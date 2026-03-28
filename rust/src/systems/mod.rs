@@ -4,3 +4,5 @@ pub mod room_template;
 pub mod loadout;
 pub mod upgrade;
 pub mod run_state;
+pub mod stereo;
+pub mod template_catalog;

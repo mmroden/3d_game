@@ -1,6 +1,5 @@
-# Local tools and assets (fetched via make deps)
+# Local tools (fetched via make deps)
 /tools/
-/assets/
 
 # Rust build artifacts
 /rust/target/

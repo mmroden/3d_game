@@ -3,51 +3,60 @@ set -euo pipefail
 
 ASSETS_DIR="${1:?Usage: fetch-assets.sh <assets-dir>}"
 
-# --- Quaternius Modular Sci-Fi MegaKit (free CC0 version from OpenGameArt) ---
+# --- Quaternius Modular Sci-Fi MegaKit (CC0, free on itch.io) ---
 MEGAKIT_DIR="$ASSETS_DIR/quaternius-megakit"
-if [ ! -d "$MEGAKIT_DIR" ]; then
-    echo "  Fetching Quaternius Modular Sci-Fi MegaKit..."
-    mkdir -p "$MEGAKIT_DIR"
-    curl -L -o "$MEGAKIT_DIR/megakit.zip" \
-        "https://opengameart.org/sites/default/files/Modular%20Sci-Fi%20MegaKit.zip"
-    unzip -o -q "$MEGAKIT_DIR/megakit.zip" -d "$MEGAKIT_DIR"
-    rm -f "$MEGAKIT_DIR/megakit.zip"
-    echo "  MegaKit ready."
-else
+if [ -d "$MEGAKIT_DIR" ] && [ "$(ls -A "$MEGAKIT_DIR" 2>/dev/null)" ]; then
     echo "  MegaKit already present, skipping."
-fi
-
-# --- Quaternius Sci-Fi Essentials Kit (enemies, props) ---
-ESSENTIALS_DIR="$ASSETS_DIR/quaternius-essentials"
-if [ ! -d "$ESSENTIALS_DIR" ]; then
-    echo "  Fetching Quaternius Sci-Fi Essentials Kit..."
-    mkdir -p "$ESSENTIALS_DIR"
-    curl -L -o "$ESSENTIALS_DIR/essentials.zip" \
-        "https://opengameart.org/sites/default/files/Sci-Fi%20Essentials.zip"
-    unzip -o -q "$ESSENTIALS_DIR/essentials.zip" -d "$ESSENTIALS_DIR"
-    rm -f "$ESSENTIALS_DIR/essentials.zip"
-    echo "  Essentials Kit ready."
 else
-    echo "  Essentials Kit already present, skipping."
+    echo ""
+    echo "  ============================================================"
+    echo "  Quaternius Modular Sci-Fi MegaKit (CC0, free)"
+    echo "  itch.io requires a browser to download — cannot automate."
+    echo ""
+    echo "  1. Visit: https://quaternius.itch.io/modular-sci-fi-megakit"
+    echo "  2. Click 'Download Now' → 'No thanks, just take me to the downloads'"
+    echo "  3. Download the Standard (free) .zip"
+    echo "  4. Unzip into: $MEGAKIT_DIR"
+    echo "  5. Re-run: make deps"
+    echo "  ============================================================"
+    echo ""
+    mkdir -p "$MEGAKIT_DIR"
+    exit 1
 fi
 
-# --- Kenney Space Kit (ships, drones, turrets) ---
+# --- Quaternius Sci-Fi Essentials Kit (CC0, free on itch.io) ---
+ESSENTIALS_DIR="$ASSETS_DIR/quaternius-essentials"
+if [ -d "$ESSENTIALS_DIR" ] && [ "$(ls -A "$ESSENTIALS_DIR" 2>/dev/null)" ]; then
+    echo "  Essentials Kit already present, skipping."
+else
+    echo ""
+    echo "  ============================================================"
+    echo "  Quaternius Sci-Fi Essentials Kit (CC0, free)"
+    echo "  itch.io requires a browser to download — cannot automate."
+    echo ""
+    echo "  1. Visit: https://quaternius.itch.io/sci-fi-essentials-kit"
+    echo "  2. Click 'Download Now' → 'No thanks, just take me to the downloads'"
+    echo "  3. Download the Standard (free) .zip"
+    echo "  4. Unzip into: $ESSENTIALS_DIR"
+    echo "  5. Re-run: make deps"
+    echo "  ============================================================"
+    echo ""
+    mkdir -p "$ESSENTIALS_DIR"
+    exit 1
+fi
+
+# --- Kenney Space Kit (CC0, direct download) ---
 KENNEY_DIR="$ASSETS_DIR/kenney-space-kit"
-if [ ! -d "$KENNEY_DIR" ]; then
+if [ -d "$KENNEY_DIR" ] && [ "$(ls -A "$KENNEY_DIR" 2>/dev/null)" ]; then
+    echo "  Kenney Space Kit already present, skipping."
+else
     echo "  Fetching Kenney Space Kit..."
     mkdir -p "$KENNEY_DIR"
     curl -L -o "$KENNEY_DIR/spacekit.zip" \
-        "https://kenney.nl/media/13752/kenneyNL_1Bit_Pack.zip"
-    # Kenney uses direct download links; if this fails, try the assets page
-    if [ $? -ne 0 ]; then
-        echo "  WARNING: Kenney download failed. Visit https://kenney.nl/assets/space-kit manually."
-    else
-        unzip -o -q "$KENNEY_DIR/spacekit.zip" -d "$KENNEY_DIR"
-        rm -f "$KENNEY_DIR/spacekit.zip"
-    fi
+        "https://kenney.nl/media/pages/assets/space-kit/cceeafbd0c-1677698978/kenney_space-kit.zip"
+    unzip -o -q "$KENNEY_DIR/spacekit.zip" -d "$KENNEY_DIR"
+    rm -f "$KENNEY_DIR/spacekit.zip"
     echo "  Kenney Space Kit ready."
-else
-    echo "  Kenney Space Kit already present, skipping."
 fi
 
 echo "All assets fetched."

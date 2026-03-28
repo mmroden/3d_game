@@ -30,7 +30,9 @@ deps-rust:
 		curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path; \
 	fi
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
+		rustup default stable && \
 		rustup update stable && \
+		rustup component add clippy 2>/dev/null || true && \
 		echo "Rust $$(rustc --version) ready."
 
 deps-godot: $(GODOT)
@@ -49,7 +51,7 @@ deps-assets:
 	@./scripts/fetch-assets.sh $(ASSETS_DIR)
 	@echo "Assets ready."
 
-check: $(RUST_LIB)
+check: deps $(RUST_LIB)
 	@echo "==> Running checks..."
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && \

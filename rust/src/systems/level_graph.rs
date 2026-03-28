@@ -14,6 +14,16 @@ pub struct PlacedRoom {
     pub grid_pos: [i32; 3],
 }
 
+impl PlacedRoom {
+    pub fn world_position(&self, cell_size: f32) -> [f32; 3] {
+        [
+            self.grid_pos[0] as f32 * cell_size,
+            self.grid_pos[1] as f32 * cell_size,
+            self.grid_pos[2] as f32 * cell_size,
+        ]
+    }
+}
+
 /// How two nodes are connected.
 #[derive(Debug, Clone)]
 pub enum EdgeKind {
@@ -62,12 +72,18 @@ pub struct LevelGraph {
     occupied: HashMap<[i32; 3], NodeIndex>,
 }
 
-impl LevelGraph {
-    pub fn new() -> Self {
+impl Default for LevelGraph {
+    fn default() -> Self {
         Self {
             graph: UnGraph::new_undirected(),
             occupied: HashMap::new(),
         }
+    }
+}
+
+impl LevelGraph {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Check whether a grid cell is free.
@@ -599,5 +615,16 @@ mod tests {
         let a_neighbors: Vec<_> = graph.neighbors(a).collect();
         assert_eq!(a_neighbors.len(), 1);
         assert!(a_neighbors.contains(&b));
+    }
+
+    // --- World position tests ---
+
+    #[test]
+    fn world_position_scales_grid_by_cell_size() {
+        let mut graph = LevelGraph::new();
+        let idx = graph.place_room(room_1x1_east_west(), [3, -1, 2]).unwrap();
+        let room = graph.room(idx).unwrap();
+        let pos = room.world_position(10.0);
+        assert_eq!(pos, [30.0, -10.0, 20.0]);
     }
 }

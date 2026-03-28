@@ -27,7 +27,7 @@ impl Default for BaseStats {
 }
 
 /// The player's current ship configuration: base stats + collected upgrades.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Loadout {
     pub base: BaseStats,
     pub upgrades: Vec<Upgrade>,
@@ -35,10 +35,7 @@ pub struct Loadout {
 
 impl Loadout {
     pub fn new() -> Self {
-        Self {
-            base: BaseStats::default(),
-            upgrades: Vec::new(),
-        }
+        Self::default()
     }
 
     pub fn add_upgrade(&mut self, upgrade: Upgrade) {
