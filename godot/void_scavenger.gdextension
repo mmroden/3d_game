@@ -1,0 +1,10 @@
+[configuration]
+entry_symbol = "gdext_rust_init"
+compatibility_minimum = 4.4
+reloadable = true
+
+[libraries]
+macos.debug = "res://../rust/target/debug/libvoid_scavenger.dylib"
+macos.release = "res://../rust/target/release/libvoid_scavenger.dylib"
+linux.debug.x86_64 = "res://../rust/target/debug/libvoid_scavenger.so"
+linux.release.x86_64 = "res://../rust/target/release/libvoid_scavenger.so"

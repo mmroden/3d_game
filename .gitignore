@@ -1,0 +1,13 @@
+# Local tools and assets (fetched via make deps)
+/tools/
+/assets/
+
+# Rust build artifacts
+/rust/target/
+
+# Godot editor artifacts
+/godot/.godot/
+/godot/.import/
+
+# OS
+.DS_Store

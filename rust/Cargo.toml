@@ -1,0 +1,12 @@
+[package]
+name = "void_scavenger"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+godot = "0.2"
+rand = "0.9"
