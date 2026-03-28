@@ -246,6 +246,7 @@ mod tests {
     fn room_1x1_east_west() -> RoomTemplate {
         RoomTemplate {
             id: "1x1_ew",
+            kind: TemplateKind::Room,
             connectors: vec![
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
@@ -259,6 +260,7 @@ mod tests {
     fn room_2x1_east_west() -> RoomTemplate {
         RoomTemplate {
             id: "2x1_ew",
+            kind: TemplateKind::Room,
             connectors: vec![
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
                 Connector { offset: [1, 0, 0], facing: ConnectorFacing::PosX },
@@ -272,6 +274,7 @@ mod tests {
     fn room_1x1_north_south() -> RoomTemplate {
         RoomTemplate {
             id: "1x1_ns",
+            kind: TemplateKind::Room,
             connectors: vec![
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ },
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ },
@@ -282,12 +285,10 @@ mod tests {
         }
     }
 
-    /// A corridor segment: narrow 1x1 with east/west connectors.
-    /// Identical shape to room_1x1_east_west but semantically
-    /// represents a corridor node in room-corridor-room chains.
     fn corridor_1x1_east_west() -> RoomTemplate {
         RoomTemplate {
             id: "corridor_ew",
+            kind: TemplateKind::Corridor,
             connectors: vec![
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },

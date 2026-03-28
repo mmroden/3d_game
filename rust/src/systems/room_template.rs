@@ -70,12 +70,21 @@ pub struct SpawnPoint {
     pub position: [f32; 3],
 }
 
+/// Whether a template represents a room (gameplay space) or a
+/// corridor (connective tissue between rooms).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemplateKind {
+    Room,
+    Corridor,
+}
+
 /// Defines the shape and connection points for a room type.
 /// Does not hold any Godot resources — the node layer maps
 /// template IDs to actual scene files.
 #[derive(Debug, Clone)]
 pub struct RoomTemplate {
     pub id: &'static str,
+    pub kind: TemplateKind,
     pub connectors: Vec<Connector>,
     pub enemy_spawns: Vec<SpawnPoint>,
     pub loot_spawns: Vec<SpawnPoint>,
