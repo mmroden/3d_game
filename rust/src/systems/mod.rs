@@ -1,3 +1,4 @@
+pub mod generator;
 pub mod level_graph;
 pub mod room_template;
 pub mod loadout;

@@ -9,4 +9,5 @@ crate-type = ["cdylib"]
 
 [dependencies]
 godot = "0.2"
+petgraph = "0.7"
 rand = "0.9"
