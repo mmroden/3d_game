@@ -63,6 +63,30 @@ pub fn corridor_templates() -> Vec<RoomTemplate> {
     ]
 }
 
+/// A scene to instantiate at a world position.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpawnEntry {
+    pub scene: &'static str,
+    pub world_pos: [f32; 3],
+}
+
+/// Walk a generated level graph and produce a list of scenes to instantiate.
+pub fn spawn_list(
+    graph: &crate::systems::level_graph::LevelGraph,
+    cell_size: f32,
+) -> Vec<SpawnEntry> {
+    graph.room_indices()
+        .filter_map(|idx| {
+            let room = graph.room(idx)?;
+            let scene = scene_path(room.template.id)?;
+            Some(SpawnEntry {
+                scene,
+                world_pos: room.world_position(cell_size),
+            })
+        })
+        .collect()
+}
+
 pub fn scene_path(template_id: &str) -> Option<&'static str> {
     match template_id {
         "scifi_room_small" => Some("res://scenes/rooms/room_small.tscn"),
@@ -148,6 +172,25 @@ mod tests {
         assert!(
             successes >= 8,
             "expected at least 8 out of 10 seeds to succeed, got {successes}"
+        );
+    }
+
+#[test]
+    fn spawn_list_has_entry_per_node() {
+        use crate::systems::generator::{generate, GeneratorConfig};
+
+        let config = GeneratorConfig {
+            seed: 42,
+            room_templates: room_templates(),
+            corridor_templates: corridor_templates(),
+            target_room_count: 3,
+        };
+        let level = generate(&config).expect("generation should succeed");
+        let entries = spawn_list(&level, 10.0);
+        assert_eq!(
+            entries.len(),
+            level.room_count(),
+            "spawn_list should have one entry per node in the graph"
         );
     }
 }

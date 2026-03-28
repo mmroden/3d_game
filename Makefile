@@ -51,7 +51,7 @@ deps-assets:
 	@./scripts/fetch-assets.sh $(ASSETS_DIR)
 	@echo "Assets ready."
 
-check: deps $(RUST_LIB)
+check: deps
 	@echo "==> Running checks..."
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && \
@@ -59,11 +59,9 @@ check: deps $(RUST_LIB)
 		$(CARGO) test
 	@echo "All checks passed."
 
-$(RUST_LIB):
+build:
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && $(CARGO) build
-
-build: $(RUST_LIB)
 	@echo "Build complete."
 
 run: build $(GODOT)
