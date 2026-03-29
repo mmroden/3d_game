@@ -245,11 +245,14 @@ impl LevelGraph {
     pub fn active_facings(&self, index: NodeIndex) -> Vec<ConnectorFacing> {
         let mut facings = Vec::new();
         for edge_ref in self.graph.edges(index) {
+            // Use edge_endpoints() to get the original add_edge(from, to) order.
+            // In petgraph's UnGraph, edge_ref.source() always returns the queried
+            // node for incoming edges, which breaks our from/to distinction.
+            let (from, _to) = self.graph.edge_endpoints(edge_ref.id()).unwrap();
             match edge_ref.weight() {
                 EdgeKind::Adjacent { from_facing, to_facing } |
                 EdgeKind::Locked { from_facing, to_facing, .. } => {
-                    // source() matches the `from` arg of add_edge
-                    if edge_ref.source() == index {
+                    if from == index {
                         facings.push(*from_facing);
                     } else {
                         facings.push(*to_facing);
@@ -471,6 +474,29 @@ mod tests {
     }
 
     #[test]
+    fn corridor_active_facings_has_both_directions() {
+        // Corridor between two rooms must report BOTH NegX and PosX,
+        // not [PosX, PosX] — regardless of which node was `from` in add_edge.
+        let mut graph = LevelGraph::new();
+        let room_a = graph.place_room(room_1x1_east_west(), [0, 0, 0]).unwrap();
+        let corridor = graph.place_room(corridor_1x1_east_west(), [1, 0, 0]).unwrap();
+        let room_b = graph.place_room(room_1x1_east_west(), [2, 0, 0]).unwrap();
+
+        // room_a is source of first edge, corridor is source of second
+        graph.connect_adjacent(room_a, corridor).unwrap();
+        graph.connect_adjacent(corridor, room_b).unwrap();
+
+        let mut facings = graph.active_facings(corridor);
+        facings.sort_by_key(|f| format!("{f:?}"));
+        let mut expected = vec![ConnectorFacing::NegX, ConnectorFacing::PosX];
+        expected.sort_by_key(|f| format!("{f:?}"));
+        assert_eq!(
+            facings, expected,
+            "corridor active_facings should be [NegX, PosX], got {facings:?}"
+        );
+    }
+
+    #[test]
     fn corridor_is_not_directly_connecting_distant_rooms() {
         // Rooms at [0,0,0] and [3,0,0] can't be directly connected
         // even with a corridor at [1,0,0] — room B is too far.
@@ -649,5 +675,149 @@ mod tests {
         let room = graph.room(idx).unwrap();
         let pos = room.world_position(10.0);
         assert_eq!(pos, [30.0, -10.0, 20.0]);
+    }
+
+    // --- R2: Hub room with 6 cardinal connections ---
+
+    fn room_3x1x3_hub_6way() -> RoomTemplate {
+        RoomTemplate {
+            id: "3x3_hub",
+            kind: TemplateKind::Room,
+            connectors: vec![
+                Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX },
+                Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX },
+                Connector { offset: [1, 0, 0], facing: ConnectorFacing::NegZ },
+                Connector { offset: [1, 0, 2], facing: ConnectorFacing::PosZ },
+                Connector { offset: [1, 0, 1], facing: ConnectorFacing::PosY },
+                Connector { offset: [1, 0, 1], facing: ConnectorFacing::NegY },
+            ],
+            enemy_spawns: vec![],
+            loot_spawns: vec![],
+            extents: [3, 1, 3],
+        }
+    }
+
+    fn room_1x1_vertical() -> RoomTemplate {
+        RoomTemplate {
+            id: "1x1_vert",
+            kind: TemplateKind::Room,
+            connectors: vec![
+                Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosY },
+                Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegY },
+            ],
+            enemy_spawns: vec![],
+            loot_spawns: vec![],
+            extents: [1, 1, 1],
+        }
+    }
+
+    #[test]
+    fn hub_room_connects_six_neighbors() {
+        let mut graph = LevelGraph::new();
+        let hub = graph.place_room(room_3x1x3_hub_6way(), [0, 0, 0]).unwrap();
+
+        // NegX neighbor at [-1, 0, 1] (targets hub's NegX connector at offset [0,0,1])
+        let neg_x = graph.place_room(room_1x1_east_west(), [-1, 0, 1]).unwrap();
+        // PosX neighbor at [3, 0, 1] (targets hub's PosX connector at offset [2,0,1])
+        let pos_x = graph.place_room(room_1x1_east_west(), [3, 0, 1]).unwrap();
+        // NegZ neighbor at [1, 0, -1] (targets hub's NegZ connector at offset [1,0,0])
+        let neg_z = graph.place_room(room_1x1_north_south(), [1, 0, -1]).unwrap();
+        // PosZ neighbor at [1, 0, 3] (targets hub's PosZ connector at offset [1,0,2])
+        let pos_z = graph.place_room(room_1x1_north_south(), [1, 0, 3]).unwrap();
+        // PosY neighbor at [1, 1, 1] (targets hub's PosY connector at offset [1,0,1])
+        let pos_y = graph.place_room(room_1x1_vertical(), [1, 1, 1]).unwrap();
+        // NegY neighbor at [1, -1, 1] (targets hub's NegY connector at offset [1,0,1])
+        let neg_y = graph.place_room(room_1x1_vertical(), [1, -1, 1]).unwrap();
+
+        graph.connect_adjacent(hub, neg_x).unwrap();
+        graph.connect_adjacent(hub, pos_x).unwrap();
+        graph.connect_adjacent(hub, neg_z).unwrap();
+        graph.connect_adjacent(hub, pos_z).unwrap();
+        graph.connect_adjacent(hub, pos_y).unwrap();
+        graph.connect_adjacent(hub, neg_y).unwrap();
+
+        assert_eq!(graph.edge_count(), 6, "hub should have 6 edges");
+        let neighbors: Vec<_> = graph.neighbors(hub).collect();
+        assert_eq!(neighbors.len(), 6, "hub should have 6 neighbors");
+        assert!(graph.is_fully_connected(), "all 7 rooms should be connected");
+    }
+
+    #[test]
+    fn hub_active_facings_returns_all_six() {
+        let mut graph = LevelGraph::new();
+        let hub = graph.place_room(room_3x1x3_hub_6way(), [0, 0, 0]).unwrap();
+
+        let neg_x = graph.place_room(room_1x1_east_west(), [-1, 0, 1]).unwrap();
+        let pos_x = graph.place_room(room_1x1_east_west(), [3, 0, 1]).unwrap();
+        let neg_z = graph.place_room(room_1x1_north_south(), [1, 0, -1]).unwrap();
+        let pos_z = graph.place_room(room_1x1_north_south(), [1, 0, 3]).unwrap();
+        let pos_y = graph.place_room(room_1x1_vertical(), [1, 1, 1]).unwrap();
+        let neg_y = graph.place_room(room_1x1_vertical(), [1, -1, 1]).unwrap();
+
+        graph.connect_adjacent(hub, neg_x).unwrap();
+        graph.connect_adjacent(hub, pos_x).unwrap();
+        graph.connect_adjacent(hub, neg_z).unwrap();
+        graph.connect_adjacent(hub, pos_z).unwrap();
+        graph.connect_adjacent(hub, pos_y).unwrap();
+        graph.connect_adjacent(hub, neg_y).unwrap();
+
+        let mut facings = graph.active_facings(hub);
+        facings.sort_by_key(|f| format!("{f:?}"));
+        let mut expected = vec![
+            ConnectorFacing::NegX, ConnectorFacing::PosX,
+            ConnectorFacing::NegZ, ConnectorFacing::PosZ,
+            ConnectorFacing::PosY, ConnectorFacing::NegY,
+        ];
+        expected.sort_by_key(|f| format!("{f:?}"));
+        assert_eq!(facings, expected, "active_facings should return all 6 directions");
+    }
+
+    #[test]
+    fn vertical_adjacent_connection() {
+        let mut graph = LevelGraph::new();
+        let bottom = graph.place_room(room_1x1_vertical(), [0, 0, 0]).unwrap();
+        let top = graph.place_room(room_1x1_vertical(), [0, 1, 0]).unwrap();
+        graph.connect_adjacent(bottom, top).unwrap();
+
+        let (_, _, edge) = graph.edges().next().unwrap();
+        match edge {
+            EdgeKind::Adjacent { from_facing, to_facing } => {
+                assert_eq!(*from_facing, ConnectorFacing::PosY);
+                assert_eq!(*to_facing, ConnectorFacing::NegY);
+            }
+            _ => panic!("Expected Adjacent edge"),
+        }
+    }
+
+    // --- R3: Multiple connections on the same face ---
+
+    fn room_3x1x3_multi_negz() -> RoomTemplate {
+        RoomTemplate {
+            id: "3x3_multi_negz",
+            kind: TemplateKind::Room,
+            connectors: vec![
+                Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ },
+                Connector { offset: [2, 0, 0], facing: ConnectorFacing::NegZ },
+            ],
+            enemy_spawns: vec![],
+            loot_spawns: vec![],
+            extents: [3, 1, 3],
+        }
+    }
+
+    #[test]
+    fn large_room_multiple_connections_same_face() {
+        let mut graph = LevelGraph::new();
+        let room = graph.place_room(room_3x1x3_multi_negz(), [0, 0, 0]).unwrap();
+
+        // Two neighbors on the NegZ face at different X positions
+        let n1 = graph.place_room(room_1x1_north_south(), [0, 0, -1]).unwrap();
+        let n2 = graph.place_room(room_1x1_north_south(), [2, 0, -1]).unwrap();
+
+        graph.connect_adjacent(room, n1).unwrap();
+        graph.connect_adjacent(room, n2).unwrap();
+
+        assert_eq!(graph.edge_count(), 2, "two connections on the same face");
+        assert!(graph.is_fully_connected());
     }
 }

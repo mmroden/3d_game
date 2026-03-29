@@ -80,8 +80,8 @@ impl LevelManager {
             let pos = Vector3::new(entry.position[0], entry.position[1], entry.position[2]);
             node.set_position(pos);
 
-            if entry.rotation_y.abs() > 0.001 {
-                node.set_rotation(Vector3::new(0.0, entry.rotation_y, 0.0));
+            if entry.rotation_x.abs() > 0.001 || entry.rotation_y.abs() > 0.001 {
+                node.set_rotation(Vector3::new(entry.rotation_x, entry.rotation_y, 0.0));
             }
 
             self.base_mut().add_child(&node);

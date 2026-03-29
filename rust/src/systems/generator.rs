@@ -100,10 +100,7 @@ pub fn generate(config: &GeneratorConfig) -> Result<LevelGraph, GenerateError> {
                 continue;
             };
 
-            let room_pos = out_connector.target_cell(target_pos);
-            if !graph.is_free(room_pos) {
-                continue;
-            }
+            let target_cell = out_connector.target_cell(target_pos);
 
             // Find a room template that mates with the corridor's outgoing connector
             let room_needed = out_connector.facing.opposite();
@@ -112,6 +109,18 @@ pub fn generate(config: &GeneratorConfig) -> Result<LevelGraph, GenerateError> {
                 .collect();
 
             if let Some(&room_template) = room_candidates.choose(&mut rng) {
+                // Find the matching connector on the room to compute the correct origin.
+                // The room origin = target_cell - connector.offset so the connector
+                // aligns with the corridor's outgoing target.
+                let matching_connector = room_template.connectors.iter()
+                    .find(|c| c.facing == room_needed);
+                let Some(mc) = matching_connector else { continue };
+                let room_pos = [
+                    target_cell[0] - mc.offset[0],
+                    target_cell[1] - mc.offset[1],
+                    target_cell[2] - mc.offset[2],
+                ];
+
                 if let Ok(new_idx) = graph.place_room(room_template.clone(), room_pos) {
                     let _ = graph.connect_adjacent(corridor_idx, new_idx);
                     frontier.push(new_idx);
