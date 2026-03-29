@@ -83,7 +83,33 @@ if [ -d "$ESSENTIALS_SRC" ]; then
     if [ -d "$ESSENTIALS_SRC/materials" ]; then
         find "$ESSENTIALS_SRC/materials" -maxdepth 1 \( -name "*.tres" -o -name "*.png" -o -name "*.gdshader" \) \
             -exec cp {} "$ADDON_DIR/materials/" \;
+
+        # Textures/ subdirectory — flatten into materials/ (the .tres path-stripping
+        # in this script converts "materials/Textures/Foo.png" to "materials/Foo.png")
+        if [ -d "$ESSENTIALS_SRC/materials/Textures" ]; then
+            find "$ESSENTIALS_SRC/materials/Textures" -maxdepth 1 \( -name "*.png" -o -name "*.jpg" \) \
+                -exec cp {} "$ADDON_DIR/materials/" \;
+        fi
+
+        # Planet Textures/ subdirectory — keep as subdirectory (referenced as
+        # "materials/Planet Textures/T_*.png" by planet material .tres files)
+        if [ -d "$ESSENTIALS_SRC/materials/Planet Textures" ]; then
+            mkdir -p "$ADDON_DIR/materials/Planet Textures"
+            find "$ESSENTIALS_SRC/materials/Planet Textures" -maxdepth 1 \( -name "*.png" -o -name "*.jpg" \) \
+                -exec cp {} "$ADDON_DIR/materials/Planet Textures/" \;
+        fi
     fi
+
+    # Essentials mesh modules (props, enemies, guns)
+    for subdir in Props Enemies Guns; do
+        src="$ESSENTIALS_SRC/Sci-FiEssentials/$subdir"
+        dst="$ADDON_DIR/essentials/$(echo "$subdir" | tr 'A-Z' 'a-z')"
+        if [ -d "$src" ]; then
+            mkdir -p "$dst"
+            find "$src" -maxdepth 1 \( -name "*.gltf" -o -name "*.bin" \) \
+                -exec cp {} "$dst/" \;
+        fi
+    done
 
     chmod -R u+w "$ADDON_DIR"
     echo "  Essentials addon installed."

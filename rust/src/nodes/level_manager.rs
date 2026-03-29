@@ -58,8 +58,9 @@ impl LevelManager {
             }
         };
 
-        // Assemble all room geometry via the cell-grid room assembler
-        let placements = template_catalog::spawn_list(&graph, self.grid_cell_size);
+        // Assemble all room geometry, furniture, and light fixtures
+        let (placements, light_sources) =
+            template_catalog::spawn_list(&graph, self.grid_cell_size, seed);
         let mut loader = ResourceLoader::singleton();
         let mut mesh_count = 0;
 
@@ -88,18 +89,18 @@ impl LevelManager {
             mesh_count += 1;
         }
 
-        // Add a light for each cell in the level
-        let centers = template_catalog::cell_centers(&graph, self.grid_cell_size);
-        for center in &centers {
+        // Spawn OmniLight3D for each light fixture
+        for ls in &light_sources {
             let mut light = OmniLight3D::new_alloc();
-            light.set_position(Vector3::new(center[0], center[1] + 3.0, center[2]));
-            light.set_param(godot::classes::light_3d::Param::RANGE, 8.0);
-            light.set_param(godot::classes::light_3d::Param::ENERGY, 1.5);
+            light.set_position(Vector3::new(ls.position[0], ls.position[1], ls.position[2]));
+            light.set_param(godot::classes::light_3d::Param::RANGE, ls.range);
+            light.set_param(godot::classes::light_3d::Param::ENERGY, ls.energy);
             light.set_color(Color::from_rgb(0.9, 0.95, 1.0));
             self.base_mut().add_child(&light);
         }
 
-        // Move player to the first room's position
+        // Move player to the first room's center
+        let centers = template_catalog::cell_centers(&graph, self.grid_cell_size);
         if let Some(first_center) = centers.first() {
             let spawn = Vector3::new(
                 first_center[0],
@@ -118,7 +119,7 @@ impl LevelManager {
             "Level generated: {} rooms, {} meshes, {} lights",
             target_rooms,
             mesh_count,
-            centers.len()
+            light_sources.len()
         );
     }
 }

@@ -5,5 +5,7 @@ pub mod loadout;
 pub mod upgrade;
 pub mod run_state;
 pub mod stereo;
+pub mod asset_catalog;
 pub mod room_assembler;
+pub mod room_furnisher;
 pub mod template_catalog;

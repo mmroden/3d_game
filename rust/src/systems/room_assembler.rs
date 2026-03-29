@@ -1,18 +1,57 @@
 use std::f32::consts::{FRAC_PI_2, PI};
 
+use crate::systems::asset_catalog;
 use crate::systems::room_template::{ConnectorFacing, RoomTemplate, TemplateKind};
 
-// Quaternius Modular Sci-Fi MegaKit asset paths
+// Default Astra asset paths — used by tests via `super::WALL` etc.
+#[cfg(test)]
 const FLOOR: &str =
     "res://addons/quaternius/modularscifimegakit/platforms/Platform_Simple.gltf";
+#[cfg(test)]
 const WALL: &str =
     "res://addons/quaternius/modularscifimegakit/walls/WallAstra_Straight.gltf";
+#[cfg(test)]
 const CEILING: &str =
     "res://addons/quaternius/modularscifimegakit/walls/TopCables_Straight.gltf";
+#[cfg(test)]
 const CORNER: &str =
-    "res://addons/quaternius/modularscifimegakit/walls/WallAstra_Corner_Square_Inner.gltf";
+    "res://addons/quaternius/modularscifimegakit/walls/WallAstra_Corner_Round_Inner.gltf";
+#[cfg(test)]
 const DOOR: &str =
     "res://addons/quaternius/modularscifimegakit/platforms/Door_Frame_Square.gltf";
+#[cfg(test)]
+const FLOOR_CURVE: &str =
+    "res://addons/quaternius/modularscifimegakit/platforms/Platform_Simple_Curve.gltf";
+
+/// Per-room visual theme: which wall, corner, ceiling, and floor assets to use.
+#[derive(Debug, Clone, Copy)]
+pub struct RoomStyle {
+    pub wall: &'static str,
+    pub corner: &'static str,
+    pub ceiling: &'static str,
+    pub ceiling_corner: &'static str,
+    pub floor: &'static str,
+    pub floor_corner: &'static str,
+}
+
+impl RoomStyle {
+    pub fn from_wall_set(ws: &asset_catalog::WallSet) -> Self {
+        Self {
+            wall: ws.wall_straight,
+            corner: ws.wall_corner_inner,
+            ceiling: ws.ceiling_straight,
+            ceiling_corner: ws.ceiling_corner,
+            floor: ws.floor,
+            floor_corner: ws.floor_corner,
+        }
+    }
+}
+
+impl Default for RoomStyle {
+    fn default() -> Self {
+        Self::from_wall_set(&asset_catalog::WALL_SET_ASTRA)
+    }
+}
 
 /// Vertical cell height in meters, determined by the Quaternius mesh geometry.
 /// Wall + top-strip extend from Y≈0.2 to Y=5.0, so one story is 5m.
@@ -42,11 +81,14 @@ pub fn assemble(
     active_facings: &[ConnectorFacing],
     world_origin: [f32; 3],
     cell_size: f32,
+    style: &RoomStyle,
 ) -> Vec<MeshPlacement> {
     let mut out = Vec::new();
     let ex = template.extents[0] as i32;
     let ey = template.extents[1] as i32;
     let ez = template.extents[2] as i32;
+
+    let door = asset_catalog::DOOR;
 
     for cx in 0..ex {
         for cy in 0..ey {
@@ -56,30 +98,6 @@ pub fn assemble(
                     world_origin[1] + cy as f32 * CELL_HEIGHT,
                     world_origin[2] + (cz as f32 + 0.5) * cell_size,
                 ];
-
-                // Floor — only on bottom boundary, or if NegY is not active at this cell
-                let is_bottom = cy == 0;
-                if is_bottom {
-                    if !is_active_connector(template, active_facings, ConnectorFacing::NegY, cx, cy, cz) {
-                        out.push(MeshPlacement { scene: FLOOR, position: pos, rotation_x: 0.0, rotation_y: 0.0 });
-                    } else {
-                        let door_pos = [pos[0], pos[1], pos[2]];
-                        out.push(MeshPlacement { scene: DOOR, position: door_pos, rotation_x: -FRAC_PI_2, rotation_y: 0.0 });
-                    }
-                } else {
-                    // Interior Y-edge: no floor between stories (open space)
-                }
-
-                // Ceiling tile — only on top boundary, gated on PosY connector
-                let is_top = cy == ey - 1;
-                if is_top {
-                    let ceiling_pos = [pos[0], pos[1] + CELL_HEIGHT, pos[2]];
-                    if !is_active_connector(template, active_facings, ConnectorFacing::PosY, cx, cy, cz) {
-                        out.push(MeshPlacement { scene: FLOOR, position: ceiling_pos, rotation_x: PI, rotation_y: 0.0 });
-                    } else {
-                        out.push(MeshPlacement { scene: DOOR, position: ceiling_pos, rotation_x: FRAC_PI_2, rotation_y: 0.0 });
-                    }
-                }
 
                 // Four horizontal edges — index order: NegX, PosX, NegZ, PosZ
                 let boundary = [
@@ -97,33 +115,62 @@ pub fn assemble(
                     }
 
                     if is_active_connector(template, active_facings, facing, cx, cy, cz) {
-                        // Corridors emit door frames; rooms leave a gap
-                        // (the adjacent corridor provides the archway).
                         if template.kind == TemplateKind::Corridor {
                             let (door_pos, door_rot) = door_placement(pos, facing, cell_size);
-                            out.push(MeshPlacement { scene: DOOR, position: door_pos, rotation_x: 0.0, rotation_y: door_rot });
+                            out.push(MeshPlacement { scene: door, position: door_pos, rotation_x: 0.0, rotation_y: door_rot });
                         }
                     } else {
                         let (wall_pos, rot) = wall_placement(pos, facing, cell_size);
-                        out.push(MeshPlacement { scene: WALL, position: wall_pos, rotation_x: 0.0, rotation_y: rot });
-                        out.push(MeshPlacement { scene: CEILING, position: wall_pos, rotation_x: 0.0, rotation_y: rot });
+                        out.push(MeshPlacement { scene: style.wall, position: wall_pos, rotation_x: 0.0, rotation_y: rot });
+                        out.push(MeshPlacement { scene: style.ceiling, position: wall_pos, rotation_x: 0.0, rotation_y: rot });
                         wall_present[i] = true;
                     }
                 }
 
                 // Corners at cell center (center-pivot meshes)
                 let [neg_x, pos_x, neg_z, pos_z] = wall_present;
-                if neg_x && neg_z {
-                    out.push(MeshPlacement { scene: CORNER, position: pos, rotation_x: 0.0, rotation_y: 0.0 });
+                let corner_rotations = [
+                    (neg_x && neg_z, 0.0),
+                    (pos_x && neg_z, -FRAC_PI_2),
+                    (neg_x && pos_z, FRAC_PI_2),
+                    (pos_x && pos_z, PI),
+                ];
+                let mut corner_rot_y: Option<f32> = None;
+                for (present, rot) in corner_rotations {
+                    if present {
+                        out.push(MeshPlacement { scene: style.corner, position: pos, rotation_x: 0.0, rotation_y: rot });
+                        out.push(MeshPlacement { scene: style.ceiling_corner, position: pos, rotation_x: 0.0, rotation_y: rot });
+                        corner_rot_y = Some(rot);
+                    }
                 }
-                if pos_x && neg_z {
-                    out.push(MeshPlacement { scene: CORNER, position: pos, rotation_x: 0.0, rotation_y: -FRAC_PI_2 });
+
+                // Floor — use curved variant at corner cells to match round wall corners
+                let is_bottom = cy == 0;
+                if is_bottom {
+                    if !is_active_connector(template, active_facings, ConnectorFacing::NegY, cx, cy, cz) {
+                        if let Some(rot) = corner_rot_y {
+                            out.push(MeshPlacement { scene: style.floor_corner, position: pos, rotation_x: 0.0, rotation_y: rot });
+                        } else {
+                            out.push(MeshPlacement { scene: style.floor, position: pos, rotation_x: 0.0, rotation_y: 0.0 });
+                        }
+                    } else {
+                        out.push(MeshPlacement { scene: door, position: pos, rotation_x: -FRAC_PI_2, rotation_y: 0.0 });
+                    }
                 }
-                if neg_x && pos_z {
-                    out.push(MeshPlacement { scene: CORNER, position: pos, rotation_x: 0.0, rotation_y: FRAC_PI_2 });
-                }
-                if pos_x && pos_z {
-                    out.push(MeshPlacement { scene: CORNER, position: pos, rotation_x: 0.0, rotation_y: PI });
+
+                // Ceiling tile — use curved variant at corner cells
+                let is_top = cy == ey - 1;
+                if is_top {
+                    let ceiling_pos = [pos[0], pos[1] + CELL_HEIGHT, pos[2]];
+                    if !is_active_connector(template, active_facings, ConnectorFacing::PosY, cx, cy, cz) {
+                        if let Some(rot) = corner_rot_y {
+                            out.push(MeshPlacement { scene: style.floor_corner, position: ceiling_pos, rotation_x: PI, rotation_y: rot });
+                        } else {
+                            out.push(MeshPlacement { scene: style.floor, position: ceiling_pos, rotation_x: PI, rotation_y: 0.0 });
+                        }
+                    } else {
+                        out.push(MeshPlacement { scene: door, position: ceiling_pos, rotation_x: FRAC_PI_2, rotation_y: 0.0 });
+                    }
                 }
             }
         }
@@ -171,5 +218,5 @@ pub(crate) fn door_placement(cell_pos: [f32; 3], facing: ConnectorFacing, _cell_
 }
 
 #[cfg(test)]
-#[path = "room_assembler_tests.rs"]
+#[path = "room_assembler_tests/mod.rs"]
 mod tests;

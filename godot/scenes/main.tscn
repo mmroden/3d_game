@@ -16,7 +16,7 @@ background_mode = 2
 sky = SubResource("sky")
 ambient_light_source = 1
 ambient_light_color = Color(0.15, 0.15, 0.2, 1)
-ambient_light_energy = 0.5
+ambient_light_energy = 0.6
 
 [sub_resource type="SphereShape3D" id="player_shape"]
 radius = 0.5
@@ -49,8 +49,8 @@ target_rooms = 5
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 0.7, 0.7, 0, -0.7, 0.7, 0, 10, 0)
-light_energy = 1.5
-shadow_enabled = true
+light_energy = 0.2
+shadow_enabled = false
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("env")

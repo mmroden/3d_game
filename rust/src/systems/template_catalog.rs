@@ -63,29 +63,72 @@ pub fn corridor_templates() -> Vec<RoomTemplate> {
     ]
 }
 
-/// Walk a generated level graph, assemble room geometry using the cell-grid
-/// room assembler, and return all mesh placements for the level.
+/// Walk a generated level graph, assemble room geometry, furnish rooms,
+/// and return all mesh placements plus light sources for the level.
+///
+/// Each room gets a deterministic visual theme based on its index + seed.
 pub fn spawn_list(
     graph: &crate::systems::level_graph::LevelGraph,
     cell_size: f32,
-) -> Vec<crate::systems::room_assembler::MeshPlacement> {
-    graph
-        .room_indices()
-        .filter_map(|idx| {
-            let room = graph.room(idx)?;
-            let active = graph.active_facings(idx);
-            Some(crate::systems::room_assembler::assemble(
-                &room.template,
-                &active,
-                room.world_position(cell_size),
-                cell_size,
-            ))
-        })
-        .flatten()
-        .collect()
+    seed: u64,
+) -> (
+    Vec<crate::systems::room_assembler::MeshPlacement>,
+    Vec<crate::systems::room_furnisher::LightSource>,
+) {
+    use crate::systems::asset_catalog::ALL_WALL_SETS;
+    use crate::systems::room_assembler::RoomStyle;
+    use crate::systems::room_furnisher;
+
+    let mut meshes = Vec::new();
+    let mut lights = Vec::new();
+
+    for (room_idx, idx) in graph.room_indices().enumerate() {
+        let Some(room) = graph.room(idx) else { continue };
+        let active = graph.active_facings(idx);
+        let origin = room.world_position(cell_size);
+
+        // Per-room theme: deterministic from seed + room index.
+        let wall_set = &ALL_WALL_SETS[(seed as usize + room_idx) % ALL_WALL_SETS.len()];
+        let style = RoomStyle::from_wall_set(wall_set);
+
+        // Structural geometry (walls, floors, ceilings, corners, doors).
+        meshes.extend(crate::systems::room_assembler::assemble(
+            &room.template,
+            &active,
+            origin,
+            cell_size,
+            &style,
+        ));
+
+        // Furniture and decorative props.
+        let room_seed = seed.wrapping_add(room_idx as u64).wrapping_mul(2654435761);
+        // Per-room density: deterministic from seed + room index.
+        let density = match (seed as usize + room_idx * 3) % 3 {
+            0 => room_furnisher::RoomDensity::Sparse,
+            1 => room_furnisher::RoomDensity::Normal,
+            _ => room_furnisher::RoomDensity::Dense,
+        };
+
+        meshes.extend(room_furnisher::furnish(
+            &room.template,
+            &active,
+            origin,
+            cell_size,
+            room_seed,
+            density,
+        ));
+
+        // Light fixtures (mesh + co-located light source).
+        for (mesh, light) in room_furnisher::light_fixtures(&room.template, origin, cell_size) {
+            meshes.push(mesh);
+            lights.push(light);
+        }
+    }
+
+    (meshes, lights)
 }
 
-/// Return the world-space center of every cell in the level (for lighting).
+/// Return the world-space center of every cell in the level (for player spawn).
 pub fn cell_centers(
     graph: &crate::systems::level_graph::LevelGraph,
     cell_size: f32,
@@ -187,7 +230,7 @@ mod tests {
             target_room_count: 3,
         };
         let level = generate(&config).expect("generation should succeed");
-        let placements = spawn_list(&level, 4.0);
+        let (placements, _lights) = spawn_list(&level, 4.0, 42);
         // Each room/corridor cell produces at least 1 floor + walls
         assert!(
             placements.len() > level.room_count(),
@@ -285,6 +328,7 @@ mod tests {
                         &active,
                         room.world_position(cell_size),
                         cell_size,
+                        &room_assembler::RoomStyle::default(),
                     );
 
                     if let Some(conn) = room.template.connectors.iter().find(|c| c.facing == *facing) {
@@ -338,7 +382,7 @@ mod tests {
         let cell_size = 4.0;
 
         let floor_scene = "res://addons/quaternius/modularscifimegakit/platforms/Platform_Simple.gltf";
-        let ceiling_scene = floor_scene; // same asset, placed at ceiling height
+        let floor_curve_scene = "res://addons/quaternius/modularscifimegakit/platforms/Platform_Simple_Curve.gltf";
 
         for idx in level.room_indices() {
             let room = level.room(idx).unwrap();
@@ -348,11 +392,14 @@ mod tests {
                 &active,
                 room.world_position(cell_size),
                 cell_size,
+                &room_assembler::RoomStyle::default(),
             );
+
+            let is_floor = |scene: &str| scene == floor_scene || scene == floor_curve_scene;
 
             let cell_count = (room.template.extents[0] * room.template.extents[2]) as usize;
             let floor_count = placements.iter().filter(|p| {
-                p.scene == floor_scene && p.position[1] == room.world_position(cell_size)[1]
+                is_floor(p.scene) && p.position[1] == room.world_position(cell_size)[1]
             }).count();
             assert_eq!(
                 floor_count, cell_count,
@@ -362,7 +409,7 @@ mod tests {
 
             // Ceiling tiles at y + CELL_HEIGHT (mesh-native vertical cell size)
             let ceiling_count = placements.iter().filter(|p| {
-                p.scene == ceiling_scene
+                is_floor(p.scene)
                     && (p.position[1] - (room.world_position(cell_size)[1] + crate::systems::room_assembler::CELL_HEIGHT)).abs() < 0.001
             }).count();
             assert_eq!(
@@ -469,12 +516,14 @@ mod tests {
                     &level.active_facings(from),
                     from_room.world_position(cell_size),
                     cell_size,
+                    &room_assembler::RoomStyle::default(),
                 );
                 let to_placements = room_assembler::assemble(
                     &to_room.template,
                     &level.active_facings(to),
                     to_room.world_position(cell_size),
                     cell_size,
+                    &room_assembler::RoomStyle::default(),
                 );
 
                 // Two walls overlap if same position AND same rotation
