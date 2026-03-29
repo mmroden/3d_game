@@ -2,6 +2,7 @@ use godot::prelude::*;
 use godot::classes::{
     CanvasLayer, Camera3D, DisplayServer, INode3D, Node3D,
     SubViewport, SubViewportContainer,
+    viewport::Msaa,
 };
 
 use crate::systems::stereo::{
@@ -104,6 +105,7 @@ impl StereoRig {
         if let Some(world) = main_world.clone() {
             left_viewport.set_world_3d(&world);
         }
+        Self::apply_aa(&mut left_viewport);
 
         let mut left_cam = Camera3D::new_alloc();
         left_cam.set_name("LeftCamera");
@@ -125,6 +127,7 @@ impl StereoRig {
         if let Some(world) = main_world {
             right_viewport.set_world_3d(&world);
         }
+        Self::apply_aa(&mut right_viewport);
 
         let mut right_cam = Camera3D::new_alloc();
         right_cam.set_name("RightCamera");
@@ -178,6 +181,11 @@ impl StereoRig {
             let mut layer = canvas.clone();
             layer.set_visible(self.enabled);
         }
+    }
+
+    fn apply_aa(viewport: &mut SubViewport) {
+        viewport.set_msaa_3d(Msaa::MSAA_4X);
+        viewport.set_use_taa(true);
     }
 
     fn resize_window(&self) {
