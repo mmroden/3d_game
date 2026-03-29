@@ -38,8 +38,8 @@ pub const WALL_SET_ASTRA: WallSet = WallSet {
     id: "astra",
     wall_straight: megakit_wall!("WallAstra_Straight.gltf"),
     wall_corner_inner: megakit_wall!("WallAstra_Corner_Round_Inner.gltf"),
-    ceiling_straight: megakit_wall!("TopCables_Straight.gltf"),
-    ceiling_corner: megakit_wall!("TopCables_Corner_Round_Inner.gltf"),
+    ceiling_straight: megakit_wall!("TopAstra_Straight.gltf"),
+    ceiling_corner: megakit_wall!("TopAstra_Corner_Round_Inner.gltf"),
     floor: megakit_platform!("Platform_Simple.gltf"),
     floor_corner: megakit_platform!("Platform_Simple_Curve.gltf"),
 };

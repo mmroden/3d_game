@@ -472,3 +472,22 @@ fn negy_hatch_lays_flat() {
         hatch[0].rotation_x
     );
 }
+
+// --- Ceiling strip mesh selection ---
+
+/// TopCables meshes have a ~0.31 unit gap above wall tops (Y≈3.33 vs wall Y≈3.02).
+/// Other Top* meshes (TopAstra, TopPlates, etc.) start at Y≈3.0, naturally overlapping
+/// with wall tops. Astra wall set must NOT use TopCables to avoid visible gaps.
+#[test]
+fn astra_ceiling_does_not_use_topcables() {
+    assert!(
+        !asset_catalog::WALL_SET_ASTRA.ceiling_straight.contains("TopCables"),
+        "Astra ceiling_straight should not use TopCables (gap at Y≈3.33), got '{}'",
+        asset_catalog::WALL_SET_ASTRA.ceiling_straight
+    );
+    assert!(
+        !asset_catalog::WALL_SET_ASTRA.ceiling_corner.contains("TopCables"),
+        "Astra ceiling_corner should not use TopCables (gap at Y≈3.33), got '{}'",
+        asset_catalog::WALL_SET_ASTRA.ceiling_corner
+    );
+}

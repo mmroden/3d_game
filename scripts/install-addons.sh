@@ -31,10 +31,11 @@ if [ "$TRES_ONLY" = "--tres-only" ]; then
         find "$ESSENTIALS_SRC/materials" -maxdepth 1 -name "*.tres" -exec cp {} "$ADDON_DIR/materials/" \;
     fi
     chmod -R u+w "$ADDON_DIR/materials"
-    # Strip Textures/ subdirectory prefix and stale UIDs from .tres paths
+    # Strip Textures/ subdirectory prefix, stale UIDs, and stale .s3tc.ctex load_path entries
     find "$ADDON_DIR/materials" -maxdepth 1 -name "*.tres" \
         -exec sed -i '' 's|materials/Textures/|materials/|g' {} + \
-        -exec sed -i '' 's| uid="uid://[^"]*"||g' {} +
+        -exec sed -i '' 's| uid="uid://[^"]*"||g' {} + \
+        -exec sed -i '' '/load_path.*\.s3tc\.ctex/d' {} +
     echo "  Materials restored."
     exit 0
 fi
@@ -56,6 +57,11 @@ rm -f "$ADDON_DIR/materials/Textures"
 # Strip stale UIDs from .tres files (they reference the asset pack author's project)
 find "$ADDON_DIR/materials" -maxdepth 1 -name "*.tres" \
     -exec sed -i '' 's| uid="uid://[^"]*"||g' {} +
+
+# Strip stale .s3tc.ctex load_path entries (macOS/Metal doesn't generate these;
+# they reference the asset pack author's S3TC-compiled textures)
+find "$ADDON_DIR/materials" -maxdepth 1 -name "*.tres" \
+    -exec sed -i '' '/load_path.*\.s3tc\.ctex/d' {} +
 
 # Mesh modules — only subdirectories with .gltf + .bin (skip root dupes and .import files)
 for subdir in walls platforms props columns aliens decals; do

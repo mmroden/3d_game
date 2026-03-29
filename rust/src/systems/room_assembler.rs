@@ -12,7 +12,7 @@ const WALL: &str =
     "res://addons/quaternius/modularscifimegakit/walls/WallAstra_Straight.gltf";
 #[cfg(test)]
 const CEILING: &str =
-    "res://addons/quaternius/modularscifimegakit/walls/TopCables_Straight.gltf";
+    "res://addons/quaternius/modularscifimegakit/walls/TopAstra_Straight.gltf";
 #[cfg(test)]
 const CORNER: &str =
     "res://addons/quaternius/modularscifimegakit/walls/WallAstra_Corner_Round_Inner.gltf";
