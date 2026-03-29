@@ -1,4 +1,4 @@
-.PHONY: deps check demo clean run
+.PHONY: deps check demo clean run assets
 
 # Project-local tool paths
 TOOLS_DIR := $(CURDIR)/tools
@@ -50,6 +50,23 @@ deps-assets:
 	@mkdir -p $(ASSETS_DIR)
 	@./scripts/fetch-assets.sh $(ASSETS_DIR)
 	@echo "Assets ready."
+
+assets: deps-assets $(GODOT)
+	@echo "==> Installing Godot addons from asset packs..."
+	@./scripts/install-addons.sh $(ASSETS_DIR) $(GODOT_DIR)
+	@echo "Addons installed."
+	@echo "==> Importing assets (pass 1: generate .import sidecars)..."
+	@rm -f $(GODOT_DIR)/.godot/uid_cache.bin
+	@chmod -R u+w $(GODOT_DIR)/.godot/imported 2>/dev/null; rm -rf $(GODOT_DIR)/.godot/imported || true
+	@$(GODOT) --headless --import --path $(GODOT_DIR) 2>/dev/null || true
+	@echo "==> Configuring Quaternius material import script..."
+	@find $(GODOT_DIR)/addons/quaternius -name "*.gltf.import" \
+		-exec sed -i '' 's|import_script/path=""|import_script/path="res://addons/quaternius/quaternius_import_script.gd"|' {} +
+	@echo "==> Importing assets (pass 2: bake materials via import script)..."
+	@$(GODOT) --headless --import --path $(GODOT_DIR) 2>/dev/null || true
+	@echo "==> Restoring material definitions (undo Godot path rewrites)..."
+	@./scripts/install-addons.sh $(ASSETS_DIR) $(GODOT_DIR) --tres-only
+	@echo "Import complete."
 
 check: deps
 	@echo "==> Running checks..."

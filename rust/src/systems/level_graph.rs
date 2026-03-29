@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use petgraph::graph::UnGraph;
 use petgraph::algo::connected_components;
 use petgraph::graph::NodeIndex;
+use petgraph::visit::EdgeRef;
 use crate::systems::room_template::{RoomTemplate, ConnectorFacing};
 
 /// A placed room in the level, with its position on the grid.
@@ -236,6 +237,28 @@ impl LevelGraph {
     /// Get neighbors of a room.
     pub fn neighbors(&self, index: NodeIndex) -> impl Iterator<Item = NodeIndex> + '_ {
         self.graph.neighbors(index)
+    }
+
+    /// Return the connector facings that are actually wired to a neighbor
+    /// via an Adjacent or Locked edge. Used by the room assembler to know
+    /// which cell edges get doors vs walls.
+    pub fn active_facings(&self, index: NodeIndex) -> Vec<ConnectorFacing> {
+        let mut facings = Vec::new();
+        for edge_ref in self.graph.edges(index) {
+            match edge_ref.weight() {
+                EdgeKind::Adjacent { from_facing, to_facing } |
+                EdgeKind::Locked { from_facing, to_facing, .. } => {
+                    // source() matches the `from` arg of add_edge
+                    if edge_ref.source() == index {
+                        facings.push(*from_facing);
+                    } else {
+                        facings.push(*to_facing);
+                    }
+                }
+                _ => {}
+            }
+        }
+        facings
     }
 }
 

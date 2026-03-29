@@ -8,5 +8,26 @@
 /godot/.godot/
 /godot/.import/
 
+# Asset formats we don't use in Godot
+assets/**/FBX/
+assets/**/FBX (Unity)/
+assets/**/OBJ/
+assets/**/Engine Projects/
+assets/**/Blends/
+assets/**/Blend/
+assets/**/Planet Textures/
+assets/**/*.blend
+
+# Asset packs with no glTF (FBX/OBJ only, not usable)
+/assets/quaternius-fish/
+/assets/quaternius-monsters/
+/assets/quaternius-spaceships/
+
+# Godot addon build output (rebuilt via make assets)
+/godot/addons/
+
+# Claude Code worktrees
+.claude/worktrees/
+
 # OS
 .DS_Store

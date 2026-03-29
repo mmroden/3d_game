@@ -63,38 +63,54 @@ pub fn corridor_templates() -> Vec<RoomTemplate> {
     ]
 }
 
-/// A scene to instantiate at a world position.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SpawnEntry {
-    pub scene: &'static str,
-    pub world_pos: [f32; 3],
-}
-
-/// Walk a generated level graph and produce a list of scenes to instantiate.
+/// Walk a generated level graph, assemble room geometry using the cell-grid
+/// room assembler, and return all mesh placements for the level.
 pub fn spawn_list(
     graph: &crate::systems::level_graph::LevelGraph,
     cell_size: f32,
-) -> Vec<SpawnEntry> {
-    graph.room_indices()
+) -> Vec<crate::systems::room_assembler::MeshPlacement> {
+    graph
+        .room_indices()
         .filter_map(|idx| {
             let room = graph.room(idx)?;
-            let scene = scene_path(room.template.id)?;
-            Some(SpawnEntry {
-                scene,
-                world_pos: room.world_position(cell_size),
-            })
+            let active = graph.active_facings(idx);
+            Some(crate::systems::room_assembler::assemble(
+                &room.template,
+                &active,
+                room.world_position(cell_size),
+                cell_size,
+            ))
         })
+        .flatten()
         .collect()
 }
 
-pub fn scene_path(template_id: &str) -> Option<&'static str> {
-    match template_id {
-        "scifi_room_small" => Some("res://scenes/rooms/room_small.tscn"),
-        "scifi_room_large" => Some("res://scenes/rooms/room_large.tscn"),
-        "scifi_corridor_ew" => Some("res://scenes/corridors/corridor_ew.tscn"),
-        "scifi_corridor_ns" => Some("res://scenes/corridors/corridor_ns.tscn"),
-        _ => None,
-    }
+/// Return the world-space center of every cell in the level (for lighting).
+pub fn cell_centers(
+    graph: &crate::systems::level_graph::LevelGraph,
+    cell_size: f32,
+) -> Vec<[f32; 3]> {
+    graph
+        .room_indices()
+        .filter_map(|idx| {
+            let room = graph.room(idx)?;
+            let origin = room.world_position(cell_size);
+            let ex = room.template.extents[0] as i32;
+            let ez = room.template.extents[2] as i32;
+            let mut centers = Vec::new();
+            for cx in 0..ex {
+                for cz in 0..ez {
+                    centers.push([
+                        origin[0] + cx as f32 * cell_size,
+                        origin[1],
+                        origin[2] + cz as f32 * cell_size,
+                    ]);
+                }
+            }
+            Some(centers)
+        })
+        .flatten()
+        .collect()
 }
 
 #[cfg(test)]
@@ -135,21 +151,6 @@ mod tests {
     }
 
     #[test]
-    fn every_template_has_a_scene_path() {
-        let all: Vec<_> = room_templates()
-            .into_iter()
-            .chain(corridor_templates())
-            .collect();
-        for t in &all {
-            assert!(
-                scene_path(t.id).is_some(),
-                "template '{}' has no scene path mapping",
-                t.id
-            );
-        }
-    }
-
-    #[test]
     fn generator_succeeds_with_catalog_templates() {
         use crate::systems::generator::{generate, GeneratorConfig};
 
@@ -176,7 +177,7 @@ mod tests {
     }
 
 #[test]
-    fn spawn_list_has_entry_per_node() {
+    fn spawn_list_produces_mesh_placements() {
         use crate::systems::generator::{generate, GeneratorConfig};
 
         let config = GeneratorConfig {
@@ -186,11 +187,31 @@ mod tests {
             target_room_count: 3,
         };
         let level = generate(&config).expect("generation should succeed");
-        let entries = spawn_list(&level, 10.0);
-        assert_eq!(
-            entries.len(),
-            level.room_count(),
-            "spawn_list should have one entry per node in the graph"
+        let placements = spawn_list(&level, 4.0);
+        // Each room/corridor cell produces at least 1 floor + walls
+        assert!(
+            placements.len() > level.room_count(),
+            "expected more placements ({}) than rooms ({})",
+            placements.len(),
+            level.room_count()
+        );
+    }
+
+    #[test]
+    fn cell_centers_covers_all_cells() {
+        use crate::systems::generator::{generate, GeneratorConfig};
+
+        let config = GeneratorConfig {
+            seed: 42,
+            room_templates: room_templates(),
+            corridor_templates: corridor_templates(),
+            target_room_count: 3,
+        };
+        let level = generate(&config).expect("generation should succeed");
+        let centers = cell_centers(&level, 4.0);
+        assert!(
+            !centers.is_empty(),
+            "cell_centers should return at least one center"
         );
     }
 }

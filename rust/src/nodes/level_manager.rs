@@ -1,11 +1,11 @@
 use godot::prelude::*;
-use godot::classes::{Node3D, INode3D, PackedScene, ResourceLoader};
+use godot::classes::{Node3D, INode3D, OmniLight3D, PackedScene, ResourceLoader};
 
 use crate::systems::generator::{generate, GeneratorConfig};
 use crate::systems::template_catalog;
 
-/// Orchestrates level lifecycle: generates the graph, instantiates
-/// room scenes, spawns enemies and loot.
+/// Orchestrates level lifecycle: generates the graph, assembles
+/// room geometry from modular pieces, and spawns lights.
 #[derive(GodotClass)]
 #[class(base=Node3D)]
 pub struct LevelManager {
@@ -26,7 +26,7 @@ impl INode3D for LevelManager {
     fn init(base: Base<Node3D>) -> Self {
         Self {
             base,
-            grid_cell_size: 10.0,
+            grid_cell_size: 4.0,
             seed: 42_i64,
             target_rooms: 5_i32,
         }
@@ -58,34 +58,53 @@ impl LevelManager {
             }
         };
 
-        let entries = template_catalog::spawn_list(&graph, self.grid_cell_size);
+        // Assemble all room geometry via the cell-grid room assembler
+        let placements = template_catalog::spawn_list(&graph, self.grid_cell_size);
         let mut loader = ResourceLoader::singleton();
+        let mut mesh_count = 0;
 
-        for entry in &entries {
+        for entry in &placements {
             let scene_res = loader.load(entry.scene);
             let Some(resource) = scene_res else {
-                godot_warn!("Could not load scene: {}", entry.scene);
+                godot_warn!("Could not load: {}", entry.scene);
                 continue;
             };
 
             let packed: Gd<PackedScene> = resource.cast();
             let Some(instance) = packed.instantiate() else {
-                godot_warn!("Could not instantiate scene: {}", entry.scene);
+                godot_warn!("Could not instantiate: {}", entry.scene);
                 continue;
             };
 
-            let mut node3d: Gd<Node3D> = instance.cast();
-            let pos = Vector3::new(entry.world_pos[0], entry.world_pos[1], entry.world_pos[2]);
-            node3d.set_position(pos);
-            self.base_mut().add_child(&node3d);
+            let mut node: Gd<Node3D> = instance.cast();
+            let pos = Vector3::new(entry.position[0], entry.position[1], entry.position[2]);
+            node.set_position(pos);
+
+            if entry.rotation_y.abs() > 0.001 {
+                node.set_rotation(Vector3::new(0.0, entry.rotation_y, 0.0));
+            }
+
+            self.base_mut().add_child(&node);
+            mesh_count += 1;
+        }
+
+        // Add a light for each cell in the level
+        let centers = template_catalog::cell_centers(&graph, self.grid_cell_size);
+        for center in &centers {
+            let mut light = OmniLight3D::new_alloc();
+            light.set_position(Vector3::new(center[0], center[1] + 3.0, center[2]));
+            light.set_param(godot::classes::light_3d::Param::RANGE, 8.0);
+            light.set_param(godot::classes::light_3d::Param::ENERGY, 1.5);
+            light.set_color(Color::from_rgb(0.9, 0.95, 1.0));
+            self.base_mut().add_child(&light);
         }
 
         // Move player to the first room's position
-        if let Some(first_entry) = entries.first() {
+        if let Some(first_center) = centers.first() {
             let spawn = Vector3::new(
-                first_entry.world_pos[0],
-                first_entry.world_pos[1] + self.grid_cell_size * 0.25,
-                first_entry.world_pos[2],
+                first_center[0],
+                first_center[1] + 1.5,
+                first_center[2],
             );
             if let Some(parent) = self.base().get_parent() {
                 if let Some(mut player) = parent.try_get_node_as::<Node3D>("Player") {
@@ -96,9 +115,10 @@ impl LevelManager {
         }
 
         godot_print!(
-            "Level generated: {} rooms, {} total nodes",
+            "Level generated: {} rooms, {} meshes, {} lights",
             target_rooms,
-            entries.len()
+            mesh_count,
+            centers.len()
         );
     }
 }

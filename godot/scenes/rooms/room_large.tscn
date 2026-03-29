@@ -1,38 +1,124 @@
-[gd_scene format=3]
+[gd_scene load_steps=7 format=3]
+
+[ext_resource type="PackedScene" path="res://addons/quaternius/modularscifimegakit/platforms/Platform_Simple.gltf" id="floor"]
+[ext_resource type="PackedScene" path="res://addons/quaternius/modularscifimegakit/walls/WallAstra_Straight.gltf" id="wall"]
+[ext_resource type="PackedScene" path="res://addons/quaternius/modularscifimegakit/walls/WallAstra_Corner_Square_Inner.gltf" id="corner"]
+[ext_resource type="PackedScene" path="res://addons/quaternius/modularscifimegakit/walls/TopCables_Straight.gltf" id="ceiling"]
+[ext_resource type="PackedScene" path="res://addons/quaternius/modularscifimegakit/platforms/Door_Frame_Square.gltf" id="door"]
+
+[sub_resource type="BoxShape3D" id="collision_box"]
+size = Vector3(4, 0.2, 4)
 
 [node name="RoomLarge" type="Node3D"]
 
-[node name="Floor" type="CSGBox3D" parent="."]
-size = Vector3(20, 0.2, 20)
+; Floor — 2x2 grid of 4m tiles, offset so room is centered
+[node name="FloorNW" parent="." instance=ExtResource("floor")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2, 0, -2)
 
-[node name="Ceiling" type="CSGBox3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 8, 0)
-size = Vector3(20, 0.2, 20)
+[node name="FloorNE" parent="." instance=ExtResource("floor")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2, 0, -2)
 
-[node name="WallNorth" type="CSGBox3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4, -10)
-size = Vector3(20, 8, 0.2)
+[node name="FloorSW" parent="." instance=ExtResource("floor")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2, 0, 2)
 
-[node name="WallSouth" type="CSGBox3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4, 10)
-size = Vector3(20, 8, 0.2)
+[node name="FloorSE" parent="." instance=ExtResource("floor")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2, 0, 2)
 
-[node name="WallEast" type="CSGBox3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10, 4, 0)
-size = Vector3(0.2, 8, 20)
+; Outer walls — wall piece native at NegX edge, shifted to room perimeter
+; West wall (x=-4): two segments at z=-2 and z=+2
+[node name="WallWest1" parent="." instance=ExtResource("wall")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2, 0, -2)
 
-[node name="WallWest" type="CSGBox3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -10, 4, 0)
-size = Vector3(0.2, 8, 20)
+[node name="WallWest2" parent="." instance=ExtResource("wall")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2, 0, 2)
 
+; East wall (x=+4): rotated 180, at z=-2 and z=+2
+[node name="WallEast1" parent="." instance=ExtResource("wall")]
+transform = Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, 2, 0, 2)
+
+[node name="WallEast2" parent="." instance=ExtResource("wall")]
+transform = Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, 2, 0, -2)
+
+; North wall (z=-4): rotated +90, at x=-2 and x=+2
+[node name="WallNorth1" parent="." instance=ExtResource("wall")]
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, -2, 0, -2)
+
+[node name="WallNorth2" parent="." instance=ExtResource("wall")]
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, 2, 0, -2)
+
+; South wall (z=+4): rotated -90, at x=-2 and x=+2
+[node name="WallSouth1" parent="." instance=ExtResource("wall")]
+transform = Transform3D(0, 0, -1, 0, 1, 0, 1, 0, 0, 2, 0, 2)
+
+[node name="WallSouth2" parent="." instance=ExtResource("wall")]
+transform = Transform3D(0, 0, -1, 0, 1, 0, 1, 0, 0, -2, 0, 2)
+
+; Ceiling strips — same pattern as walls
+[node name="CeilWest1" parent="." instance=ExtResource("ceiling")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2, 0, -2)
+
+[node name="CeilWest2" parent="." instance=ExtResource("ceiling")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2, 0, 2)
+
+[node name="CeilEast1" parent="." instance=ExtResource("ceiling")]
+transform = Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, 2, 0, 2)
+
+[node name="CeilEast2" parent="." instance=ExtResource("ceiling")]
+transform = Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, 2, 0, -2)
+
+[node name="CeilNorth1" parent="." instance=ExtResource("ceiling")]
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, -2, 0, -2)
+
+[node name="CeilNorth2" parent="." instance=ExtResource("ceiling")]
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, 2, 0, -2)
+
+[node name="CeilSouth1" parent="." instance=ExtResource("ceiling")]
+transform = Transform3D(0, 0, -1, 0, 1, 0, 1, 0, 0, 2, 0, 2)
+
+[node name="CeilSouth2" parent="." instance=ExtResource("ceiling")]
+transform = Transform3D(0, 0, -1, 0, 1, 0, 1, 0, 0, -2, 0, 2)
+
+; Corners — native in NegX-NegZ quadrant, shifted to each room corner
+[node name="CornerNW" parent="." instance=ExtResource("corner")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2, 0, -2)
+
+[node name="CornerNE" parent="." instance=ExtResource("corner")]
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, 2, 0, -2)
+
+[node name="CornerSW" parent="." instance=ExtResource("corner")]
+transform = Transform3D(0, 0, -1, 0, 1, 0, 1, 0, 0, -2, 0, 2)
+
+[node name="CornerSE" parent="." instance=ExtResource("corner")]
+transform = Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, 2, 0, 2)
+
+; Lighting
 [node name="Light1" type="OmniLight3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -4, 6, -4)
-omni_range = 12.0
-light_energy = 1.5
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.5, 3, -1.5)
+omni_range = 8.0
+light_energy = 2.0
 light_color = Color(0.9, 0.95, 1.0, 1)
 
 [node name="Light2" type="OmniLight3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4, 6, 4)
-omni_range = 12.0
-light_energy = 1.5
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 3, 1.5)
+omni_range = 8.0
+light_energy = 2.0
 light_color = Color(0.9, 0.95, 1.0, 1)
+
+; Floor collisions
+[node name="FloorBody" type="StaticBody3D" parent="."]
+
+[node name="ShapeNW" type="CollisionShape3D" parent="FloorBody"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2, -0.1, -2)
+shape = SubResource("collision_box")
+
+[node name="ShapeNE" type="CollisionShape3D" parent="FloorBody"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2, -0.1, -2)
+shape = SubResource("collision_box")
+
+[node name="ShapeSW" type="CollisionShape3D" parent="FloorBody"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2, -0.1, 2)
+shape = SubResource("collision_box")
+
+[node name="ShapeSE" type="CollisionShape3D" parent="FloorBody"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2, -0.1, 2)
+shape = SubResource("collision_box")

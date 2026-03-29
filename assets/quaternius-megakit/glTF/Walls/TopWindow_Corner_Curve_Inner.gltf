@@ -39,6 +39,7 @@
 			}
 		},
 		{
+			"alphaMode":"BLEND",
 			"doubleSided":true,
 			"name":"M_Glass",
 			"pbrMetallicRoughness":{
@@ -46,7 +47,7 @@
 					0.800000011920929,
 					0.800000011920929,
 					0.800000011920929,
-					1
+					0
 				],
 				"metallicFactor":0,
 				"roughnessFactor":0.5
@@ -78,7 +79,17 @@
 		{
 			"doubleSided":true,
 			"name":"MI_Trim_02_Variation",
-			"pbrMetallicRoughness":{}
+			"normalTexture":{
+				"index":6
+			},
+			"pbrMetallicRoughness":{
+				"baseColorTexture":{
+					"index":7
+				},
+				"metallicRoughnessTexture":{
+					"index":8
+				}
+			}
 		}
 	],
 	"meshes":[
@@ -148,6 +159,18 @@
 		{
 			"sampler":0,
 			"source":5
+		},
+		{
+			"sampler":0,
+			"source":0
+		},
+		{
+			"sampler":0,
+			"source":6
+		},
+		{
+			"sampler":0,
+			"source":2
 		}
 	],
 	"images":[
@@ -180,6 +203,11 @@
 			"mimeType":"image/png",
 			"name":"T_PaddedWall_ORM",
 			"uri":"T_PaddedWall_ORM.png"
+		},
+		{
+			"mimeType":"image/png",
+			"name":"T_Trim_02_BaseColor",
+			"uri":"T_Trim_02_BaseColor.png"
 		}
 	],
 	"accessors":[
