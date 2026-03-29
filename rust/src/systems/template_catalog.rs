@@ -255,10 +255,11 @@ mod tests {
     // --- R9: Full integration — generated level geometry validation ---
 
     #[test]
-    fn generated_level_all_apertures_have_archways() {
+    fn generated_level_apertures_correct_by_kind() {
         use crate::systems::generator::{generate, GeneratorConfig};
         use crate::systems::level_graph::EdgeKind;
         use crate::systems::room_assembler;
+        use crate::systems::room_template::TemplateKind;
 
         let config = GeneratorConfig {
             seed: 42,
@@ -269,73 +270,54 @@ mod tests {
         let level = generate(&config).expect("generation should succeed");
         let cell_size = 4.0;
         let door_scene = "res://addons/quaternius/modularscifimegakit/platforms/Door_Frame_Square.gltf";
+        let wall_scene = "res://addons/quaternius/modularscifimegakit/walls/WallAstra_Straight.gltf";
 
-        // For each Adjacent edge, verify both rooms have archway geometry
-        // at the correct connector cell position (not just "any archway somewhere").
+        // For each Adjacent edge, verify:
+        //   - Corridors have archway geometry at the connector cell
+        //   - Rooms have a gap (no wall AND no door) at the connector cell
         for (from, to, edge) in level.edges() {
             if let EdgeKind::Adjacent { from_facing, to_facing } = edge {
-                let from_room = level.room(from).unwrap();
-                let to_room = level.room(to).unwrap();
-
-                let from_active = level.active_facings(from);
-                let to_active = level.active_facings(to);
-
-                let from_placements = room_assembler::assemble(
-                    &from_room.template,
-                    &from_active,
-                    from_room.world_position(cell_size),
-                    cell_size,
-                );
-                let to_placements = room_assembler::assemble(
-                    &to_room.template,
-                    &to_active,
-                    to_room.world_position(cell_size),
-                    cell_size,
-                );
-
-                // Find the connector on the "from" room that matches the edge facing,
-                // compute its world cell position, and verify a DOOR is placed there.
-                let from_origin = from_room.world_position(cell_size);
-                if let Some(fc) = from_room.template.connectors.iter().find(|c| c.facing == *from_facing) {
-                    let cell_pos = [
-                        from_origin[0] + (fc.offset[0] as f32 + 0.5) * cell_size,
-                        from_origin[1] + fc.offset[1] as f32 * cell_size,
-                        from_origin[2] + (fc.offset[2] as f32 + 0.5) * cell_size,
-                    ];
-                    let (dp, _) = room_assembler::door_placement(cell_pos, *from_facing, cell_size);
-                    let has_archway = from_placements.iter().any(|p| {
-                        p.scene == door_scene
-                            && (p.position[0] - dp[0]).abs() < 0.001
-                            && (p.position[1] - dp[1]).abs() < 0.001
-                            && (p.position[2] - dp[2]).abs() < 0.001
-                    });
-                    assert!(
-                        has_archway,
-                        "room '{}' at {:?} missing archway at {dp:?} for {from_facing:?} edge",
-                        from_room.template.id, from_room.grid_pos
+                for (idx, facing) in [(from, from_facing), (to, to_facing)] {
+                    let room = level.room(idx).unwrap();
+                    let active = level.active_facings(idx);
+                    let placements = room_assembler::assemble(
+                        &room.template,
+                        &active,
+                        room.world_position(cell_size),
+                        cell_size,
                     );
-                }
 
-                // Same check for the "to" room.
-                let to_origin = to_room.world_position(cell_size);
-                if let Some(tc) = to_room.template.connectors.iter().find(|c| c.facing == *to_facing) {
-                    let cell_pos = [
-                        to_origin[0] + (tc.offset[0] as f32 + 0.5) * cell_size,
-                        to_origin[1] + tc.offset[1] as f32 * cell_size,
-                        to_origin[2] + (tc.offset[2] as f32 + 0.5) * cell_size,
-                    ];
-                    let (dp, _) = room_assembler::door_placement(cell_pos, *to_facing, cell_size);
-                    let has_archway = to_placements.iter().any(|p| {
-                        p.scene == door_scene
-                            && (p.position[0] - dp[0]).abs() < 0.001
-                            && (p.position[1] - dp[1]).abs() < 0.001
-                            && (p.position[2] - dp[2]).abs() < 0.001
-                    });
-                    assert!(
-                        has_archway,
-                        "room '{}' at {:?} missing archway at {dp:?} for {to_facing:?} edge",
-                        to_room.template.id, to_room.grid_pos
-                    );
+                    if let Some(conn) = room.template.connectors.iter().find(|c| c.facing == *facing) {
+                        let origin = room.world_position(cell_size);
+                        let cell_pos = [
+                            origin[0] + (conn.offset[0] as f32 + 0.5) * cell_size,
+                            origin[1] + conn.offset[1] as f32 * cell_size,
+                            origin[2] + (conn.offset[2] as f32 + 0.5) * cell_size,
+                        ];
+
+                        let at_pos = |p: &room_assembler::MeshPlacement| {
+                            (p.position[0] - cell_pos[0]).abs() < 0.001
+                                && (p.position[1] - cell_pos[1]).abs() < 0.001
+                                && (p.position[2] - cell_pos[2]).abs() < 0.001
+                        };
+                        let has_door = placements.iter().any(|p| p.scene == door_scene && at_pos(p));
+                        let has_wall = placements.iter().any(|p| p.scene == wall_scene && at_pos(p));
+
+                        if room.template.kind == TemplateKind::Corridor {
+                            assert!(
+                                has_door,
+                                "corridor '{}' at {:?} missing archway at {cell_pos:?} for {facing:?}",
+                                room.template.id, room.grid_pos
+                            );
+                        } else {
+                            assert!(
+                                !has_door && !has_wall,
+                                "room '{}' at {:?} should have gap at {cell_pos:?} for {facing:?}, \
+                                 found wall={has_wall} door={has_door}",
+                                room.template.id, room.grid_pos
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -378,10 +360,10 @@ mod tests {
                 room.template.id, room.grid_pos, cell_count, floor_count
             );
 
-            // Ceiling tiles at y + cell_size
+            // Ceiling tiles at y + CELL_HEIGHT (mesh-native vertical cell size)
             let ceiling_count = placements.iter().filter(|p| {
                 p.scene == ceiling_scene
-                    && (p.position[1] - (room.world_position(cell_size)[1] + cell_size)).abs() < 0.001
+                    && (p.position[1] - (room.world_position(cell_size)[1] + crate::systems::room_assembler::CELL_HEIGHT)).abs() < 0.001
             }).count();
             assert_eq!(
                 ceiling_count, cell_count,
@@ -416,6 +398,23 @@ mod tests {
                         if !is_boundary {
                             continue;
                         }
+
+                        // Rooms with active connectors leave a gap (corridor
+                        // provides the archway). Only check for geometry on
+                        // sealed boundaries or corridor connectors.
+                        let is_active = active.contains(&facing)
+                            && room.template.connectors.iter().any(|c| {
+                                c.facing == facing
+                                    && c.offset[0] == cx
+                                    && c.offset[1] == 0
+                                    && c.offset[2] == cz
+                            });
+                        let is_room = room.template.kind == crate::systems::room_template::TemplateKind::Room;
+                        if is_active && is_room {
+                            // Room gap — no geometry expected here.
+                            continue;
+                        }
+
                         let (wp, wr) = room_assembler::wall_placement(cell_pos, facing, cell_size);
                         let (dp, _) = room_assembler::door_placement(cell_pos, facing, cell_size);
                         let has_wall = placements.iter().any(|p| {

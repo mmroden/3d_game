@@ -1,6 +1,6 @@
 use std::f32::consts::{FRAC_PI_2, PI};
 
-use crate::systems::room_template::{ConnectorFacing, RoomTemplate};
+use crate::systems::room_template::{ConnectorFacing, RoomTemplate, TemplateKind};
 
 // Quaternius Modular Sci-Fi MegaKit asset paths
 const FLOOR: &str =
@@ -13,6 +13,11 @@ const CORNER: &str =
     "res://addons/quaternius/modularscifimegakit/walls/WallAstra_Corner_Square_Inner.gltf";
 const DOOR: &str =
     "res://addons/quaternius/modularscifimegakit/platforms/Door_Frame_Square.gltf";
+
+/// Vertical cell height in meters, determined by the Quaternius mesh geometry.
+/// Wall + top-strip extend from Y≈0.2 to Y=5.0, so one story is 5m.
+/// This is independent of the horizontal cell_size (4m).
+pub(crate) const CELL_HEIGHT: f32 = 5.0;
 
 /// A single mesh to place in the level.
 #[derive(Debug, Clone, PartialEq)]
@@ -28,7 +33,9 @@ pub struct MeshPlacement {
 ///
 /// Returns mesh placements for floors, walls, ceilings, corners, and doors.
 /// Walls appear on boundary edges that lack an active connector.
-/// Doors appear on boundary edges WITH an active connector.
+/// For corridors, doors appear on boundary edges WITH an active connector.
+/// For rooms, active connectors leave a gap (no wall, no door) — the
+/// adjacent corridor provides the door frame.
 /// Interior edges (between cells of the same multi-cell room) get nothing.
 pub fn assemble(
     template: &RoomTemplate,
@@ -46,7 +53,7 @@ pub fn assemble(
             for cz in 0..ez {
                 let pos = [
                     world_origin[0] + (cx as f32 + 0.5) * cell_size,
-                    world_origin[1] + cy as f32 * cell_size,
+                    world_origin[1] + cy as f32 * CELL_HEIGHT,
                     world_origin[2] + (cz as f32 + 0.5) * cell_size,
                 ];
 
@@ -66,7 +73,7 @@ pub fn assemble(
                 // Ceiling tile — only on top boundary, gated on PosY connector
                 let is_top = cy == ey - 1;
                 if is_top {
-                    let ceiling_pos = [pos[0], pos[1] + cell_size, pos[2]];
+                    let ceiling_pos = [pos[0], pos[1] + CELL_HEIGHT, pos[2]];
                     if !is_active_connector(template, active_facings, ConnectorFacing::PosY, cx, cy, cz) {
                         out.push(MeshPlacement { scene: FLOOR, position: ceiling_pos, rotation_x: PI, rotation_y: 0.0 });
                     } else {
@@ -90,8 +97,12 @@ pub fn assemble(
                     }
 
                     if is_active_connector(template, active_facings, facing, cx, cy, cz) {
-                        let (door_pos, door_rot) = door_placement(pos, facing, cell_size);
-                        out.push(MeshPlacement { scene: DOOR, position: door_pos, rotation_x: 0.0, rotation_y: door_rot });
+                        // Corridors emit door frames; rooms leave a gap
+                        // (the adjacent corridor provides the archway).
+                        if template.kind == TemplateKind::Corridor {
+                            let (door_pos, door_rot) = door_placement(pos, facing, cell_size);
+                            out.push(MeshPlacement { scene: DOOR, position: door_pos, rotation_x: 0.0, rotation_y: door_rot });
+                        }
                     } else {
                         let (wall_pos, rot) = wall_placement(pos, facing, cell_size);
                         out.push(MeshPlacement { scene: WALL, position: wall_pos, rotation_x: 0.0, rotation_y: rot });
