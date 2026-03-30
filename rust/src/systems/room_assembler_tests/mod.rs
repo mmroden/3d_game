@@ -106,6 +106,7 @@ fn is_floor_scene(scene: &str) -> bool {
     scene == FLOOR || scene == FLOOR_CURVE
 }
 
+
 fn count_floors(placements: &[MeshPlacement], origin_y: f32) -> usize {
     placements.iter().filter(|p| {
         is_floor_scene(p.scene) && (p.position[1] - origin_y).abs() < 0.001

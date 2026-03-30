@@ -96,18 +96,14 @@ fn every_boundary_has_wall_or_gap_at_cell_center() {
                         });
                     let is_room = template.kind == TemplateKind::Room;
 
-                    let has_wall = placements.iter().any(|p| {
-                        p.scene == WALL
-                            && (p.position[0] - center[0]).abs() < 0.001
+                    let at_center = |p: &MeshPlacement| {
+                        (p.position[0] - center[0]).abs() < 0.001
                             && (p.position[1] - center[1]).abs() < 0.001
                             && (p.position[2] - center[2]).abs() < 0.001
-                    });
-                    let has_door = placements.iter().any(|p| {
-                        p.scene == DOOR
-                            && (p.position[0] - center[0]).abs() < 0.001
-                            && (p.position[1] - center[1]).abs() < 0.001
-                            && (p.position[2] - center[2]).abs() < 0.001
-                    });
+                    };
+                    let has_wall = placements.iter().any(|p| p.scene == WALL && at_center(p));
+                    let has_corner = placements.iter().any(|p| p.scene == CORNER && at_center(p));
+                    let has_door = placements.iter().any(|p| p.scene == DOOR && at_center(p));
 
                     if is_active && is_room {
                         assert!(
@@ -125,9 +121,9 @@ fn every_boundary_has_wall_or_gap_at_cell_center() {
                         );
                     } else {
                         assert!(
-                            has_wall,
+                            has_wall || has_corner,
                             "room '{}' cell ({cx},{cz}) face {facing:?}: sealed boundary \
-                             should have WALL at cell center {center:?}",
+                             should have WALL or CORNER at cell center {center:?}",
                             template.id
                         );
                     }
@@ -140,12 +136,14 @@ fn every_boundary_has_wall_or_gap_at_cell_center() {
 // --- Count-based tests ---
 
 #[test]
-fn sealed_small_room_has_4_walls_4_walltops_4_corners_1_floor_1_ceiling() {
+fn sealed_small_room_wall_and_corner_counts() {
+    // In a 1x1 room, all 4 edges are sealed and all participate in corners.
+    // Corner pieces replace straight walls at corner edges.
     let placements = assemble_default(&small_room(), &[], [0.0, 0.0, 0.0], 4.0);
     assert_eq!(count_floors(&placements, 0.0), 1);
     assert_eq!(count_ceiling_tiles(&placements, 0.0, 5.0), 1);
-    assert_eq!(count(&placements, WALL), 4);
-    assert_eq!(count(&placements, CEILING), 4);
+    assert_eq!(count(&placements, WALL), 4, "4 sealed faces, each gets a straight wall even at corners");
+    assert_eq!(count(&placements, CEILING), 4, "4 sealed faces, each gets a ceiling strip even at corners");
     assert_eq!(count(&placements, CORNER), 4);
     assert_eq!(count(&placements, DOOR), 0);
 }
@@ -158,8 +156,9 @@ fn room_active_connector_leaves_gap_no_door() {
         [0.0, 0.0, 0.0],
         4.0,
     );
-    assert_eq!(count(&placements, WALL), 3, "3 sealed walls remain");
-    assert_eq!(count(&placements, CEILING), 3, "ceiling strips match walls");
+    // With PosX open: NegX, NegZ, PosZ sealed → 3 straight walls.
+    assert_eq!(count(&placements, WALL), 3, "3 sealed faces each get a straight wall");
+    assert_eq!(count(&placements, CEILING), 3, "3 sealed faces each get a ceiling strip");
     assert_eq!(count(&placements, DOOR), 0, "rooms should NOT emit door frames");
     assert_eq!(count(&placements, CORNER), 2, "corners only where two walls meet");
 }
@@ -172,7 +171,8 @@ fn room_two_active_connectors_leave_gaps() {
         [0.0, 0.0, 0.0],
         4.0,
     );
-    assert_eq!(count(&placements, WALL), 2);
+    // With PosX+PosZ open: NegX, NegZ sealed → 2 straight walls.
+    assert_eq!(count(&placements, WALL), 2, "2 sealed faces each get a straight wall");
     assert_eq!(count(&placements, DOOR), 0, "rooms should NOT emit door frames");
     assert_eq!(count(&placements, CORNER), 1);
 }
@@ -214,18 +214,29 @@ fn large_room_sealed_has_4_floors_4_ceilings() {
 
 #[test]
 fn large_room_sealed_walls() {
+    // 2x2 sealed: 8 perimeter edges, each gets a straight wall.
     let placements = assemble_default(&large_room(), &[], [0.0, 0.0, 0.0], 4.0);
-    assert_eq!(count(&placements, WALL), 8);
+    assert_eq!(count(&placements, WALL), 8, "2x2 sealed: 8 perimeter edges each get a wall");
+    assert_eq!(count(&placements, CORNER), 4, "one corner per cell");
 }
 
 #[test]
-fn large_room_interior_edges_have_no_walls() {
+fn large_room_interior_edges_have_no_walls_at_interior() {
     let placements = assemble_default(&large_room(), &[], [0.0, 0.0, 0.0], 4.0);
-    assert_eq!(count(&placements, WALL), 8);
+    // Interior edges (between cells of same room) should have nothing.
+    // But all 8 perimeter edges get straight walls.
+    assert_eq!(count(&placements, WALL), 8, "2x2 sealed: 8 perimeter walls, 0 interior");
 }
 
 #[test]
 fn large_room_one_connector_active() {
+    // large_room NegX connector at [0,0,0]. With NegX active:
+    // Cell (0,0): NegX gap, NegZ sealed → 1 wall
+    // Cell (1,0): PosX+NegZ sealed → 2 walls
+    // Cell (0,1): PosZ sealed (NegX gap) → 1 wall (note: NegX not sealed here, only at [0,0,0])
+    // Cell (1,1): PosX+PosZ sealed → 2 walls
+    // Plus cell (0,1) NegX is still sealed (connector is at [0,0,0] not [0,0,1])
+    // Total: 7 walls
     let placements = assemble_default(
         &large_room(),
         &[ConnectorFacing::NegX],
@@ -233,7 +244,7 @@ fn large_room_one_connector_active() {
         4.0,
     );
     assert_eq!(count(&placements, DOOR), 0, "rooms leave gaps, no door frames");
-    assert_eq!(count(&placements, WALL), 7);
+    assert_eq!(count(&placements, WALL), 7, "8 perimeter walls minus 1 NegX gap");
 }
 
 #[test]
@@ -255,8 +266,9 @@ fn room_active_connector_leaves_gap_not_archway() {
         [0.0, 0.0, 0.0],
         4.0,
     );
+    // 3x3 with NegX active at [0,0,1]: gap at (0,1), 11 sealed perimeter edges remain.
     assert_eq!(count(&placements, DOOR), 0, "rooms leave gaps, no door frames");
-    assert_eq!(count(&placements, WALL), 11, "12 - 1 = 11 walls remaining");
+    assert_eq!(count(&placements, WALL), 11, "12 perimeter edges minus 1 NegX gap");
 }
 
 // --- Orientation tests ---
@@ -308,8 +320,9 @@ fn sealed_3x3_room_full_surface_coverage() {
     let placements = assemble_default(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0);
     assert_eq!(count_floors(&placements, 0.0), 9, "3x3 = 9 floor tiles");
     assert_eq!(count_ceiling_tiles(&placements, 0.0, 5.0), 9, "3x3 = 9 ceiling tiles");
-    assert_eq!(count(&placements, WALL), 12, "3x3 perimeter = 12 wall segments");
-    assert_eq!(count(&placements, CEILING), 12, "12 wall-top decorations");
+    // 12 perimeter edges, all get straight walls (corners also get corner pieces on top).
+    assert_eq!(count(&placements, WALL), 12, "12 perimeter wall segments");
+    assert_eq!(count(&placements, CEILING), 12, "12 perimeter ceiling strips");
     assert_eq!(count(&placements, CORNER), 4, "4 external corners");
 }
 
@@ -481,13 +494,18 @@ fn negy_hatch_lays_flat() {
 #[test]
 fn astra_ceiling_does_not_use_topcables() {
     assert!(
-        !asset_catalog::WALL_SET_ASTRA.ceiling_straight.contains("TopCables"),
-        "Astra ceiling_straight should not use TopCables (gap at Y≈3.33), got '{}'",
-        asset_catalog::WALL_SET_ASTRA.ceiling_straight
+        !asset_catalog::WALL_SET_ASTRA.straight.ceiling.contains("TopCables"),
+        "Astra straight ceiling should not use TopCables (gap at Y≈3.33), got '{}'",
+        asset_catalog::WALL_SET_ASTRA.straight.ceiling
     );
     assert!(
-        !asset_catalog::WALL_SET_ASTRA.ceiling_corner.contains("TopCables"),
-        "Astra ceiling_corner should not use TopCables (gap at Y≈3.33), got '{}'",
-        asset_catalog::WALL_SET_ASTRA.ceiling_corner
+        !asset_catalog::WALL_SET_ASTRA.corner_inner.ceiling.contains("TopCables"),
+        "Astra corner_inner ceiling should not use TopCables (gap at Y≈3.33), got '{}'",
+        asset_catalog::WALL_SET_ASTRA.corner_inner.ceiling
+    );
+    assert!(
+        !asset_catalog::WALL_SET_ASTRA.corner_outer.ceiling.contains("TopCables"),
+        "Astra corner_outer ceiling should not use TopCables (gap at Y≈3.33), got '{}'",
+        asset_catalog::WALL_SET_ASTRA.corner_outer.ceiling
     );
 }

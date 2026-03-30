@@ -3,18 +3,38 @@
 // All scene paths use Godot `res://` format pointing into `godot/addons/`.
 // Downloaded assets live in `assets/` and are installed by `scripts/install-addons.sh`.
 
+// ── Structural triple ──────────────────────────────────────────────────
+
+/// Enforces that any structural piece set provides floor, wall, and ceiling.
+pub trait StructuralTriple {
+    fn floor(&self) -> &'static str;
+    fn wall(&self) -> &'static str;
+    fn ceiling(&self) -> &'static str;
+}
+
+/// A concrete floor + wall + ceiling mesh triple.
+#[derive(Debug, Clone, Copy)]
+pub struct Triple {
+    pub floor: &'static str,
+    pub wall: &'static str,
+    pub ceiling: &'static str,
+}
+
+impl StructuralTriple for Triple {
+    fn floor(&self) -> &'static str { self.floor }
+    fn wall(&self) -> &'static str { self.wall }
+    fn ceiling(&self) -> &'static str { self.ceiling }
+}
+
 // ── Wall sets ───────────────────────────────────────────────────────────
 
-/// A themed group of matching wall, corner, ceiling, and floor assets.
+/// A themed group of matching structural assets organized as triples.
 #[derive(Debug, Clone, Copy)]
 pub struct WallSet {
     pub id: &'static str,
-    pub wall_straight: &'static str,
-    pub wall_corner_inner: &'static str,
-    pub ceiling_straight: &'static str,
-    pub ceiling_corner: &'static str,
-    pub floor: &'static str,
-    pub floor_corner: &'static str,
+    pub straight: Triple,
+    pub corner_inner: Triple,
+    pub corner_outer: Triple,
 }
 
 macro_rules! megakit_wall {
@@ -36,62 +56,116 @@ macro_rules! megakit_platform {
 
 pub const WALL_SET_ASTRA: WallSet = WallSet {
     id: "astra",
-    wall_straight: megakit_wall!("WallAstra_Straight.gltf"),
-    wall_corner_inner: megakit_wall!("WallAstra_Corner_Round_Inner.gltf"),
-    ceiling_straight: megakit_wall!("TopAstra_Straight.gltf"),
-    ceiling_corner: megakit_wall!("TopAstra_Corner_Round_Inner.gltf"),
-    floor: megakit_platform!("Platform_Simple.gltf"),
-    floor_corner: megakit_platform!("Platform_Simple_Curve.gltf"),
+    straight: Triple {
+        floor: megakit_platform!("Platform_Simple.gltf"),
+        wall: megakit_wall!("WallAstra_Straight.gltf"),
+        ceiling: megakit_wall!("TopAstra_Straight.gltf"),
+    },
+    corner_inner: Triple {
+        floor: megakit_platform!("Platform_Simple_Curve.gltf"),
+        wall: megakit_wall!("WallAstra_Corner_Round_Inner.gltf"),
+        ceiling: megakit_wall!("TopSimple_Corner_Round_Inner.gltf"),
+    },
+    corner_outer: Triple {
+        floor: megakit_platform!("Platform_Simple_Curve.gltf"),
+        wall: megakit_wall!("WallAstra_Corner_Round_Outer.gltf"),
+        ceiling: megakit_wall!("TopAstra_Curve_Round_Outer.gltf"),
+    },
 };
 
 pub const WALL_SET_BAND: WallSet = WallSet {
     id: "band",
-    wall_straight: megakit_wall!("WallBand_Straight.gltf"),
-    wall_corner_inner: megakit_wall!("WallBand_Corner_Round_Inner.gltf"),
-    ceiling_straight: megakit_wall!("TopAstra_Straight.gltf"),
-    ceiling_corner: megakit_wall!("TopAstra_Corner_Round_Inner.gltf"),
-    floor: megakit_platform!("Platform_Metal.gltf"),
-    floor_corner: megakit_platform!("Platform_Metal_Curve.gltf"),
+    straight: Triple {
+        floor: megakit_platform!("Platform_Metal.gltf"),
+        wall: megakit_wall!("WallBand_Straight.gltf"),
+        ceiling: megakit_wall!("TopAstra_Straight.gltf"),
+    },
+    corner_inner: Triple {
+        floor: megakit_platform!("Platform_Metal_Curve.gltf"),
+        wall: megakit_wall!("WallBand_Corner_Round_Inner.gltf"),
+        ceiling: megakit_wall!("TopSimple_Corner_Round_Inner.gltf"),
+    },
+    corner_outer: Triple {
+        floor: megakit_platform!("Platform_Metal_Curve.gltf"),
+        wall: megakit_wall!("WallBand_Corner_Round_Outer.gltf"),
+        ceiling: megakit_wall!("TopAstra_Curve_Round_Outer.gltf"),
+    },
 };
 
 pub const WALL_SET_PIPE: WallSet = WallSet {
     id: "pipe",
-    wall_straight: megakit_wall!("WallPipe_Straight.gltf"),
-    wall_corner_inner: megakit_wall!("WallPipe_Corner_Round_Inner.gltf"),
-    ceiling_straight: megakit_wall!("TopPlates_Straight.gltf"),
-    ceiling_corner: megakit_wall!("TopPlates_Corner_Round_Inner.gltf"),
-    floor: megakit_platform!("Platform_DarkPlates.gltf"),
-    floor_corner: megakit_platform!("Platform_DarkPlates_Curves.gltf"),
+    straight: Triple {
+        floor: megakit_platform!("Platform_DarkPlates.gltf"),
+        wall: megakit_wall!("WallPipe_Straight.gltf"),
+        ceiling: megakit_wall!("TopPlates_Straight.gltf"),
+    },
+    corner_inner: Triple {
+        floor: megakit_platform!("Platform_DarkPlates_Curves.gltf"),
+        wall: megakit_wall!("WallPipe_Corner_Round_Inner.gltf"),
+        ceiling: megakit_wall!("TopPlates_Corner_Round_Inner.gltf"),
+    },
+    corner_outer: Triple {
+        floor: megakit_platform!("Platform_DarkPlates_Curves.gltf"),
+        wall: megakit_wall!("WallPipe_Corner_Round_Outer.gltf"),
+        ceiling: megakit_wall!("TopPlates_Corner_Round_Outer.gltf"),
+    },
 };
 
 pub const WALL_SET_WIDEBAND: WallSet = WallSet {
     id: "wideband",
-    wall_straight: megakit_wall!("WallWideBand_Straight.gltf"),
-    wall_corner_inner: megakit_wall!("WallWideBand_Corner_Round_Inner.gltf"),
-    ceiling_straight: megakit_wall!("TopSimple_Straight.gltf"),
-    ceiling_corner: megakit_wall!("TopSimple_Corner_Round_Inner.gltf"),
-    floor: megakit_platform!("Platform_CenterPlate.gltf"),
-    floor_corner: megakit_platform!("Platform_CenterPlate_Curve.gltf"),
+    straight: Triple {
+        floor: megakit_platform!("Platform_CenterPlate.gltf"),
+        wall: megakit_wall!("WallWideBand_Straight.gltf"),
+        ceiling: megakit_wall!("TopSimple_Straight.gltf"),
+    },
+    corner_inner: Triple {
+        floor: megakit_platform!("Platform_CenterPlate_Curve.gltf"),
+        wall: megakit_wall!("WallWideBand_Corner_Round_Inner.gltf"),
+        ceiling: megakit_wall!("TopSimple_Corner_Round_Inner.gltf"),
+    },
+    corner_outer: Triple {
+        floor: megakit_platform!("Platform_CenterPlate_Curve.gltf"),
+        wall: megakit_wall!("WallWideBand_Corner_Round_Outer.gltf"),
+        ceiling: megakit_wall!("TopSimple_Corner_Round_Outer.gltf"),
+    },
 };
 
 pub const WALL_SET_WINDOW: WallSet = WallSet {
     id: "window",
-    wall_straight: megakit_wall!("WallWindow_Straight.gltf"),
-    wall_corner_inner: megakit_wall!("WallWindow_Corner_Round_Inner.gltf"),
-    ceiling_straight: megakit_wall!("TopWindow_Straight.gltf"),
-    ceiling_corner: megakit_wall!("TopWindow_Corner_Curve_Inner.gltf"),
-    floor: megakit_platform!("Platform_Squares.gltf"),
-    floor_corner: megakit_platform!("Platform_Squares_Curve.gltf"),
+    straight: Triple {
+        floor: megakit_platform!("Platform_Squares.gltf"),
+        wall: megakit_wall!("WallWindow_Straight.gltf"),
+        ceiling: megakit_wall!("TopWindow_Straight.gltf"),
+    },
+    corner_inner: Triple {
+        floor: megakit_platform!("Platform_Squares_Curve.gltf"),
+        wall: megakit_wall!("WallWindow_Corner_Round_Inner.gltf"),
+        ceiling: megakit_wall!("TopWindow_Corner_Curve_Inner.gltf"),
+    },
+    corner_outer: Triple {
+        floor: megakit_platform!("Platform_Squares_Curve.gltf"),
+        wall: megakit_wall!("WallWindow_Corner_Round_Outer.gltf"),
+        ceiling: megakit_wall!("TopSimple_Corner_Round_Outer.gltf"),
+    },
 };
 
 pub const WALL_SET_PADDED: WallSet = WallSet {
     id: "padded",
-    wall_straight: megakit_wall!("WallPadded_Straight.gltf"),
-    wall_corner_inner: megakit_wall!("WallPadded_Curve_Round_Inner.gltf"),
-    ceiling_straight: megakit_wall!("TopPadded_Flat_Straight.gltf"),
-    ceiling_corner: megakit_wall!("TopPadded_Flat_Curve_Round_Inner.gltf"),
-    floor: megakit_platform!("Platform_Padded.gltf"),
-    floor_corner: megakit_platform!("Platform_Padded.gltf"),
+    straight: Triple {
+        floor: megakit_platform!("Platform_Padded.gltf"),
+        wall: megakit_wall!("WallPadded_Straight.gltf"),
+        ceiling: megakit_wall!("TopPadded_Flat_Straight.gltf"),
+    },
+    corner_inner: Triple {
+        floor: megakit_platform!("Platform_Padded.gltf"),
+        wall: megakit_wall!("WallPadded_Curve_Round_Inner.gltf"),
+        ceiling: megakit_wall!("TopPadded_Flat_Curve_Round_Inner.gltf"),
+    },
+    corner_outer: Triple {
+        floor: megakit_platform!("Platform_Padded.gltf"),
+        wall: megakit_wall!("WallPadded_Curve_Round_Outer.gltf"),
+        ceiling: megakit_wall!("TopPadded_Flat_Curve_Round_Outer.gltf"),
+    },
 };
 
 pub const ALL_WALL_SETS: &[WallSet] = &[
@@ -213,6 +287,68 @@ pub const CEILING_PROPS: &[PropEntry] = &[
     PropEntry { scene: essentials_prop!("Prop_CeilingComputer.gltf"), placement: PropPlacement::Ceiling, blocks_flight: false },
 ];
 
+// ── Themed palette subsets ─────────────────────────────────────────────
+
+/// Warehouse: shelves, lockers, gun racks — storage-oriented wall props.
+pub const WAREHOUSE_WALL_PROPS: &[PropEntry] = &[
+    PropEntry { scene: essentials_prop!("Prop_Shelves_WideTall.gltf"), placement: PropPlacement::WallAdjacent, blocks_flight: true },
+    PropEntry { scene: essentials_prop!("Prop_Shelves_WideShort.gltf"), placement: PropPlacement::WallAdjacent, blocks_flight: false },
+    PropEntry { scene: essentials_prop!("Prop_Shelves_ThinTall.gltf"), placement: PropPlacement::WallAdjacent, blocks_flight: true },
+    PropEntry { scene: essentials_prop!("Prop_Shelves_ThinShort.gltf"), placement: PropPlacement::WallAdjacent, blocks_flight: false },
+    PropEntry { scene: essentials_prop!("Prop_Locker.gltf"), placement: PropPlacement::WallAdjacent, blocks_flight: true },
+    PropEntry { scene: essentials_prop!("Prop_GunRack.gltf"), placement: PropPlacement::WallAdjacent, blocks_flight: false },
+];
+
+/// Warehouse: crates and barrels — bulk storage center props.
+pub const WAREHOUSE_CENTER_PROPS: &[PropEntry] = &[
+    PropEntry { scene: megakit_prop!("Prop_Crate1.gltf"), placement: PropPlacement::Center, blocks_flight: false },
+    PropEntry { scene: megakit_prop!("Prop_Crate2.gltf"), placement: PropPlacement::Center, blocks_flight: false },
+    PropEntry { scene: megakit_prop!("Prop_Crate3.gltf"), placement: PropPlacement::Center, blocks_flight: false },
+    PropEntry { scene: megakit_prop!("Prop_Crate4.gltf"), placement: PropPlacement::Center, blocks_flight: false },
+    PropEntry { scene: megakit_prop!("Prop_Barrel_Large.gltf"), placement: PropPlacement::Center, blocks_flight: true },
+    PropEntry { scene: megakit_prop!("Prop_Barrel_Small.gltf"), placement: PropPlacement::Center, blocks_flight: false },
+    PropEntry { scene: essentials_prop!("Prop_Crate.gltf"), placement: PropPlacement::Center, blocks_flight: false },
+    PropEntry { scene: essentials_prop!("Prop_Crate_Large.gltf"), placement: PropPlacement::Center, blocks_flight: true },
+    PropEntry { scene: essentials_prop!("Prop_Barrel1.gltf"), placement: PropPlacement::Center, blocks_flight: false },
+    PropEntry { scene: essentials_prop!("Prop_Barrel2_Closed.gltf"), placement: PropPlacement::Center, blocks_flight: false },
+];
+
+/// Command: computers, screens, desks — control room wall props.
+pub const COMMAND_WALL_PROPS: &[PropEntry] = &[
+    PropEntry { scene: megakit_prop!("Prop_Computer.gltf"), placement: PropPlacement::WallAdjacent, blocks_flight: false },
+    PropEntry { scene: megakit_prop!("Prop_AccessPoint.gltf"), placement: PropPlacement::WallAdjacent, blocks_flight: false },
+    PropEntry { scene: essentials_prop!("Prop_Desk_Large.gltf"), placement: PropPlacement::WallAdjacent, blocks_flight: false },
+    PropEntry { scene: essentials_prop!("Prop_Desk_Medium.gltf"), placement: PropPlacement::WallAdjacent, blocks_flight: false },
+    PropEntry { scene: essentials_prop!("Prop_Desk_Small.gltf"), placement: PropPlacement::WallAdjacent, blocks_flight: false },
+    PropEntry { scene: essentials_prop!("Prop_Desk_L.gltf"), placement: PropPlacement::WallAdjacent, blocks_flight: false },
+    PropEntry { scene: essentials_prop!("Prop_Screen.gltf"), placement: PropPlacement::WallAdjacent, blocks_flight: false },
+    PropEntry { scene: essentials_prop!("Prop_Computer.gltf"), placement: PropPlacement::WallAdjacent, blocks_flight: false },
+];
+
+/// Command: hologram displays, chests — tactical center props.
+pub const COMMAND_CENTER_PROPS: &[PropEntry] = &[
+    PropEntry { scene: essentials_prop!("Prop_HologramMap1.gltf"), placement: PropPlacement::Center, blocks_flight: false },
+    PropEntry { scene: essentials_prop!("Prop_HologramMap2.gltf"), placement: PropPlacement::Center, blocks_flight: false },
+    PropEntry { scene: megakit_prop!("Prop_Chest.gltf"), placement: PropPlacement::Center, blocks_flight: false },
+    PropEntry { scene: essentials_prop!("Prop_Chest.gltf"), placement: PropPlacement::Center, blocks_flight: false },
+];
+
+/// Laboratory: pods, teleporters, access points — science wall props.
+pub const LABORATORY_WALL_PROPS: &[PropEntry] = &[
+    PropEntry { scene: megakit_prop!("Prop_AccessPoint.gltf"), placement: PropPlacement::WallAdjacent, blocks_flight: false },
+    PropEntry { scene: megakit_prop!("Prop_Computer.gltf"), placement: PropPlacement::WallAdjacent, blocks_flight: false },
+    PropEntry { scene: megakit_prop!("Prop_Vent_Big.gltf"), placement: PropPlacement::WallAdjacent, blocks_flight: false },
+    PropEntry { scene: megakit_prop!("Prop_Vent_Small.gltf"), placement: PropPlacement::WallAdjacent, blocks_flight: false },
+];
+
+/// Laboratory: pods, teleporters — experimental center props.
+pub const LABORATORY_CENTER_PROPS: &[PropEntry] = &[
+    PropEntry { scene: megakit_prop!("Prop_Teleporter.gltf"), placement: PropPlacement::Center, blocks_flight: true },
+    PropEntry { scene: megakit_prop!("Prop_Pod.gltf"), placement: PropPlacement::Center, blocks_flight: true },
+    PropEntry { scene: megakit_prop!("Prop_Barrel_Large.gltf"), placement: PropPlacement::Center, blocks_flight: true },
+    PropEntry { scene: megakit_prop!("Prop_Barrel_Small.gltf"), placement: PropPlacement::Center, blocks_flight: false },
+];
+
 // ── Light fixtures ──────────────────────────────────────────────────────
 
 /// A light fixture mesh with its co-located light source parameters.
@@ -271,12 +407,11 @@ pub fn all_scene_paths() -> Vec<&'static str> {
 
     // Wall set assets
     for ws in ALL_WALL_SETS {
-        paths.push(ws.wall_straight);
-        paths.push(ws.wall_corner_inner);
-        paths.push(ws.ceiling_straight);
-        paths.push(ws.ceiling_corner);
-        paths.push(ws.floor);
-        paths.push(ws.floor_corner);
+        for triple in [&ws.straight, &ws.corner_inner, &ws.corner_outer] {
+            paths.push(triple.floor);
+            paths.push(triple.wall);
+            paths.push(triple.ceiling);
+        }
     }
 
     // Door
@@ -416,15 +551,17 @@ mod tests {
     }
 
     #[test]
-    fn all_wall_sets_have_ceiling_corner() {
+    fn all_wall_sets_have_ceiling_corners() {
         for ws in ALL_WALL_SETS {
-            assert!(
-                ws.ceiling_corner.starts_with("res://")
-                    && ws.ceiling_corner.ends_with(".gltf"),
-                "wall set '{}' missing valid ceiling_corner path, got '{}'",
-                ws.id,
-                ws.ceiling_corner
-            );
+            for (label, triple) in [("inner", &ws.corner_inner), ("outer", &ws.corner_outer)] {
+                assert!(
+                    triple.ceiling.starts_with("res://")
+                        && triple.ceiling.ends_with(".gltf"),
+                    "wall set '{}' {label} missing valid ceiling corner path, got '{}'",
+                    ws.id,
+                    triple.ceiling
+                );
+            }
         }
     }
 
@@ -432,11 +569,18 @@ mod tests {
     fn all_wall_sets_use_round_or_curve_corners() {
         for ws in ALL_WALL_SETS {
             assert!(
-                ws.wall_corner_inner.contains("Round_Inner")
-                    || ws.wall_corner_inner.contains("Curve"),
-                "wall set '{}' uses '{}' — expected Round_Inner or Curve variant",
+                ws.corner_inner.wall.contains("Round_Inner")
+                    || ws.corner_inner.wall.contains("Curve"),
+                "wall set '{}' inner uses '{}' — expected Round_Inner or Curve variant",
                 ws.id,
-                ws.wall_corner_inner
+                ws.corner_inner.wall
+            );
+            assert!(
+                ws.corner_outer.wall.contains("Round_Outer")
+                    || ws.corner_outer.wall.contains("Curve"),
+                "wall set '{}' outer uses '{}' — expected Round_Outer or Curve variant",
+                ws.id,
+                ws.corner_outer.wall
             );
         }
     }

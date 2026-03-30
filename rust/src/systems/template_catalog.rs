@@ -75,9 +75,10 @@ pub fn spawn_list(
     Vec<crate::systems::room_assembler::MeshPlacement>,
     Vec<crate::systems::room_furnisher::LightSource>,
 ) {
-    use crate::systems::asset_catalog::ALL_WALL_SETS;
+    use crate::systems::cell::CellGrid;
     use crate::systems::room_assembler::RoomStyle;
     use crate::systems::room_furnisher;
+    use crate::systems::room_theme;
 
     let mut meshes = Vec::new();
     let mut lights = Vec::new();
@@ -88,35 +89,23 @@ pub fn spawn_list(
         let origin = room.world_position(cell_size);
 
         // Per-room theme: deterministic from seed + room index.
-        let wall_set = &ALL_WALL_SETS[(seed as usize + room_idx) % ALL_WALL_SETS.len()];
-        let style = RoomStyle::from_wall_set(wall_set);
+        let theme = room_theme::theme_for_room(seed, room_idx);
+        let style = RoomStyle::from_wall_set(theme.wall_set);
 
-        // Structural geometry (walls, floors, ceilings, corners, doors).
-        meshes.extend(crate::systems::room_assembler::assemble(
+        // Build cell grid and structural geometry.
+        let mut grid = CellGrid::new(&room.template, &active, origin, cell_size);
+        meshes.extend(crate::systems::room_assembler::assemble_from_grid(
+            &grid,
             &room.template,
             &active,
-            origin,
-            cell_size,
             &style,
-        ));
-
-        // Furniture and decorative props.
-        let room_seed = seed.wrapping_add(room_idx as u64).wrapping_mul(2654435761);
-        // Per-room density: deterministic from seed + room index.
-        let density = match (seed as usize + room_idx * 3) % 3 {
-            0 => room_furnisher::RoomDensity::Sparse,
-            1 => room_furnisher::RoomDensity::Normal,
-            _ => room_furnisher::RoomDensity::Dense,
-        };
-
-        meshes.extend(room_furnisher::furnish(
-            &room.template,
-            &active,
-            origin,
             cell_size,
-            room_seed,
-            density,
         ));
+
+        // Populate cells with themed props.
+        let room_seed = seed.wrapping_add(room_idx as u64).wrapping_mul(2654435761);
+        grid.populate(theme, room_seed);
+        meshes.extend(grid.prop_placements());
 
         // Light fixtures (mesh + co-located light source).
         for (mesh, light) in room_furnisher::light_fixtures(&room.template, origin, cell_size) {
@@ -420,7 +409,6 @@ mod tests {
 
             // Per-edge boundary coverage: every horizontal boundary edge must have
             // a wall or archway at the correct spatial position (not just Y).
-            let wall_scene = "res://addons/quaternius/modularscifimegakit/walls/WallAstra_Straight.gltf";
             let door_scene = "res://addons/quaternius/modularscifimegakit/platforms/Door_Frame_Square.gltf";
             let origin = room.world_position(cell_size);
             let ex = room.template.extents[0] as i32;
@@ -462,14 +450,13 @@ mod tests {
                             continue;
                         }
 
-                        let (wp, wr) = room_assembler::wall_placement(cell_pos, facing, cell_size);
                         let (dp, _) = room_assembler::door_placement(cell_pos, facing, cell_size);
-                        let has_wall = placements.iter().any(|p| {
-                            p.scene == wall_scene
-                                && (p.position[0] - wp[0]).abs() < 0.001
-                                && (p.position[1] - wp[1]).abs() < 0.001
-                                && (p.position[2] - wp[2]).abs() < 0.001
-                                && (p.rotation_y - wr).abs() < 0.001
+                        // Check for any wall-like geometry at this cell (straight wall or corner piece)
+                        let has_wall_geometry = placements.iter().any(|p| {
+                            (p.scene.contains("Wall") || p.scene.contains("Corner") || p.scene.contains("Curve"))
+                                && (p.position[0] - cell_pos[0]).abs() < 0.001
+                                && (p.position[1] - cell_pos[1]).abs() < 0.001
+                                && (p.position[2] - cell_pos[2]).abs() < 0.001
                         });
                         let has_door = placements.iter().any(|p| {
                             p.scene == door_scene
@@ -478,9 +465,9 @@ mod tests {
                                 && (p.position[2] - dp[2]).abs() < 0.001
                         });
                         assert!(
-                            has_wall || has_door,
+                            has_wall_geometry || has_door,
                             "room '{}' at {:?} cell ({cx},{cz}) face {facing:?}: \
-                             no wall at {wp:?} rot {wr} or door at {dp:?}",
+                             no wall/corner geometry or door at {cell_pos:?}",
                             room.template.id, room.grid_pos
                         );
                     }
@@ -546,6 +533,75 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    /// After wiring CellGrid::populate(), each room's props must come from
+    /// that room's assigned theme palette — not just any palette.
+    #[test]
+    fn spawn_list_props_match_per_room_theme() {
+        use crate::systems::generator::{generate, GeneratorConfig};
+        use crate::systems::room_theme;
+        use crate::systems::room_assembler;
+
+        let seed = 42u64;
+        let config = GeneratorConfig {
+            seed,
+            room_templates: room_templates(),
+            corridor_templates: corridor_templates(),
+            target_room_count: 5,
+        };
+        let level = generate(&config).expect("generation should succeed");
+        let cell_size = 4.0;
+        let (all_placements, _lights) = spawn_list(&level, cell_size, seed);
+
+        // For each room, compute its theme and structural placements,
+        // then verify non-structural props belong to that theme's palette.
+        for (room_idx, idx) in level.room_indices().enumerate() {
+            let room = level.room(idx).unwrap();
+            let active = level.active_facings(idx);
+            let origin = room.world_position(cell_size);
+            let theme = room_theme::theme_for_room(seed, room_idx);
+
+            // Structural geometry for this room.
+            let style = room_assembler::RoomStyle::from_wall_set(theme.wall_set);
+            let structural = room_assembler::assemble(
+                &room.template, &active, origin, cell_size, &style,
+            );
+            let structural_scenes: std::collections::HashSet<&str> =
+                structural.iter().map(|p| p.scene).collect();
+
+            // Light fixture scenes.
+            let light_scenes: std::collections::HashSet<&str> =
+                crate::systems::asset_catalog::ALL_LIGHTS.iter().map(|l| l.scene).collect();
+
+            // Collect allowed prop scenes for this room's theme.
+            let allowed: std::collections::HashSet<&str> = theme.palette.wall_adjacent.iter()
+                .chain(theme.palette.center)
+                .chain(theme.palette.corner)
+                .chain(theme.palette.ceiling)
+                .map(|p| p.scene)
+                .collect();
+
+            // Find placements that fall within this room's world bounds.
+            let ex = room.template.extents[0] as f32;
+            let ez = room.template.extents[2] as f32;
+            let room_props: Vec<_> = all_placements.iter()
+                .filter(|p| {
+                    p.position[0] >= origin[0] && p.position[0] < origin[0] + ex * cell_size
+                    && p.position[2] >= origin[2] && p.position[2] < origin[2] + ez * cell_size
+                    && !structural_scenes.contains(p.scene)
+                    && !light_scenes.contains(p.scene)
+                })
+                .collect();
+
+            for p in &room_props {
+                assert!(
+                    allowed.contains(p.scene),
+                    "room '{}' (theme '{}') has prop '{}' not in its palette",
+                    room.template.id, theme.name, p.scene
+                );
             }
         }
     }

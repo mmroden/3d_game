@@ -6,14 +6,15 @@ use super::*;
 
 #[test]
 fn pipe_style_uses_pipe_wall_assets() {
+    // Use 3x3 room: 4 non-corner edges get straight walls.
     let style = RoomStyle::from_wall_set(&asset_catalog::WALL_SET_PIPE);
-    let placements = assemble(&small_room(), &[], [0.0, 0.0, 0.0], 4.0, &style);
+    let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0, &style);
     let walls: Vec<_> = placements.iter()
-        .filter(|p| p.scene == asset_catalog::WALL_SET_PIPE.wall_straight)
+        .filter(|p| p.scene == asset_catalog::WALL_SET_PIPE.straight.wall)
         .collect();
-    assert_eq!(walls.len(), 4, "sealed 1x1 room should have 4 pipe walls");
+    assert_eq!(walls.len(), 12, "sealed 3x3 room should have 12 pipe walls (all perimeter edges)");
     assert_eq!(
-        count(&placements, asset_catalog::WALL_SET_ASTRA.wall_straight), 0,
+        count(&placements, asset_catalog::WALL_SET_ASTRA.straight.wall), 0,
         "no Astra walls when using Pipe style"
     );
 }
@@ -23,19 +24,20 @@ fn pipe_style_uses_pipe_corner_assets() {
     let style = RoomStyle::from_wall_set(&asset_catalog::WALL_SET_PIPE);
     let placements = assemble(&small_room(), &[], [0.0, 0.0, 0.0], 4.0, &style);
     let corners: Vec<_> = placements.iter()
-        .filter(|p| p.scene == asset_catalog::WALL_SET_PIPE.wall_corner_inner)
+        .filter(|p| p.scene == asset_catalog::WALL_SET_PIPE.corner_inner.wall)
         .collect();
-    assert_eq!(corners.len(), 4, "sealed 1x1 room should have 4 pipe corners");
+    assert_eq!(corners.len(), 4, "sealed 1x1 room should have 4 pipe inner corners");
 }
 
 #[test]
 fn pipe_style_uses_pipe_ceiling_assets() {
+    // Use 3x3 room: 4 non-corner edges get straight ceiling strips.
     let style = RoomStyle::from_wall_set(&asset_catalog::WALL_SET_PIPE);
-    let placements = assemble(&small_room(), &[], [0.0, 0.0, 0.0], 4.0, &style);
+    let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0, &style);
     let ceilings: Vec<_> = placements.iter()
-        .filter(|p| p.scene == asset_catalog::WALL_SET_PIPE.ceiling_straight)
+        .filter(|p| p.scene == asset_catalog::WALL_SET_PIPE.straight.ceiling)
         .collect();
-    assert_eq!(ceilings.len(), 4, "sealed 1x1 room should have 4 pipe ceiling strips");
+    assert_eq!(ceilings.len(), 12, "sealed 3x3 room should have 12 pipe ceiling strips (all perimeter edges)");
 }
 
 #[test]
@@ -43,8 +45,8 @@ fn pipe_style_uses_pipe_floor_assets() {
     let style = RoomStyle::from_wall_set(&asset_catalog::WALL_SET_PIPE);
     let placements = assemble(&small_room(), &[], [0.0, 0.0, 0.0], 4.0, &style);
     let pipe_floors: Vec<_> = placements.iter()
-        .filter(|p| (p.scene == asset_catalog::WALL_SET_PIPE.floor
-                || p.scene == asset_catalog::WALL_SET_PIPE.floor_corner)
+        .filter(|p| (p.scene == asset_catalog::WALL_SET_PIPE.straight.floor
+                || p.scene == asset_catalog::WALL_SET_PIPE.corner_inner.floor)
                 && (p.position[1]).abs() < 0.001)
         .collect();
     assert_eq!(pipe_floors.len(), 1, "1x1 room should have 1 pipe floor");

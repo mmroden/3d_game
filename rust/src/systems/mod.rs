@@ -1,4 +1,6 @@
+pub mod cell;
 pub mod generator;
+pub mod room_theme;
 pub mod level_graph;
 pub mod room_template;
 pub mod loadout;
