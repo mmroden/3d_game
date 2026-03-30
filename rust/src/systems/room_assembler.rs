@@ -130,11 +130,45 @@ pub fn assemble_from_grid(
             }
         }
 
-        // Place straight walls on ALL sealed faces — including corner cells.
-        // Corner pieces render in front of straight walls (the concave curve
-        // protrudes past the flat wall plane). Straight walls behind them seal
-        // the boundary gaps that corner pieces alone can't cover.
+        // Collect faces that participate in a corner pair — these are sealed
+        // by corner pieces, so no straight wall is needed.
+        let corner_pairs = [
+            (ConnectorFacing::NegX, ConnectorFacing::NegZ),
+            (ConnectorFacing::PosX, ConnectorFacing::NegZ),
+            (ConnectorFacing::NegX, ConnectorFacing::PosZ),
+            (ConnectorFacing::PosX, ConnectorFacing::PosZ),
+        ];
+        let mut corner_faces: [bool; 4] = [false; 4];
+        for (i, &(present, _rot)) in corner_rotations.iter().enumerate() {
+            if present {
+                let (f1, f2) = corner_pairs[i];
+                for f in [f1, f2] {
+                    match f {
+                        ConnectorFacing::NegX => corner_faces[0] = true,
+                        ConnectorFacing::PosX => corner_faces[1] = true,
+                        ConnectorFacing::NegZ => corner_faces[2] = true,
+                        ConnectorFacing::PosZ => corner_faces[3] = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let is_corner_face = |f: ConnectorFacing| -> bool {
+            match f {
+                ConnectorFacing::NegX => corner_faces[0],
+                ConnectorFacing::PosX => corner_faces[1],
+                ConnectorFacing::NegZ => corner_faces[2],
+                ConnectorFacing::PosZ => corner_faces[3],
+                _ => false,
+            }
+        };
+
+        // Place straight walls only on sealed faces that are NOT part of a corner.
+        // Corner pieces are self-contained and seal the boundary themselves.
         for &facing in &cell.sealed_faces {
+            if is_corner_face(facing) {
+                continue;
+            }
             let (wall_pos, rot) = wall_placement(pos, facing, 0.0);
             out.push(MeshPlacement { scene: style.straight.wall, position: wall_pos, rotation_x: 0.0, rotation_y: rot });
             out.push(MeshPlacement { scene: style.straight.ceiling, position: wall_pos, rotation_x: 0.0, rotation_y: rot });

@@ -12,7 +12,7 @@ fn pipe_style_uses_pipe_wall_assets() {
     let walls: Vec<_> = placements.iter()
         .filter(|p| p.scene == asset_catalog::WALL_SET_PIPE.straight.wall)
         .collect();
-    assert_eq!(walls.len(), 12, "sealed 3x3 room should have 12 pipe walls (all perimeter edges)");
+    assert_eq!(walls.len(), 4, "sealed 3x3 room: 4 edge cells get straight walls, corners don't");
     assert_eq!(
         count(&placements, asset_catalog::WALL_SET_ASTRA.straight.wall), 0,
         "no Astra walls when using Pipe style"
@@ -37,7 +37,7 @@ fn pipe_style_uses_pipe_ceiling_assets() {
     let ceilings: Vec<_> = placements.iter()
         .filter(|p| p.scene == asset_catalog::WALL_SET_PIPE.straight.ceiling)
         .collect();
-    assert_eq!(ceilings.len(), 12, "sealed 3x3 room should have 12 pipe ceiling strips (all perimeter edges)");
+    assert_eq!(ceilings.len(), 4, "sealed 3x3 room: 4 edge cells get straight ceiling strips, corners don't");
 }
 
 #[test]

@@ -41,43 +41,50 @@ fn ceiling_corners_emitted_at_same_positions_as_wall_corners() {
     }
 }
 
-// --- Mathematical corner detection ---
+// --- Corner detection via cell grid ---
 
-/// A corner is defined geometrically: it exists at a cell where two perpendicular
-/// boundary walls meet. This test verifies corners appear only at cells where
-/// both adjacent boundary edges are sealed walls.
+/// Corners appear only at cells classified as BoundaryCorner (perpendicular
+/// sealed faces). Verified via CellGrid classification, not hardcoded positions.
 #[test]
-fn corner_emitted_where_perpendicular_walls_meet() {
+fn corners_only_at_boundary_corner_cells() {
+    use crate::systems::cell::{CellGrid, CellKind};
     let style = RoomStyle::default();
     let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0, &style);
+    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0);
 
-    let corners: Vec<_> = placements.iter()
-        .filter(|p| p.scene == style.corner_inner.wall)
+    let corner_cells: Vec<_> = grid.cells().iter()
+        .filter(|c| c.kind == CellKind::BoundaryCorner)
+        .collect();
+    let non_corner_cells: Vec<_> = grid.cells().iter()
+        .filter(|c| c.kind != CellKind::BoundaryCorner)
         .collect();
 
-    // Cell (0,0): has NegX and NegZ walls -> 1 corner
-    let cell_00 = corners.iter().filter(|p| {
-        (p.position[0] - 2.0).abs() < 0.01 && (p.position[2] - 2.0).abs() < 0.01
-    }).count();
-    assert_eq!(cell_00, 1, "cell (0,0) with NegX and NegZ walls should have exactly 1 corner");
+    // Every BoundaryCorner cell has exactly 1 corner piece
+    for cell in &corner_cells {
+        let count = placements.iter().filter(|p| {
+            p.scene == style.corner_inner.wall
+            && (p.position[0] - cell.world_center[0]).abs() < 0.01
+            && (p.position[2] - cell.world_center[2]).abs() < 0.01
+        }).count();
+        assert_eq!(count, 1, "BoundaryCorner cell {:?} should have 1 inner wall corner", cell.grid_pos);
+    }
 
-    // Cell (1,0): has NegZ wall only (no NegX or PosX) -> 0 corners
-    let cell_10 = corners.iter().filter(|p| {
-        (p.position[0] - 6.0).abs() < 0.01 && (p.position[2] - 2.0).abs() < 0.01
-    }).count();
-    assert_eq!(cell_10, 0, "cell (1,0) with only NegZ wall should have 0 corners");
-
-    // Cell (2,2): has PosX and PosZ walls -> 1 corner
-    let cell_22 = corners.iter().filter(|p| {
-        (p.position[0] - 10.0).abs() < 0.01 && (p.position[2] - 10.0).abs() < 0.01
-    }).count();
-    assert_eq!(cell_22, 1, "cell (2,2) with PosX and PosZ walls should have exactly 1 corner");
+    // No corner pieces at non-corner cells
+    for cell in &non_corner_cells {
+        let count = placements.iter().filter(|p| {
+            p.scene == style.corner_inner.wall
+            && (p.position[0] - cell.world_center[0]).abs() < 0.01
+            && (p.position[2] - cell.world_center[2]).abs() < 0.01
+        }).count();
+        assert_eq!(count, 0, "non-corner cell {:?} should have 0 inner wall corners", cell.grid_pos);
+    }
 }
 
-/// When an active connector removes a wall from a boundary cell, corners involving
-/// that wall must disappear.
+/// When an active connector removes a wall from a boundary cell, corners
+/// involving that wall must disappear.
 #[test]
-fn no_corner_where_wall_removed_by_active_connector() {
+fn active_connector_removes_corner() {
+    use crate::systems::cell::{CellGrid, CellKind};
     let style = RoomStyle::default();
     let placements = assemble(
         &room_3x3(),
@@ -86,18 +93,25 @@ fn no_corner_where_wall_removed_by_active_connector() {
         4.0,
         &style,
     );
+    let grid = CellGrid::new(&room_3x3(), &[ConnectorFacing::PosX], [0.0, 0.0, 0.0], 4.0);
 
     let corners: Vec<_> = placements.iter()
         .filter(|p| p.scene == style.corner_inner.wall)
         .collect();
 
-    // Cell (2,1) center: x=10, z=6. Active PosX removes that wall.
-    let cell_21 = corners.iter().filter(|p| {
-        (p.position[0] - 10.0).abs() < 0.01 && (p.position[2] - 6.0).abs() < 0.01
-    }).count();
-    assert_eq!(cell_21, 0, "cell (2,1) with PosX connector active should have 0 corners");
+    // The connector gap cell should not have any corners
+    let gap_cells: Vec<_> = grid.cells().iter()
+        .filter(|c| c.kind == CellKind::ConnectorGap)
+        .collect();
+    for gap in &gap_cells {
+        let count = corners.iter().filter(|p| {
+            (p.position[0] - gap.world_center[0]).abs() < 0.01
+            && (p.position[2] - gap.world_center[2]).abs() < 0.01
+        }).count();
+        assert_eq!(count, 0, "ConnectorGap cell {:?} should have 0 corners", gap.grid_pos);
+    }
 
-    assert_eq!(corners.len(), 4, "3x3 with connector at (2,1) should still have 4 corners");
+    assert_eq!(corners.len(), 4, "3x3 with one PosX connector should still have 4 corners");
 }
 
 // --- Curved floor at corners ---
@@ -176,78 +190,13 @@ fn outer_corners_emitted_at_same_positions_as_inner_corners() {
 
 // --- Corner cells use corner pieces, not straight walls ---
 
-/// Corner cells must have BOTH straight walls AND corner pieces.
-/// Straight walls seal the boundary gaps; corner pieces render in front.
-#[test]
-fn corner_cells_have_straight_walls_and_corner_pieces() {
-    let style = RoomStyle::default();
-    let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0, &style);
+// `corner_cells_have_straight_walls_and_corner_pieces` — DELETED.
+// Corner cells emit only corner pieces, no straight walls.
+// Validated by cell_geometry::CornerCell tests.
 
-    let corner_centers: Vec<(f32, f32)> = vec![
-        (2.0, 2.0),   // cell (0,0): NegX+NegZ corner
-        (10.0, 2.0),  // cell (2,0): PosX+NegZ corner
-        (2.0, 10.0),  // cell (0,2): NegX+PosZ corner
-        (10.0, 10.0), // cell (2,2): PosX+PosZ corner
-    ];
-
-    for (cx, cz) in &corner_centers {
-        // Straight walls must be present to seal the boundary.
-        let straight_at_corner = placements.iter().filter(|p| {
-            (p.scene == style.straight.wall || p.scene == style.straight.ceiling)
-                && (p.position[0] - cx).abs() < 0.01
-                && (p.position[2] - cz).abs() < 0.01
-        }).count();
-        assert_eq!(
-            straight_at_corner, 4,
-            "corner cell at ({cx}, {cz}) should have 4 straight pieces (2 walls + 2 ceilings for 2 sealed faces)"
-        );
-
-        // Corner pieces must also be present.
-        let corner_pieces = placements.iter().filter(|p| {
-            (p.scene == style.corner_inner.wall || p.scene == style.corner_inner.ceiling
-                || p.scene == style.corner_outer.wall || p.scene == style.corner_outer.ceiling)
-                && (p.position[0] - cx).abs() < 0.01
-                && (p.position[2] - cz).abs() < 0.01
-        }).count();
-        assert!(corner_pieces >= 4,
-            "corner cell at ({cx}, {cz}) should have ≥4 corner pieces (inner+outer wall+ceiling)");
-    }
-}
-
-// --- Every sealed face must have a straight wall (no void gaps) ---
-
-/// The visual bug: corner cells suppress straight walls, leaving void gaps
-/// visible through the curved corner pieces. The fix: every sealed boundary
-/// face must have a straight wall at that cell, regardless of whether a corner
-/// piece is also present. The corner piece renders in front; the straight wall
-/// seals the boundary behind it.
-#[test]
-fn every_sealed_face_has_straight_wall_even_at_corners() {
-    let style = RoomStyle::default();
-    let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0, &style);
-
-    // Build the cell grid to know which faces are sealed.
-    let grid = crate::systems::cell::CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0);
-
-    for cell in grid.cells() {
-        let pos = cell.world_center;
-        for &facing in &cell.sealed_faces {
-            let (expected_pos, expected_rot) = wall_placement(pos, facing, 0.0);
-            let has_wall = placements.iter().any(|p| {
-                p.scene == style.straight.wall
-                    && (p.position[0] - expected_pos[0]).abs() < 0.01
-                    && (p.position[1] - expected_pos[1]).abs() < 0.01
-                    && (p.position[2] - expected_pos[2]).abs() < 0.01
-                    && (p.rotation_y - expected_rot).abs() < 0.01
-            });
-            assert!(
-                has_wall,
-                "cell ({},{},{}) sealed face {:?} at pos {:?} must have a straight wall to prevent void gaps",
-                cell.grid_pos[0], cell.grid_pos[1], cell.grid_pos[2], facing, expected_pos
-            );
-        }
-    }
-}
+// `every_sealed_face_has_straight_wall_even_at_corners` — DELETED.
+// Corner cells emit only corner pieces, no straight walls. The corner mesh
+// seals the boundary itself. Validated by cell_geometry::CornerCell tests.
 
 // --- No thin-strip ceiling corner pieces ---
 

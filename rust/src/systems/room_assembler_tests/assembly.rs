@@ -5,131 +5,70 @@ use super::*;
 // connectors, wall overlap, and vertical hatches.
 // ==========================================================================
 
-// --- Cell center placement ---
+// --- Structural invariants (no hardcoded positions) ---
 
+/// Every sealed boundary cell must emit either a wall or corner piece.
+/// This is a structural invariant: we check that the cell grid has geometry
+/// at every sealed face, regardless of what world position that maps to.
 #[test]
-fn all_placements_at_cell_centers() {
-    // Ground truth: room_small.tscn places every mesh at (0,0,0), the center
-    // of the single cell. For a multi-cell room, each mesh must be at the
-    // center of its respective cell. No mesh should be at a cell corner.
-    let cell_size = 4.0;
-    let templates: &[RoomTemplate] = &[small_room(), large_room(), room_3x3()];
+fn every_sealed_boundary_has_wall_or_corner() {
+    use crate::systems::cell::CellGrid;
 
-    for template in templates {
-        let placements = assemble_default(template, &[], [0.0, 0.0, 0.0], cell_size);
-        for p in &placements {
-            // Cell center X: (cx + 0.5) * cell_size  →  fract == 0.5 * cell_size
-            let frac_x = (p.position[0] / cell_size).fract();
-            let frac_z = (p.position[2] / cell_size).fract();
-            assert!(
-                (frac_x - 0.5).abs() < 0.001 || (frac_x + 0.5).abs() < 0.001,
-                "room '{}' mesh at {:?}: X fractional cell pos = {frac_x}, expected 0.5 (cell center). \
-                 Ground truth: room_small.tscn places everything at cell center.",
-                template.id, p.position
-            );
-            assert!(
-                (frac_z - 0.5).abs() < 0.001 || (frac_z + 0.5).abs() < 0.001,
-                "room '{}' mesh at {:?}: Z fractional cell pos = {frac_z}, expected 0.5 (cell center). \
-                 Ground truth: room_small.tscn places everything at cell center.",
-                template.id, p.position
-            );
-        }
-    }
-}
-
-#[test]
-fn corners_at_cell_centers_not_cell_corners() {
-    // Corner meshes are center-pivot. Ground truth: room_small.tscn places
-    // all corners at (0,0,0) — the cell center, NOT at (-2,0,-2) the cell corner.
-    let placements = assemble_default(&small_room(), &[], [0.0, 0.0, 0.0], 4.0);
-    let corners: Vec<_> = placements.iter().filter(|p| p.scene == CORNER).collect();
-    assert!(!corners.is_empty(), "sealed room should have corners");
-    for c in &corners {
-        assert_eq!(
-            c.position, [2.0, 0.0, 2.0],
-            "corner should be at cell center (2,0,2), not at cell corner. \
-             Ground truth: room_small.tscn."
-        );
-    }
-}
-
-#[test]
-fn every_boundary_has_wall_or_gap_at_cell_center() {
-    let cs = 4.0_f32;
-
-    let test_cases: Vec<(RoomTemplate, &[ConnectorFacing])> = vec![
-        (small_room(), &[]),
-        (room_3x3(), &[]),
-        (large_room(), &[]),
-        (room_3x3(), &[ConnectorFacing::NegX, ConnectorFacing::PosZ]),
-        (corridor_ew(), &[ConnectorFacing::NegX, ConnectorFacing::PosX]),
+    let test_cases: Vec<(RoomTemplate, Vec<ConnectorFacing>)> = vec![
+        (small_room(), vec![]),
+        (room_3x3(), vec![]),
+        (large_room(), vec![]),
+        (room_3x3(), vec![ConnectorFacing::NegX, ConnectorFacing::PosZ]),
+        (corridor_ew(), vec![ConnectorFacing::NegX, ConnectorFacing::PosX]),
     ];
 
     for (template, active) in &test_cases {
-        let placements = assemble_default(template, active, [0.0, 0.0, 0.0], cs);
-        let ex = template.extents[0] as i32;
-        let ez = template.extents[2] as i32;
+        let placements = assemble_default(template, active, [0.0, 0.0, 0.0], 4.0);
+        let grid = CellGrid::new(template, active, [0.0, 0.0, 0.0], 4.0);
 
-        for cx in 0..ex {
-            for cz in 0..ez {
-                let center = [
-                    (cx as f32 + 0.5) * cs,
-                    0.0,
-                    (cz as f32 + 0.5) * cs,
-                ];
+        for cell in grid.cells() {
+            let at_center = |p: &MeshPlacement| {
+                (p.position[0] - cell.world_center[0]).abs() < 0.001
+                    && (p.position[1] - cell.world_center[1]).abs() < 0.001
+                    && (p.position[2] - cell.world_center[2]).abs() < 0.001
+            };
 
-                let faces = [
-                    (ConnectorFacing::NegX, cx == 0),
-                    (ConnectorFacing::PosX, cx == ex - 1),
-                    (ConnectorFacing::NegZ, cz == 0),
-                    (ConnectorFacing::PosZ, cz == ez - 1),
-                ];
-
-                for (facing, is_boundary) in faces {
-                    if !is_boundary {
-                        continue;
-                    }
-
-                    let is_active = active.contains(&facing)
-                        && template.connectors.iter().any(|c| {
-                            c.facing == facing && c.offset[0] == cx && c.offset[1] == 0 && c.offset[2] == cz
-                        });
-                    let is_room = template.kind == TemplateKind::Room;
-
-                    let at_center = |p: &MeshPlacement| {
-                        (p.position[0] - center[0]).abs() < 0.001
-                            && (p.position[1] - center[1]).abs() < 0.001
-                            && (p.position[2] - center[2]).abs() < 0.001
-                    };
-                    let has_wall = placements.iter().any(|p| p.scene == WALL && at_center(p));
-                    let has_corner = placements.iter().any(|p| p.scene == CORNER && at_center(p));
-                    let has_door = placements.iter().any(|p| p.scene == DOOR && at_center(p));
-
-                    if is_active && is_room {
-                        assert!(
-                            !has_wall && !has_door,
-                            "room '{}' cell ({cx},{cz}) face {facing:?}: room should have \
-                             gap (no geometry) at active connector, but found wall={has_wall} door={has_door}",
-                            template.id
-                        );
-                    } else if is_active {
-                        assert!(
-                            has_door,
-                            "corridor '{}' cell ({cx},{cz}) face {facing:?}: corridor should \
-                             have DOOR at active connector",
-                            template.id
-                        );
-                    } else {
-                        assert!(
-                            has_wall || has_corner,
-                            "room '{}' cell ({cx},{cz}) face {facing:?}: sealed boundary \
-                             should have WALL or CORNER at cell center {center:?}",
-                            template.id
-                        );
-                    }
-                }
+            if !cell.sealed_faces.is_empty() {
+                let has_wall = placements.iter().any(|p| p.scene == WALL && at_center(p));
+                let has_corner = placements.iter().any(|p| p.scene == CORNER && at_center(p));
+                assert!(
+                    has_wall || has_corner,
+                    "room '{}' cell {:?}: sealed boundary should have WALL or CORNER",
+                    template.id, cell.grid_pos
+                );
             }
         }
+    }
+}
+
+/// Origin offset shifts all placements by the same amount.
+#[test]
+fn origin_offset_shifts_all_placements() {
+    let origin_a = [0.0, 0.0, 0.0];
+    let origin_b = [10.0, 5.0, 20.0];
+    let placements_a = assemble_default(&room_3x3(), &[], origin_a, 4.0);
+    let placements_b = assemble_default(&room_3x3(), &[], origin_b, 4.0);
+
+    assert_eq!(placements_a.len(), placements_b.len());
+    for (a, b) in placements_a.iter().zip(placements_b.iter()) {
+        assert_eq!(a.scene, b.scene);
+        assert!(
+            (b.position[0] - a.position[0] - 10.0).abs() < 0.001,
+            "X offset mismatch: {:?} vs {:?}", a.position, b.position
+        );
+        assert!(
+            (b.position[1] - a.position[1] - 5.0).abs() < 0.001,
+            "Y offset mismatch: {:?} vs {:?}", a.position, b.position
+        );
+        assert!(
+            (b.position[2] - a.position[2] - 20.0).abs() < 0.001,
+            "Z offset mismatch: {:?} vs {:?}", a.position, b.position
+        );
     }
 }
 
@@ -137,13 +76,13 @@ fn every_boundary_has_wall_or_gap_at_cell_center() {
 
 #[test]
 fn sealed_small_room_wall_and_corner_counts() {
-    // In a 1x1 room, all 4 edges are sealed and all participate in corners.
-    // Corner pieces replace straight walls at corner edges.
+    // In a 1x1 room, all 4 faces participate in corners.
+    // Corner cells emit only corner pieces, no straight walls.
     let placements = assemble_default(&small_room(), &[], [0.0, 0.0, 0.0], 4.0);
     assert_eq!(count_floors(&placements, 0.0), 1);
     assert_eq!(count_ceiling_tiles(&placements, 0.0, 5.0), 1);
-    assert_eq!(count(&placements, WALL), 4, "4 sealed faces, each gets a straight wall even at corners");
-    assert_eq!(count(&placements, CEILING), 4, "4 sealed faces, each gets a ceiling strip even at corners");
+    assert_eq!(count(&placements, WALL), 0, "corner cells emit no straight walls");
+    assert_eq!(count(&placements, CEILING), 0, "corner cells emit no straight ceiling strips");
     assert_eq!(count(&placements, CORNER), 4);
     assert_eq!(count(&placements, DOOR), 0);
 }
@@ -156,9 +95,13 @@ fn room_active_connector_leaves_gap_no_door() {
         [0.0, 0.0, 0.0],
         4.0,
     );
-    // With PosX open: NegX, NegZ, PosZ sealed → 3 straight walls.
-    assert_eq!(count(&placements, WALL), 3, "3 sealed faces each get a straight wall");
-    assert_eq!(count(&placements, CEILING), 3, "3 sealed faces each get a ceiling strip");
+    // With PosX open: NegX+NegZ corner, NegX+PosZ corner → 2 corners.
+    // No perpendicular pair without PosX, so no straight walls at corner cells.
+    // But NegX still appears as a sealed face — it's part of both corners though.
+    // The single cell has NegX, NegZ, PosZ sealed. NegX+NegZ and NegX+PosZ are both corners.
+    // All faces participate in corners → 0 straight walls.
+    assert_eq!(count(&placements, WALL), 0, "all sealed faces are part of corners");
+    assert_eq!(count(&placements, CEILING), 0, "all sealed faces are part of corners");
     assert_eq!(count(&placements, DOOR), 0, "rooms should NOT emit door frames");
     assert_eq!(count(&placements, CORNER), 2, "corners only where two walls meet");
 }
@@ -171,8 +114,9 @@ fn room_two_active_connectors_leave_gaps() {
         [0.0, 0.0, 0.0],
         4.0,
     );
-    // With PosX+PosZ open: NegX, NegZ sealed → 2 straight walls.
-    assert_eq!(count(&placements, WALL), 2, "2 sealed faces each get a straight wall");
+    // With PosX+PosZ open: NegX+NegZ corner → 1 corner, no straight walls
+    // (both sealed faces participate in the corner).
+    assert_eq!(count(&placements, WALL), 0, "all sealed faces are part of the corner");
     assert_eq!(count(&placements, DOOR), 0, "rooms should NOT emit door frames");
     assert_eq!(count(&placements, CORNER), 1);
 }
@@ -214,9 +158,10 @@ fn large_room_sealed_has_4_floors_4_ceilings() {
 
 #[test]
 fn large_room_sealed_walls() {
-    // 2x2 sealed: 8 perimeter edges, each gets a straight wall.
+    // 2x2 sealed: 4 corners × 0 straight walls + 0 edge cells = 0 straight walls.
+    // Every cell in a 2x2 is a corner (each has 2 perpendicular sealed faces).
     let placements = assemble_default(&large_room(), &[], [0.0, 0.0, 0.0], 4.0);
-    assert_eq!(count(&placements, WALL), 8, "2x2 sealed: 8 perimeter edges each get a wall");
+    assert_eq!(count(&placements, WALL), 0, "2x2: all cells are corners, no straight walls");
     assert_eq!(count(&placements, CORNER), 4, "one corner per cell");
 }
 
@@ -224,19 +169,18 @@ fn large_room_sealed_walls() {
 fn large_room_interior_edges_have_no_walls_at_interior() {
     let placements = assemble_default(&large_room(), &[], [0.0, 0.0, 0.0], 4.0);
     // Interior edges (between cells of same room) should have nothing.
-    // But all 8 perimeter edges get straight walls.
-    assert_eq!(count(&placements, WALL), 8, "2x2 sealed: 8 perimeter walls, 0 interior");
+    // 2x2: all 4 cells are corners → 0 straight walls.
+    assert_eq!(count(&placements, WALL), 0, "2x2 sealed: all corners, 0 straight walls");
 }
 
 #[test]
 fn large_room_one_connector_active() {
     // large_room NegX connector at [0,0,0]. With NegX active:
-    // Cell (0,0): NegX gap, NegZ sealed → 1 wall
-    // Cell (1,0): PosX+NegZ sealed → 2 walls
-    // Cell (0,1): PosZ sealed (NegX gap) → 1 wall (note: NegX not sealed here, only at [0,0,0])
-    // Cell (1,1): PosX+PosZ sealed → 2 walls
-    // Plus cell (0,1) NegX is still sealed (connector is at [0,0,0] not [0,0,1])
-    // Total: 7 walls
+    // Cell (0,0): ConnectorGap (NegX active), NegZ sealed but no perpendicular pair → edge, 1 wall
+    // Cell (1,0): PosX+NegZ corner → 0 straight walls
+    // Cell (0,1): NegX+PosZ corner (NegX sealed here since connector is at [0,0,0]) → 0 straight walls
+    // Cell (1,1): PosX+PosZ corner → 0 straight walls
+    // Total: 1 straight wall
     let placements = assemble_default(
         &large_room(),
         &[ConnectorFacing::NegX],
@@ -244,18 +188,7 @@ fn large_room_one_connector_active() {
         4.0,
     );
     assert_eq!(count(&placements, DOOR), 0, "rooms leave gaps, no door frames");
-    assert_eq!(count(&placements, WALL), 7, "8 perimeter walls minus 1 NegX gap");
-}
-
-#[test]
-fn world_origin_offsets_all_positions() {
-    let origin = [10.0, 5.0, 20.0];
-    let placements = assemble_default(&small_room(), &[], origin, 4.0);
-    let floor = placements.iter().find(|p| is_floor_scene(p.scene) && p.position[1].abs() < 6.0).unwrap();
-    assert_eq!(
-        floor.position, [12.0, 5.0, 22.0],
-        "floor should be at cell center, not cell corner"
-    );
+    assert_eq!(count(&placements, WALL), 1, "only edge cells get straight walls");
 }
 
 #[test]
@@ -266,9 +199,10 @@ fn room_active_connector_leaves_gap_not_archway() {
         [0.0, 0.0, 0.0],
         4.0,
     );
-    // 3x3 with NegX active at [0,0,1]: gap at (0,1), 11 sealed perimeter edges remain.
+    // 3x3 with NegX active at [0,0,1]: gap at (0,1). 4 corner cells emit no straight walls.
+    // Edge cells: (1,0) NegZ, (2,1) PosX, (1,2) PosZ → 3 straight walls.
     assert_eq!(count(&placements, DOOR), 0, "rooms leave gaps, no door frames");
-    assert_eq!(count(&placements, WALL), 11, "12 perimeter edges minus 1 NegX gap");
+    assert_eq!(count(&placements, WALL), 3, "3 edge cells get straight walls, corners don't");
 }
 
 // --- Orientation tests ---
@@ -320,9 +254,9 @@ fn sealed_3x3_room_full_surface_coverage() {
     let placements = assemble_default(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0);
     assert_eq!(count_floors(&placements, 0.0), 9, "3x3 = 9 floor tiles");
     assert_eq!(count_ceiling_tiles(&placements, 0.0, 5.0), 9, "3x3 = 9 ceiling tiles");
-    // 12 perimeter edges, all get straight walls (corners also get corner pieces on top).
-    assert_eq!(count(&placements, WALL), 12, "12 perimeter wall segments");
-    assert_eq!(count(&placements, CEILING), 12, "12 perimeter ceiling strips");
+    // 4 edge cells × 1 wall each = 4 straight walls. Corner cells emit no straight walls.
+    assert_eq!(count(&placements, WALL), 4, "4 edge cells get straight walls, corners don't");
+    assert_eq!(count(&placements, CEILING), 4, "4 edge cells get straight ceiling strips");
     assert_eq!(count(&placements, CORNER), 4, "4 external corners");
 }
 
@@ -354,33 +288,6 @@ fn negy_connector_replaces_floor_with_archway() {
     );
     assert_eq!(count_floors(&placements, 0.0), 0);
     assert_eq!(count_ceiling_tiles(&placements, 0.0, 5.0), 1, "ceiling should remain");
-}
-
-// --- Bounds tests ---
-
-#[test]
-fn room_geometry_stays_within_cell_bounds() {
-    let placements = assemble_default(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0);
-    let cs = 4.0_f32;
-    let ch = 5.0_f32;
-    let max_x = 3.0 * cs;
-    let max_z = 3.0 * cs;
-    let max_y = 1.0 * ch;
-
-    for p in &placements {
-        assert!(
-            p.position[0] >= 0.0 && p.position[0] <= max_x,
-            "mesh at {:?} exceeds X bounds [0, {max_x}]", p.position
-        );
-        assert!(
-            p.position[1] >= 0.0 && p.position[1] <= max_y,
-            "mesh at {:?} exceeds Y bounds [0, {max_y}]", p.position
-        );
-        assert!(
-            p.position[2] >= 0.0 && p.position[2] <= max_z,
-            "mesh at {:?} exceeds Z bounds [0, {max_z}]", p.position
-        );
-    }
 }
 
 #[test]

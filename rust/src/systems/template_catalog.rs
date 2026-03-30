@@ -266,9 +266,18 @@ mod tests {
 
         let centers = cell_centers(&graph, 4.0);
         assert_eq!(centers.len(), 1);
-        // Center of a 4m cell at origin should be [2, 0, 2], not [0, 0, 0]
-        assert_eq!(centers[0][0], 2.0, "x should be at cell midpoint");
-        assert_eq!(centers[0][2], 2.0, "z should be at cell midpoint");
+        // Center of a 4m cell at origin [0,0,0] with corner overhang:
+        // world_position = [overhang, 0, overhang], cell center = world_position + [2, 0, 2]
+        let overhang = crate::systems::cell_geometry::corner_overhang();
+        let expected_x = overhang + 2.0;
+        assert!(
+            (centers[0][0] - expected_x).abs() < 0.001,
+            "x should be at cell midpoint ({}), got {}", expected_x, centers[0][0]
+        );
+        assert!(
+            (centers[0][2] - expected_x).abs() < 0.001,
+            "z should be at cell midpoint ({}), got {}", expected_x, centers[0][2]
+        );
     }
 
     // --- R1: Minimum room size ---
