@@ -22,6 +22,27 @@ impl CellExtents {
     pub fn width_z(&self) -> f32 {
         self.neg_z + self.pos_z
     }
+
+    /// XZ offset to align asymmetric geometry with adjacent cells.
+    /// Pushes from the larger (boundary) side toward the smaller (interior) side.
+    /// Symmetric cells return `[0.0, 0.0]`.
+    pub fn interior_offset(&self) -> [f32; 2] {
+        let ox = if self.neg_x > self.pos_x {
+            self.pos_x
+        } else if self.pos_x > self.neg_x {
+            -self.neg_x
+        } else {
+            0.0
+        };
+        let oz = if self.neg_z > self.pos_z {
+            self.pos_z
+        } else if self.pos_z > self.neg_z {
+            -self.neg_z
+        } else {
+            0.0
+        };
+        [ox, oz]
+    }
 }
 
 // ── Trait ───────────────────────────────────────────────────────────────
@@ -130,18 +151,24 @@ fn corner_rotation(pair: (ConnectorFacing, ConnectorFacing)) -> f32 {
     }
 }
 
+// ── Standalone geometry helpers ────────────────────────────────────────
+
+/// Corner extents for a given pair, without requiring a `WallSet`.
+/// `CornerCell::extents()` delegates here to avoid duplication.
+pub fn corner_extents(pair: (ConnectorFacing, ConnectorFacing)) -> CellExtents {
+    let (a, b) = pair;
+    let neg_x = if a == ConnectorFacing::NegX || b == ConnectorFacing::NegX { CORNER_REACH } else { INTERIOR_HALF };
+    let pos_x = if a == ConnectorFacing::PosX || b == ConnectorFacing::PosX { CORNER_REACH } else { INTERIOR_HALF };
+    let neg_z = if a == ConnectorFacing::NegZ || b == ConnectorFacing::NegZ { CORNER_REACH } else { INTERIOR_HALF };
+    let pos_z = if a == ConnectorFacing::PosZ || b == ConnectorFacing::PosZ { CORNER_REACH } else { INTERIOR_HALF };
+    CellExtents { neg_x, pos_x, neg_z, pos_z, height: CELL_HEIGHT }
+}
+
 // ── Implementations ────────────────────────────────────────────────────
 
 impl CellGeometry for CornerCell<'_> {
     fn extents(&self) -> CellExtents {
-        // Corner mesh extends ~4.47m into one quadrant from center.
-        // Asymmetric: outward sides use corner reach, inward sides use interior half.
-        let (a, b) = self.corner_pair;
-        let neg_x = if a == ConnectorFacing::NegX || b == ConnectorFacing::NegX { CORNER_REACH } else { INTERIOR_HALF };
-        let pos_x = if a == ConnectorFacing::PosX || b == ConnectorFacing::PosX { CORNER_REACH } else { INTERIOR_HALF };
-        let neg_z = if a == ConnectorFacing::NegZ || b == ConnectorFacing::NegZ { CORNER_REACH } else { INTERIOR_HALF };
-        let pos_z = if a == ConnectorFacing::PosZ || b == ConnectorFacing::PosZ { CORNER_REACH } else { INTERIOR_HALF };
-        CellExtents { neg_x, pos_x, neg_z, pos_z, height: CELL_HEIGHT }
+        corner_extents(self.corner_pair)
     }
 
     fn placements(&self) -> Vec<MeshPlacement> {
@@ -204,32 +231,6 @@ impl CellGeometry for ConnectorCell<'_> {
             Vec::new()
         }
     }
-}
-
-// ── Room footprint ────────────────────────────────────────────────────
-
-/// Compute the world-space footprint of a room, accounting for corner overhang.
-///
-/// For a room with `extents` cells at the given `cell_size`, the interior
-/// cells are `cell_size` meters wide. Corner cells extend CORNER_REACH
-/// beyond the cell center on the boundary side, which is larger than the
-/// normal INTERIOR_HALF. The footprint is therefore wider than
-/// `extents * cell_size` by the corner overhang on each side.
-///
-/// Returns `[width_x, height_y, width_z]` in meters.
-pub fn room_footprint(extents: [usize; 3], cell_size: f32) -> [f32; 3] {
-    let overhang = CORNER_REACH - INTERIOR_HALF; // ~2.468m per side
-    let width_x = extents[0] as f32 * cell_size + 2.0 * overhang;
-    let height_y = extents[1] as f32 * CELL_HEIGHT;
-    let width_z = extents[2] as f32 * cell_size + 2.0 * overhang;
-    [width_x, height_y, width_z]
-}
-
-/// The overhang of a corner cell beyond the nominal cell boundary.
-/// Room world_position needs to account for this offset so that
-/// corner geometry doesn't protrude into negative coordinates.
-pub fn corner_overhang() -> f32 {
-    CORNER_REACH - INTERIOR_HALF
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
@@ -536,38 +537,62 @@ mod tests {
         assert!(interior.extents().width_x() > 0.0 || interior.extents().width_x() == 0.0);
     }
 
-    // ── Room footprint tests ──────────────────────────────────────────
+    // ── CellExtents::interior_offset tests ────────────────────────────
 
     #[test]
-    fn room_footprint_wider_than_cell_count_times_cell_size() {
-        let fp = room_footprint([3, 1, 3], 4.0);
-        let nominal = 3.0 * 4.0; // 12.0
-        assert!(fp[0] > nominal, "footprint x ({}) should exceed nominal ({})", fp[0], nominal);
-        assert!(fp[2] > nominal, "footprint z ({}) should exceed nominal ({})", fp[2], nominal);
+    fn corner_extents_matches_corner_cell_extents() {
+        for ws in all_wall_sets() {
+            for pair in all_corner_pairs() {
+                let from_fn = corner_extents(pair);
+                let from_trait = CornerCell { mesh_set: ws, corner_pair: pair }.extents();
+                assert_eq!(from_fn, from_trait,
+                    "corner_extents({pair:?}) should match CornerCell::extents() for wall set '{}'", ws.id);
+            }
+        }
     }
 
     #[test]
-    fn room_footprint_accounts_for_corner_overhang() {
-        let fp = room_footprint([3, 1, 3], 4.0);
-        let overhang = CORNER_REACH - INTERIOR_HALF;
-        let expected_x = 3.0 * 4.0 + 2.0 * overhang;
-        assert!(
-            (fp[0] - expected_x).abs() < 0.001,
-            "footprint x = {}, expected {}", fp[0], expected_x
-        );
+    fn interior_offset_zero_for_symmetric_cells() {
+        for ws in all_wall_sets() {
+            let edge = EdgeCell { mesh_set: ws, sealed_face: ConnectorFacing::NegX };
+            let [ox, oz] = edge.extents().interior_offset();
+            assert!(ox.abs() < 0.001 && oz.abs() < 0.001,
+                "edge cell should have zero offset, got [{ox}, {oz}]");
+
+            let interior = InteriorCell { mesh_set: ws };
+            let [ox, oz] = interior.extents().interior_offset();
+            assert!(ox.abs() < 0.001 && oz.abs() < 0.001,
+                "interior cell should have zero offset, got [{ox}, {oz}]");
+        }
     }
 
     #[test]
-    fn room_footprint_height_uses_cell_height() {
-        let fp = room_footprint([1, 2, 1], 4.0);
-        assert!(
-            (fp[1] - 2.0 * CELL_HEIGHT).abs() < 0.001,
-            "footprint height = {}, expected {}", fp[1], 2.0 * CELL_HEIGHT
-        );
-    }
+    fn interior_offset_pushes_toward_interior_for_corners() {
+        for ws in all_wall_sets() {
+            // NegX+NegZ corner: boundary on -X and -Z, interior on +X and +Z
+            // Offset should be positive on both axes (toward interior)
+            let ext = CornerCell { mesh_set: ws, corner_pair: (ConnectorFacing::NegX, ConnectorFacing::NegZ) }.extents();
+            let [ox, oz] = ext.interior_offset();
+            assert!(ox > 0.0, "NegX+NegZ: ox should be positive (toward +X), got {ox}");
+            assert!(oz > 0.0, "NegX+NegZ: oz should be positive (toward +Z), got {oz}");
 
-    #[test]
-    fn corner_overhang_is_positive() {
-        assert!(corner_overhang() > 0.0, "corner overhang should be positive");
+            // PosX+NegZ corner: boundary on +X and -Z
+            let ext = CornerCell { mesh_set: ws, corner_pair: (ConnectorFacing::PosX, ConnectorFacing::NegZ) }.extents();
+            let [ox, oz] = ext.interior_offset();
+            assert!(ox < 0.0, "PosX+NegZ: ox should be negative (toward -X), got {ox}");
+            assert!(oz > 0.0, "PosX+NegZ: oz should be positive (toward +Z), got {oz}");
+
+            // NegX+PosZ corner: boundary on -X and +Z
+            let ext = CornerCell { mesh_set: ws, corner_pair: (ConnectorFacing::NegX, ConnectorFacing::PosZ) }.extents();
+            let [ox, oz] = ext.interior_offset();
+            assert!(ox > 0.0, "NegX+PosZ: ox should be positive (toward +X), got {ox}");
+            assert!(oz < 0.0, "NegX+PosZ: oz should be negative (toward -Z), got {oz}");
+
+            // PosX+PosZ corner: boundary on +X and +Z
+            let ext = CornerCell { mesh_set: ws, corner_pair: (ConnectorFacing::PosX, ConnectorFacing::PosZ) }.extents();
+            let [ox, oz] = ext.interior_offset();
+            assert!(ox < 0.0, "PosX+PosZ: ox should be negative (toward -X), got {ox}");
+            assert!(oz < 0.0, "PosX+PosZ: oz should be negative (toward -Z), got {oz}");
+        }
     }
 }

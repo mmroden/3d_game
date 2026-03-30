@@ -59,24 +59,24 @@ fn corners_only_at_boundary_corner_cells() {
         .filter(|c| c.kind != CellKind::BoundaryCorner)
         .collect();
 
-    // Every BoundaryCorner cell has exactly 1 corner piece
-    for cell in &corner_cells {
-        let count = placements.iter().filter(|p| {
-            p.scene == style.corner_inner.wall
-            && (p.position[0] - cell.world_center[0]).abs() < 0.01
-            && (p.position[2] - cell.world_center[2]).abs() < 0.01
-        }).count();
-        assert_eq!(count, 1, "BoundaryCorner cell {:?} should have 1 inner wall corner", cell.grid_pos);
-    }
+    // Total inner wall corners = number of BoundaryCorner cells
+    let total_corners = placements.iter()
+        .filter(|p| p.scene == style.corner_inner.wall)
+        .count();
+    assert_eq!(
+        total_corners, corner_cells.len(),
+        "total inner wall corners ({total_corners}) should equal BoundaryCorner cell count ({})",
+        corner_cells.len()
+    );
 
-    // No corner pieces at non-corner cells
+    // No corner pieces at non-corner cell centers (straight walls are still at center)
     for cell in &non_corner_cells {
         let count = placements.iter().filter(|p| {
             p.scene == style.corner_inner.wall
             && (p.position[0] - cell.world_center[0]).abs() < 0.01
             && (p.position[2] - cell.world_center[2]).abs() < 0.01
         }).count();
-        assert_eq!(count, 0, "non-corner cell {:?} should have 0 inner wall corners", cell.grid_pos);
+        assert_eq!(count, 0, "non-corner cell {:?} should have 0 inner wall corners at its center", cell.grid_pos);
     }
 }
 

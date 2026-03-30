@@ -17,17 +17,11 @@ pub struct PlacedRoom {
 
 impl PlacedRoom {
     /// Convert grid position to world-space origin.
-    ///
-    /// The grid position is multiplied by `cell_size` to get the base position.
-    /// An additional `corner_overhang` offset is added on X and Z so that
-    /// corner meshes (which extend beyond `cell_size / 2` from cell center)
-    /// don't protrude into negative coordinates relative to the room origin.
     pub fn world_position(&self, cell_size: f32) -> [f32; 3] {
-        let overhang = crate::systems::cell_geometry::corner_overhang();
         [
-            self.grid_pos[0] as f32 * cell_size + overhang,
+            self.grid_pos[0] as f32 * cell_size,
             self.grid_pos[1] as f32 * cell_size,
-            self.grid_pos[2] as f32 * cell_size + overhang,
+            self.grid_pos[2] as f32 * cell_size,
         ]
     }
 }
@@ -676,13 +670,12 @@ mod tests {
     // --- World position tests ---
 
     #[test]
-    fn world_position_includes_corner_overhang() {
+    fn world_position_scales_grid_by_cell_size() {
         let mut graph = LevelGraph::new();
         let idx = graph.place_room(room_1x1_east_west(), [3, -1, 2]).unwrap();
         let room = graph.room(idx).unwrap();
         let pos = room.world_position(10.0);
-        let overhang = crate::systems::cell_geometry::corner_overhang();
-        assert_eq!(pos, [30.0 + overhang, -10.0, 20.0 + overhang]);
+        assert_eq!(pos, [30.0, -10.0, 20.0]);
     }
 
     // --- R2: Hub room with 6 cardinal connections ---

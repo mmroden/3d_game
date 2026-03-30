@@ -174,28 +174,30 @@ pub fn assemble_from_grid(
             out.push(MeshPlacement { scene: style.straight.ceiling, position: wall_pos, rotation_x: 0.0, rotation_y: rot });
         }
 
-        // Place corner pieces at cell center. Corner meshes are center-pivoted:
-        // the geometry extends ~4.5m from origin into one quadrant, reaching the
-        // cell boundary. Rotation selects which quadrant (NegX/NegZ, PosX/NegZ, etc.).
-        let mut corner_rot_y: Option<f32> = None;
-        for &(present, rot) in &corner_rotations {
+        // Place corner pieces offset from cell center toward interior.
+        // The offset is derived from CellExtents asymmetry via the type system.
+        let mut corner_placement: Option<([f32; 3], f32)> = None;
+        for (i, &(present, rot)) in corner_rotations.iter().enumerate() {
             if present {
-                out.push(MeshPlacement { scene: style.corner_inner.wall, position: pos, rotation_x: 0.0, rotation_y: rot });
-                out.push(MeshPlacement { scene: style.corner_inner.ceiling, position: pos, rotation_x: 0.0, rotation_y: rot });
-                out.push(MeshPlacement { scene: style.corner_outer.wall, position: pos, rotation_x: 0.0, rotation_y: rot });
-                out.push(MeshPlacement { scene: style.corner_outer.ceiling, position: pos, rotation_x: 0.0, rotation_y: rot });
-                corner_rot_y = Some(rot);
+                let pair = corner_pairs[i];
+                let [ox, oz] = crate::systems::cell_geometry::corner_extents(pair).interior_offset();
+                let corner_pos = [pos[0] + ox, pos[1], pos[2] + oz];
+                out.push(MeshPlacement { scene: style.corner_inner.wall, position: corner_pos, rotation_x: 0.0, rotation_y: rot });
+                out.push(MeshPlacement { scene: style.corner_inner.ceiling, position: corner_pos, rotation_x: 0.0, rotation_y: rot });
+                out.push(MeshPlacement { scene: style.corner_outer.wall, position: corner_pos, rotation_x: 0.0, rotation_y: rot });
+                out.push(MeshPlacement { scene: style.corner_outer.ceiling, position: corner_pos, rotation_x: 0.0, rotation_y: rot });
+                corner_placement = Some((corner_pos, rot));
             }
         }
 
-        // Floor — use curved variant at corner cells.
+        // Floor — use curved variant at corner cells (at corner offset position).
         let is_bottom = cy == 0;
         if is_bottom {
             if !is_active_connector(template, active_facings, ConnectorFacing::NegY,
                 cell.grid_pos[0], cy, cell.grid_pos[2])
             {
-                if let Some(rot) = corner_rot_y {
-                    out.push(MeshPlacement { scene: style.corner_inner.floor, position: pos, rotation_x: 0.0, rotation_y: rot });
+                if let Some((corner_pos, rot)) = corner_placement {
+                    out.push(MeshPlacement { scene: style.corner_inner.floor, position: corner_pos, rotation_x: 0.0, rotation_y: rot });
                 } else {
                     out.push(MeshPlacement { scene: style.straight.floor, position: pos, rotation_x: 0.0, rotation_y: 0.0 });
                 }
@@ -204,7 +206,7 @@ pub fn assemble_from_grid(
             }
         }
 
-        // Ceiling tile — use curved variant at corner cells.
+        // Ceiling tile — use curved variant at corner cells (at corner offset position).
         // Godot YXZ rotation: Rx(PI) flips Z, so compensate with rot - PI/2
         let is_top = cy == ey - 1;
         if is_top {
@@ -212,8 +214,9 @@ pub fn assemble_from_grid(
             if !is_active_connector(template, active_facings, ConnectorFacing::PosY,
                 cell.grid_pos[0], cy, cell.grid_pos[2])
             {
-                if let Some(rot) = corner_rot_y {
-                    out.push(MeshPlacement { scene: style.corner_inner.floor, position: ceiling_pos, rotation_x: PI, rotation_y: rot - FRAC_PI_2 });
+                if let Some((corner_pos, rot)) = corner_placement {
+                    let corner_ceiling = [corner_pos[0], corner_pos[1] + CELL_HEIGHT, corner_pos[2]];
+                    out.push(MeshPlacement { scene: style.corner_inner.floor, position: corner_ceiling, rotation_x: PI, rotation_y: rot - FRAC_PI_2 });
                 } else {
                     out.push(MeshPlacement { scene: style.straight.floor, position: ceiling_pos, rotation_x: PI, rotation_y: 0.0 });
                 }

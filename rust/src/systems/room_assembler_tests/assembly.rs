@@ -27,15 +27,16 @@ fn every_sealed_boundary_has_wall_or_corner() {
         let grid = CellGrid::new(template, active, [0.0, 0.0, 0.0], 4.0);
 
         for cell in grid.cells() {
-            let at_center = |p: &MeshPlacement| {
-                (p.position[0] - cell.world_center[0]).abs() < 0.001
+            let near_center = |p: &MeshPlacement| {
+                // Corner pieces are offset from cell center by up to INTERIOR_HALF (2.0m).
+                (p.position[0] - cell.world_center[0]).abs() < 2.1
                     && (p.position[1] - cell.world_center[1]).abs() < 0.001
-                    && (p.position[2] - cell.world_center[2]).abs() < 0.001
+                    && (p.position[2] - cell.world_center[2]).abs() < 2.1
             };
 
             if !cell.sealed_faces.is_empty() {
-                let has_wall = placements.iter().any(|p| p.scene == WALL && at_center(p));
-                let has_corner = placements.iter().any(|p| p.scene == CORNER && at_center(p));
+                let has_wall = placements.iter().any(|p| p.scene == WALL && near_center(p));
+                let has_corner = placements.iter().any(|p| p.scene == CORNER && near_center(p));
                 assert!(
                     has_wall || has_corner,
                     "room '{}' cell {:?}: sealed boundary should have WALL or CORNER",

@@ -266,17 +266,15 @@ mod tests {
 
         let centers = cell_centers(&graph, 4.0);
         assert_eq!(centers.len(), 1);
-        // Center of a 4m cell at origin [0,0,0] with corner overhang:
-        // world_position = [overhang, 0, overhang], cell center = world_position + [2, 0, 2]
-        let overhang = crate::systems::cell_geometry::corner_overhang();
-        let expected_x = overhang + 2.0;
+        // Center of a 4m cell at grid origin [0,0,0]:
+        // world_position = [0, 0, 0], cell center = world_position + [2, 0, 2]
         assert!(
-            (centers[0][0] - expected_x).abs() < 0.001,
-            "x should be at cell midpoint ({}), got {}", expected_x, centers[0][0]
+            (centers[0][0] - 2.0).abs() < 0.001,
+            "x should be at cell midpoint (2.0), got {}", centers[0][0]
         );
         assert!(
-            (centers[0][2] - expected_x).abs() < 0.001,
-            "z should be at cell midpoint ({}), got {}", expected_x, centers[0][2]
+            (centers[0][2] - 2.0).abs() < 0.001,
+            "z should be at cell midpoint (2.0), got {}", centers[0][2]
         );
     }
 
@@ -460,12 +458,13 @@ mod tests {
                         }
 
                         let (dp, _) = room_assembler::door_placement(cell_pos, facing, cell_size);
-                        // Check for any wall-like geometry at this cell (straight wall or corner piece)
+                        // Check for any wall-like geometry near this cell.
+                        // Corner pieces are offset up to 2.0m from cell center.
                         let has_wall_geometry = placements.iter().any(|p| {
                             (p.scene.contains("Wall") || p.scene.contains("Corner") || p.scene.contains("Curve"))
-                                && (p.position[0] - cell_pos[0]).abs() < 0.001
+                                && (p.position[0] - cell_pos[0]).abs() < 2.1
                                 && (p.position[1] - cell_pos[1]).abs() < 0.001
-                                && (p.position[2] - cell_pos[2]).abs() < 0.001
+                                && (p.position[2] - cell_pos[2]).abs() < 2.1
                         });
                         let has_door = placements.iter().any(|p| {
                             p.scene == door_scene
