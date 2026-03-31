@@ -10,8 +10,4 @@ func _ready() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and event.keycode == KEY_F3:
-		var rig = $Player/StereoRig
-		if rig and rig.has_method("toggle_stereo"):
-			rig.toggle_stereo()
-			# Swap which camera is active
-			$Player/Camera3D.current = not rig.enabled
+		$GameManager.on_sbs_toggled()

@@ -426,12 +426,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "void_logic"
+version = "0.1.0"
+dependencies = [
+ "petgraph",
+ "rand",
+]
+
+[[package]]
 name = "void_scavenger"
 version = "0.1.0"
 dependencies = [
  "godot",
- "petgraph",
  "rand",
+ "void_logic",
 ]
 
 [[package]]

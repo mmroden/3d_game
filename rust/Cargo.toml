@@ -1,13 +1,3 @@
-[package]
-name = "void_scavenger"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.85"
-
-[lib]
-crate-type = ["cdylib"]
-
-[dependencies]
-godot = { version = "0.5", features = ["api-4-6"] }
-petgraph = "0.8"
-rand = "0.10"
+[workspace]
+members = ["void-logic", "void-nodes"]
+resolver = "2"

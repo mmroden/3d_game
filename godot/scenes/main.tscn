@@ -38,11 +38,10 @@ shape = SubResource("player_shape")
 [node name="Camera3D" type="Camera3D" parent="Player"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.5, 0)
 
-[node name="StereoRig" type="StereoRig" parent="Player"]
+[node name="ViewManager" type="ViewManager" parent="."]
 eye_separation = 0.065
 depth_strength = 1.0
 convergence_distance = 0.0
-enabled = false
 
 [node name="LevelManager" type="LevelManager" parent="."]
 grid_cell_size = 4.0
