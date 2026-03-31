@@ -48,7 +48,7 @@ impl KillSummaryUI {
 
     /// Populate and show the summary screen.
     #[func]
-    pub fn show_summary(&mut self, kill_data: Dictionary, total_credits: i64, level: i32) {
+    pub fn show_summary(&mut self, kill_data: Dictionary<GString, i32>, total_credits: i64, level: i32) {
         for mut child in self.base().get_children().iter_shared() {
             child.queue_free();
         }
@@ -79,9 +79,7 @@ impl KillSummaryUI {
         vbox.add_child(&header);
 
         // Each enemy type
-        for key in kill_data.keys_array().iter_shared() {
-            let name = key.to::<GString>();
-            let count = kill_data.get_or_nil(key.clone()).to::<i32>();
+        for (name, count) in kill_data.iter_shared() {
             let mut row = Label::new_alloc();
             row.set_text(&format!("  {} x {}", name, count));
             row.add_theme_font_size_override("font_size", 24);

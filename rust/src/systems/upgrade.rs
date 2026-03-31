@@ -1,4 +1,5 @@
 use rand::Rng;
+use rand::RngExt;
 
 /// What aspect of the ship an upgrade modifies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

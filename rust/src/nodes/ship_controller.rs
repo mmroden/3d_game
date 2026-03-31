@@ -3,6 +3,7 @@ use godot::classes::{
     CharacterBody3D, ICharacterBody3D, PhysicsRayQueryParameters3D,
     MeshInstance3D, BoxMesh, StandardMaterial3D,
     GpuParticles3D, ParticleProcessMaterial, SphereMesh,
+    Input,
 };
 
 use crate::systems::laser::LaserLevel;
@@ -228,7 +229,7 @@ impl ShipController {
         particles.set_draw_pass_mesh(0, &sphere);
 
         particles.set_transform(Transform3D::new(Basis::IDENTITY, position));
-        self.base_mut().get_tree().unwrap().get_root().unwrap().add_child(&particles);
+        self.base_mut().get_tree().get_root().unwrap().add_child(&particles);
         particles.set_emitting(true);
 
         // Auto-free after lifetime
@@ -271,7 +272,7 @@ impl ShipController {
         mesh_instance.set_transform(transform);
 
         let node = mesh_instance.clone();
-        self.base_mut().get_tree().unwrap().get_root().unwrap().add_child(&mesh_instance);
+        self.base_mut().get_tree().get_root().unwrap().add_child(&mesh_instance);
         self.beam_nodes.push(node);
     }
 

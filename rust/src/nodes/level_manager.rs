@@ -39,7 +39,7 @@ impl INode3D for LevelManager {
     }
 
     fn ready(&mut self) {
-        let seed = self.seed as u64;
+        let seed = self.seed;
         let target = self.target_rooms as u32;
         self.generate_level(seed, target);
     }
@@ -48,9 +48,9 @@ impl INode3D for LevelManager {
 #[godot_api]
 impl LevelManager {
     #[func]
-    pub fn generate_level(&mut self, seed: u64, target_rooms: u32) {
+    pub fn generate_level(&mut self, seed: i64, target_rooms: u32) {
         let config = GeneratorConfig {
-            seed,
+            seed: seed as u64,
             room_templates: template_catalog::room_templates(),
             corridor_templates: template_catalog::corridor_templates(),
             target_room_count: target_rooms as usize,
@@ -66,7 +66,7 @@ impl LevelManager {
 
         // Assemble all room geometry, furniture, light fixtures, and enemy positions
         let (placements, light_sources, enemy_positions) =
-            template_catalog::spawn_list_full(&graph, self.grid_cell_size, seed);
+            template_catalog::spawn_list_full(&graph, self.grid_cell_size, seed as u64);
         let mut loader = ResourceLoader::singleton();
         let mut mesh_count = 0;
 

@@ -179,7 +179,7 @@ impl ShipShowcase {
         mesh_instance.set_transform(transform);
 
         let node = mesh_instance.clone();
-        self.base_mut().get_tree().unwrap().get_root().unwrap().add_child(&mesh_instance);
+        self.base_mut().get_tree().get_root().unwrap().add_child(&mesh_instance);
         self.beams.push(node);
     }
 

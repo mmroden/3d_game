@@ -8,6 +8,6 @@ rust-version = "1.85"
 crate-type = ["cdylib"]
 
 [dependencies]
-godot = "0.2"
-petgraph = "0.7"
-rand = "0.9"
+godot = "0.5"
+petgraph = "0.8"
+rand = "0.10"

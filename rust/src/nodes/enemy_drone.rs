@@ -81,10 +81,11 @@ impl ICharacterBody3D for EnemyDrone {
         }
 
         // Find player via group
-        let mut tree = self.base().get_tree().unwrap();
+        let tree = self.base().get_tree();
         let players = tree.get_nodes_in_group("player");
         if let Some(player_node) = players.get(0) {
-            self.player = Some(player_node.cast::<CharacterBody3D>());
+            let typed: Gd<CharacterBody3D> = player_node.cast();
+            self.player = Some(typed);
         }
 
         self.create_health_bar();
@@ -167,7 +168,7 @@ impl EnemyDrone {
         );
 
         let pos = self.base().get_global_position();
-        let root: Gd<Node> = self.base().get_tree().unwrap().get_root().unwrap().upcast();
+        let root: Gd<Node> = self.base().get_tree().get_root().unwrap().upcast();
 
         // Spawn explosion particles
         Self::spawn_explosion(&root, pos);
@@ -381,7 +382,7 @@ impl EnemyDrone {
         particles.set_draw_pass_mesh(0, &sphere);
 
         particles.set_transform(Transform3D::new(Basis::IDENTITY, pos));
-        self.base_mut().get_tree().unwrap().get_root().unwrap().add_child(&particles);
+        self.base_mut().get_tree().get_root().unwrap().add_child(&particles);
         particles.set_emitting(true);
     }
 }

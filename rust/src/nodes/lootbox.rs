@@ -95,9 +95,10 @@ impl Lootbox {
         godot_print!("Collected upgrade: {} (x{:.0}%)", upgrade.name, (upgrade.multiplier - 1.0) * 100.0);
 
         // Apply to player's loadout via signal/method call
-        let mut tree = self.base().get_tree().unwrap();
+        let tree = self.base().get_tree();
         let players = tree.get_nodes_in_group("player");
-        if let Some(mut player) = players.get(0) {
+        if let Some(player) = players.get(0) {
+            let mut player: Gd<Node> = player.clone();
             player.call(
                 "apply_upgrade",
                 &[

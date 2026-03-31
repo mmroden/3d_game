@@ -180,8 +180,8 @@ impl GameManager {
             let Some(parent) = self.base().get_parent() else { return };
             if let Some(mut death_ui) = Self::find_ui_node(&parent, "DeathScreenUI") {
                 death_ui.call("show_death", &[
-                    Variant::from(GString::from(old_laser)),
-                    Variant::from(GString::from(new_laser)),
+                    Variant::from(GString::from(old_laser.as_str())),
+                    Variant::from(GString::from(new_laser.as_str())),
                     Variant::from(level_reached),
                 ]);
             }
@@ -255,14 +255,14 @@ impl GameManager {
 
     #[func]
     pub fn get_phase_name(&self) -> GString {
-        format!("{:?}", self.phase).into()
+        GString::from(format!("{:?}", self.phase).as_str())
     }
 
     #[func]
-    pub fn get_kill_summary(&self) -> Dictionary {
+    pub fn get_kill_summary(&self) -> Dictionary<GString, i32> {
         let mut dict = Dictionary::new();
         for (enemy_type, count) in self.run_state.kills.summary() {
-            dict.set(enemy_type.display_name(), count);
+            dict.set(enemy_type.display_name(), count as i32);
         }
         dict
     }
@@ -309,7 +309,7 @@ impl GameManager {
         self.phase = next;
         self.show_phase(next);
 
-        let phase_name: GString = format!("{:?}", next).into();
+        let phase_name: GString = GString::from(format!("{:?}", next).as_str());
         self.base_mut().emit_signal("phase_changed", &[phase_name.to_variant()]);
     }
 

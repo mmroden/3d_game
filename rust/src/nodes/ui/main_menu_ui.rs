@@ -205,9 +205,7 @@ impl MainMenuUI {
             }
             3 => {
                 self.base_mut().emit_signal("exit_selected", &[]);
-                if let Some(mut tree) = self.base().get_tree() {
-                    tree.quit();
-                }
+                self.base().get_tree().quit();
             }
             _ => {}
         }
