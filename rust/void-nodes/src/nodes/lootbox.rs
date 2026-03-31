@@ -1,6 +1,8 @@
 use godot::prelude::*;
 use godot::classes::{Area3D, IArea3D};
 
+use super::constants::{groups, methods, signals};
+
 /// A pickup that grants the player an upgrade.
 #[derive(GodotClass)]
 #[class(base=Area3D)]
@@ -39,8 +41,8 @@ impl IArea3D for Lootbox {
         self.base_mut().set_collision_layer(0); // Don't block anything
 
         // Connect body_entered signal
-        let callable = self.base().callable("on_body_entered");
-        self.base_mut().connect("body_entered", &callable);
+        let callable = self.base().callable(methods::ON_BODY_ENTERED);
+        self.base_mut().connect(signals::BODY_ENTERED, &callable);
     }
 
     fn process(&mut self, delta: f64) {
@@ -67,7 +69,7 @@ impl Lootbox {
             return;
         }
         // Check if it's the player
-        if body.is_in_group("player") {
+        if body.is_in_group(groups::PLAYER) {
             self.collect();
         }
     }
@@ -96,11 +98,11 @@ impl Lootbox {
 
         // Apply to player's loadout via signal/method call
         let tree = self.base().get_tree();
-        let players = tree.get_nodes_in_group("player");
+        let players = tree.get_nodes_in_group(groups::PLAYER);
         if let Some(player) = players.get(0) {
             let mut player: Gd<Node> = player.clone();
             player.call(
-                "apply_upgrade",
+                methods::APPLY_UPGRADE,
                 &[
                     Variant::from(GString::from(&upgrade.name)),
                     Variant::from(upgrade.kind as i32),

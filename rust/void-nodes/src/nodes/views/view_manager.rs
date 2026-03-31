@@ -7,6 +7,7 @@ use godot::classes::{
     viewport::Msaa,
 };
 
+use crate::nodes::constants::{methods, nodes, signals};
 use void_logic::stereo::{
     frustum_offsets, left_eye_offset, right_eye_offset,
     single_viewport_size, ui_viewport_size,
@@ -98,11 +99,11 @@ impl ViewManager {
             godot_warn!("ViewManager: could not find Main scene");
             return;
         };
-        if let Some(game_mgr) = main_scene.try_get_node_as::<Node>("GameManager") {
-            let callable = self.base().callable("on_options_changed");
-            if !game_mgr.is_connected("options_changed", &callable) {
+        if let Some(game_mgr) = main_scene.try_get_node_as::<Node>(nodes::GAME_MANAGER) {
+            let callable = self.base().callable(methods::ON_OPTIONS_CHANGED);
+            if !game_mgr.is_connected(signals::OPTIONS_CHANGED, &callable) {
                 let mut gm = game_mgr;
-                gm.connect("options_changed", &callable);
+                gm.connect(signals::OPTIONS_CHANGED, &callable);
             }
         } else {
             godot_warn!("ViewManager: GameManager not found");
@@ -115,7 +116,7 @@ impl ViewManager {
         let Some(main_scene) = self.base().get_parent() else {
             return;
         };
-        let Some(ui_vp) = self.base().try_get_node_as::<SubViewport>("UIViewport") else {
+        let Some(ui_vp) = self.base().try_get_node_as::<SubViewport>(nodes::UI_VIEWPORT) else {
             godot_warn!("ViewManager: UIViewport not found");
             return;
         };
@@ -258,7 +259,7 @@ impl ViewManager {
         let Some(main_scene) = self.base().get_parent() else {
             return;
         };
-        let Some(camera) = main_scene.try_get_node_as::<Camera3D>("Player/Camera3D") else {
+        let Some(camera) = main_scene.try_get_node_as::<Camera3D>(nodes::PLAYER_CAMERA) else {
             return;
         };
 
@@ -273,7 +274,7 @@ impl ViewManager {
 
         if let Some(left_cam) = self
             .base()
-            .try_get_node_as::<Camera3D>("StereoCanvas/LeftContainer/LeftViewport/LeftCamera")
+            .try_get_node_as::<Camera3D>(nodes::LEFT_CAMERA)
         {
             let mut cam = left_cam.clone();
             let mut t = camera_transform;
@@ -284,7 +285,7 @@ impl ViewManager {
 
         if let Some(right_cam) = self
             .base()
-            .try_get_node_as::<Camera3D>("StereoCanvas/RightContainer/RightViewport/RightCamera")
+            .try_get_node_as::<Camera3D>(nodes::RIGHT_CAMERA)
         {
             let mut cam = right_cam.clone();
             let mut t = camera_transform;
@@ -296,19 +297,19 @@ impl ViewManager {
 
     fn apply_visibility(&mut self, sbs: bool) {
         // StereoCanvas: visible in SBS mode
-        if let Some(canvas) = self.base().try_get_node_as::<CanvasLayer>("StereoCanvas") {
+        if let Some(canvas) = self.base().try_get_node_as::<CanvasLayer>(nodes::STEREO_CANVAS) {
             let mut layer = canvas.clone();
             layer.set_visible(sbs);
         }
         // MonoUILayer: visible in mono mode
-        if let Some(mono) = self.base().try_get_node_as::<CanvasLayer>("MonoUILayer") {
+        if let Some(mono) = self.base().try_get_node_as::<CanvasLayer>(nodes::MONO_UI_LAYER) {
             let mut layer = mono.clone();
             layer.set_visible(!sbs);
         }
         // UI overlays in stereo eyes
         for path in [
-            "StereoCanvas/LeftContainer/LeftUIOverlay",
-            "StereoCanvas/RightContainer/RightUIOverlay",
+            nodes::LEFT_UI_OVERLAY,
+            nodes::RIGHT_UI_OVERLAY,
         ] {
             if let Some(overlay) = self.base().try_get_node_as::<TextureRect>(path) {
                 let mut o = overlay.clone();
@@ -326,25 +327,25 @@ impl ViewManager {
         let [ui_w, ui_h] = ui_viewport_size(&config);
 
         // Left container: position (0,0), size = per-eye
-        if let Some(mut c) = self.base().try_get_node_as::<SubViewportContainer>("StereoCanvas/LeftContainer") {
+        if let Some(mut c) = self.base().try_get_node_as::<SubViewportContainer>(nodes::LEFT_CONTAINER) {
             c.set_position(Vector2::new(0.0, 0.0));
             c.set_size(Vector2::new(eye_w as f32, eye_h as f32));
         }
-        if let Some(mut r) = self.base().try_get_node_as::<TextureRect>("StereoCanvas/LeftContainer/LeftUIOverlay") {
+        if let Some(mut r) = self.base().try_get_node_as::<TextureRect>(nodes::LEFT_UI_OVERLAY) {
             r.set_size(Vector2::new(eye_w as f32, eye_h as f32));
         }
 
         // Right container: position (eye_w, 0), size = per-eye
-        if let Some(mut c) = self.base().try_get_node_as::<SubViewportContainer>("StereoCanvas/RightContainer") {
+        if let Some(mut c) = self.base().try_get_node_as::<SubViewportContainer>(nodes::RIGHT_CONTAINER) {
             c.set_position(Vector2::new(eye_w as f32, 0.0));
             c.set_size(Vector2::new(eye_w as f32, eye_h as f32));
         }
-        if let Some(mut r) = self.base().try_get_node_as::<TextureRect>("StereoCanvas/RightContainer/RightUIOverlay") {
+        if let Some(mut r) = self.base().try_get_node_as::<TextureRect>(nodes::RIGHT_UI_OVERLAY) {
             r.set_size(Vector2::new(eye_w as f32, eye_h as f32));
         }
 
         // UIViewport has no SubViewportContainer parent — resize directly
-        if let Some(mut vp) = self.base().try_get_node_as::<SubViewport>("UIViewport") {
+        if let Some(mut vp) = self.base().try_get_node_as::<SubViewport>(nodes::UI_VIEWPORT) {
             vp.set_size(Vector2i::new(ui_w as i32, ui_h as i32));
         }
     }
@@ -372,7 +373,7 @@ impl ViewManager {
         let Some(main_scene) = self.base().get_parent() else {
             return;
         };
-        if let Some(mut camera) = main_scene.try_get_node_as::<Camera3D>("Player/Camera3D") {
+        if let Some(mut camera) = main_scene.try_get_node_as::<Camera3D>(nodes::PLAYER_CAMERA) {
             camera.set_current(!sbs);
         }
     }

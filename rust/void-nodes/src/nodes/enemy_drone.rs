@@ -6,6 +6,7 @@ use godot::classes::{
     MeshInstance3D, BoxMesh,
 };
 
+use super::constants::{groups, meta_keys, scenes, signals};
 use super::godot_util;
 use void_logic::enemy_ai::{DroneAi, DroneConfig};
 use void_logic::enemy_type::EnemyType;
@@ -83,7 +84,7 @@ impl ICharacterBody3D for EnemyDrone {
 
         // Find player via group
         let tree = self.base().get_tree();
-        let players = tree.get_nodes_in_group("player");
+        let players = tree.get_nodes_in_group(groups::PLAYER);
         if let Some(player_node) = players.get(0) {
             let typed: Gd<CharacterBody3D> = player_node.cast();
             self.player = Some(typed);
@@ -164,7 +165,7 @@ impl EnemyDrone {
         // Emit signal so GameManager can track the kill
         let type_id = self.enemy_type_id;
         self.base_mut().emit_signal(
-            "enemy_killed",
+            signals::ENEMY_KILLED,
             &[Variant::from(type_id)],
         );
 
@@ -179,7 +180,7 @@ impl EnemyDrone {
 
         // Spawn lootbox
         if let Some(scene) = ResourceLoader::singleton()
-            .load("res://scenes/items/lootbox.tscn")
+            .load(scenes::LOOTBOX)
         {
             let packed = scene.cast::<PackedScene>();
             if let Some(instance) = packed.instantiate() {
@@ -245,7 +246,7 @@ impl EnemyDrone {
             ));
 
             // Tag for cleanup after a few seconds
-            debris.set_meta("debris_timer", &Variant::from(3.0_f32));
+            debris.set_meta(meta_keys::DEBRIS_TIMER, &Variant::from(3.0_f32));
             root.clone().add_child(&debris);
         }
     }

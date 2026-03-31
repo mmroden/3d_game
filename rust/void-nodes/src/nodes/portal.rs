@@ -5,6 +5,7 @@ use godot::classes::{
     GpuParticles3D, SphereMesh,
 };
 
+use super::constants::{groups, methods, signals};
 use super::godot_util;
 
 /// End-of-level portal. Player touches it to complete the level.
@@ -77,8 +78,8 @@ impl IArea3D for Portal {
         self.base_mut().set_collision_layer(0);
 
         // Connect body_entered signal
-        let callable = self.base().callable("on_body_entered");
-        self.base_mut().connect("body_entered", &callable);
+        let callable = self.base().callable(methods::ON_BODY_ENTERED);
+        self.base_mut().connect(signals::BODY_ENTERED, &callable);
     }
 
     fn process(&mut self, delta: f64) {
@@ -97,8 +98,8 @@ impl Portal {
     #[func]
     fn on_body_entered(&mut self, body: Gd<Node3D>) {
         // Check if it's the player (in "player" group)
-        if body.is_in_group("player") {
-            self.base_mut().emit_signal("portal_entered", &[]);
+        if body.is_in_group(groups::PLAYER) {
+            self.base_mut().emit_signal(signals::PORTAL_ENTERED, &[]);
             // Disable further collisions
             self.base_mut().set_monitoring(false);
         }

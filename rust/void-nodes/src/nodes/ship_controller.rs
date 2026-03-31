@@ -6,6 +6,7 @@ use godot::classes::{
     Input,
 };
 
+use super::constants::{actions, groups, meta_keys, methods};
 use super::godot_util;
 
 use void_logic::laser::LaserLevel;
@@ -56,7 +57,7 @@ impl ICharacterBody3D for ShipController {
     }
 
     fn ready(&mut self) {
-        self.base_mut().add_to_group("player");
+        self.base_mut().add_to_group(groups::PLAYER);
     }
 
     fn physics_process(&mut self, delta: f64) {
@@ -64,13 +65,13 @@ impl ICharacterBody3D for ShipController {
         let input = Input::singleton();
 
         // --- Movement ---
-        let forward = input.get_action_strength("move_forward") - input.get_action_strength("move_back");
-        let strafe = input.get_action_strength("move_right") - input.get_action_strength("move_left");
-        let vertical = input.get_action_strength("move_up") - input.get_action_strength("move_down");
+        let forward = input.get_action_strength(actions::MOVE_FORWARD) - input.get_action_strength(actions::MOVE_BACK);
+        let strafe = input.get_action_strength(actions::MOVE_RIGHT) - input.get_action_strength(actions::MOVE_LEFT);
+        let vertical = input.get_action_strength(actions::MOVE_UP) - input.get_action_strength(actions::MOVE_DOWN);
 
-        let pitch = input.get_action_strength("look_down") - input.get_action_strength("look_up");
-        let yaw = input.get_action_strength("look_left") - input.get_action_strength("look_right");
-        let roll = input.get_action_strength("roll_right") - input.get_action_strength("roll_left");
+        let pitch = input.get_action_strength(actions::LOOK_DOWN) - input.get_action_strength(actions::LOOK_UP);
+        let yaw = input.get_action_strength(actions::LOOK_LEFT) - input.get_action_strength(actions::LOOK_RIGHT);
+        let roll = input.get_action_strength(actions::ROLL_RIGHT) - input.get_action_strength(actions::ROLL_LEFT);
 
         let basis = self.base().get_transform().basis;
         let thrust = basis.col_c() * (-forward)
@@ -102,7 +103,7 @@ impl ICharacterBody3D for ShipController {
         self.weapon.tick(delta);
         self.age_beams(delta);
 
-        if input.is_action_pressed("fire") {
+        if input.is_action_pressed(actions::FIRE) {
             if let FireResult::Fired { damage } = self.weapon.try_fire() {
                 self.fire_dual_lasers(damage);
             }
@@ -174,8 +175,8 @@ impl ShipController {
 
             if let Some(collider) = result.get("collider") {
                 let mut obj = collider.to::<Gd<Node3D>>();
-                if obj.has_method("take_damage") {
-                    obj.call("take_damage", &[Variant::from(damage)]);
+                if obj.has_method(methods::TAKE_DAMAGE) {
+                    obj.call(methods::TAKE_DAMAGE, &[Variant::from(damage)]);
                 }
             }
 
@@ -219,7 +220,7 @@ impl ShipController {
         self.base_mut().get_tree().get_root().unwrap().add_child(&particles);
         particles.set_emitting(true);
 
-        particles.set_meta("spark_timer", &Variant::from(0.5_f32));
+        particles.set_meta(meta_keys::SPARK_TIMER, &Variant::from(0.5_f32));
     }
 
     fn spawn_beam(&mut self, from: Vector3, to: Vector3) {

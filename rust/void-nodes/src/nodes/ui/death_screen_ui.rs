@@ -6,6 +6,7 @@ use godot::classes::{
 };
 
 use super::menu_panel;
+use crate::nodes::constants::{signals, theme};
 use void_logic::ui_style;
 
 /// Death screen: shows stats and penalty, press key to return to menu.
@@ -37,7 +38,7 @@ impl ICanvasLayer for DeathScreenUI {
             return;
         }
         if key_event.get_keycode() == Key::ENTER || key_event.get_keycode() == Key::SPACE {
-            self.base_mut().emit_signal("return_pressed", &[]);
+            self.base_mut().emit_signal(signals::RETURN_PRESSED, &[]);
         }
     }
 }
@@ -63,8 +64,8 @@ impl DeathScreenUI {
 
         let mut title = Label::new_alloc();
         title.set_text("MISSION FAILED");
-        title.add_theme_font_size_override("font_size", 56);
-        title.add_theme_color_override("font_color", Color::from_rgb(1.0, 0.2, 0.2));
+        title.add_theme_font_size_override(theme::FONT_SIZE, 56);
+        title.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(1.0, 0.2, 0.2));
         vbox.add_child(&title);
 
         let mut spacer = Control::new_alloc();
@@ -73,8 +74,8 @@ impl DeathScreenUI {
 
         let mut level_label = Label::new_alloc();
         level_label.set_text(&format!("Reached Level {}", level_reached));
-        level_label.add_theme_font_size_override("font_size", 28);
-        level_label.add_theme_color_override("font_color", super::rgb(ui_style::TEXT_SECONDARY));
+        level_label.add_theme_font_size_override(theme::FONT_SIZE, 28);
+        level_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_SECONDARY));
         vbox.add_child(&level_label);
 
         let mut penalty_label = Label::new_alloc();
@@ -82,8 +83,8 @@ impl DeathScreenUI {
             "Laser downgraded: {} -> {}",
             laser_name, downgraded_to
         ));
-        penalty_label.add_theme_font_size_override("font_size", 28);
-        penalty_label.add_theme_color_override("font_color", Color::from_rgb(1.0, 0.6, 0.2));
+        penalty_label.add_theme_font_size_override(theme::FONT_SIZE, 28);
+        penalty_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(1.0, 0.6, 0.2));
         vbox.add_child(&penalty_label);
 
         let mut spacer2 = Control::new_alloc();
@@ -92,8 +93,8 @@ impl DeathScreenUI {
 
         let mut prompt = Label::new_alloc();
         prompt.set_text("Press ENTER to return to base");
-        prompt.add_theme_font_size_override("font_size", 22);
-        prompt.add_theme_color_override("font_color", super::rgb(ui_style::TEXT_UNSELECTED));
+        prompt.add_theme_font_size_override(theme::FONT_SIZE, 22);
+        prompt.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_UNSELECTED));
         vbox.add_child(&prompt);
 
         self.base_mut().add_child(&panel);

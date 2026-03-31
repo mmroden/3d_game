@@ -5,6 +5,7 @@ use godot::classes::{
 };
 
 use super::menu_panel;
+use crate::nodes::constants::{methods, nodes, signals, theme};
 use void_logic::menu_cursor::MenuCursor;
 use void_logic::ui_style;
 
@@ -114,11 +115,11 @@ impl MainMenuUI {
             godot_warn!("MainMenuUI: could not find parent");
             return;
         };
-        if let Some(game_mgr) = parent.try_get_node_as::<Node>("GameManager") {
-            let callable = self.base().callable("on_options_changed");
-            if !game_mgr.is_connected("options_changed", &callable) {
+        if let Some(game_mgr) = parent.try_get_node_as::<Node>(nodes::GAME_MANAGER) {
+            let callable = self.base().callable(methods::ON_OPTIONS_CHANGED);
+            if !game_mgr.is_connected(signals::OPTIONS_CHANGED, &callable) {
                 let mut gm = game_mgr;
-                gm.connect("options_changed", &callable);
+                gm.connect(signals::OPTIONS_CHANGED, &callable);
             }
         } else {
             godot_warn!("MainMenuUI: GameManager not found");
@@ -131,15 +132,15 @@ impl MainMenuUI {
         // Title
         let mut title = Label::new_alloc();
         title.set_text("VOID SCAVENGER");
-        title.add_theme_font_size_override("font_size", 64);
-        title.add_theme_color_override("font_color", Color::from_rgb(0.6, 0.8, 1.0));
+        title.add_theme_font_size_override(theme::FONT_SIZE, 64);
+        title.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.6, 0.8, 1.0));
         vbox.add_child(&title);
 
         // Subtitle
         let mut subtitle = Label::new_alloc();
         subtitle.set_text("6DOF Roguelike Space Shooter");
-        subtitle.add_theme_font_size_override("font_size", 20);
-        subtitle.add_theme_color_override("font_color", Color::from_rgb(0.4, 0.5, 0.7));
+        subtitle.add_theme_font_size_override(theme::FONT_SIZE, 20);
+        subtitle.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.4, 0.5, 0.7));
         vbox.add_child(&subtitle);
 
         // Spacer
@@ -157,13 +158,13 @@ impl MainMenuUI {
                 format!("  {}", item)
             };
             label.set_text(&text);
-            label.add_theme_font_size_override("font_size", 32);
+            label.add_theme_font_size_override(theme::FONT_SIZE, 32);
             let color = if i == self.cursor.index() {
                 super::rgb(ui_style::TEXT_SELECTED)
             } else {
                 super::rgb(ui_style::TEXT_UNSELECTED)
             };
-            label.add_theme_color_override("font_color", color);
+            label.add_theme_color_override(theme::FONT_COLOR, color);
             vbox.add_child(&label);
             self.labels.push(label);
         }
@@ -191,10 +192,10 @@ impl MainMenuUI {
     fn select_item(&mut self) {
         match self.cursor.index() {
             0 => {
-                self.base_mut().emit_signal("continue_selected", &[]);
+                self.base_mut().emit_signal(signals::CONTINUE_SELECTED, &[]);
             }
             1 => {
-                self.base_mut().emit_signal("new_game_selected", &[]);
+                self.base_mut().emit_signal(signals::NEW_GAME_SELECTED, &[]);
             }
             2 => {
                 self.in_options = true;
@@ -202,7 +203,7 @@ impl MainMenuUI {
                 self.show_options();
             }
             3 => {
-                self.base_mut().emit_signal("exit_selected", &[]);
+                self.base_mut().emit_signal(signals::EXIT_SELECTED, &[]);
                 self.base().get_tree().quit();
             }
             _ => {}
@@ -219,7 +220,7 @@ impl MainMenuUI {
             } else {
                 super::rgb(ui_style::TEXT_UNSELECTED)
             };
-            label.add_theme_color_override("font_color", color);
+            label.add_theme_color_override(theme::FONT_COLOR, color);
 
             let base_text = self.menu_items[i].clone();
             if i == self.cursor.index() {
@@ -261,13 +262,13 @@ impl MainMenuUI {
                 text.clone()
             };
             label.set_text(&display);
-            label.add_theme_font_size_override("font_size", 32);
+            label.add_theme_font_size_override(theme::FONT_SIZE, 32);
             let color = if i == self.option_cursor.index() {
                 super::rgb(ui_style::TEXT_SELECTED)
             } else {
                 super::rgb(ui_style::TEXT_UNSELECTED)
             };
-            label.add_theme_color_override("font_color", color);
+            label.add_theme_color_override(theme::FONT_COLOR, color);
             parent.add_child(&label);
             self.option_labels.push(label);
         }
@@ -286,10 +287,10 @@ impl MainMenuUI {
             Key::ENTER | Key::SPACE => {
                 match self.option_cursor.index() {
                     0 => {
-                        self.base_mut().emit_signal("sbs_toggled", &[]);
+                        self.base_mut().emit_signal(signals::SBS_TOGGLED, &[]);
                     }
                     1 => {
-                        self.base_mut().emit_signal("msaa_toggled", &[]);
+                        self.base_mut().emit_signal(signals::MSAA_TOGGLED, &[]);
                     }
                     2 => {
                         self.close_options();
@@ -326,7 +327,7 @@ impl MainMenuUI {
             } else {
                 super::rgb(ui_style::TEXT_UNSELECTED)
             };
-            label.add_theme_color_override("font_color", color);
+            label.add_theme_color_override(theme::FONT_COLOR, color);
         }
     }
 

@@ -1,3 +1,4 @@
+pub mod constants;
 pub mod godot_util;
 mod ship_controller;
 mod enemy_drone;

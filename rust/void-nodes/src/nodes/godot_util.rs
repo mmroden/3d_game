@@ -8,6 +8,8 @@ use godot::classes::{
     particle_process_material::Parameter,
 };
 
+use super::constants::meta_keys;
+
 /// Compute an orientation basis pointing along `forward`.
 /// Falls back to `Vector3::RIGHT` as up-reference when forward is near-parallel to UP.
 pub fn basis_from_direction(forward: Vector3) -> Basis {
@@ -44,7 +46,7 @@ pub fn create_beam_mesh(from: Vector3, to: Vector3, color: &[f32]) -> Option<Gd<
     material.set_emission_energy_multiplier(5.0);
     mesh_instance.set_surface_override_material(0, &material);
 
-    mesh_instance.set_meta("beam_age", &Variant::from(0.0_f32));
+    mesh_instance.set_meta(meta_keys::BEAM_AGE, &Variant::from(0.0_f32));
 
     let beam_basis = basis_from_direction(to - from);
     let transform = Transform3D { basis: beam_basis, origin: midpoint };
@@ -59,12 +61,12 @@ pub fn age_beams(beams: &mut Vec<Gd<MeshInstance3D>>, delta: f32, lifetime: f32,
         if !beam.is_instance_valid() {
             return false;
         }
-        let age = beam.get_meta("beam_age").to::<f32>() + delta;
+        let age = beam.get_meta(meta_keys::BEAM_AGE).to::<f32>() + delta;
         if age >= lifetime {
             beam.queue_free();
             false
         } else {
-            beam.set_meta("beam_age", &Variant::from(age));
+            beam.set_meta(meta_keys::BEAM_AGE, &Variant::from(age));
             let alpha = 1.0 - (age / lifetime);
             if let Some(mat) = beam.get_surface_override_material(0) {
                 let mut std_mat = mat.cast::<StandardMaterial3D>();

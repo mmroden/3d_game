@@ -1,5 +1,7 @@
 use godot::prelude::*;
 use godot::classes::{Node3D, INode3D, OmniLight3D, PackedScene, ResourceLoader};
+
+use super::constants::{nodes, scenes};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use rand::seq::IndexedRandom;
@@ -130,7 +132,7 @@ impl LevelManager {
                 }
             } else {
                 // Fallback: try loading as the default drone scene
-                if let Some(scene_res) = loader.load("res://scenes/enemies/enemy_drone.tscn") {
+                if let Some(scene_res) = loader.load(scenes::ENEMY_DRONE_FALLBACK) {
                     let packed: Gd<PackedScene> = scene_res.cast();
                     if let Some(instance) = packed.instantiate() {
                         let mut node: Gd<Node3D> = instance.cast();
@@ -144,7 +146,7 @@ impl LevelManager {
 
         // Spawn end-of-level portal in the last room
         if let Some(portal_pos) = portal_sys::portal_position(&graph, self.grid_cell_size) {
-            if let Some(portal_scene) = loader.load("res://scenes/items/portal.tscn") {
+            if let Some(portal_scene) = loader.load(scenes::PORTAL) {
                 let packed: Gd<PackedScene> = portal_scene.cast();
                 if let Some(instance) = packed.instantiate() {
                     let mut node: Gd<Node3D> = instance.cast();
@@ -166,7 +168,7 @@ impl LevelManager {
                 first_center[2],
             );
             if let Some(parent) = self.base().get_parent() {
-                if let Some(mut player) = parent.try_get_node_as::<Node3D>("Player") {
+                if let Some(mut player) = parent.try_get_node_as::<Node3D>(nodes::PLAYER) {
                     player.set_position(spawn);
                     godot_print!("Player spawned at ({}, {}, {})", spawn.x, spawn.y, spawn.z);
                 }

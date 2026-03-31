@@ -6,6 +6,7 @@ use godot::classes::{
 };
 
 use super::menu_panel;
+use crate::nodes::constants::{signals, theme};
 use void_logic::menu_cursor::MenuCursor;
 use void_logic::ui_style;
 
@@ -56,10 +57,10 @@ impl ICanvasLayer for ShopUI {
             Key::ENTER | Key::SPACE => {
                 match self.cursor.index() {
                     0 => {
-                        self.base_mut().emit_signal("buy_pressed", &[]);
+                        self.base_mut().emit_signal(signals::BUY_PRESSED, &[]);
                     }
                     1 => {
-                        self.base_mut().emit_signal("continue_pressed", &[]);
+                        self.base_mut().emit_signal(signals::CONTINUE_PRESSED, &[]);
                     }
                     _ => {}
                 }
@@ -106,8 +107,8 @@ impl ShopUI {
         // Title
         let mut title = Label::new_alloc();
         title.set_text("UPGRADE STATION");
-        title.add_theme_font_size_override("font_size", 48);
-        title.add_theme_color_override("font_color", Color::from_rgb(0.8, 0.6, 1.0));
+        title.add_theme_font_size_override(theme::FONT_SIZE, 48);
+        title.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.8, 0.6, 1.0));
         vbox.add_child(&title);
 
         let mut spacer = Control::new_alloc();
@@ -120,15 +121,15 @@ impl ShopUI {
             "Current Laser: {} (Damage: {})",
             laser_name, laser_damage as i32
         ));
-        current.add_theme_font_size_override("font_size", 28);
-        current.add_theme_color_override("font_color", laser_color);
+        current.add_theme_font_size_override(theme::FONT_SIZE, 28);
+        current.add_theme_color_override(theme::FONT_COLOR, laser_color);
         vbox.add_child(&current);
 
         // Credits
         let mut credits_label = Label::new_alloc();
         credits_label.set_text(&format!("Credits: {}", credits));
-        credits_label.add_theme_font_size_override("font_size", 28);
-        credits_label.add_theme_color_override("font_color", super::rgb(ui_style::TEXT_CREDITS));
+        credits_label.add_theme_font_size_override(theme::FONT_SIZE, 28);
+        credits_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_CREDITS));
         vbox.add_child(&credits_label);
 
         let mut spacer2 = Control::new_alloc();
@@ -145,7 +146,7 @@ impl ShopUI {
         };
         let mut upgrade_label = Label::new_alloc();
         upgrade_label.set_text(&upgrade_text);
-        upgrade_label.add_theme_font_size_override("font_size", 28);
+        upgrade_label.add_theme_font_size_override(theme::FONT_SIZE, 28);
         let upgrade_color = if is_max {
             Color::from_rgb(0.4, 0.4, 0.5)
         } else if can_afford {
@@ -153,15 +154,15 @@ impl ShopUI {
         } else {
             Color::from_rgb(0.6, 0.3, 0.3)
         };
-        upgrade_label.add_theme_color_override("font_color", upgrade_color);
+        upgrade_label.add_theme_color_override(theme::FONT_COLOR, upgrade_color);
         vbox.add_child(&upgrade_label);
         self.labels.push(upgrade_label);
 
         // Continue
         let mut continue_label = Label::new_alloc();
         continue_label.set_text("  Continue to Next Level");
-        continue_label.add_theme_font_size_override("font_size", 28);
-        continue_label.add_theme_color_override("font_color", super::rgb(ui_style::TEXT_UNSELECTED));
+        continue_label.add_theme_font_size_override(theme::FONT_SIZE, 28);
+        continue_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_UNSELECTED));
         vbox.add_child(&continue_label);
         self.labels.push(continue_label);
 
@@ -180,7 +181,7 @@ impl ShopUI {
             } else {
                 super::rgb(ui_style::TEXT_UNSELECTED)
             };
-            label.add_theme_color_override("font_color", color);
+            label.add_theme_color_override(theme::FONT_COLOR, color);
         }
     }
 }

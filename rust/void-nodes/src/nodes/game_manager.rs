@@ -1,6 +1,7 @@
 use godot::prelude::*;
 use godot::classes::{Node, INode, Engine, CanvasLayer, viewport::Msaa};
 
+use super::constants::{signals, methods, nodes};
 use void_logic::enemy_type::EnemyType;
 use void_logic::game_options::GameOptions;
 use void_logic::game_phase::GamePhase;
@@ -106,9 +107,9 @@ impl GameManager {
 
             // Populate kill summary UI
             let Some(parent) = self.base().get_parent() else { return };
-            if let Some(mut summary) = Self::find_ui_node(&parent, "KillSummaryUI") {
+            if let Some(mut summary) = Self::find_ui_node(&parent, nodes::KILL_SUMMARY_UI) {
                 let kill_data = self.get_kill_summary();
-                summary.call("show_summary", &[
+                summary.call(methods::SHOW_SUMMARY, &[
                     Variant::from(kill_data),
                     Variant::from(self.run_state.credits.balance as i64),
                     Variant::from(self.run_state.current_level as i32),
@@ -178,8 +179,8 @@ impl GameManager {
 
             // Show death screen
             let Some(parent) = self.base().get_parent() else { return };
-            if let Some(mut death_ui) = Self::find_ui_node(&parent, "DeathScreenUI") {
-                death_ui.call("show_death", &[
+            if let Some(mut death_ui) = Self::find_ui_node(&parent, nodes::DEATH_SCREEN_UI) {
+                death_ui.call(methods::SHOW_DEATH, &[
                     Variant::from(GString::from(old_laser.as_str())),
                     Variant::from(GString::from(new_laser.as_str())),
                     Variant::from(level_reached),
@@ -193,7 +194,7 @@ impl GameManager {
     pub fn on_sbs_toggled(&mut self) {
         let sbs = self.game_options.toggle_sbs();
         let msaa = self.game_options.msaa_enabled;
-        self.base_mut().emit_signal("options_changed", &[sbs.to_variant(), msaa.to_variant()]);
+        self.base_mut().emit_signal(signals::OPTIONS_CHANGED, &[sbs.to_variant(), msaa.to_variant()]);
     }
 
     /// Called from main menu: toggle MSAA.
@@ -205,7 +206,7 @@ impl GameManager {
             viewport.set_msaa_3d(if msaa { Msaa::MSAA_4X } else { Msaa::DISABLED });
         }
         let sbs = self.game_options.sbs_enabled;
-        self.base_mut().emit_signal("options_changed", &[sbs.to_variant(), msaa.to_variant()]);
+        self.base_mut().emit_signal(signals::OPTIONS_CHANGED, &[sbs.to_variant(), msaa.to_variant()]);
     }
 
     /// Called from death screen: return to main menu.
@@ -310,7 +311,7 @@ impl GameManager {
         self.show_phase(next);
 
         let phase_name: GString = GString::from(format!("{:?}", next).as_str());
-        self.base_mut().emit_signal("phase_changed", &[phase_name.to_variant()]);
+        self.base_mut().emit_signal(signals::PHASE_CHANGED, &[phase_name.to_variant()]);
     }
 
     fn show_phase(&self, phase: GamePhase) {
@@ -323,39 +324,39 @@ impl GameManager {
         let shop_vis = phase == GamePhase::Shop;
         let death_vis = phase == GamePhase::Death;
 
-        Self::set_ui_visible(&parent, "MainMenuUI", menu_vis);
-        Self::set_ui_visible(&parent, "HUD", hud_vis);
-        Self::set_ui_visible(&parent, "KillSummaryUI", summary_vis);
-        Self::set_ui_visible(&parent, "ShopUI", shop_vis);
-        Self::set_ui_visible(&parent, "DeathScreenUI", death_vis);
+        Self::set_ui_visible(&parent, nodes::MAIN_MENU_UI, menu_vis);
+        Self::set_ui_visible(&parent, nodes::HUD, hud_vis);
+        Self::set_ui_visible(&parent, nodes::KILL_SUMMARY_UI, summary_vis);
+        Self::set_ui_visible(&parent, nodes::SHOP_UI, shop_vis);
+        Self::set_ui_visible(&parent, nodes::DEATH_SCREEN_UI, death_vis);
 
         // Show/hide gameplay elements
-        if let Some(mut player) = parent.try_get_node_as::<Node3D>("Player") {
+        if let Some(mut player) = parent.try_get_node_as::<Node3D>(nodes::PLAYER) {
             player.set_visible(hud_vis);
         }
-        if let Some(mut level) = parent.try_get_node_as::<Node3D>("LevelManager") {
+        if let Some(mut level) = parent.try_get_node_as::<Node3D>(nodes::LEVEL_MANAGER) {
             level.set_visible(hud_vis);
         }
 
         // Show/hide ship showcase for end-of-level screens
         let showcase_vis = summary_vis || shop_vis || death_vis;
-        if let Some(mut showcase) = parent.try_get_node_as::<Node>("ShipShowcase") {
+        if let Some(mut showcase) = parent.try_get_node_as::<Node>(nodes::SHIP_SHOWCASE) {
             if showcase_vis {
                 let c = self.run_state.laser_level.color();
                 let color = Color::from_rgba(c[0], c[1], c[2], c[3]);
-                showcase.call("show_showcase", &[Variant::from(color)]);
+                showcase.call(methods::SHOW_SHOWCASE, &[Variant::from(color)]);
 
                 // Position showcase in front of camera
-                if let Some(camera) = parent.try_get_node_as::<Node3D>("Player/Camera3D") {
+                if let Some(camera) = parent.try_get_node_as::<Node3D>(nodes::PLAYER_CAMERA) {
                     let cam_transform = camera.get_global_transform();
                     let forward = -cam_transform.basis.col_c();
                     let showcase_pos = cam_transform.origin + forward * 3.0;
-                    if let Some(mut showcase_3d) = parent.try_get_node_as::<Node3D>("ShipShowcase") {
+                    if let Some(mut showcase_3d) = parent.try_get_node_as::<Node3D>(nodes::SHIP_SHOWCASE) {
                         showcase_3d.set_global_position(showcase_pos);
                     }
                 }
             } else {
-                showcase.call("hide_showcase", &[]);
+                showcase.call(methods::HIDE_SHOWCASE, &[]);
             }
         }
     }
@@ -384,18 +385,18 @@ impl GameManager {
 
     fn update_player_laser(&self) {
         let Some(parent) = self.base().get_parent() else { return };
-        if let Some(mut player) = parent.try_get_node_as::<Node>("Player") {
+        if let Some(mut player) = parent.try_get_node_as::<Node>(nodes::PLAYER) {
             let level = self.run_state.laser_level as i32;
-            player.call("set_laser_level", &[Variant::from(level)]);
+            player.call(methods::SET_LASER_LEVEL, &[Variant::from(level)]);
         }
     }
 
     fn show_shop_ui(&self) {
         let Some(parent) = self.base().get_parent() else { return };
-        if let Some(mut shop) = Self::find_ui_node(&parent, "ShopUI") {
+        if let Some(mut shop) = Self::find_ui_node(&parent, nodes::SHOP_UI) {
             let c = self.run_state.laser_level.color();
             let color = Color::from_rgba(c[0], c[1], c[2], c[3]);
-            shop.call("show_shop", &[
+            shop.call(methods::SHOW_SHOP, &[
                 Variant::from(self.run_state.credits.balance as i64),
                 Variant::from(GString::from(self.run_state.laser_level.display_name())),
                 Variant::from(color),
@@ -411,88 +412,88 @@ impl GameManager {
         let Some(parent) = self.base().get_parent() else { return };
 
         // Connect MainMenuUI signals
-        if let Some(menu) = Self::find_ui_node(&parent, "MainMenuUI") {
-            let new_game = self.base().callable("start_new_game");
-            if !menu.is_connected("new_game_selected", &new_game) {
+        if let Some(menu) = Self::find_ui_node(&parent, nodes::MAIN_MENU_UI) {
+            let new_game = self.base().callable(methods::START_NEW_GAME);
+            if !menu.is_connected(signals::NEW_GAME_SELECTED, &new_game) {
                 let mut menu = menu;
-                menu.connect("new_game_selected", &new_game);
-                let continue_game = self.base().callable("continue_game");
-                menu.connect("continue_selected", &continue_game);
-                let sbs = self.base().callable("on_sbs_toggled");
-                menu.connect("sbs_toggled", &sbs);
-                let msaa = self.base().callable("on_msaa_toggled");
-                menu.connect("msaa_toggled", &msaa);
+                menu.connect(signals::NEW_GAME_SELECTED, &new_game);
+                let continue_game = self.base().callable(methods::CONTINUE_GAME);
+                menu.connect(signals::CONTINUE_SELECTED, &continue_game);
+                let sbs = self.base().callable(methods::ON_SBS_TOGGLED);
+                menu.connect(signals::SBS_TOGGLED, &sbs);
+                let msaa = self.base().callable(methods::ON_MSAA_TOGGLED);
+                menu.connect(signals::MSAA_TOGGLED, &msaa);
             }
         }
 
         // Connect KillSummaryUI
-        if let Some(summary) = Self::find_ui_node(&parent, "KillSummaryUI") {
-            let callable = self.base().callable("advance_to_shop");
-            if !summary.is_connected("continue_pressed", &callable) {
+        if let Some(summary) = Self::find_ui_node(&parent, nodes::KILL_SUMMARY_UI) {
+            let callable = self.base().callable(methods::ADVANCE_TO_SHOP);
+            if !summary.is_connected(signals::CONTINUE_PRESSED, &callable) {
                 let mut summary = summary;
-                summary.connect("continue_pressed", &callable);
+                summary.connect(signals::CONTINUE_PRESSED, &callable);
             }
         }
 
         // Connect ShopUI
-        if let Some(shop) = Self::find_ui_node(&parent, "ShopUI") {
-            let buy_callable = self.base().callable("buy_laser_upgrade");
-            let continue_callable = self.base().callable("advance_to_next_level");
-            if !shop.is_connected("buy_pressed", &buy_callable) {
+        if let Some(shop) = Self::find_ui_node(&parent, nodes::SHOP_UI) {
+            let buy_callable = self.base().callable(methods::BUY_LASER_UPGRADE);
+            let continue_callable = self.base().callable(methods::ADVANCE_TO_NEXT_LEVEL);
+            if !shop.is_connected(signals::BUY_PRESSED, &buy_callable) {
                 let mut shop = shop;
-                shop.connect("buy_pressed", &buy_callable);
-                shop.connect("continue_pressed", &continue_callable);
+                shop.connect(signals::BUY_PRESSED, &buy_callable);
+                shop.connect(signals::CONTINUE_PRESSED, &continue_callable);
             }
         }
 
         // Connect DeathScreenUI
-        if let Some(death) = Self::find_ui_node(&parent, "DeathScreenUI") {
-            let callable = self.base().callable("return_to_menu");
-            if !death.is_connected("return_pressed", &callable) {
+        if let Some(death) = Self::find_ui_node(&parent, nodes::DEATH_SCREEN_UI) {
+            let callable = self.base().callable(methods::RETURN_TO_MENU);
+            if !death.is_connected(signals::RETURN_PRESSED, &callable) {
                 let mut death = death;
-                death.connect("return_pressed", &callable);
+                death.connect(signals::RETURN_PRESSED, &callable);
             }
         }
     }
 
     fn connect_spawned_entities(&mut self) {
         let Some(parent) = self.base().get_parent() else { return };
-        let Some(level_mgr) = parent.try_get_node_as::<Node>("LevelManager") else { return };
+        let Some(level_mgr) = parent.try_get_node_as::<Node>(nodes::LEVEL_MANAGER) else { return };
 
-        let callable = self.base().callable("on_enemy_killed");
-        let portal_callable = self.base().callable("on_portal_entered");
+        let callable = self.base().callable(methods::ON_ENEMY_KILLED);
+        let portal_callable = self.base().callable(methods::ON_PORTAL_ENTERED);
 
         for child in level_mgr.get_children().iter_shared() {
             // Connect enemy signals
-            if child.has_signal("enemy_killed") && !child.is_connected("enemy_killed", &callable) {
+            if child.has_signal(signals::ENEMY_KILLED) && !child.is_connected(signals::ENEMY_KILLED, &callable) {
                 let mut c = child.clone();
-                c.connect("enemy_killed", &callable);
+                c.connect(signals::ENEMY_KILLED, &callable);
             }
             // Connect portal signal
-            if child.has_signal("portal_entered") && !child.is_connected("portal_entered", &portal_callable) {
+            if child.has_signal(signals::PORTAL_ENTERED) && !child.is_connected(signals::PORTAL_ENTERED, &portal_callable) {
                 let mut c = child;
-                c.connect("portal_entered", &portal_callable);
+                c.connect(signals::PORTAL_ENTERED, &portal_callable);
             }
         }
     }
 
     fn update_hud(&self) {
         let Some(parent) = self.base().get_parent() else { return };
-        if let Some(mut hud) = Self::find_ui_node(&parent, "HUD") {
+        if let Some(mut hud) = Self::find_ui_node(&parent, nodes::HUD) {
             let c = self.run_state.laser_level.color();
             let color = Color::from_rgba(c[0], c[1], c[2], c[3]);
-            hud.call("update_health", &[
+            hud.call(methods::UPDATE_HEALTH, &[
                 Variant::from(self.run_state.health),
                 Variant::from(self.run_state.loadout.max_health()),
             ]);
-            hud.call("update_credits", &[
+            hud.call(methods::UPDATE_CREDITS, &[
                 Variant::from(self.run_state.credits.balance as i64),
             ]);
-            hud.call("update_laser", &[
+            hud.call(methods::UPDATE_LASER, &[
                 Variant::from(GString::from(self.run_state.laser_level.display_name())),
                 Variant::from(color),
             ]);
-            hud.call("update_level", &[
+            hud.call(methods::UPDATE_LEVEL, &[
                 Variant::from(self.run_state.current_level as i32),
             ]);
         }
@@ -501,7 +502,7 @@ impl GameManager {
 
     fn regenerate_level(&self) {
         let Some(parent) = self.base().get_parent() else { return };
-        if let Some(mut level_mgr) = parent.try_get_node_as::<Node>("LevelManager") {
+        if let Some(mut level_mgr) = parent.try_get_node_as::<Node>(nodes::LEVEL_MANAGER) {
             // Clear old children
             for mut child in level_mgr.get_children().iter_shared() {
                 child.queue_free();
@@ -511,7 +512,7 @@ impl GameManager {
             // Generate with new seed based on level number
             let seed = 42_u64.wrapping_add(self.run_state.current_level as u64 * 7919);
             level_mgr.call(
-                "generate_level",
+                methods::GENERATE_LEVEL,
                 &[Variant::from(seed as i64), Variant::from(5_i32)],
             );
         }

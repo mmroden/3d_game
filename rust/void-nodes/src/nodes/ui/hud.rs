@@ -5,6 +5,7 @@ use godot::classes::{
     control::LayoutPreset,
 };
 
+use crate::nodes::constants::theme;
 use void_logic::ui_style;
 
 /// In-game HUD: health bar, credits, laser level, level number.
@@ -85,7 +86,7 @@ impl HUD {
         if let Some(label) = &mut self.laser_label {
             if label.is_instance_valid() {
                 label.set_text(&format!("Laser: {}", name));
-                label.add_theme_color_override("font_color", color);
+                label.add_theme_color_override(theme::FONT_COLOR, color);
             }
         }
         if let Some(indicator) = &mut self.laser_indicator {
@@ -131,8 +132,8 @@ impl HUD {
 
         let mut health_label = Label::new_alloc();
         health_label.set_text("100/100");
-        health_label.add_theme_font_size_override("font_size", 18);
-        health_label.add_theme_color_override("font_color", Color::from_rgb(0.9, 0.9, 0.9));
+        health_label.add_theme_font_size_override(theme::FONT_SIZE, 18);
+        health_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.9, 0.9, 0.9));
         health_row.add_child(&health_label);
 
         top_left.add_child(&health_row);
@@ -145,8 +146,8 @@ impl HUD {
         // Credits
         let mut credits_label = Label::new_alloc();
         credits_label.set_text("Credits: 0");
-        credits_label.add_theme_font_size_override("font_size", 18);
-        credits_label.add_theme_color_override("font_color", super::rgb(ui_style::TEXT_CREDITS));
+        credits_label.add_theme_font_size_override(theme::FONT_SIZE, 18);
+        credits_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_CREDITS));
         top_left.add_child(&credits_label);
         self.credits_label = Some(credits_label);
 
@@ -173,8 +174,8 @@ impl HUD {
 
         let mut laser_label = Label::new_alloc();
         laser_label.set_text("Laser: Red");
-        laser_label.add_theme_font_size_override("font_size", 18);
-        laser_label.add_theme_color_override("font_color", Color::from_rgb(1.0, 0.2, 0.2));
+        laser_label.add_theme_font_size_override(theme::FONT_SIZE, 18);
+        laser_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(1.0, 0.2, 0.2));
         laser_row.add_child(&laser_label);
         self.laser_label = Some(laser_label);
 
@@ -183,8 +184,8 @@ impl HUD {
         // Level
         let mut level_label = Label::new_alloc();
         level_label.set_text("Level 1");
-        level_label.add_theme_font_size_override("font_size", 18);
-        level_label.add_theme_color_override("font_color", super::rgb(ui_style::TEXT_SECONDARY));
+        level_label.add_theme_font_size_override(theme::FONT_SIZE, 18);
+        level_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_SECONDARY));
         top_right.add_child(&level_label);
         self.level_label = Some(level_label);
 
@@ -199,8 +200,8 @@ impl HUD {
 
         let mut controls = Label::new_alloc();
         controls.set_text("WASD: Move | Arrows: Look | Space: Fire | R/F: Up/Down");
-        controls.add_theme_font_size_override("font_size", 16);
-        controls.add_theme_color_override("font_color", Color::from_rgba(
+        controls.add_theme_font_size_override(theme::FONT_SIZE, 16);
+        controls.add_theme_color_override(theme::FONT_COLOR, Color::from_rgba(
             ui_style::TEXT_UNSELECTED[0], ui_style::TEXT_UNSELECTED[1], ui_style::TEXT_UNSELECTED[2], 0.7,
         ));
         bottom_center.add_child(&controls);
