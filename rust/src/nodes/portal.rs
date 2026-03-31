@@ -2,8 +2,10 @@ use godot::prelude::*;
 use godot::classes::{
     Area3D, IArea3D, CollisionShape3D, SphereShape3D,
     MeshInstance3D, TorusMesh, StandardMaterial3D,
-    GpuParticles3D, ParticleProcessMaterial, SphereMesh,
+    GpuParticles3D, SphereMesh,
 };
+
+use super::godot_util;
 
 /// End-of-level portal. Player touches it to complete the level.
 #[derive(GodotClass)]
@@ -48,17 +50,11 @@ impl IArea3D for Portal {
         particles.set_lifetime(2.0);
         particles.set_explosiveness_ratio(0.0);
 
-        let mut pmat = ParticleProcessMaterial::new_gd();
-        pmat.set_spread(180.0);
-        pmat.set_color(Color::from_rgba(0.5, 0.9, 1.0, 0.8));
-        pmat.set_gravity(Vector3::ZERO);
-        pmat.set_param_min(
-            godot::classes::particle_process_material::Parameter::INITIAL_LINEAR_VELOCITY,
-            1.0,
-        );
-        pmat.set_param_max(
-            godot::classes::particle_process_material::Parameter::INITIAL_LINEAR_VELOCITY,
-            3.0,
+        let pmat = godot_util::particle_burst_material(
+            180.0,
+            Color::from_rgba(0.5, 0.9, 1.0, 0.8),
+            (1.0, 3.0),
+            None,
         );
         particles.set_process_material(&pmat);
 

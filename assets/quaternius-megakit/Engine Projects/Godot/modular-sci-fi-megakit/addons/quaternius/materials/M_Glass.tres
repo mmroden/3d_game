@@ -1,0 +1,8 @@
+[gd_resource type="ShaderMaterial" load_steps=2 format=3 uid="uid://odh3g3j6tcig"]
+
+[ext_resource type="Shader" uid="uid://ce5xcm8o6gvbt" path="res://addons/quaternius/materials/M_Glass_Base.tres" id="1_iqfu5"]
+
+[resource]
+render_priority = 0
+shader = ExtResource("1_iqfu5")
+shader_parameter/Color = Color(0.470588, 0.776471, 0.596078, 1)

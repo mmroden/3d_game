@@ -6,14 +6,15 @@ use godot::classes::{
 };
 
 use super::menu_panel;
+use crate::systems::menu_cursor::MenuCursor;
+use crate::systems::ui_style;
 
 /// Upgrade shop between levels: buy laser upgrades with credits.
 #[derive(GodotClass)]
 #[class(base=CanvasLayer)]
 pub struct ShopUI {
     base: Base<CanvasLayer>,
-    cursor_index: usize,
-    item_count: usize,
+    cursor: MenuCursor,
     labels: Vec<Gd<Label>>,
 }
 
@@ -22,8 +23,7 @@ impl ICanvasLayer for ShopUI {
     fn init(base: Base<CanvasLayer>) -> Self {
         Self {
             base,
-            cursor_index: 0,
-            item_count: 2,
+            cursor: MenuCursor::new(2),
             labels: Vec::new(),
         }
     }
@@ -46,19 +46,15 @@ impl ICanvasLayer for ShopUI {
 
         match key_event.get_keycode() {
             Key::UP | Key::W => {
-                if self.cursor_index > 0 {
-                    self.cursor_index -= 1;
-                } else {
-                    self.cursor_index = self.item_count - 1;
-                }
+                self.cursor.move_up();
                 self.update_cursor();
             }
             Key::DOWN | Key::S => {
-                self.cursor_index = (self.cursor_index + 1) % self.item_count;
+                self.cursor.move_down();
                 self.update_cursor();
             }
             Key::ENTER | Key::SPACE => {
-                match self.cursor_index {
+                match self.cursor.index() {
                     0 => {
                         self.base_mut().emit_signal("buy_pressed", &[]);
                     }
@@ -98,7 +94,7 @@ impl ShopUI {
         }
 
         self.labels.clear();
-        self.cursor_index = 0;
+        self.cursor.reset();
 
         // Semi-transparent overlay for ship showcase visibility
         let overlay = menu_panel::create_showcase_overlay();
@@ -131,7 +127,7 @@ impl ShopUI {
         let mut credits_label = Label::new_alloc();
         credits_label.set_text(&format!("Credits: {}", credits));
         credits_label.add_theme_font_size_override("font_size", 28);
-        credits_label.add_theme_color_override("font_color", Color::from_rgb(1.0, 0.85, 0.2));
+        credits_label.add_theme_color_override("font_color", super::rgb(ui_style::TEXT_CREDITS));
         vbox.add_child(&credits_label);
 
         let mut spacer2 = Control::new_alloc();
@@ -152,7 +148,7 @@ impl ShopUI {
         let upgrade_color = if is_max {
             Color::from_rgb(0.4, 0.4, 0.5)
         } else if can_afford {
-            Color::from_rgb(1.0, 1.0, 1.0)
+            super::rgb(ui_style::TEXT_SELECTED)
         } else {
             Color::from_rgb(0.6, 0.3, 0.3)
         };
@@ -164,11 +160,10 @@ impl ShopUI {
         let mut continue_label = Label::new_alloc();
         continue_label.set_text("  Continue to Next Level");
         continue_label.add_theme_font_size_override("font_size", 28);
-        continue_label.add_theme_color_override("font_color", Color::from_rgb(0.5, 0.5, 0.6));
+        continue_label.add_theme_color_override("font_color", super::rgb(ui_style::TEXT_UNSELECTED));
         vbox.add_child(&continue_label);
         self.labels.push(continue_label);
 
-        self.item_count = 2;
         self.base_mut().add_child(&panel);
         self.base_mut().set_visible(true);
         self.update_cursor();
@@ -179,10 +174,10 @@ impl ShopUI {
             if !label.is_instance_valid() {
                 continue;
             }
-            let color = if i == self.cursor_index {
-                Color::from_rgb(1.0, 1.0, 1.0)
+            let color = if i == self.cursor.index() {
+                super::rgb(ui_style::TEXT_SELECTED)
             } else {
-                Color::from_rgb(0.5, 0.5, 0.6)
+                super::rgb(ui_style::TEXT_UNSELECTED)
             };
             label.add_theme_color_override("font_color", color);
         }

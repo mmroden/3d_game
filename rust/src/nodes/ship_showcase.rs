@@ -3,6 +3,8 @@ use godot::classes::{
     Node3D, INode3D, MeshInstance3D, BoxMesh, StandardMaterial3D, Engine,
 };
 
+use super::godot_util;
+
 /// Cosmetic rotating ship with laser beams for end-of-level screens.
 /// Spawned by GameManager during KillSummary/Shop/Death phases.
 #[derive(GodotClass)]
@@ -145,65 +147,15 @@ impl ShipShowcase {
     }
 
     fn spawn_beam(&mut self, from: Vector3, to: Vector3) {
-        let midpoint = (from + to) * 0.5;
-        let length = from.distance_to(to);
-        if length < 0.01 {
-            return;
+        if let Some(mesh_instance) = godot_util::create_beam_mesh(from, to, &self.laser_color) {
+            let node = mesh_instance.clone();
+            self.base_mut().get_tree().get_root().unwrap().add_child(&mesh_instance);
+            self.beams.push(node);
         }
-
-        let mut mesh_instance = MeshInstance3D::new_alloc();
-        let mut box_mesh = BoxMesh::new_gd();
-        box_mesh.set_size(Vector3::new(0.02, 0.02, length));
-        mesh_instance.set_mesh(&box_mesh);
-
-        let mut material = StandardMaterial3D::new_gd();
-        let c = self.laser_color;
-        material.set_albedo(Color::from_rgba(c[0], c[1], c[2], 1.0));
-        material.set_emission(Color::from_rgba(c[0], c[1], c[2], 1.0));
-        material.set_emission_energy_multiplier(5.0);
-        mesh_instance.set_surface_override_material(0, &material);
-
-        mesh_instance.set_meta("beam_age", &Variant::from(0.0_f32));
-
-        let dir = (to - from).normalized();
-        let up = if dir.cross(Vector3::UP).length() > 0.001 {
-            Vector3::UP
-        } else {
-            Vector3::RIGHT
-        };
-        let z_axis = -dir;
-        let x_axis = up.cross(z_axis).normalized();
-        let y_axis = z_axis.cross(x_axis);
-        let beam_basis = Basis::from_cols(x_axis, y_axis, z_axis);
-        let transform = Transform3D { basis: beam_basis, origin: midpoint };
-        mesh_instance.set_transform(transform);
-
-        let node = mesh_instance.clone();
-        self.base_mut().get_tree().get_root().unwrap().add_child(&mesh_instance);
-        self.beams.push(node);
     }
 
     fn age_beams(&mut self, delta: f32) {
         const BEAM_LIFETIME: f32 = 0.3;
-
-        self.beams.retain_mut(|beam| {
-            if !beam.is_instance_valid() {
-                return false;
-            }
-            let age = beam.get_meta("beam_age").to::<f32>() + delta;
-            if age >= BEAM_LIFETIME {
-                beam.queue_free();
-                false
-            } else {
-                beam.set_meta("beam_age", &Variant::from(age));
-                let alpha = 1.0 - (age / BEAM_LIFETIME);
-                if let Some(mat) = beam.get_surface_override_material(0) {
-                    let mut std_mat = mat.cast::<StandardMaterial3D>();
-                    let c = [1.0, 0.2, 0.2]; // default fallback
-                    std_mat.set_albedo(Color::from_rgba(c[0], c[1], c[2], alpha));
-                }
-                true
-            }
-        });
+        godot_util::age_beams(&mut self.beams, delta, BEAM_LIFETIME, &self.laser_color);
     }
 }

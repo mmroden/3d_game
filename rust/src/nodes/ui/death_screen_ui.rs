@@ -6,6 +6,7 @@ use godot::classes::{
 };
 
 use super::menu_panel;
+use crate::systems::ui_style;
 
 /// Death screen: shows stats and penalty, press key to return to menu.
 #[derive(GodotClass)]
@@ -73,7 +74,7 @@ impl DeathScreenUI {
         let mut level_label = Label::new_alloc();
         level_label.set_text(&format!("Reached Level {}", level_reached));
         level_label.add_theme_font_size_override("font_size", 28);
-        level_label.add_theme_color_override("font_color", Color::from_rgb(0.7, 0.7, 0.8));
+        level_label.add_theme_color_override("font_color", super::rgb(ui_style::TEXT_SECONDARY));
         vbox.add_child(&level_label);
 
         let mut penalty_label = Label::new_alloc();
@@ -92,7 +93,7 @@ impl DeathScreenUI {
         let mut prompt = Label::new_alloc();
         prompt.set_text("Press ENTER to return to base");
         prompt.add_theme_font_size_override("font_size", 22);
-        prompt.add_theme_color_override("font_color", Color::from_rgb(0.5, 0.5, 0.6));
+        prompt.add_theme_color_override("font_color", super::rgb(ui_style::TEXT_UNSELECTED));
         vbox.add_child(&prompt);
 
         self.base_mut().add_child(&panel);

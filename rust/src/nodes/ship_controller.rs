@@ -1,10 +1,12 @@
 use godot::prelude::*;
 use godot::classes::{
     CharacterBody3D, ICharacterBody3D, PhysicsRayQueryParameters3D,
-    MeshInstance3D, BoxMesh, StandardMaterial3D,
-    GpuParticles3D, ParticleProcessMaterial, SphereMesh,
+    MeshInstance3D,
+    GpuParticles3D, SphereMesh, StandardMaterial3D,
     Input,
 };
+
+use super::godot_util;
 
 use crate::systems::laser::LaserLevel;
 use crate::systems::loadout::Loadout;
@@ -194,30 +196,15 @@ impl ShipController {
         particles.set_one_shot(true);
         particles.set_explosiveness_ratio(1.0);
 
-        let mut mat = ParticleProcessMaterial::new_gd();
+        let mut mat = godot_util::particle_burst_material(
+            45.0,
+            Color::from_rgba(1.0, 0.6, 0.2, 1.0),
+            (3.0, 6.0),
+            Some((0.5, 1.0)),
+        );
         mat.set_direction(normal);
-        mat.set_spread(45.0);
-        mat.set_color(Color::from_rgba(1.0, 0.6, 0.2, 1.0));
-        mat.set_gravity(Vector3::ZERO);
-        mat.set_param_min(
-            godot::classes::particle_process_material::Parameter::INITIAL_LINEAR_VELOCITY,
-            3.0,
-        );
-        mat.set_param_max(
-            godot::classes::particle_process_material::Parameter::INITIAL_LINEAR_VELOCITY,
-            6.0,
-        );
-        mat.set_param_min(
-            godot::classes::particle_process_material::Parameter::SCALE,
-            0.5,
-        );
-        mat.set_param_max(
-            godot::classes::particle_process_material::Parameter::SCALE,
-            1.0,
-        );
         particles.set_process_material(&mat);
 
-        // Small sphere as particle mesh
         let mut sphere = SphereMesh::new_gd();
         sphere.set_radius(0.015);
         sphere.set_height(0.03);
@@ -232,71 +219,19 @@ impl ShipController {
         self.base_mut().get_tree().get_root().unwrap().add_child(&particles);
         particles.set_emitting(true);
 
-        // Auto-free after lifetime
         particles.set_meta("spark_timer", &Variant::from(0.5_f32));
     }
 
     fn spawn_beam(&mut self, from: Vector3, to: Vector3) {
-        let midpoint = (from + to) * 0.5;
-        let length = from.distance_to(to);
-        if length < 0.01 {
-            return;
+        if let Some(mesh_instance) = godot_util::create_beam_mesh(from, to, &self.laser_level.color()) {
+            let node = mesh_instance.clone();
+            self.base_mut().get_tree().get_root().unwrap().add_child(&mesh_instance);
+            self.beam_nodes.push(node);
         }
-
-        let mut mesh_instance = MeshInstance3D::new_alloc();
-
-        let mut box_mesh = BoxMesh::new_gd();
-        box_mesh.set_size(Vector3::new(0.02, 0.02, length));
-        mesh_instance.set_mesh(&box_mesh);
-
-        let mut material = StandardMaterial3D::new_gd();
-        let c = self.laser_level.color();
-        material.set_albedo(Color::from_rgba(c[0], c[1], c[2], 1.0));
-        material.set_emission(Color::from_rgba(c[0], c[1], c[2], 1.0));
-        material.set_emission_energy_multiplier(5.0);
-        mesh_instance.set_surface_override_material(0, &material);
-
-        mesh_instance.set_meta("beam_age", &Variant::from(0.0_f32));
-
-        let dir = (to - from).normalized();
-        let up = if dir.cross(Vector3::UP).length() > 0.001 {
-            Vector3::UP
-        } else {
-            Vector3::RIGHT
-        };
-        let z_axis = -dir;
-        let x_axis = up.cross(z_axis).normalized();
-        let y_axis = z_axis.cross(x_axis);
-        let beam_basis = Basis::from_cols(x_axis, y_axis, z_axis);
-        let transform = Transform3D { basis: beam_basis, origin: midpoint };
-        mesh_instance.set_transform(transform);
-
-        let node = mesh_instance.clone();
-        self.base_mut().get_tree().get_root().unwrap().add_child(&mesh_instance);
-        self.beam_nodes.push(node);
     }
 
     fn age_beams(&mut self, delta: f32) {
         const BEAM_LIFETIME: f32 = 0.08;
-
-        self.beam_nodes.retain_mut(|beam| {
-            if !beam.is_instance_valid() {
-                return false;
-            }
-            let age = beam.get_meta("beam_age").to::<f32>() + delta;
-            if age >= BEAM_LIFETIME {
-                beam.queue_free();
-                false
-            } else {
-                beam.set_meta("beam_age", &Variant::from(age));
-                let alpha = 1.0 - (age / BEAM_LIFETIME);
-                if let Some(mat) = beam.get_surface_override_material(0) {
-                    let mut std_mat = mat.cast::<StandardMaterial3D>();
-                    let bc = self.laser_level.color();
-                    std_mat.set_albedo(Color::from_rgba(bc[0], bc[1], bc[2], alpha));
-                }
-                true
-            }
-        });
+        godot_util::age_beams(&mut self.beam_nodes, delta, BEAM_LIFETIME, &self.laser_level.color());
     }
 }

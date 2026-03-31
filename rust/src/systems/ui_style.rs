@@ -19,6 +19,20 @@ pub const PANEL_PADDING: f32 = 24.0;
 /// Background alpha for screens that show the ship showcase behind.
 pub const SHOWCASE_BG_ALPHA: f32 = 0.4;
 
+// ── Text colors ──────────────────────────────────────────────────
+
+/// White — selected / highlighted menu item [R, G, B].
+pub const TEXT_SELECTED: [f32; 3] = [1.0, 1.0, 1.0];
+
+/// Muted blue-gray — unselected menu items, prompts [R, G, B].
+pub const TEXT_UNSELECTED: [f32; 3] = [0.5, 0.5, 0.6];
+
+/// Pale blue-gray — secondary labels, headers [R, G, B].
+pub const TEXT_SECONDARY: [f32; 3] = [0.7, 0.7, 0.8];
+
+/// Gold/yellow — credits display [R, G, B].
+pub const TEXT_CREDITS: [f32; 3] = [1.0, 0.85, 0.2];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,6 +69,20 @@ mod tests {
     #[test]
     fn showcase_bg_alpha_valid() {
         assert!((0.0..=1.0).contains(&SHOWCASE_BG_ALPHA));
+    }
+
+    #[test]
+    fn text_colors_valid_rgb() {
+        for (name, color) in [
+            ("TEXT_SELECTED", TEXT_SELECTED),
+            ("TEXT_UNSELECTED", TEXT_UNSELECTED),
+            ("TEXT_SECONDARY", TEXT_SECONDARY),
+            ("TEXT_CREDITS", TEXT_CREDITS),
+        ] {
+            for &c in &color {
+                assert!((0.0..=1.0).contains(&c), "{name} out of range: {c}");
+            }
+        }
     }
 
     #[test]

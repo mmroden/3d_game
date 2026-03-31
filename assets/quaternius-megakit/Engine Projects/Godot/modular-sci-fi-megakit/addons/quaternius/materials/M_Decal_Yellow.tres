@@ -1,0 +1,9 @@
+[gd_resource type="ShaderMaterial" load_steps=2 format=3 uid="uid://cv2fh3lsiknx4"]
+
+[ext_resource type="Shader" uid="uid://cktrlun2qnkf4" path="res://addons/quaternius/materials/M_Decal_Base.tres" id="1_a3h1r"]
+
+[resource]
+render_priority = 0
+shader = ExtResource("1_a3h1r")
+shader_parameter/Color = Color(0.615686, 0.435294, 0, 1)
+shader_parameter/Alpha_Scissor = 0.5

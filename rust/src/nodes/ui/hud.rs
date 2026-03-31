@@ -5,6 +5,8 @@ use godot::classes::{
     control::LayoutPreset,
 };
 
+use crate::systems::ui_style;
+
 /// In-game HUD: health bar, credits, laser level, level number.
 #[derive(GodotClass)]
 #[class(base=CanvasLayer)]
@@ -143,7 +145,7 @@ impl HUD {
         let mut credits_label = Label::new_alloc();
         credits_label.set_text("Credits: 0");
         credits_label.add_theme_font_size_override("font_size", 18);
-        credits_label.add_theme_color_override("font_color", Color::from_rgb(1.0, 0.85, 0.2));
+        credits_label.add_theme_color_override("font_color", super::rgb(ui_style::TEXT_CREDITS));
         top_left.add_child(&credits_label);
         self.credits_label = Some(credits_label);
 
@@ -181,7 +183,7 @@ impl HUD {
         let mut level_label = Label::new_alloc();
         level_label.set_text("Level 1");
         level_label.add_theme_font_size_override("font_size", 18);
-        level_label.add_theme_color_override("font_color", Color::from_rgb(0.7, 0.7, 0.8));
+        level_label.add_theme_color_override("font_color", super::rgb(ui_style::TEXT_SECONDARY));
         top_right.add_child(&level_label);
         self.level_label = Some(level_label);
 
@@ -197,7 +199,9 @@ impl HUD {
         let mut controls = Label::new_alloc();
         controls.set_text("WASD: Move | Arrows: Look | Space: Fire | R/F: Up/Down");
         controls.add_theme_font_size_override("font_size", 16);
-        controls.add_theme_color_override("font_color", Color::from_rgba(0.5, 0.5, 0.6, 0.7));
+        controls.add_theme_color_override("font_color", Color::from_rgba(
+            ui_style::TEXT_UNSELECTED[0], ui_style::TEXT_UNSELECTED[1], ui_style::TEXT_UNSELECTED[2], 0.7,
+        ));
         bottom_center.add_child(&controls);
 
         self.base_mut().add_child(&bottom_center);

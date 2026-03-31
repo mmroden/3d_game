@@ -1,0 +1,31 @@
+[gd_resource type="ShaderMaterial" load_steps=7 format=3 uid="uid://bxm8f2hdnab23"]
+
+[ext_resource type="Shader" uid="uid://8cwmjfk5jyls" path="res://addons/quaternius/materials/M_Trim_Base.tres" id="1_os0b4"]
+[ext_resource type="Texture2D" uid="uid://pcsi3sonumpo" path="res://addons/quaternius/materials/T_Trim_02_BaseColor.png" id="2_mn337"]
+[ext_resource type="Texture2D" uid="uid://06q2kc1o3er6" path="res://addons/quaternius/materials/T_Trim_02_DetailMask.png" id="3_aa6ng"]
+[ext_resource type="Texture2D" uid="uid://dxmxlxcqhlsqx" path="res://addons/quaternius/materials/T_Trim_02_Normal.png" id="4_uqijm"]
+[ext_resource type="Texture2D" uid="uid://cc6c40ji1ko2x" path="res://addons/quaternius/materials/T_Trim_02_ORM.png" id="5_tfyk4"]
+
+[sub_resource type="CompressedTexture2D" id="CompressedTexture2D_pqa8e"]
+load_path = "res://.godot/imported/T_Black.png-b78d246c14aa48861d48255069526cfc.s3tc.ctex"
+
+[resource]
+render_priority = 0
+shader = ExtResource("1_os0b4")
+shader_parameter/Color_Base = Color(1, 1, 1, 1)
+shader_parameter/Color_Detail = Color(1, 1, 1, 1)
+shader_parameter/Metallic = 0.0
+shader_parameter/Roughness = 0.5
+shader_parameter/Specular = 0.5
+shader_parameter/Emissive_A = Color(1, 0, 0, 1)
+shader_parameter/Emissive_B = Color(2e-06, 0.668473, 0.2112, 1)
+shader_parameter/Emissive_C = Color(0, 0.195909, 1, 1)
+shader_parameter/Emissive_Intensity = 2.0
+shader_parameter/Speed = 2.0
+shader_parameter/HasBlinking = false
+shader_parameter/Has_Emissive = false
+shader_parameter/Base_Color = ExtResource("2_mn337")
+shader_parameter/Emissive_Texture = SubResource("CompressedTexture2D_pqa8e")
+shader_parameter/Detail_Mask = ExtResource("3_aa6ng")
+shader_parameter/ORM = ExtResource("5_tfyk4")
+shader_parameter/Normal = ExtResource("4_uqijm")

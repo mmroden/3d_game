@@ -9,7 +9,7 @@ RUST_DIR := $(CURDIR)/rust
 GODOT_DIR := $(CURDIR)/godot
 
 # Godot version - update these when upgrading
-GODOT_VERSION := 4.4.1
+GODOT_VERSION := 4.6.1
 GODOT_RELEASE := stable
 GODOT_ZIP := Godot_v$(GODOT_VERSION)-$(GODOT_RELEASE)_macos.universal.zip
 GODOT_URL := https://github.com/godotengine/godot/releases/download/$(GODOT_VERSION)-$(GODOT_RELEASE)/$(GODOT_ZIP)
@@ -20,7 +20,7 @@ RUST_LIB := $(RUST_DIR)/target/debug/libvoid_scavenger.dylib
 
 # --- Targets ---
 
-deps: deps-rust deps-godot deps-assets
+deps: deps-rust deps-godot
 	@echo "All dependencies ready."
 
 deps-rust:
@@ -35,23 +35,21 @@ deps-rust:
 		rustup component add clippy 2>/dev/null || true && \
 		echo "Rust $$(rustc --version) ready."
 
-deps-godot: $(GODOT)
+deps-godot:
+	@if [ -x "$(GODOT)" ] && $(GODOT) --version 2>/dev/null | grep -q "^$(GODOT_VERSION)\."; then \
+		echo "Godot $(GODOT_VERSION) already installed."; \
+	else \
+		echo "==> Downloading Godot $(GODOT_VERSION)..."; \
+		rm -rf $(GODOT_APP); \
+		mkdir -p $(TOOLS_DIR); \
+		curl -L -o $(TOOLS_DIR)/$(GODOT_ZIP) $(GODOT_URL); \
+		unzip -o -q $(TOOLS_DIR)/$(GODOT_ZIP) -d $(TOOLS_DIR); \
+		rm -f $(TOOLS_DIR)/$(GODOT_ZIP); \
+		echo "Godot $(GODOT_VERSION) installed to $(GODOT_APP)"; \
+	fi
 
-$(GODOT):
-	@echo "==> Downloading Godot $(GODOT_VERSION)..."
-	@mkdir -p $(TOOLS_DIR)
-	@curl -L -o $(TOOLS_DIR)/$(GODOT_ZIP) $(GODOT_URL)
-	@unzip -o -q $(TOOLS_DIR)/$(GODOT_ZIP) -d $(TOOLS_DIR)
-	@rm -f $(TOOLS_DIR)/$(GODOT_ZIP)
-	@echo "Godot $(GODOT_VERSION) installed to $(GODOT_APP)"
-
-deps-assets:
-	@echo "==> Downloading assets..."
-	@mkdir -p $(ASSETS_DIR)
-	@./scripts/fetch-assets.sh $(ASSETS_DIR)
-	@echo "Assets ready."
-
-assets: deps-assets $(GODOT)
+assets: $(GODOT)
+	@test -d $(ASSETS_DIR)/quaternius-megakit || { echo "ERROR: assets/ not found. Download paid assets manually into assets/."; exit 1; }
 	@echo "==> Installing Godot addons from asset packs..."
 	@./scripts/install-addons.sh $(ASSETS_DIR) $(GODOT_DIR)
 	@echo "Addons installed."
@@ -76,16 +74,16 @@ check: deps
 		$(CARGO) test
 	@echo "All checks passed."
 
-build:
+build: deps
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && $(CARGO) build
 	@echo "Build complete."
 
-run: build $(GODOT)
+run: build
 	@echo "==> Launching game..."
 	@$(GODOT) --path $(GODOT_DIR)
 
-demo: build $(GODOT)
+demo: build
 	@echo "==> Running demo..."
 	@$(GODOT) --path $(GODOT_DIR)
 
@@ -95,6 +93,8 @@ clean:
 	@echo "Clean."
 
 nuke: clean
-	@echo "==> Removing all local tools and assets..."
-	@rm -rf $(TOOLS_DIR) $(ASSETS_DIR)
-	@echo "Nuked."
+	@echo "==> Removing local tools and derived Godot files..."
+	@chmod -R u+w $(TOOLS_DIR) 2>/dev/null; rm -rf $(TOOLS_DIR)
+	@chmod -R u+w $(GODOT_DIR)/addons 2>/dev/null; rm -rf $(GODOT_DIR)/addons
+	@chmod -R u+w $(GODOT_DIR)/.godot 2>/dev/null; rm -rf $(GODOT_DIR)/.godot
+	@echo "Nuked. (assets/ preserved)"

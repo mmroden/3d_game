@@ -1,10 +1,17 @@
 use godot::prelude::*;
 use godot::classes::{Node3D, INode3D, OmniLight3D, PackedScene, ResourceLoader};
+use rand::SeedableRng;
+use rand::rngs::SmallRng;
+use rand::seq::IndexedRandom;
 
 use crate::systems::generator::{generate, GeneratorConfig};
 use crate::systems::template_catalog;
 use crate::systems::portal as portal_sys;
 use crate::systems::enemy_type;
+
+fn vec3(a: [f32; 3]) -> Vector3 {
+    Vector3::new(a[0], a[1], a[2])
+}
 
 /// Orchestrates level lifecycle: generates the graph, assembles
 /// room geometry from modular pieces, and spawns lights.
@@ -84,7 +91,7 @@ impl LevelManager {
             };
 
             let mut node: Gd<Node3D> = instance.cast();
-            let pos = Vector3::new(entry.position[0], entry.position[1], entry.position[2]);
+            let pos = vec3(entry.position);
             node.set_position(pos);
 
             if entry.rotation_x.abs() > 0.001 || entry.rotation_y.abs() > 0.001 {
@@ -98,7 +105,7 @@ impl LevelManager {
         // Spawn OmniLight3D for each light fixture
         for ls in &light_sources {
             let mut light = OmniLight3D::new_alloc();
-            light.set_position(Vector3::new(ls.position[0], ls.position[1], ls.position[2]));
+            light.set_position(vec3(ls.position));
             light.set_param(godot::classes::light_3d::Param::RANGE, ls.range);
             light.set_param(godot::classes::light_3d::Param::ENERGY, ls.energy);
             light.set_color(Color::from_rgb(0.9, 0.95, 1.0));
@@ -108,18 +115,16 @@ impl LevelManager {
         // Spawn varied enemies based on current level
         let mut enemy_count = 0;
         let available_enemies = enemy_type::enemies_for_level(self.current_level as u32);
-        let mut enemy_rng = seed;
+        let mut enemy_rng = SmallRng::seed_from_u64(seed as u64);
         for pos in &enemy_positions {
-            // Pick a random enemy type from those available at this level
-            enemy_rng = enemy_rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-            let idx = (enemy_rng >> 33) as usize % available_enemies.len();
-            let etype = available_enemies[idx];
+            let etype = *available_enemies.choose(&mut enemy_rng)
+                .expect("available_enemies is non-empty for any valid level");
 
             if let Some(scene_res) = loader.load(etype.scene_path()) {
                 let packed: Gd<PackedScene> = scene_res.cast();
                 if let Some(instance) = packed.instantiate() {
                     let mut node: Gd<Node3D> = instance.cast();
-                    node.set_position(Vector3::new(pos[0], pos[1], pos[2]));
+                    node.set_position(vec3(*pos));
                     self.base_mut().add_child(&node);
                     enemy_count += 1;
                 }
@@ -129,7 +134,7 @@ impl LevelManager {
                     let packed: Gd<PackedScene> = scene_res.cast();
                     if let Some(instance) = packed.instantiate() {
                         let mut node: Gd<Node3D> = instance.cast();
-                        node.set_position(Vector3::new(pos[0], pos[1], pos[2]));
+                        node.set_position(vec3(*pos));
                         self.base_mut().add_child(&node);
                         enemy_count += 1;
                     }
@@ -143,7 +148,7 @@ impl LevelManager {
                 let packed: Gd<PackedScene> = portal_scene.cast();
                 if let Some(instance) = packed.instantiate() {
                     let mut node: Gd<Node3D> = instance.cast();
-                    node.set_position(Vector3::new(portal_pos[0], portal_pos[1], portal_pos[2]));
+                    node.set_position(vec3(portal_pos));
                     self.base_mut().add_child(&node);
                     godot_print!("Portal spawned at ({}, {}, {})", portal_pos[0], portal_pos[1], portal_pos[2]);
                 }

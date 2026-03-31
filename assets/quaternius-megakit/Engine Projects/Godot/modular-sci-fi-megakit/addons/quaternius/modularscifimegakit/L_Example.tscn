@@ -1,0 +1,73 @@
+[gd_scene load_steps=13 format=3 uid="uid://c0u6f4c6clmyo"]
+
+[ext_resource type="PackedScene" uid="uid://xmsaoqmnlcuj" path="res://addons/quaternius/modularscifimegakit/walls/WallAstra_Corner_Round_Inner.gltf" id="1_hn7wf"]
+[ext_resource type="PackedScene" uid="uid://bfrbve4gs33c4" path="res://addons/quaternius/modularscifimegakit/walls/WallAstra_Straight.gltf" id="2_2tibv"]
+[ext_resource type="PackedScene" uid="uid://dmhuhbulquaoa" path="res://addons/quaternius/modularscifimegakit/walls/WallAstra_Corner_Square_Outer.gltf" id="3_gv5lw"]
+[ext_resource type="PackedScene" uid="uid://d3k434s50e03y" path="res://addons/quaternius/modularscifimegakit/walls/TopAstra_Corner_Round_Inner.gltf" id="4_bi5g3"]
+[ext_resource type="PackedScene" uid="uid://dj7gim1v012fy" path="res://addons/quaternius/modularscifimegakit/walls/TopAstra_Straight.gltf" id="5_cqpyu"]
+[ext_resource type="PackedScene" uid="uid://b8avnl536d4o5" path="res://addons/quaternius/modularscifimegakit/platforms/Platform_CenterPlate.gltf" id="6_wktqm"]
+[ext_resource type="PackedScene" uid="uid://dwhtfb0v86pbe" path="res://addons/quaternius/modularscifimegakit/platforms/Platform_CenterPlate_Curve.gltf" id="7_5vjo7"]
+[ext_resource type="PackedScene" uid="uid://dvplatplha8ji" path="res://addons/quaternius/modularscifimegakit/platforms/Platform_DarkPlates.gltf" id="8_a5y1w"]
+[ext_resource type="PackedScene" uid="uid://cph6nl0vy7rkd" path="res://addons/quaternius/modularscifimegakit/platforms/Platform_DarkPlates_Curves.gltf" id="9_ed7wn"]
+[ext_resource type="PackedScene" uid="uid://c04kvylj6ybbl" path="res://addons/quaternius/modularscifimegakit/props/Prop_Cable1.gltf" id="10_fcgdm"]
+[ext_resource type="PackedScene" uid="uid://3aqnrofcblbw" path="res://addons/quaternius/modularscifimegakit/props/Prop_Computer.gltf" id="11_xml5f"]
+[ext_resource type="PackedScene" uid="uid://dmjrow6kuq2e2" path="res://addons/quaternius/modularscifimegakit/walls/WallAstra_Straight_Broken.gltf" id="12_8ercb"]
+
+[node name="Node3D" type="Node3D"]
+
+[node name="WallAstra_Corner_Round_Inner2" parent="." instance=ExtResource("1_hn7wf")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2, 0, -2)
+
+[node name="WallAstra_Straight3" parent="." instance=ExtResource("2_2tibv")]
+transform = Transform3D(-4.37114e-08, 0, -1, 0, 1, 0, 1, 0, -4.37114e-08, 4, 0, -4)
+
+[node name="WallAstra_Corner_Square_Outer2" parent="." instance=ExtResource("3_gv5lw")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6, 0, 2)
+
+[node name="TopAstra_Corner_Round_Inner2" parent="." instance=ExtResource("4_bi5g3")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2, 0, -2)
+
+[node name="TopAstra_Straight2" parent="." instance=ExtResource("5_cqpyu")]
+
+[node name="TopAstra_Straight3" parent="." instance=ExtResource("5_cqpyu")]
+transform = Transform3D(-4.37114e-08, 0, -1, 0, 1, 0, 1, 0, -4.37114e-08, 4, 0, -4)
+
+[node name="TopAstra_Straight4" parent="." instance=ExtResource("5_cqpyu")]
+transform = Transform3D(-1, 0, 8.74228e-08, 0, 1, 0, -8.74228e-08, 0, -1, 0, 0, 0)
+
+[node name="TopAstra_Straight4" parent="TopAstra_Straight4" instance=ExtResource("5_cqpyu")]
+transform = Transform3D(-4.37114e-08, 0, -1, 0, 1, 0, 1, 0, -4.37114e-08, -4, 0, 4)
+
+[node name="Platform_CenterPlate2" parent="TopAstra_Straight4" instance=ExtResource("6_wktqm")]
+transform = Transform3D(-1, 0, -8.74228e-08, 0, 1, 0, 8.74228e-08, 0, -1, 0, 0, 0)
+
+[node name="Platform_CenterPlate_Curve2" parent="TopAstra_Straight4" instance=ExtResource("7_5vjo7")]
+transform = Transform3D(-1, 0, -8.74228e-08, 0, 1, 0, 8.74228e-08, 0, -1, 3.49691e-07, 0, 4)
+
+[node name="Platform_CenterPlate3" parent="TopAstra_Straight4" instance=ExtResource("6_wktqm")]
+transform = Transform3D(-4.37114e-08, 0, 1, 0, 1, 0, -1, 0, -4.37114e-08, -4, 0, 4)
+
+[node name="OmniLight3D2" type="OmniLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4, 4, -4)
+light_energy = 0.838
+
+[node name="OmniLight3D" type="OmniLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 3, 0)
+light_energy = 0.838
+
+[node name="Platform_DarkPlates2" parent="." instance=ExtResource("8_a5y1w")]
+transform = Transform3D(-1, 8.74228e-08, 0, -8.74228e-08, -1, 0, 0, 0, 1, 0, 5, 0)
+
+[node name="Platform_DarkPlates2" parent="Platform_DarkPlates2" instance=ExtResource("8_a5y1w")]
+transform = Transform3D(-1, 2.62268e-07, -7.64274e-15, 2.62268e-07, 1, -8.74228e-08, -1.52855e-14, -8.74228e-08, -1, -4, 4.76837e-07, -4)
+
+[node name="Platform_DarkPlates_Curves2" parent="." instance=ExtResource("9_ed7wn")]
+transform = Transform3D(4.37114e-08, 1.04251e-15, 1, 2.38498e-08, -1, 0, 1, 2.38498e-08, -4.37114e-08, 0, 5, -4)
+
+[node name="Prop_Cable12" parent="." instance=ExtResource("10_fcgdm")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1, 0, 0)
+
+[node name="Prop_Computer2" parent="." instance=ExtResource("11_xml5f")]
+transform = Transform3D(-4.37114e-08, 0, 1, 0, 1, 0, -1, 0, -4.37114e-08, -1.54171, 0, -2)
+
+[node name="WallAstra_Straight_Broken2" parent="." instance=ExtResource("12_8ercb")]

@@ -5,6 +5,8 @@ use godot::classes::{
 };
 
 use super::menu_panel;
+use crate::systems::menu_cursor::MenuCursor;
+use crate::systems::ui_style;
 
 /// FF-style main menu: Continue / New Game / Options / Exit.
 /// Pure view — emits signals for all actions, never reaches into the scene tree.
@@ -12,11 +14,11 @@ use super::menu_panel;
 #[class(base=CanvasLayer)]
 pub struct MainMenuUI {
     base: Base<CanvasLayer>,
-    cursor_index: usize,
+    cursor: MenuCursor,
     menu_items: Vec<String>,
     labels: Vec<Gd<Label>>,
     in_options: bool,
-    option_cursor: usize,
+    option_cursor: MenuCursor,
     option_labels: Vec<Gd<Label>>,
     sbs_enabled: bool,
     msaa_enabled: bool,
@@ -27,7 +29,7 @@ impl ICanvasLayer for MainMenuUI {
     fn init(base: Base<CanvasLayer>) -> Self {
         Self {
             base,
-            cursor_index: 1, // Default to New Game
+            cursor: MenuCursor::new_at(1, 4), // Default to New Game
             menu_items: vec![
                 "Continue".to_string(),
                 "New Game".to_string(),
@@ -36,7 +38,7 @@ impl ICanvasLayer for MainMenuUI {
             ],
             labels: Vec::new(),
             in_options: false,
-            option_cursor: 0,
+            option_cursor: MenuCursor::new(3),
             option_labels: Vec::new(),
             sbs_enabled: false,
             msaa_enabled: true,
@@ -149,17 +151,17 @@ impl MainMenuUI {
         self.labels.clear();
         for (i, item) in self.menu_items.iter().enumerate() {
             let mut label = Label::new_alloc();
-            let text = if i == self.cursor_index {
+            let text = if i == self.cursor.index() {
                 format!("> {}", item)
             } else {
                 format!("  {}", item)
             };
             label.set_text(&text);
             label.add_theme_font_size_override("font_size", 32);
-            let color = if i == self.cursor_index {
-                Color::from_rgb(1.0, 1.0, 1.0)
+            let color = if i == self.cursor.index() {
+                super::rgb(ui_style::TEXT_SELECTED)
             } else {
-                Color::from_rgb(0.5, 0.5, 0.6)
+                super::rgb(ui_style::TEXT_UNSELECTED)
             };
             label.add_theme_color_override("font_color", color);
             vbox.add_child(&label);
@@ -172,15 +174,11 @@ impl MainMenuUI {
     fn handle_menu_input(&mut self, keycode: Key) {
         match keycode {
             Key::UP | Key::W => {
-                if self.cursor_index > 0 {
-                    self.cursor_index -= 1;
-                } else {
-                    self.cursor_index = self.menu_items.len() - 1;
-                }
+                self.cursor.move_up();
                 self.update_cursor();
             }
             Key::DOWN | Key::S => {
-                self.cursor_index = (self.cursor_index + 1) % self.menu_items.len();
+                self.cursor.move_down();
                 self.update_cursor();
             }
             Key::ENTER | Key::SPACE => {
@@ -191,7 +189,7 @@ impl MainMenuUI {
     }
 
     fn select_item(&mut self) {
-        match self.cursor_index {
+        match self.cursor.index() {
             0 => {
                 self.base_mut().emit_signal("continue_selected", &[]);
             }
@@ -200,7 +198,7 @@ impl MainMenuUI {
             }
             2 => {
                 self.in_options = true;
-                self.option_cursor = 0;
+                self.option_cursor.reset();
                 self.show_options();
             }
             3 => {
@@ -216,15 +214,15 @@ impl MainMenuUI {
             if !label.is_instance_valid() {
                 continue;
             }
-            let color = if i == self.cursor_index {
-                Color::from_rgb(1.0, 1.0, 1.0)
+            let color = if i == self.cursor.index() {
+                super::rgb(ui_style::TEXT_SELECTED)
             } else {
-                Color::from_rgb(0.5, 0.5, 0.6)
+                super::rgb(ui_style::TEXT_UNSELECTED)
             };
             label.add_theme_color_override("font_color", color);
 
             let base_text = self.menu_items[i].clone();
-            if i == self.cursor_index {
+            if i == self.cursor.index() {
                 label.set_text(&format!("> {}", base_text));
             } else {
                 label.set_text(&format!("  {}", base_text));
@@ -251,17 +249,17 @@ impl MainMenuUI {
 
         for (i, text) in options.iter().enumerate() {
             let mut label = Label::new_alloc();
-            let display = if i == self.option_cursor {
+            let display = if i == self.option_cursor.index() {
                 format!("> {}", text.trim())
             } else {
                 text.clone()
             };
             label.set_text(&display);
             label.add_theme_font_size_override("font_size", 32);
-            let color = if i == self.option_cursor {
-                Color::from_rgb(1.0, 1.0, 1.0)
+            let color = if i == self.option_cursor.index() {
+                super::rgb(ui_style::TEXT_SELECTED)
             } else {
-                Color::from_rgb(0.5, 0.5, 0.6)
+                super::rgb(ui_style::TEXT_UNSELECTED)
             };
             label.add_theme_color_override("font_color", color);
             parent.add_child(&label);
@@ -272,19 +270,15 @@ impl MainMenuUI {
     fn handle_options_input(&mut self, keycode: Key) {
         match keycode {
             Key::UP | Key::W => {
-                if self.option_cursor > 0 {
-                    self.option_cursor -= 1;
-                } else {
-                    self.option_cursor = 2;
-                }
+                self.option_cursor.move_up();
                 self.refresh_options();
             }
             Key::DOWN | Key::S => {
-                self.option_cursor = (self.option_cursor + 1) % 3;
+                self.option_cursor.move_down();
                 self.refresh_options();
             }
             Key::ENTER | Key::SPACE => {
-                match self.option_cursor {
+                match self.option_cursor.index() {
                     0 => {
                         self.base_mut().emit_signal("sbs_toggled", &[]);
                     }
@@ -315,16 +309,16 @@ impl MainMenuUI {
             if !label.is_instance_valid() {
                 continue;
             }
-            let display = if i == self.option_cursor {
+            let display = if i == self.option_cursor.index() {
                 format!("> {}", texts[i])
             } else {
                 format!("  {}", texts[i])
             };
             label.set_text(&display);
-            let color = if i == self.option_cursor {
-                Color::from_rgb(1.0, 1.0, 1.0)
+            let color = if i == self.option_cursor.index() {
+                super::rgb(ui_style::TEXT_SELECTED)
             } else {
-                Color::from_rgb(0.5, 0.5, 0.6)
+                super::rgb(ui_style::TEXT_UNSELECTED)
             };
             label.add_theme_color_override("font_color", color);
         }

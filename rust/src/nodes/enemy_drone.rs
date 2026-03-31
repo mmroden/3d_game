@@ -6,6 +6,7 @@ use godot::classes::{
     MeshInstance3D, BoxMesh,
 };
 
+use super::godot_util;
 use crate::systems::enemy_ai::{DroneAi, DroneConfig};
 use crate::systems::enemy_type::EnemyType;
 
@@ -199,25 +200,11 @@ impl EnemyDrone {
         particles.set_one_shot(true);
         particles.set_explosiveness_ratio(0.9);
 
-        let mut mat = ParticleProcessMaterial::new_gd();
-        mat.set_spread(180.0);
-        mat.set_color(Color::from_rgba(1.0, 0.4, 0.05, 1.0));
-        mat.set_gravity(Vector3::ZERO);
-        mat.set_param_min(
-            godot::classes::particle_process_material::Parameter::INITIAL_LINEAR_VELOCITY,
-            4.0,
-        );
-        mat.set_param_max(
-            godot::classes::particle_process_material::Parameter::INITIAL_LINEAR_VELOCITY,
-            10.0,
-        );
-        mat.set_param_min(
-            godot::classes::particle_process_material::Parameter::SCALE,
-            0.5,
-        );
-        mat.set_param_max(
-            godot::classes::particle_process_material::Parameter::SCALE,
-            2.0,
+        let mat = godot_util::particle_burst_material(
+            180.0,
+            Color::from_rgba(1.0, 0.4, 0.05, 1.0),
+            (4.0, 10.0),
+            Some((0.5, 2.0)),
         );
         particles.set_process_material(&mat);
 

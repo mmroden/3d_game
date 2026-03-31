@@ -8,6 +8,6 @@ rust-version = "1.85"
 crate-type = ["cdylib"]
 
 [dependencies]
-godot = "0.5"
+godot = { version = "0.5", features = ["api-4-6"] }
 petgraph = "0.8"
 rand = "0.10"

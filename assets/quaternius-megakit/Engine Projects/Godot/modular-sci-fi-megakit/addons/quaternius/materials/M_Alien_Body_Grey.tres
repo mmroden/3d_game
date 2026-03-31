@@ -1,0 +1,12 @@
+[gd_resource type="ShaderMaterial" load_steps=2 format=3 uid="uid://dv8m0lmwy4ife"]
+
+[ext_resource type="Shader" uid="uid://drivqrtl1k7i5" path="res://addons/quaternius/materials/M_Alien_Body.tres" id="1_qo4wh"]
+
+[resource]
+render_priority = 0
+shader = ExtResource("1_qo4wh")
+shader_parameter/Speed = 2.0
+shader_parameter/Expansion = 1.0
+shader_parameter/Color = Color(0.733333, 0.741176, 0.72549, 1)
+shader_parameter/Color2 = Color(0.117647, 0.152941, 0.0705882, 1)
+shader_parameter/Emissive = Color(0.443137, 0.368627, 0.317647, 1)

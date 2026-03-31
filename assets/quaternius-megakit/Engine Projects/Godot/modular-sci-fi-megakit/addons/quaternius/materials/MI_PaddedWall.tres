@@ -1,0 +1,29 @@
+[gd_resource type="ShaderMaterial" load_steps=7 format=3 uid="uid://dq5cswqgra3gn"]
+
+[ext_resource type="Shader" uid="uid://8cwmjfk5jyls" path="res://addons/quaternius/materials/M_Trim_Base.tres" id="1_tujnc"]
+[ext_resource type="Texture2D" uid="uid://13sfkvx870s" path="res://addons/quaternius/materials/T_PaddedWall_BaseColor.png" id="2_ynl7l"]
+[ext_resource type="Texture2D" uid="uid://ch48dhq5b5b1g" path="res://addons/quaternius/materials/T_Black.png" id="3_352g0"]
+[ext_resource type="Texture2D" uid="uid://yyiiffnk4urw" path="res://addons/quaternius/materials/T_PaddingWall_Emissive.png" id="4_yx2ga"]
+[ext_resource type="Texture2D" uid="uid://cjjx8mod4ivor" path="res://addons/quaternius/materials/T_PaddedWall_Normal.png" id="5_h31pg"]
+[ext_resource type="Texture2D" uid="uid://chlwn4wedk34n" path="res://addons/quaternius/materials/T_PaddedWall_ORM.png" id="6_35jsg"]
+
+[resource]
+render_priority = 0
+shader = ExtResource("1_tujnc")
+shader_parameter/Color_Base = Color(1, 1, 1, 1)
+shader_parameter/Color_Detail = Color(1, 0, 0, 1)
+shader_parameter/Metallic = 0.0
+shader_parameter/Roughness = 1.0
+shader_parameter/Specular = 0.6
+shader_parameter/Emissive_A = Color(1, 0, 0, 1)
+shader_parameter/Emissive_B = Color(2e-06, 0.668473, 0.2112, 1)
+shader_parameter/Emissive_C = Color(0, 0.195909, 1, 1)
+shader_parameter/Emissive_Intensity = 2.0
+shader_parameter/Speed = 2.0
+shader_parameter/HasBlinking = false
+shader_parameter/Has_Emissive = true
+shader_parameter/Base_Color = ExtResource("2_ynl7l")
+shader_parameter/Emissive_Texture = ExtResource("4_yx2ga")
+shader_parameter/Detail_Mask = ExtResource("3_352g0")
+shader_parameter/ORM = ExtResource("6_35jsg")
+shader_parameter/Normal = ExtResource("5_h31pg")

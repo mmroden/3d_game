@@ -1,0 +1,8 @@
+[gd_resource type="ShaderMaterial" load_steps=2 format=3 uid="uid://biakfho3yonyg"]
+
+[ext_resource type="Shader" uid="uid://b5xrnp0kevvwm" path="res://addons/quaternius/materials/M_Black_Base.tres" id="1_ma06h"]
+
+[resource]
+render_priority = 0
+shader = ExtResource("1_ma06h")
+shader_parameter/Color = Color(0, 0, 0, 1)

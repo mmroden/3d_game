@@ -12,16 +12,13 @@
 assets/**/FBX/
 assets/**/FBX (Unity)/
 assets/**/OBJ/
-assets/**/Engine Projects/
 assets/**/Blends/
 assets/**/Blend/
 assets/**/Planet Textures/
 assets/**/*.blend
+assets/quaternius-megakit/Engine Projects/Unity (URP)/
+assets/quaternius-megakit/Engine Projects/Unreal Engine/
 
-# Asset packs with no glTF (FBX/OBJ only, not usable)
-/assets/quaternius-fish/
-/assets/quaternius-monsters/
-/assets/quaternius-spaceships/
 
 # Godot addon build output (rebuilt via make assets)
 /godot/addons/

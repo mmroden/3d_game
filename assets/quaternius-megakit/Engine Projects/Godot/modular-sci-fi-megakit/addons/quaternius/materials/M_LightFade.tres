@@ -1,0 +1,10 @@
+[gd_resource type="ShaderMaterial" load_steps=2 format=3 uid="uid://cndvffmnslqh3"]
+
+[ext_resource type="Shader" uid="uid://vbikg6wfpgrw" path="res://addons/quaternius/materials/M_LightFade_Base.tres" id="1_mi7gn"]
+
+[resource]
+render_priority = 0
+shader = ExtResource("1_mi7gn")
+shader_parameter/Color = Color(0.579008, 1, 0, 1)
+shader_parameter/FloatParameter = 2.6
+shader_parameter/Emissive_Intensity = 3.0

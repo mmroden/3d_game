@@ -6,6 +6,7 @@ use godot::classes::{
 };
 
 use super::menu_panel;
+use crate::systems::ui_style;
 
 /// Post-level kill summary: shows enemy types killed and credits earned.
 #[derive(GodotClass)]
@@ -75,7 +76,7 @@ impl KillSummaryUI {
         let mut header = Label::new_alloc();
         header.set_text("ENEMIES DEFEATED");
         header.add_theme_font_size_override("font_size", 28);
-        header.add_theme_color_override("font_color", Color::from_rgb(0.7, 0.7, 0.8));
+        header.add_theme_color_override("font_color", super::rgb(ui_style::TEXT_SECONDARY));
         vbox.add_child(&header);
 
         // Each enemy type
@@ -96,7 +97,7 @@ impl KillSummaryUI {
         let mut credits_label = Label::new_alloc();
         credits_label.set_text(&format!("TOTAL CREDITS: {}", total_credits));
         credits_label.add_theme_font_size_override("font_size", 32);
-        credits_label.add_theme_color_override("font_color", Color::from_rgb(1.0, 0.85, 0.2));
+        credits_label.add_theme_color_override("font_color", super::rgb(ui_style::TEXT_CREDITS));
         vbox.add_child(&credits_label);
 
         // Spacer
@@ -108,7 +109,7 @@ impl KillSummaryUI {
         let mut prompt = Label::new_alloc();
         prompt.set_text("Press ENTER to continue");
         prompt.add_theme_font_size_override("font_size", 22);
-        prompt.add_theme_color_override("font_color", Color::from_rgb(0.5, 0.5, 0.6));
+        prompt.add_theme_color_override("font_color", super::rgb(ui_style::TEXT_UNSELECTED));
         vbox.add_child(&prompt);
 
         self.base_mut().add_child(&panel);

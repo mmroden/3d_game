@@ -1,0 +1,10 @@
+[gd_resource type="ShaderMaterial" load_steps=2 format=3 uid="uid://l5vhbfsex4g2"]
+
+[ext_resource type="Shader" uid="uid://b8h748brt2tgd" path="res://addons/quaternius/materials/M_Alien_Eyes_Base.tres" id="1_tgc2d"]
+
+[resource]
+render_priority = 0
+shader = ExtResource("1_tgc2d")
+shader_parameter/Color = Color(0, 0, 0, 1)
+shader_parameter/Specular2 = 0.0
+shader_parameter/Specular = 1.0

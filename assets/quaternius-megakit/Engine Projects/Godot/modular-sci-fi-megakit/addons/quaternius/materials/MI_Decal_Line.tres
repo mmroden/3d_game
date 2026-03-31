@@ -1,0 +1,8 @@
+[gd_resource type="ShaderMaterial" load_steps=2 format=3 uid="uid://fpk7ibc37d7t"]
+
+[ext_resource type="Shader" uid="uid://dnuuwlnci3645" path="res://addons/quaternius/materials/MI_Decal_Line_Base.tres" id="1_7ufl7"]
+
+[resource]
+render_priority = 0
+shader = ExtResource("1_7ufl7")
+shader_parameter/Color = Color(0.721569, 0.505882, 0, 1)

@@ -57,7 +57,7 @@ impl Default for RoomStyle {
 pub(crate) const CELL_HEIGHT: f32 = 5.0;
 
 /// A single mesh to place in the level.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MeshPlacement {
     pub scene: &'static str,
     pub position: [f32; 3],

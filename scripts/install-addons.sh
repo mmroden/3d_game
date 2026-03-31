@@ -80,47 +80,42 @@ echo "  MegaKit addon installed."
 
 # ---------- Quaternius Sci-Fi Essentials ----------
 
-ESSENTIALS_SRC="$ASSETS_DIR/quaternius-essentials/Engine Projects/Godot/sci-fi-essentials/addons/quaternius"
+ESSENTIALS_GLTF="$ASSETS_DIR/quaternius-essentials/glTF"
+ESSENTIALS_TEX="$ASSETS_DIR/quaternius-essentials/Textures"
 
-if [ -d "$ESSENTIALS_SRC" ]; then
+if [ -d "$ESSENTIALS_GLTF" ]; then
     echo "  Installing Essentials addon..."
 
-    # Essentials materials (merge into same materials dir)
-    if [ -d "$ESSENTIALS_SRC/materials" ]; then
-        find "$ESSENTIALS_SRC/materials" -maxdepth 1 \( -name "*.tres" -o -name "*.png" -o -name "*.gdshader" \) \
+    # Essentials textures (merge into materials dir for shared material references)
+    if [ -d "$ESSENTIALS_TEX" ]; then
+        find "$ESSENTIALS_TEX" -maxdepth 1 \( -name "*.png" -o -name "*.jpg" \) \
             -exec cp {} "$ADDON_DIR/materials/" \;
 
-        # Textures/ subdirectory — flatten into materials/ (the .tres path-stripping
-        # in this script converts "materials/Textures/Foo.png" to "materials/Foo.png")
-        if [ -d "$ESSENTIALS_SRC/materials/Textures" ]; then
-            find "$ESSENTIALS_SRC/materials/Textures" -maxdepth 1 \( -name "*.png" -o -name "*.jpg" \) \
-                -exec cp {} "$ADDON_DIR/materials/" \;
-        fi
-
-        # Planet Textures/ subdirectory — keep as subdirectory (referenced as
-        # "materials/Planet Textures/T_*.png" by planet material .tres files)
-        if [ -d "$ESSENTIALS_SRC/materials/Planet Textures" ]; then
+        if [ -d "$ESSENTIALS_TEX/Planet Textures" ]; then
             mkdir -p "$ADDON_DIR/materials/Planet Textures"
-            find "$ESSENTIALS_SRC/materials/Planet Textures" -maxdepth 1 \( -name "*.png" -o -name "*.jpg" \) \
+            find "$ESSENTIALS_TEX/Planet Textures" -maxdepth 1 \( -name "*.png" -o -name "*.jpg" \) \
                 -exec cp {} "$ADDON_DIR/materials/Planet Textures/" \;
         fi
     fi
 
-    # Essentials mesh modules (props, enemies, guns)
-    for subdir in Props Enemies Guns; do
-        src="$ESSENTIALS_SRC/Sci-FiEssentials/$subdir"
-        dst="$ADDON_DIR/essentials/$(echo "$subdir" | tr 'A-Z' 'a-z')"
-        if [ -d "$src" ]; then
-            mkdir -p "$dst"
-            find "$src" -maxdepth 1 \( -name "*.gltf" -o -name "*.bin" \) \
-                -exec cp {} "$dst/" \;
-        fi
+    # Essentials meshes — categorize by filename prefix from flat glTF/ directory
+    for category in props enemies guns; do
+        mkdir -p "$ADDON_DIR/essentials/$category"
+    done
+    for f in "$ESSENTIALS_GLTF"/*.gltf "$ESSENTIALS_GLTF"/*.bin; do
+        [ -f "$f" ] || continue
+        base="$(basename "$f")"
+        case "$base" in
+            Prop_*) cp "$f" "$ADDON_DIR/essentials/props/" ;;
+            Enemy_*) cp "$f" "$ADDON_DIR/essentials/enemies/" ;;
+            Gun_*) cp "$f" "$ADDON_DIR/essentials/guns/" ;;
+        esac
     done
 
     chmod -R u+w "$ADDON_DIR"
     echo "  Essentials addon installed."
 else
-    echo "  Essentials Godot addon not found, skipping."
+    echo "  Essentials glTF not found, skipping."
 fi
 
 # ---------- Quaternius Monsters (FBX-only pack) ----------
