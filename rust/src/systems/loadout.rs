@@ -21,7 +21,7 @@ impl Default for BaseStats {
             max_health: 100.0,
             fire_rate: 5.0,
             projectile_speed: 50.0,
-            projectile_damage: 10.0,
+            projectile_damage: 1.0,
         }
     }
 }

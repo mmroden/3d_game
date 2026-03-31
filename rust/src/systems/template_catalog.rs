@@ -75,6 +75,20 @@ pub fn spawn_list(
     Vec<crate::systems::room_assembler::MeshPlacement>,
     Vec<crate::systems::room_furnisher::LightSource>,
 ) {
+    let (meshes, lights, _enemies) = spawn_list_full(graph, cell_size, seed);
+    (meshes, lights)
+}
+
+/// Like `spawn_list`, but also returns world-space enemy spawn positions.
+pub fn spawn_list_full(
+    graph: &crate::systems::level_graph::LevelGraph,
+    cell_size: f32,
+    seed: u64,
+) -> (
+    Vec<crate::systems::room_assembler::MeshPlacement>,
+    Vec<crate::systems::room_furnisher::LightSource>,
+    Vec<[f32; 3]>,
+) {
     use crate::systems::cell::CellGrid;
     use crate::systems::room_assembler::RoomStyle;
     use crate::systems::room_furnisher;
@@ -82,6 +96,7 @@ pub fn spawn_list(
 
     let mut meshes = Vec::new();
     let mut lights = Vec::new();
+    let mut enemy_positions = Vec::new();
 
     for (room_idx, idx) in graph.room_indices().enumerate() {
         let Some(room) = graph.room(idx) else { continue };
@@ -112,9 +127,20 @@ pub fn spawn_list(
             meshes.push(mesh);
             lights.push(light);
         }
+
+        // Enemy spawn positions (skip first room so player doesn't spawn into enemies)
+        if room_idx > 0 {
+            for sp in &room.template.enemy_spawns {
+                enemy_positions.push([
+                    origin[0] + sp.position[0],
+                    origin[1] + sp.position[1] + 1.5, // Hover height
+                    origin[2] + sp.position[2],
+                ]);
+            }
+        }
     }
 
-    (meshes, lights)
+    (meshes, lights, enemy_positions)
 }
 
 /// Return the world-space center of every cell in the level (for player spawn).

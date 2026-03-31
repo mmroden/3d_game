@@ -3,6 +3,8 @@ use godot::classes::{Node3D, INode3D, OmniLight3D, PackedScene, ResourceLoader};
 
 use crate::systems::generator::{generate, GeneratorConfig};
 use crate::systems::template_catalog;
+use crate::systems::portal as portal_sys;
+use crate::systems::enemy_type;
 
 /// Orchestrates level lifecycle: generates the graph, assembles
 /// room geometry from modular pieces, and spawns lights.
@@ -19,6 +21,9 @@ pub struct LevelManager {
 
     #[export]
     target_rooms: i32,
+
+    #[export]
+    current_level: i32,
 }
 
 #[godot_api]
@@ -29,6 +34,7 @@ impl INode3D for LevelManager {
             grid_cell_size: 4.0,
             seed: 42_i64,
             target_rooms: 5_i32,
+            current_level: 1_i32,
         }
     }
 
@@ -58,9 +64,9 @@ impl LevelManager {
             }
         };
 
-        // Assemble all room geometry, furniture, and light fixtures
-        let (placements, light_sources) =
-            template_catalog::spawn_list(&graph, self.grid_cell_size, seed);
+        // Assemble all room geometry, furniture, light fixtures, and enemy positions
+        let (placements, light_sources, enemy_positions) =
+            template_catalog::spawn_list_full(&graph, self.grid_cell_size, seed);
         let mut loader = ResourceLoader::singleton();
         let mut mesh_count = 0;
 
@@ -99,6 +105,53 @@ impl LevelManager {
             self.base_mut().add_child(&light);
         }
 
+        // Spawn varied enemies based on current level
+        let mut enemy_count = 0;
+        let available_enemies = enemy_type::enemies_for_level(self.current_level as u32);
+        let mut enemy_rng = seed;
+        for pos in &enemy_positions {
+            // Pick a random enemy type from those available at this level
+            enemy_rng = enemy_rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let idx = (enemy_rng >> 33) as usize % available_enemies.len();
+            let etype = available_enemies[idx];
+
+            if let Some(scene_res) = loader.load(etype.scene_path()) {
+                let packed: Gd<PackedScene> = scene_res.cast();
+                if let Some(instance) = packed.instantiate() {
+                    let mut node: Gd<Node3D> = instance.cast();
+                    node.set_position(Vector3::new(pos[0], pos[1], pos[2]));
+                    self.base_mut().add_child(&node);
+                    enemy_count += 1;
+                }
+            } else {
+                // Fallback: try loading as the default drone scene
+                if let Some(scene_res) = loader.load("res://scenes/enemies/enemy_drone.tscn") {
+                    let packed: Gd<PackedScene> = scene_res.cast();
+                    if let Some(instance) = packed.instantiate() {
+                        let mut node: Gd<Node3D> = instance.cast();
+                        node.set_position(Vector3::new(pos[0], pos[1], pos[2]));
+                        self.base_mut().add_child(&node);
+                        enemy_count += 1;
+                    }
+                }
+            }
+        }
+
+        // Spawn end-of-level portal in the last room
+        if let Some(portal_pos) = portal_sys::portal_position(&graph, self.grid_cell_size) {
+            if let Some(portal_scene) = loader.load("res://scenes/items/portal.tscn") {
+                let packed: Gd<PackedScene> = portal_scene.cast();
+                if let Some(instance) = packed.instantiate() {
+                    let mut node: Gd<Node3D> = instance.cast();
+                    node.set_position(Vector3::new(portal_pos[0], portal_pos[1], portal_pos[2]));
+                    self.base_mut().add_child(&node);
+                    godot_print!("Portal spawned at ({}, {}, {})", portal_pos[0], portal_pos[1], portal_pos[2]);
+                }
+            } else {
+                godot_warn!("Could not load portal.tscn");
+            }
+        }
+
         // Move player to the first room's center
         let centers = template_catalog::cell_centers(&graph, self.grid_cell_size);
         if let Some(first_center) = centers.first() {
@@ -116,10 +169,11 @@ impl LevelManager {
         }
 
         godot_print!(
-            "Level generated: {} rooms, {} meshes, {} lights",
+            "Level generated: {} rooms, {} meshes, {} lights, {} enemies",
             target_rooms,
             mesh_count,
-            light_sources.len()
+            light_sources.len(),
+            enemy_count,
         );
     }
 }

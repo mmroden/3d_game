@@ -8,8 +8,6 @@ pub struct Lootbox {
     base: Base<Area3D>,
 
     #[export]
-    upgrade_name: GString,
-    #[export]
     bob_speed: f32,
     #[export]
     bob_amplitude: f32,
@@ -24,7 +22,6 @@ impl IArea3D for Lootbox {
     fn init(base: Base<Area3D>) -> Self {
         Self {
             base,
-            upgrade_name: GString::new(),
             bob_speed: 2.0,
             bob_amplitude: 0.3,
             time: 0.0,
@@ -35,6 +32,15 @@ impl IArea3D for Lootbox {
 
     fn ready(&mut self) {
         self.origin_y = self.base().get_global_position().y;
+
+        // Monitor for bodies entering (player collision)
+        self.base_mut().set_monitoring(true);
+        self.base_mut().set_collision_mask(1); // Detect layer 1 (player)
+        self.base_mut().set_collision_layer(0); // Don't block anything
+
+        // Connect body_entered signal
+        let callable = self.base().callable("on_body_entered");
+        self.base_mut().connect("body_entered", &callable);
     }
 
     fn process(&mut self, delta: f64) {
@@ -56,12 +62,52 @@ impl IArea3D for Lootbox {
 #[godot_api]
 impl Lootbox {
     #[func]
+    fn on_body_entered(&mut self, body: Gd<Node3D>) {
+        if self.collected {
+            return;
+        }
+        // Check if it's the player
+        if body.is_in_group("player") {
+            self.collect();
+        }
+    }
+
+    #[func]
     pub fn collect(&mut self) {
         if self.collected {
             return;
         }
         self.collected = true;
-        // TODO: emit signal with upgrade data, play effect, queue_free
+
+        // Generate and apply a random upgrade to the player
+        use crate::systems::upgrade::random_upgrade;
+        use rand::SeedableRng;
+        use rand::rngs::SmallRng;
+
+        // Use current position as entropy for variety
+        let pos = self.base().get_global_position();
+        let seed = ((pos.x * 1000.0) as u64)
+            .wrapping_add((pos.z * 7777.0) as u64)
+            .wrapping_add((self.time * 9999.0) as u64);
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let upgrade = random_upgrade(&mut rng);
+
+        godot_print!("Collected upgrade: {} (x{:.0}%)", upgrade.name, (upgrade.multiplier - 1.0) * 100.0);
+
+        // Apply to player's loadout via signal/method call
+        let mut tree = self.base().get_tree().unwrap();
+        let players = tree.get_nodes_in_group("player");
+        if let Some(mut player) = players.get(0) {
+            player.call(
+                "apply_upgrade",
+                &[
+                    Variant::from(GString::from(&upgrade.name)),
+                    Variant::from(upgrade.kind as i32),
+                    Variant::from(upgrade.multiplier),
+                ],
+            );
+        }
+
         self.base_mut().queue_free();
     }
 }

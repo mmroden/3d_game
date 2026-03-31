@@ -123,5 +123,50 @@ else
     echo "  Essentials Godot addon not found, skipping."
 fi
 
+# ---------- Quaternius Monsters (FBX-only pack) ----------
+
+MONSTERS_SRC="$ASSETS_DIR/quaternius-monsters/FBX"
+
+if [ -d "$MONSTERS_SRC" ]; then
+    echo "  Installing Monsters addon..."
+    mkdir -p "$ADDON_DIR/monsters"
+    find "$MONSTERS_SRC" -maxdepth 1 -name "*.fbx" \
+        -exec cp {} "$ADDON_DIR/monsters/" \;
+    chmod -R u+w "$ADDON_DIR/monsters"
+    echo "  Monsters addon installed."
+else
+    echo "  Monsters FBX not found, skipping."
+fi
+
+# ---------- Quaternius Fish (FBX-only pack) ----------
+
+FISH_SRC="$ASSETS_DIR/quaternius-fish/FBX"
+
+if [ -d "$FISH_SRC" ]; then
+    echo "  Installing Fish addon..."
+    mkdir -p "$ADDON_DIR/fish"
+    find "$FISH_SRC" -maxdepth 1 -name "*.fbx" \
+        -exec cp {} "$ADDON_DIR/fish/" \;
+    chmod -R u+w "$ADDON_DIR/fish"
+    echo "  Fish addon installed."
+else
+    echo "  Fish FBX not found, skipping."
+fi
+
+# ---------- Quaternius Spaceships (FBX-only pack, reserved for player ship upgrades) ----------
+
+SPACESHIPS_SRC="$ASSETS_DIR/quaternius-spaceships/FBX"
+
+if [ -d "$SPACESHIPS_SRC" ]; then
+    echo "  Installing Spaceships addon..."
+    mkdir -p "$ADDON_DIR/spaceships"
+    find "$SPACESHIPS_SRC" -maxdepth 1 -name "*.fbx" \
+        -exec cp {} "$ADDON_DIR/spaceships/" \;
+    chmod -R u+w "$ADDON_DIR/spaceships"
+    echo "  Spaceships addon installed."
+else
+    echo "  Spaceships FBX not found, skipping."
+fi
+
 echo "  Quaternius addon ready at: $ADDON_DIR"
 du -sh "$ADDON_DIR"
