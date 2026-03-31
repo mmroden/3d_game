@@ -59,6 +59,33 @@ pub fn right_viewport_rect(config: &StereoConfig) -> [u32; 4] {
     [config.viewport_width, 0, config.viewport_width, config.viewport_height]
 }
 
+/// UI viewport size — same as per-eye resolution.
+/// UI renders at native per-eye res regardless of SBS mode.
+pub fn ui_viewport_size(config: &StereoConfig) -> [u32; 2] {
+    [config.viewport_width, config.viewport_height]
+}
+
+/// Rect `[x, y, w, h]` for the UI TextureRect overlay in the left eye container.
+/// Local coords inside the left SubViewportContainer — origin is (0,0).
+pub fn ui_overlay_rect_left(config: &StereoConfig) -> [f32; 4] {
+    [0.0, 0.0, config.viewport_width as f32, config.viewport_height as f32]
+}
+
+/// Rect `[x, y, w, h]` for the UI TextureRect overlay in the right eye container.
+/// Local coords inside the right SubViewportContainer — origin is (0,0).
+pub fn ui_overlay_rect_right(config: &StereoConfig) -> [f32; 4] {
+    [0.0, 0.0, config.viewport_width as f32, config.viewport_height as f32]
+}
+
+/// UI CanvasLayer node names that must be reparented when toggling SBS mode.
+pub const UI_NODE_NAMES: &[&str] = &[
+    "MainMenuUI",
+    "HUD",
+    "KillSummaryUI",
+    "ShopUI",
+    "DeathScreenUI",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,5 +190,36 @@ mod tests {
             "default IPD should be ~0.065m (human average), got {}",
             cfg.eye_separation
         );
+    }
+
+    #[test]
+    fn ui_viewport_size_matches_per_eye() {
+        let cfg = StereoConfig::default();
+        assert_eq!(ui_viewport_size(&cfg), [1920, 1080]);
+    }
+
+    #[test]
+    fn ui_overlay_left_is_full_viewport() {
+        let cfg = StereoConfig::default();
+        assert_eq!(ui_overlay_rect_left(&cfg), [0.0, 0.0, 1920.0, 1080.0]);
+    }
+
+    #[test]
+    fn ui_overlay_right_is_full_viewport_at_local_origin() {
+        let cfg = StereoConfig::default();
+        assert_eq!(ui_overlay_rect_right(&cfg), [0.0, 0.0, 1920.0, 1080.0]);
+    }
+
+    #[test]
+    fn ui_node_names_non_empty() {
+        assert!(!UI_NODE_NAMES.is_empty());
+    }
+
+    #[test]
+    fn ui_node_names_no_duplicates() {
+        let mut seen = std::collections::HashSet::new();
+        for name in UI_NODE_NAMES {
+            assert!(seen.insert(name), "duplicate UI node name: {name}");
+        }
     }
 }

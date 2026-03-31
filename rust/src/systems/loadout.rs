@@ -1,7 +1,7 @@
 use crate::systems::upgrade::{Upgrade, UpgradeKind};
 
 /// Base stats for the ship before upgrades.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BaseStats {
     pub thrust_power: f32,
     pub rotation_speed: f32,
@@ -27,7 +27,7 @@ impl Default for BaseStats {
 }
 
 /// The player's current ship configuration: base stats + collected upgrades.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Loadout {
     pub base: BaseStats,
     pub upgrades: Vec<Upgrade>,

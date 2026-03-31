@@ -1,9 +1,11 @@
 use godot::prelude::*;
 use godot::global::Key;
 use godot::classes::{
-    CanvasLayer, ICanvasLayer, ColorRect, Label, VBoxContainer, Control,
+    CanvasLayer, ICanvasLayer, Label, Control,
     Engine, InputEvent, InputEventKey,
 };
+
+use super::menu_panel;
 
 /// Upgrade shop between levels: buy laser upgrades with credits.
 #[derive(GodotClass)]
@@ -91,7 +93,6 @@ impl ShopUI {
         can_afford: bool,
         is_max: bool,
     ) {
-        // Clear old children
         for mut child in self.base().get_children().iter_shared() {
             child.queue_free();
         }
@@ -99,25 +100,22 @@ impl ShopUI {
         self.labels.clear();
         self.cursor_index = 0;
 
-        // Dark background
-        let mut bg = ColorRect::new_alloc();
-        bg.set_anchors_preset(godot::classes::control::LayoutPreset::FULL_RECT);
-        bg.set_color(Color::from_rgba(0.02, 0.02, 0.08, 0.95));
-        self.base_mut().add_child(&bg);
+        // Semi-transparent overlay for ship showcase visibility
+        let overlay = menu_panel::create_showcase_overlay();
+        self.base_mut().add_child(&overlay);
 
-        let mut container = VBoxContainer::new_alloc();
-        container.set_position(Vector2::new(600.0, 150.0));
+        let (panel, mut vbox) = menu_panel::create_menu_panel();
 
         // Title
         let mut title = Label::new_alloc();
         title.set_text("UPGRADE STATION");
         title.add_theme_font_size_override("font_size", 48);
         title.add_theme_color_override("font_color", Color::from_rgb(0.8, 0.6, 1.0));
-        container.add_child(&title);
+        vbox.add_child(&title);
 
         let mut spacer = Control::new_alloc();
         spacer.set_custom_minimum_size(Vector2::new(0.0, 20.0));
-        container.add_child(&spacer);
+        vbox.add_child(&spacer);
 
         // Current laser info
         let mut current = Label::new_alloc();
@@ -127,18 +125,18 @@ impl ShopUI {
         ));
         current.add_theme_font_size_override("font_size", 28);
         current.add_theme_color_override("font_color", laser_color);
-        container.add_child(&current);
+        vbox.add_child(&current);
 
         // Credits
         let mut credits_label = Label::new_alloc();
         credits_label.set_text(&format!("Credits: {}", credits));
         credits_label.add_theme_font_size_override("font_size", 28);
         credits_label.add_theme_color_override("font_color", Color::from_rgb(1.0, 0.85, 0.2));
-        container.add_child(&credits_label);
+        vbox.add_child(&credits_label);
 
         let mut spacer2 = Control::new_alloc();
         spacer2.set_custom_minimum_size(Vector2::new(0.0, 30.0));
-        container.add_child(&spacer2);
+        vbox.add_child(&spacer2);
 
         // Upgrade option
         let upgrade_text = if is_max {
@@ -159,7 +157,7 @@ impl ShopUI {
             Color::from_rgb(0.6, 0.3, 0.3)
         };
         upgrade_label.add_theme_color_override("font_color", upgrade_color);
-        container.add_child(&upgrade_label);
+        vbox.add_child(&upgrade_label);
         self.labels.push(upgrade_label);
 
         // Continue
@@ -167,18 +165,16 @@ impl ShopUI {
         continue_label.set_text("  Continue to Next Level");
         continue_label.add_theme_font_size_override("font_size", 28);
         continue_label.add_theme_color_override("font_color", Color::from_rgb(0.5, 0.5, 0.6));
-        container.add_child(&continue_label);
+        vbox.add_child(&continue_label);
         self.labels.push(continue_label);
 
         self.item_count = 2;
-        self.base_mut().add_child(&container);
+        self.base_mut().add_child(&panel);
         self.base_mut().set_visible(true);
         self.update_cursor();
     }
 
     fn update_cursor(&mut self) {
-        // This is a simplified cursor update; a full implementation would
-        // rebuild text prefixes. For now, we just update colors.
         for (i, label) in self.labels.iter_mut().enumerate() {
             if !label.is_instance_valid() {
                 continue;

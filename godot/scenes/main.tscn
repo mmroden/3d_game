@@ -58,6 +58,8 @@ shadow_enabled = false
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("env")
 
+[node name="ShipShowcase" type="ShipShowcase" parent="."]
+
 [node name="MainMenuUI" type="MainMenuUI" parent="."]
 
 [node name="HUD" type="HUD" parent="."]

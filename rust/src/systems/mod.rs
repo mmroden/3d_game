@@ -20,3 +20,7 @@ pub mod enemy_type;
 pub mod kill_tracker;
 pub mod game_phase;
 pub mod portal;
+pub mod ui_layout;
+pub mod ui_style;
+pub mod game_options;
+pub mod save_game;

@@ -37,7 +37,7 @@ impl UpgradeKind {
 }
 
 /// A single upgrade instance, as found in a lootbox.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Upgrade {
     pub name: String,
     pub kind: UpgradeKind,

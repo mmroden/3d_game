@@ -1,9 +1,11 @@
 use godot::prelude::*;
-use godot::classes::{Node, INode, Engine, CanvasLayer};
+use godot::classes::{Node, INode, Engine, CanvasLayer, viewport::Msaa};
 
 use crate::systems::enemy_type::EnemyType;
+use crate::systems::game_options::GameOptions;
 use crate::systems::game_phase::GamePhase;
 use crate::systems::run_state::RunState;
+use crate::systems::save_game::SaveGame;
 
 /// Central orchestrator: owns RunState, manages game phase transitions,
 /// shows/hides UI screens, and connects signals from enemies/portal.
@@ -13,6 +15,8 @@ pub struct GameManager {
     base: Base<Node>,
     run_state: RunState,
     phase: GamePhase,
+    game_options: GameOptions,
+    save_game: Option<SaveGame>,
 }
 
 #[godot_api]
@@ -22,6 +26,8 @@ impl INode for GameManager {
             base,
             run_state: RunState::new(42),
             phase: GamePhase::MainMenu,
+            game_options: GameOptions::new(),
+            save_game: None,
         }
     }
 
@@ -53,10 +59,27 @@ impl GameManager {
     #[signal]
     fn phase_changed(phase_name: GString);
 
-    /// Called from UI: start a new game.
+    #[signal]
+    fn options_changed(sbs_enabled: bool, msaa_enabled: bool);
+
+    /// Called from UI: start a fresh new game.
     #[func]
     pub fn start_new_game(&mut self) {
         self.run_state = RunState::new(42);
+        self.save_game = None;
+        self.transition_to(GamePhase::Playing);
+    }
+
+    /// Called from UI: continue from saved game.
+    #[func]
+    pub fn continue_game(&mut self) {
+        if let Some(save) = &self.save_game {
+            let mut run = RunState::new(save.run_seed);
+            save.apply_to(&mut run);
+            self.run_state = run;
+        } else {
+            self.run_state = RunState::new(42);
+        }
         self.transition_to(GamePhase::Playing);
     }
 
@@ -77,12 +100,13 @@ impl GameManager {
     #[func]
     pub fn on_portal_entered(&mut self) {
         if self.phase == GamePhase::Playing {
+            self.save_game = Some(SaveGame::from_run_state(&self.run_state));
             self.transition_to(GamePhase::LevelComplete);
             self.transition_to(GamePhase::KillSummary);
 
             // Populate kill summary UI
             let Some(parent) = self.base().get_parent() else { return };
-            if let Some(mut summary) = parent.try_get_node_as::<Node>("KillSummaryUI") {
+            if let Some(mut summary) = Self::find_ui_node(&parent, "KillSummaryUI") {
                 let kill_data = self.get_kill_summary();
                 summary.call("show_summary", &[
                     Variant::from(kill_data),
@@ -148,12 +172,13 @@ impl GameManager {
             let old_laser = self.run_state.laser_level.display_name().to_string();
             let level_reached = self.run_state.current_level as i32;
             self.run_state.apply_death_penalty();
+            self.save_game = Some(SaveGame::from_run_state(&self.run_state));
             let new_laser = self.run_state.laser_level.display_name().to_string();
             self.transition_to(GamePhase::Death);
 
             // Show death screen
             let Some(parent) = self.base().get_parent() else { return };
-            if let Some(mut death_ui) = parent.try_get_node_as::<Node>("DeathScreenUI") {
+            if let Some(mut death_ui) = Self::find_ui_node(&parent, "DeathScreenUI") {
                 death_ui.call("show_death", &[
                     Variant::from(GString::from(old_laser)),
                     Variant::from(GString::from(new_laser)),
@@ -161,6 +186,26 @@ impl GameManager {
                 ]);
             }
         }
+    }
+
+    /// Called from main menu: toggle SBS stereo.
+    #[func]
+    pub fn on_sbs_toggled(&mut self) {
+        let sbs = self.game_options.toggle_sbs();
+        let msaa = self.game_options.msaa_enabled;
+        self.base_mut().emit_signal("options_changed", &[sbs.to_variant(), msaa.to_variant()]);
+    }
+
+    /// Called from main menu: toggle MSAA.
+    #[func]
+    pub fn on_msaa_toggled(&mut self) {
+        let msaa = self.game_options.toggle_msaa();
+        // Apply MSAA to viewport
+        if let Some(mut viewport) = self.base().get_viewport() {
+            viewport.set_msaa_3d(if msaa { Msaa::MSAA_4X } else { Msaa::DISABLED });
+        }
+        let sbs = self.game_options.sbs_enabled;
+        self.base_mut().emit_signal("options_changed", &[sbs.to_variant(), msaa.to_variant()]);
     }
 
     /// Called from death screen: return to main menu.
@@ -291,14 +336,49 @@ impl GameManager {
         if let Some(mut level) = parent.try_get_node_as::<Node3D>("LevelManager") {
             level.set_visible(hud_vis);
         }
+
+        // Show/hide ship showcase for end-of-level screens
+        let showcase_vis = summary_vis || shop_vis || death_vis;
+        if let Some(mut showcase) = parent.try_get_node_as::<Node>("ShipShowcase") {
+            if showcase_vis {
+                let c = self.run_state.laser_level.color();
+                let color = Color::from_rgba(c[0], c[1], c[2], c[3]);
+                showcase.call("show_showcase", &[Variant::from(color)]);
+
+                // Position showcase in front of camera
+                if let Some(camera) = parent.try_get_node_as::<Node3D>("Player/Camera3D") {
+                    let cam_transform = camera.get_global_transform();
+                    let forward = -cam_transform.basis.col_c();
+                    let showcase_pos = cam_transform.origin + forward * 3.0;
+                    if let Some(mut showcase_3d) = parent.try_get_node_as::<Node3D>("ShipShowcase") {
+                        showcase_3d.set_global_position(showcase_pos);
+                    }
+                }
+            } else {
+                showcase.call("hide_showcase", &[]);
+            }
+        }
+    }
+
+    /// Find a UI node by name. UI nodes are always direct children of Main
+    /// (never reparented — SBS uses custom_viewport to redirect rendering).
+    fn find_ui_node(parent: &Gd<Node>, name: &str) -> Option<Gd<Node>> {
+        if let Some(node) = parent.try_get_node_as::<Node>(name) {
+            return Some(node);
+        }
+        godot_warn!("find_ui_node: '{}' not found", name);
+        None
     }
 
     fn set_ui_visible(parent: &Gd<Node>, name: &str, visible: bool) {
-        if let Some(node) = parent.try_get_node_as::<CanvasLayer>(name) {
-            // CanvasLayer doesn't have set_visible, so we toggle process mode and layer
-            let mut node = node;
-            node.set_layer(if visible { 1 } else { 128 });
-            node.set_visible(visible);
+        if let Some(node) = Self::find_ui_node(parent, name) {
+            if let Ok(mut canvas) = node.try_cast::<CanvasLayer>() {
+                canvas.set_layer(if visible { 1 } else { 128 });
+                canvas.set_visible(visible);
+                canvas.set_process_input(visible);
+            } else {
+                godot_warn!("set_ui_visible: '{}' failed to cast to CanvasLayer", name);
+            }
         }
     }
 
@@ -312,7 +392,7 @@ impl GameManager {
 
     fn show_shop_ui(&self) {
         let Some(parent) = self.base().get_parent() else { return };
-        if let Some(mut shop) = parent.try_get_node_as::<Node>("ShopUI") {
+        if let Some(mut shop) = Self::find_ui_node(&parent, "ShopUI") {
             let c = self.run_state.laser_level.color();
             let color = Color::from_rgba(c[0], c[1], c[2], c[3]);
             shop.call("show_shop", &[
@@ -331,17 +411,22 @@ impl GameManager {
         let Some(parent) = self.base().get_parent() else { return };
 
         // Connect MainMenuUI signals
-        if let Some(menu) = parent.try_get_node_as::<Node>("MainMenuUI") {
-            let callable = self.base().callable("start_new_game");
-            if !menu.is_connected("new_game_selected", &callable) {
+        if let Some(menu) = Self::find_ui_node(&parent, "MainMenuUI") {
+            let new_game = self.base().callable("start_new_game");
+            if !menu.is_connected("new_game_selected", &new_game) {
                 let mut menu = menu;
-                menu.connect("new_game_selected", &callable);
-                menu.connect("continue_selected", &callable);
+                menu.connect("new_game_selected", &new_game);
+                let continue_game = self.base().callable("continue_game");
+                menu.connect("continue_selected", &continue_game);
+                let sbs = self.base().callable("on_sbs_toggled");
+                menu.connect("sbs_toggled", &sbs);
+                let msaa = self.base().callable("on_msaa_toggled");
+                menu.connect("msaa_toggled", &msaa);
             }
         }
 
         // Connect KillSummaryUI
-        if let Some(summary) = parent.try_get_node_as::<Node>("KillSummaryUI") {
+        if let Some(summary) = Self::find_ui_node(&parent, "KillSummaryUI") {
             let callable = self.base().callable("advance_to_shop");
             if !summary.is_connected("continue_pressed", &callable) {
                 let mut summary = summary;
@@ -350,7 +435,7 @@ impl GameManager {
         }
 
         // Connect ShopUI
-        if let Some(shop) = parent.try_get_node_as::<Node>("ShopUI") {
+        if let Some(shop) = Self::find_ui_node(&parent, "ShopUI") {
             let buy_callable = self.base().callable("buy_laser_upgrade");
             let continue_callable = self.base().callable("advance_to_next_level");
             if !shop.is_connected("buy_pressed", &buy_callable) {
@@ -361,7 +446,7 @@ impl GameManager {
         }
 
         // Connect DeathScreenUI
-        if let Some(death) = parent.try_get_node_as::<Node>("DeathScreenUI") {
+        if let Some(death) = Self::find_ui_node(&parent, "DeathScreenUI") {
             let callable = self.base().callable("return_to_menu");
             if !death.is_connected("return_pressed", &callable) {
                 let mut death = death;
@@ -393,7 +478,7 @@ impl GameManager {
 
     fn update_hud(&self) {
         let Some(parent) = self.base().get_parent() else { return };
-        if let Some(mut hud) = parent.try_get_node_as::<Node>("HUD") {
+        if let Some(mut hud) = Self::find_ui_node(&parent, "HUD") {
             let c = self.run_state.laser_level.color();
             let color = Color::from_rgba(c[0], c[1], c[2], c[3]);
             hud.call("update_health", &[
@@ -412,6 +497,7 @@ impl GameManager {
             ]);
         }
     }
+
 
     fn regenerate_level(&self) {
         let Some(parent) = self.base().get_parent() else { return };

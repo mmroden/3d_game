@@ -6,4 +6,5 @@ mod level_manager;
 mod stereo_rig;
 mod portal;
 mod game_manager;
+mod ship_showcase;
 pub mod ui;

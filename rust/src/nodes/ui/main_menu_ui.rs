@@ -1,11 +1,13 @@
 use godot::prelude::*;
 use godot::global::Key;
 use godot::classes::{
-    CanvasLayer, ICanvasLayer, ColorRect, Label, VBoxContainer, Control,
-    Engine, InputEvent, InputEventKey,
+    CanvasLayer, ICanvasLayer, Label, Control, Engine, InputEvent, InputEventKey, Node,
 };
 
+use super::menu_panel;
+
 /// FF-style main menu: Continue / New Game / Options / Exit.
+/// Pure view — emits signals for all actions, never reaches into the scene tree.
 #[derive(GodotClass)]
 #[class(base=CanvasLayer)]
 pub struct MainMenuUI {
@@ -13,7 +15,6 @@ pub struct MainMenuUI {
     cursor_index: usize,
     menu_items: Vec<String>,
     labels: Vec<Gd<Label>>,
-    cursor_label: Option<Gd<Label>>,
     in_options: bool,
     option_cursor: usize,
     option_labels: Vec<Gd<Label>>,
@@ -34,7 +35,6 @@ impl ICanvasLayer for MainMenuUI {
                 "Exit".to_string(),
             ],
             labels: Vec::new(),
-            cursor_label: None,
             in_options: false,
             option_cursor: 0,
             option_labels: Vec::new(),
@@ -48,6 +48,7 @@ impl ICanvasLayer for MainMenuUI {
             return;
         }
         self.build_ui();
+        self.connect_to_game_manager();
     }
 
     fn input(&mut self, event: Gd<InputEvent>) {
@@ -80,52 +81,80 @@ impl MainMenuUI {
 
     #[signal]
     fn exit_selected();
+
+    #[signal]
+    fn sbs_toggled();
+
+    #[signal]
+    fn msaa_toggled();
+
+    /// Called by GameManager to update displayed option states.
+    #[func]
+    pub fn set_option_states(&mut self, sbs_on: bool, msaa_on: bool) {
+        self.sbs_enabled = sbs_on;
+        self.msaa_enabled = msaa_on;
+        if self.in_options {
+            self.refresh_options();
+        }
+    }
+
+    /// Called when GameManager emits options_changed signal.
+    #[func]
+    pub fn on_options_changed(&mut self, sbs_enabled: bool, msaa_enabled: bool) {
+        self.set_option_states(sbs_enabled, msaa_enabled);
+    }
 }
 
 impl MainMenuUI {
-    fn build_ui(&mut self) {
-        // Dark background
-        let mut bg = ColorRect::new_alloc();
-        bg.set_anchors_preset(godot::classes::control::LayoutPreset::FULL_RECT);
-        bg.set_color(Color::from_rgba(0.02, 0.02, 0.08, 1.0));
-        self.base_mut().add_child(&bg);
+    fn connect_to_game_manager(&mut self) {
+        // MainMenuUI is a child of Main, GameManager is also a child of Main
+        let Some(parent) = self.base().get_parent() else {
+            godot_warn!("MainMenuUI: could not find parent");
+            return;
+        };
+        if let Some(game_mgr) = parent.try_get_node_as::<Node>("GameManager") {
+            let callable = self.base().callable("on_options_changed");
+            if !game_mgr.is_connected("options_changed", &callable) {
+                let mut gm = game_mgr;
+                gm.connect("options_changed", &callable);
+            }
+        } else {
+            godot_warn!("MainMenuUI: GameManager not found");
+        }
+    }
 
-        // Container for centering
-        let mut container = VBoxContainer::new_alloc();
-        container.set_anchors_preset(godot::classes::control::LayoutPreset::CENTER);
-        container.set_position(Vector2::new(800.0, 250.0));
+    fn build_ui(&mut self) {
+        let (panel, mut vbox) = menu_panel::create_menu_panel();
 
         // Title
         let mut title = Label::new_alloc();
         title.set_text("VOID SCAVENGER");
         title.add_theme_font_size_override("font_size", 64);
         title.add_theme_color_override("font_color", Color::from_rgb(0.6, 0.8, 1.0));
-        container.add_child(&title);
+        vbox.add_child(&title);
 
         // Subtitle
         let mut subtitle = Label::new_alloc();
         subtitle.set_text("6DOF Roguelike Space Shooter");
         subtitle.add_theme_font_size_override("font_size", 20);
         subtitle.add_theme_color_override("font_color", Color::from_rgb(0.4, 0.5, 0.7));
-        container.add_child(&subtitle);
+        vbox.add_child(&subtitle);
 
         // Spacer
         let mut spacer = Control::new_alloc();
         spacer.set_custom_minimum_size(Vector2::new(0.0, 40.0));
-        container.add_child(&spacer);
-
-        // Cursor label (the > indicator)
-        let mut cursor = Label::new_alloc();
-        cursor.set_text(">");
-        cursor.add_theme_font_size_override("font_size", 32);
-        cursor.add_theme_color_override("font_color", Color::from_rgb(1.0, 1.0, 1.0));
-        cursor.set_position(Vector2::new(-30.0, 0.0));
+        vbox.add_child(&spacer);
 
         // Menu items
         self.labels.clear();
         for (i, item) in self.menu_items.iter().enumerate() {
             let mut label = Label::new_alloc();
-            label.set_text(item);
+            let text = if i == self.cursor_index {
+                format!("> {}", item)
+            } else {
+                format!("  {}", item)
+            };
+            label.set_text(&text);
             label.add_theme_font_size_override("font_size", 32);
             let color = if i == self.cursor_index {
                 Color::from_rgb(1.0, 1.0, 1.0)
@@ -133,15 +162,11 @@ impl MainMenuUI {
                 Color::from_rgb(0.5, 0.5, 0.6)
             };
             label.add_theme_color_override("font_color", color);
-            container.add_child(&label);
+            vbox.add_child(&label);
             self.labels.push(label);
         }
 
-        self.base_mut().add_child(&container);
-
-        // Position cursor next to selected item
-        self.cursor_label = Some(cursor);
-        self.update_cursor();
+        self.base_mut().add_child(&panel);
     }
 
     fn handle_menu_input(&mut self, keycode: Key) {
@@ -168,21 +193,17 @@ impl MainMenuUI {
     fn select_item(&mut self) {
         match self.cursor_index {
             0 => {
-                // Continue (same as New Game for now)
                 self.base_mut().emit_signal("continue_selected", &[]);
             }
             1 => {
-                // New Game
                 self.base_mut().emit_signal("new_game_selected", &[]);
             }
             2 => {
-                // Options
                 self.in_options = true;
                 self.option_cursor = 0;
                 self.show_options();
             }
             3 => {
-                // Exit
                 self.base_mut().emit_signal("exit_selected", &[]);
                 if let Some(mut tree) = self.base().get_tree() {
                     tree.quit();
@@ -204,7 +225,6 @@ impl MainMenuUI {
             };
             label.add_theme_color_override("font_color", color);
 
-            // Add/remove cursor prefix
             let base_text = self.menu_items[i].clone();
             if i == self.cursor_index {
                 label.set_text(&format!("> {}", base_text));
@@ -215,15 +235,12 @@ impl MainMenuUI {
     }
 
     fn show_options(&mut self) {
-        // Update menu items to show options
         for label in &mut self.labels {
             if label.is_instance_valid() {
                 label.set_visible(false);
             }
         }
 
-        // Build options list on top of existing container
-        // For now, just update labels in-place
         self.option_labels.clear();
         let parent = self.labels[0].get_parent().unwrap();
         let mut parent: Gd<Node> = parent;
@@ -271,17 +288,12 @@ impl MainMenuUI {
             Key::ENTER | Key::SPACE => {
                 match self.option_cursor {
                     0 => {
-                        self.sbs_enabled = !self.sbs_enabled;
-                        self.toggle_sbs();
-                        self.refresh_options();
+                        self.base_mut().emit_signal("sbs_toggled", &[]);
                     }
                     1 => {
-                        self.msaa_enabled = !self.msaa_enabled;
-                        self.toggle_msaa();
-                        self.refresh_options();
+                        self.base_mut().emit_signal("msaa_toggled", &[]);
                     }
                     2 => {
-                        // Back
                         self.close_options();
                     }
                     _ => {}
@@ -335,23 +347,4 @@ impl MainMenuUI {
         self.update_cursor();
     }
 
-    fn toggle_sbs(&self) {
-        let Some(parent) = self.base().get_parent() else { return };
-        if let Some(mut stereo) = parent.try_get_node_as::<Node>("StereoRig") {
-            stereo.call("toggle_stereo", &[]);
-        }
-    }
-
-    fn toggle_msaa(&self) {
-        if let Some(viewport) = self.base().get_viewport() {
-            let current = viewport.get_msaa_3d();
-            let new_msaa = if current == godot::classes::viewport::Msaa::DISABLED {
-                godot::classes::viewport::Msaa::MSAA_4X
-            } else {
-                godot::classes::viewport::Msaa::DISABLED
-            };
-            let mut vp = viewport;
-            vp.set_msaa_3d(new_msaa);
-        }
-    }
 }

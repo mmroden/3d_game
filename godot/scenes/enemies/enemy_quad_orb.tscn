@@ -1,0 +1,20 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="PackedScene" path="res://addons/quaternius/essentials/enemies/Enemy_QuadOrb.gltf" id="1"]
+
+[sub_resource type="SphereShape3D" id="shape"]
+radius = 0.6
+
+[node name="EnemyDrone" type="EnemyDrone"]
+enemy_type_id = 4
+speed = 6.0
+health = 8.0
+detection_range = 25.0
+attack_range = 6.0
+damage = 5.0
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+shape = SubResource("shape")
+
+[node name="Model" parent="." instance=ExtResource("1")]
+transform = Transform3D(0.5, 0, 0, 0, 0.5, 0, 0, 0, 0.5, 0, 0, 0)

@@ -1,7 +1,8 @@
 use godot::prelude::*;
 use godot::classes::{
-    CanvasLayer, ICanvasLayer, Label, ColorRect,
+    CanvasLayer, ICanvasLayer, Label, ColorRect, HBoxContainer, VBoxContainer, Control,
     Engine,
+    control::LayoutPreset,
 };
 
 /// In-game HUD: health bar, credits, laser level, level number.
@@ -103,68 +104,102 @@ impl HUD {
 
 impl HUD {
     fn build_hud(&mut self) {
-        // Top-left: Health
-        let mut health_bg = ColorRect::new_alloc();
-        health_bg.set_position(Vector2::new(20.0, 20.0));
-        health_bg.set_size(Vector2::new(200.0, 20.0));
-        health_bg.set_color(Color::from_rgba(0.2, 0.2, 0.2, 0.7));
-        self.base_mut().add_child(&health_bg);
+        // === Top-left: Health + Credits ===
+        let mut top_left = VBoxContainer::new_alloc();
+        top_left.set_anchors_preset(LayoutPreset::TOP_LEFT);
+        top_left.set_offset(godot::builtin::Side::LEFT, 20.0);
+        top_left.set_offset(godot::builtin::Side::TOP, 20.0);
 
+        // Health bar row
+        let mut health_row = HBoxContainer::new_alloc();
+
+        let mut health_bg = ColorRect::new_alloc();
+        health_bg.set_custom_minimum_size(Vector2::new(200.0, 20.0));
+        health_bg.set_color(Color::from_rgba(0.2, 0.2, 0.2, 0.7));
+        health_row.add_child(&health_bg);
+
+        // Health fill overlaid on top of bg (we'll position it absolutely)
+        // For simplicity, use a separate ColorRect that gets resized
         let mut health_fill = ColorRect::new_alloc();
-        health_fill.set_position(Vector2::new(20.0, 20.0));
-        health_fill.set_size(Vector2::new(200.0, 20.0));
+        health_fill.set_custom_minimum_size(Vector2::new(200.0, 20.0));
         health_fill.set_color(Color::from_rgb(0.2, 0.9, 0.2));
-        self.base_mut().add_child(&health_fill);
-        self.health_fill = Some(health_fill);
+        // Place fill at same position as bg (overlapping)
+        health_fill.set_position(Vector2::new(0.0, 0.0));
 
         let mut health_label = Label::new_alloc();
-        health_label.set_position(Vector2::new(230.0, 16.0));
         health_label.set_text("100/100");
         health_label.add_theme_font_size_override("font_size", 18);
         health_label.add_theme_color_override("font_color", Color::from_rgb(0.9, 0.9, 0.9));
-        self.base_mut().add_child(&health_label);
+        health_row.add_child(&health_label);
+
+        top_left.add_child(&health_row);
+
+        // We need health_fill overlapping the bg — add it to the CanvasLayer directly
+        // and position it relative to the top_left container
+        self.health_fill = Some(health_fill.clone());
         self.health_label = Some(health_label);
 
-        // Top-left below health: Credits
+        // Credits
         let mut credits_label = Label::new_alloc();
-        credits_label.set_position(Vector2::new(20.0, 48.0));
         credits_label.set_text("Credits: 0");
         credits_label.add_theme_font_size_override("font_size", 18);
         credits_label.add_theme_color_override("font_color", Color::from_rgb(1.0, 0.85, 0.2));
-        self.base_mut().add_child(&credits_label);
+        top_left.add_child(&credits_label);
         self.credits_label = Some(credits_label);
 
-        // Top-right: Laser info
+        self.base_mut().add_child(&top_left);
+        // Add health fill as overlay on CanvasLayer, positioned at top-left
+        health_fill.set_position(Vector2::new(20.0, 20.0));
+        self.base_mut().add_child(&health_fill);
+
+        // === Top-right: Laser info + Level ===
+        let mut top_right = VBoxContainer::new_alloc();
+        top_right.set_anchors_preset(LayoutPreset::TOP_RIGHT);
+        top_right.set_offset(godot::builtin::Side::RIGHT, -20.0);
+        top_right.set_offset(godot::builtin::Side::TOP, 20.0);
+        top_right.set_offset(godot::builtin::Side::LEFT, -200.0);
+
+        // Laser row
+        let mut laser_row = HBoxContainer::new_alloc();
+
         let mut laser_indicator = ColorRect::new_alloc();
-        laser_indicator.set_position(Vector2::new(1720.0, 20.0));
-        laser_indicator.set_size(Vector2::new(16.0, 16.0));
+        laser_indicator.set_custom_minimum_size(Vector2::new(16.0, 16.0));
         laser_indicator.set_color(Color::from_rgb(1.0, 0.2, 0.2));
-        self.base_mut().add_child(&laser_indicator);
+        laser_row.add_child(&laser_indicator);
         self.laser_indicator = Some(laser_indicator);
 
         let mut laser_label = Label::new_alloc();
-        laser_label.set_position(Vector2::new(1740.0, 16.0));
         laser_label.set_text("Laser: Red");
         laser_label.add_theme_font_size_override("font_size", 18);
         laser_label.add_theme_color_override("font_color", Color::from_rgb(1.0, 0.2, 0.2));
-        self.base_mut().add_child(&laser_label);
+        laser_row.add_child(&laser_label);
         self.laser_label = Some(laser_label);
 
-        // Top-right: Level
+        top_right.add_child(&laser_row);
+
+        // Level
         let mut level_label = Label::new_alloc();
-        level_label.set_position(Vector2::new(1800.0, 48.0));
         level_label.set_text("Level 1");
         level_label.add_theme_font_size_override("font_size", 18);
         level_label.add_theme_color_override("font_color", Color::from_rgb(0.7, 0.7, 0.8));
-        self.base_mut().add_child(&level_label);
+        top_right.add_child(&level_label);
         self.level_label = Some(level_label);
 
-        // Bottom center: Controls reminder (fades eventually)
+        self.base_mut().add_child(&top_right);
+
+        // === Bottom center: Controls reminder ===
+        let mut bottom_center = Control::new_alloc();
+        bottom_center.set_anchors_preset(LayoutPreset::CENTER_BOTTOM);
+        bottom_center.set_offset(godot::builtin::Side::TOP, -40.0);
+        bottom_center.set_offset(godot::builtin::Side::LEFT, -300.0);
+        bottom_center.set_offset(godot::builtin::Side::RIGHT, 300.0);
+
         let mut controls = Label::new_alloc();
-        controls.set_position(Vector2::new(650.0, 1040.0));
         controls.set_text("WASD: Move | Arrows: Look | Space: Fire | R/F: Up/Down");
         controls.add_theme_font_size_override("font_size", 16);
         controls.add_theme_color_override("font_color", Color::from_rgba(0.5, 0.5, 0.6, 0.7));
-        self.base_mut().add_child(&controls);
+        bottom_center.add_child(&controls);
+
+        self.base_mut().add_child(&bottom_center);
     }
 }
