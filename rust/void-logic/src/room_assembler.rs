@@ -35,6 +35,9 @@ pub struct MeshPlacement {
     pub position: [f32; 3],
     pub rotation_x: f32,
     pub rotation_y: f32,
+    /// Loose props float freely in zero-g. Structural meshes and anchored
+    /// equipment stay fixed.
+    pub loose: bool,
 }
 
 /// An axis-aligned box collider for physics.
@@ -125,7 +128,7 @@ pub fn assemble_from_grid(
                     cell.grid_pos[0], cell.grid_pos[1], cell.grid_pos[2])
                 {
                     let (door_pos, door_rot) = door_placement(pos, *facing);
-                    out.push(MeshPlacement { scene: door, position: door_pos, rotation_x: 0.0, rotation_y: door_rot });
+                    out.push(MeshPlacement { scene: door, position: door_pos, rotation_x: 0.0, rotation_y: door_rot, loose: false });
                 }
             }
         }
@@ -171,10 +174,10 @@ pub fn assemble_from_grid(
                 continue;
             }
             let (wall_pos, rot) = wall_placement(pos, facing);
-            out.push(MeshPlacement { scene: wall_set.bottom.straight, position: wall_pos, rotation_x: 0.0, rotation_y: rot });
-            out.push(MeshPlacement { scene: wall_set.short_wall.straight, position: wall_pos, rotation_x: 0.0, rotation_y: rot });
-            out.push(MeshPlacement { scene: wall_set.straight.wall, position: wall_pos, rotation_x: 0.0, rotation_y: rot });
-            out.push(MeshPlacement { scene: wall_set.straight.ceiling, position: wall_pos, rotation_x: 0.0, rotation_y: rot });
+            out.push(MeshPlacement { scene: wall_set.bottom.straight, position: wall_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
+            out.push(MeshPlacement { scene: wall_set.short_wall.straight, position: wall_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
+            out.push(MeshPlacement { scene: wall_set.straight.wall, position: wall_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
+            out.push(MeshPlacement { scene: wall_set.straight.ceiling, position: wall_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
         }
 
         // Place corner pieces (5-layer stack) offset from cell center toward interior.
@@ -188,17 +191,17 @@ pub fn assemble_from_grid(
                 let [ox, oz] = corner_interior_offset(pair);
                 let corner_pos = [pos[0] + ox, pos[1], pos[2] + oz];
                 // Bottom layer corners
-                out.push(MeshPlacement { scene: wall_set.bottom.corner_inner, position: corner_pos, rotation_x: 0.0, rotation_y: rot });
-                out.push(MeshPlacement { scene: wall_set.bottom.corner_outer, position: corner_pos, rotation_x: 0.0, rotation_y: rot });
+                out.push(MeshPlacement { scene: wall_set.bottom.corner_inner, position: corner_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
+                out.push(MeshPlacement { scene: wall_set.bottom.corner_outer, position: corner_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
                 // ShortWall layer corners
-                out.push(MeshPlacement { scene: wall_set.short_wall.corner_inner, position: corner_pos, rotation_x: 0.0, rotation_y: rot });
-                out.push(MeshPlacement { scene: wall_set.short_wall.corner_outer, position: corner_pos, rotation_x: 0.0, rotation_y: rot });
+                out.push(MeshPlacement { scene: wall_set.short_wall.corner_inner, position: corner_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
+                out.push(MeshPlacement { scene: wall_set.short_wall.corner_outer, position: corner_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
                 // Wall layer corners
-                out.push(MeshPlacement { scene: wall_set.corner_inner.wall, position: corner_pos, rotation_x: 0.0, rotation_y: rot });
-                out.push(MeshPlacement { scene: wall_set.corner_outer.wall, position: corner_pos, rotation_x: 0.0, rotation_y: rot });
+                out.push(MeshPlacement { scene: wall_set.corner_inner.wall, position: corner_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
+                out.push(MeshPlacement { scene: wall_set.corner_outer.wall, position: corner_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
                 // Top layer corners
-                out.push(MeshPlacement { scene: wall_set.corner_inner.ceiling, position: corner_pos, rotation_x: 0.0, rotation_y: rot });
-                out.push(MeshPlacement { scene: wall_set.corner_outer.ceiling, position: corner_pos, rotation_x: 0.0, rotation_y: rot });
+                out.push(MeshPlacement { scene: wall_set.corner_inner.ceiling, position: corner_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
+                out.push(MeshPlacement { scene: wall_set.corner_outer.ceiling, position: corner_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
                 if !has_corner {
                     first_corner_rot = rot;
                 }
@@ -213,9 +216,9 @@ pub fn assemble_from_grid(
                 cell.grid_pos[0], cy, cell.grid_pos[2])
         {
             if has_corner {
-                out.push(MeshPlacement { scene: wall_set.corner_inner.floor, position: pos, rotation_x: 0.0, rotation_y: first_corner_rot });
+                out.push(MeshPlacement { scene: wall_set.corner_inner.floor, position: pos, rotation_x: 0.0, rotation_y: first_corner_rot, loose: false });
             } else {
-                out.push(MeshPlacement { scene: wall_set.straight.floor, position: pos, rotation_x: 0.0, rotation_y: 0.0 });
+                out.push(MeshPlacement { scene: wall_set.straight.floor, position: pos, rotation_x: 0.0, rotation_y: 0.0, loose: false });
             }
         }
 
@@ -228,9 +231,9 @@ pub fn assemble_from_grid(
         {
             let ceiling_pos = [pos[0], pos[1] + story_height, pos[2]];
             if has_corner {
-                out.push(MeshPlacement { scene: wall_set.corner_inner.floor, position: ceiling_pos, rotation_x: PI, rotation_y: first_corner_rot - FRAC_PI_2 });
+                out.push(MeshPlacement { scene: wall_set.corner_inner.floor, position: ceiling_pos, rotation_x: PI, rotation_y: first_corner_rot - FRAC_PI_2, loose: false });
             } else {
-                out.push(MeshPlacement { scene: wall_set.straight.floor, position: ceiling_pos, rotation_x: PI, rotation_y: 0.0 });
+                out.push(MeshPlacement { scene: wall_set.straight.floor, position: ceiling_pos, rotation_x: PI, rotation_y: 0.0, loose: false });
             }
         }
     }

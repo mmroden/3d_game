@@ -295,6 +295,19 @@ pub struct PropEntry {
     pub blocks_flight: bool,
 }
 
+/// Whether a prop scene is loose debris that floats in zero-g.
+/// Columns, cables, wall-mounted equipment, and large installations stay fixed.
+/// Crates, barrels, and chests tumble freely.
+pub fn is_loose_prop(scene: &str) -> bool {
+    scene.contains("Crate")
+        || scene.contains("Barrel")
+        || scene.contains("Chest")
+        || scene.contains("Shelves")
+        || scene.contains("Locker")
+        || scene.contains("GunRack")
+        || scene.contains("Desk")
+}
+
 macro_rules! megakit_prop {
     ($name:expr) => {
         concat!(
@@ -460,32 +473,32 @@ pub const LIGHT_CEILING_WIDE: LightFixture = LightFixture {
     scene: megakit_prop!("Prop_Light_Wide.gltf"),
     light_offset: [0.0, -0.3, 0.0],
     fixture_bounds: [1.0, 0.4, 0.5],
-    range: 8.0,
-    energy: 1.5,
+    range: 14.0,
+    energy: 3.0,
 };
 
 pub const LIGHT_CEILING_SMALL: LightFixture = LightFixture {
     scene: megakit_prop!("Prop_Light_Small.gltf"),
     light_offset: [0.0, -0.2, 0.0],
     fixture_bounds: [0.3, 0.3, 0.3],
-    range: 6.0,
-    energy: 1.2,
+    range: 12.0,
+    energy: 2.5,
 };
 
 pub const LIGHT_CORNER: LightFixture = LightFixture {
     scene: megakit_prop!("Prop_Light_Corner.gltf"),
     light_offset: [0.0, -0.2, 0.0],
     fixture_bounds: [0.4, 0.3, 0.4],
-    range: 5.0,
-    energy: 1.0,
+    range: 10.0,
+    energy: 2.0,
 };
 
 pub const LIGHT_FLOOR: LightFixture = LightFixture {
     scene: megakit_prop!("Prop_Light_Floor.gltf"),
     light_offset: [0.0, 1.0, 0.0],
     fixture_bounds: [0.3, 1.2, 0.3],
-    range: 6.0,
-    energy: 1.0,
+    range: 10.0,
+    energy: 2.0,
 };
 
 pub const CEILING_LIGHTS: &[LightFixture] = &[LIGHT_CEILING_WIDE, LIGHT_CEILING_SMALL];
@@ -808,5 +821,18 @@ mod tests {
         check("CENTER_PROPS", CENTER_PROPS);
         check("CORNER_PROPS", CORNER_PROPS);
         check("CEILING_PROPS", CEILING_PROPS);
+    }
+
+    #[test]
+    fn is_loose_prop_identifies_floating_debris() {
+        // Loose: crates, barrels, chests
+        assert!(is_loose_prop("res://props/Prop_Crate1.gltf"));
+        assert!(is_loose_prop("res://props/Prop_Barrel_Large.gltf"));
+        assert!(is_loose_prop("res://props/Prop_Chest.gltf"));
+        // Anchored: columns, computers, vents, teleporters
+        assert!(!is_loose_prop("res://columns/Column_Astra.gltf"));
+        assert!(!is_loose_prop("res://props/Prop_Computer.gltf"));
+        assert!(!is_loose_prop("res://props/Prop_Teleporter.gltf"));
+        assert!(!is_loose_prop("res://props/Prop_Vent_Big.gltf"));
     }
 }

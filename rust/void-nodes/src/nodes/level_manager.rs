@@ -1,5 +1,5 @@
 use godot::prelude::*;
-use godot::classes::{BoxShape3D, CollisionShape3D, Node3D, INode3D, OmniLight3D, PackedScene, ResourceLoader, StaticBody3D};
+use godot::classes::{BoxShape3D, CollisionShape3D, Node3D, INode3D, OmniLight3D, PackedScene, ResourceLoader, RigidBody3D, StaticBody3D};
 
 use super::constants::{nodes, scenes};
 use rand::SeedableRng;
@@ -80,6 +80,8 @@ impl LevelManager {
         let mut loader = ResourceLoader::singleton();
         let mut mesh_count = 0;
 
+        let mut loose_rng = SmallRng::seed_from_u64(seed as u64);
+
         for entry in &placements {
             let scene_res = loader.load(entry.scene);
             let Some(resource) = scene_res else {
@@ -93,15 +95,44 @@ impl LevelManager {
                 continue;
             };
 
-            let mut node: Gd<Node3D> = instance.cast();
-            let pos = vec3(entry.position);
-            node.set_position(pos);
+            if entry.loose {
+                // Zero-g floating prop: wrap in RigidBody3D with no gravity,
+                // gentle random spin and drift.
+                let mut body = RigidBody3D::new_alloc();
+                body.set_position(vec3(entry.position));
+                body.set_gravity_scale(0.0);
 
-            if entry.rotation_x.abs() > 0.001 || entry.rotation_y.abs() > 0.001 {
-                node.set_rotation(Vector3::new(entry.rotation_x, entry.rotation_y, 0.0));
+                // Random angular velocity for gentle tumble.
+                use rand::RngExt;
+                let ax: f32 = loose_rng.random_range(-0.3..0.3);
+                let ay: f32 = loose_rng.random_range(-0.3..0.3);
+                let az: f32 = loose_rng.random_range(-0.3..0.3);
+                body.set_angular_velocity(Vector3::new(ax, ay, az));
+
+                // Gentle random drift.
+                let vx: f32 = loose_rng.random_range(-0.1..0.1);
+                let vy: f32 = loose_rng.random_range(-0.05..0.05);
+                let vz: f32 = loose_rng.random_range(-0.1..0.1);
+                body.set_linear_velocity(Vector3::new(vx, vy, vz));
+
+                let mut mesh_node: Gd<Node3D> = instance.cast();
+                if entry.rotation_x.abs() > 0.001 || entry.rotation_y.abs() > 0.001 {
+                    mesh_node.set_rotation(Vector3::new(entry.rotation_x, entry.rotation_y, 0.0));
+                }
+
+                body.add_child(&mesh_node);
+                self.base_mut().add_child(&body);
+            } else {
+                let mut node: Gd<Node3D> = instance.cast();
+                let pos = vec3(entry.position);
+                node.set_position(pos);
+
+                if entry.rotation_x.abs() > 0.001 || entry.rotation_y.abs() > 0.001 {
+                    node.set_rotation(Vector3::new(entry.rotation_x, entry.rotation_y, 0.0));
+                }
+
+                self.base_mut().add_child(&node);
             }
-
-            self.base_mut().add_child(&node);
             mesh_count += 1;
         }
 

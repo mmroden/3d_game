@@ -162,6 +162,7 @@ impl CellGrid {
     /// palette based on the cell's kind. Density controls probability.
     /// ConnectorGap cells stay empty. Blocking props skip reserved path cells.
     pub fn populate(&mut self, theme: &RoomTheme, seed: u64) {
+        use crate::asset_catalog::is_loose_prop;
         use crate::room_furnisher::RoomDensity;
         use std::f32::consts::{FRAC_PI_2, PI};
 
@@ -185,6 +186,7 @@ impl CellGrid {
                     if !theme.palette.corner.is_empty() && rng.next_usize() % corner_den < corner_num {
                         let prop = &theme.palette.corner[rng.next_usize() % theme.palette.corner.len()];
                         let is_column = prop.scene.contains("/columns/");
+                        let loose = is_loose_prop(prop.scene);
                         if is_column {
                             // Stack columns at every story level for this XZ position.
                             let story_height = Self::DEFAULT_STORY_HEIGHT;
@@ -200,6 +202,7 @@ impl CellGrid {
                                     ],
                                     rotation_x: 0.0,
                                     rotation_y: 0.0,
+                                    loose,
                                 }
                             }).collect();
                             cell.occupant = CellOccupant::Props(placements);
@@ -209,6 +212,7 @@ impl CellGrid {
                                 position: cell.world_center,
                                 rotation_x: 0.0,
                                 rotation_y: 0.0,
+                                loose,
                             }]);
                         }
                     }
@@ -237,6 +241,7 @@ impl CellGrid {
                             ],
                             rotation_x: 0.0,
                             rotation_y: rot,
+                            loose: is_loose_prop(prop.scene),
                         }]);
                     }
                 }
@@ -248,6 +253,7 @@ impl CellGrid {
                             position: cell.world_center,
                             rotation_x: 0.0,
                             rotation_y: 0.0,
+                            loose: is_loose_prop(prop.scene),
                         }]);
                     }
                 }
