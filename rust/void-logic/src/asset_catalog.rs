@@ -26,15 +26,34 @@ impl StructuralTriple for Triple {
     fn ceiling(&self) -> &'static str { self.ceiling }
 }
 
+// ── Layer set (straight + corner variants) ─────────────────────────────
+
+/// A single mesh layer with straight, inner-corner, and outer-corner variants.
+#[derive(Debug, Clone, Copy)]
+pub struct LayerSet {
+    pub straight: &'static str,
+    pub corner_inner: &'static str,
+    pub corner_outer: &'static str,
+}
+
 // ── Wall sets ───────────────────────────────────────────────────────────
 
-/// A themed group of matching structural assets organized as triples.
+/// A themed group of matching structural assets organized as triples,
+/// plus ShortWall and Bottom layers for gap-free wall stacks.
 #[derive(Debug, Clone, Copy)]
 pub struct WallSet {
     pub id: &'static str,
     pub straight: Triple,
     pub corner_inner: Triple,
     pub corner_outer: Triple,
+    /// Lower wall section (y ≈ 0–1m), fills the gap between Bottom and Wall.
+    pub short_wall: LayerSet,
+    /// Baseboard decorative trim (y ≈ 0–0.02m), at the base of every wall.
+    pub bottom: LayerSet,
+    /// Width of one tile in meters, derived from mesh z-range.
+    pub tile_width: f32,
+    /// Height of one story in meters, derived from top-layer y-max.
+    pub story_height: f32,
 }
 
 macro_rules! megakit_wall {
@@ -71,6 +90,18 @@ pub const WALL_SET_ASTRA: WallSet = WallSet {
         wall: megakit_wall!("WallAstra_Corner_Round_Outer.gltf"),
         ceiling: megakit_wall!("TopAstra_Curve_Round_Outer.gltf"),
     },
+    short_wall: LayerSet {
+        straight: megakit_wall!("ShortWall_AccentStrip_Straight.gltf"),
+        corner_inner: megakit_wall!("ShortWall_AccentStrip_Corner_Inner.gltf"),
+        corner_outer: megakit_wall!("ShortWall_AccentStrip_Corner_Outer.gltf"),
+    },
+    bottom: LayerSet {
+        straight: megakit_wall!("BottomAccent_Straight.gltf"),
+        corner_inner: megakit_wall!("BottomAccent_Corner_Round_Inner.gltf"),
+        corner_outer: megakit_wall!("BottomAccent_Corner_Round_Outer.gltf"),
+    },
+    tile_width: 4.0,
+    story_height: 5.0,
 };
 
 pub const WALL_SET_BAND: WallSet = WallSet {
@@ -90,6 +121,18 @@ pub const WALL_SET_BAND: WallSet = WallSet {
         wall: megakit_wall!("WallBand_Corner_Round_Outer.gltf"),
         ceiling: megakit_wall!("TopAstra_Curve_Round_Outer.gltf"),
     },
+    short_wall: LayerSet {
+        straight: megakit_wall!("ShortWall_Band2_Straight.gltf"),
+        corner_inner: megakit_wall!("ShortWall_Band2_Corner_Inner.gltf"),
+        corner_outer: megakit_wall!("ShortWall_Band2_Corner_Outer.gltf"),
+    },
+    bottom: LayerSet {
+        straight: megakit_wall!("BottomSimple_Straight.gltf"),
+        corner_inner: megakit_wall!("BottomSimple_Corner_Round_Inner.gltf"),
+        corner_outer: megakit_wall!("BottomSimple_Corner_Round_Outer.gltf"),
+    },
+    tile_width: 4.0,
+    story_height: 5.0,
 };
 
 pub const WALL_SET_PIPE: WallSet = WallSet {
@@ -109,6 +152,18 @@ pub const WALL_SET_PIPE: WallSet = WallSet {
         wall: megakit_wall!("WallPipe_Corner_Round_Outer.gltf"),
         ceiling: megakit_wall!("TopPlates_Corner_Round_Outer.gltf"),
     },
+    short_wall: LayerSet {
+        straight: megakit_wall!("ShortWall_MetalPlates_Straight.gltf"),
+        corner_inner: megakit_wall!("ShortWall_MetalPlates_Corner_Inner.gltf"),
+        corner_outer: megakit_wall!("ShortWall_MetalPlates_Corner_Outer.gltf"),
+    },
+    bottom: LayerSet {
+        straight: megakit_wall!("BottomMetal_Straight.gltf"),
+        corner_inner: megakit_wall!("BottomMetal_Corner_Round_Inner.gltf"),
+        corner_outer: megakit_wall!("BottomMetal_Corner_Round_Outer.gltf"),
+    },
+    tile_width: 4.0,
+    story_height: 5.0,
 };
 
 pub const WALL_SET_WIDEBAND: WallSet = WallSet {
@@ -128,6 +183,18 @@ pub const WALL_SET_WIDEBAND: WallSet = WallSet {
         wall: megakit_wall!("WallWideBand_Corner_Round_Outer.gltf"),
         ceiling: megakit_wall!("TopSimple_Corner_Round_Outer.gltf"),
     },
+    short_wall: LayerSet {
+        straight: megakit_wall!("ShortWall_WhitePlate2_Straight.gltf"),
+        corner_inner: megakit_wall!("ShortWall_WhitePlate2_Corner_Inner.gltf"),
+        corner_outer: megakit_wall!("ShortWall_WhitePlate2_Corner_Outer.gltf"),
+    },
+    bottom: LayerSet {
+        straight: megakit_wall!("BottomSimple_Straight.gltf"),
+        corner_inner: megakit_wall!("BottomSimple_Corner_Round_Inner.gltf"),
+        corner_outer: megakit_wall!("BottomSimple_Corner_Round_Outer.gltf"),
+    },
+    tile_width: 4.0,
+    story_height: 5.0,
 };
 
 pub const WALL_SET_WINDOW: WallSet = WallSet {
@@ -147,6 +214,18 @@ pub const WALL_SET_WINDOW: WallSet = WallSet {
         wall: megakit_wall!("WallWindow_Corner_Round_Outer.gltf"),
         ceiling: megakit_wall!("TopSimple_Corner_Round_Outer.gltf"),
     },
+    short_wall: LayerSet {
+        straight: megakit_wall!("ShortWall_Simple1_Straight.gltf"),
+        corner_inner: megakit_wall!("ShortWall_Simple1_Corner_Inner.gltf"),
+        corner_outer: megakit_wall!("ShortWall_Simple1_Corner_Outer.gltf"),
+    },
+    bottom: LayerSet {
+        straight: megakit_wall!("BottomSimple_Straight.gltf"),
+        corner_inner: megakit_wall!("BottomSimple_Corner_Round_Inner.gltf"),
+        corner_outer: megakit_wall!("BottomSimple_Corner_Round_Outer.gltf"),
+    },
+    tile_width: 4.0,
+    story_height: 5.0,
 };
 
 pub const WALL_SET_PADDED: WallSet = WallSet {
@@ -166,6 +245,18 @@ pub const WALL_SET_PADDED: WallSet = WallSet {
         wall: megakit_wall!("WallPadded_Curve_Round_Outer.gltf"),
         ceiling: megakit_wall!("TopPadded_Flat_Curve_Round_Outer.gltf"),
     },
+    short_wall: LayerSet {
+        straight: megakit_wall!("ShortWall_DarkPlastic_Straight.gltf"),
+        corner_inner: megakit_wall!("ShortWall_DarkPlastic_Corner_Inner.gltf"),
+        corner_outer: megakit_wall!("ShortWall_DarkPlastic_Corner_Outer.gltf"),
+    },
+    bottom: LayerSet {
+        straight: megakit_wall!("BottomMetal_Straight.gltf"),
+        corner_inner: megakit_wall!("BottomMetal_Corner_Round_Inner.gltf"),
+        corner_outer: megakit_wall!("BottomMetal_Corner_Round_Outer.gltf"),
+    },
+    tile_width: 4.0,
+    story_height: 5.0,
 };
 
 pub const ALL_WALL_SETS: &[WallSet] = &[
@@ -412,6 +503,15 @@ pub fn all_scene_paths() -> Vec<&'static str> {
             paths.push(triple.wall);
             paths.push(triple.ceiling);
         }
+        // New layers
+        for path in [
+            ws.short_wall.straight, ws.short_wall.corner_inner, ws.short_wall.corner_outer,
+            ws.bottom.straight, ws.bottom.corner_inner, ws.bottom.corner_outer,
+        ] {
+            if !path.is_empty() {
+                paths.push(path);
+            }
+        }
     }
 
     // Door
@@ -585,6 +685,110 @@ mod tests {
                 ws.corner_outer.wall
             );
         }
+    }
+
+    #[test]
+    fn wall_set_has_short_wall_layer() {
+        for ws in ALL_WALL_SETS {
+            assert!(
+                !ws.short_wall.straight.is_empty(),
+                "wall set '{}' missing short_wall.straight",
+                ws.id
+            );
+            assert!(
+                !ws.short_wall.corner_inner.is_empty(),
+                "wall set '{}' missing short_wall.corner_inner",
+                ws.id
+            );
+            assert!(
+                !ws.short_wall.corner_outer.is_empty(),
+                "wall set '{}' missing short_wall.corner_outer",
+                ws.id
+            );
+        }
+    }
+
+    #[test]
+    fn wall_set_has_bottom_layer() {
+        for ws in ALL_WALL_SETS {
+            assert!(
+                !ws.bottom.straight.is_empty(),
+                "wall set '{}' missing bottom.straight",
+                ws.id
+            );
+            assert!(
+                !ws.bottom.corner_inner.is_empty(),
+                "wall set '{}' missing bottom.corner_inner",
+                ws.id
+            );
+            assert!(
+                !ws.bottom.corner_outer.is_empty(),
+                "wall set '{}' missing bottom.corner_outer",
+                ws.id
+            );
+        }
+    }
+
+    #[test]
+    fn wall_set_tile_width_matches_mesh_bounds() {
+        for ws in ALL_WALL_SETS {
+            assert!(
+                (ws.tile_width - 4.0).abs() < 0.01,
+                "wall set '{}' tile_width should be 4.0, got {}",
+                ws.id,
+                ws.tile_width
+            );
+        }
+    }
+
+    #[test]
+    fn wall_set_story_height_matches_mesh_bounds() {
+        for ws in ALL_WALL_SETS {
+            assert!(
+                ws.story_height > 4.0 && ws.story_height <= 5.0,
+                "wall set '{}' story_height should be ~5.0, got {}",
+                ws.id,
+                ws.story_height
+            );
+        }
+    }
+
+    #[test]
+    fn short_wall_and_bottom_scene_paths_exist_on_disk() {
+        let godot_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("void-logic/ should have a parent dir")
+            .parent()
+            .expect("rust/ should have a parent dir")
+            .join("godot");
+
+        let mut missing = Vec::new();
+        for ws in ALL_WALL_SETS {
+            for (label, path) in [
+                ("short_wall.straight", ws.short_wall.straight),
+                ("short_wall.corner_inner", ws.short_wall.corner_inner),
+                ("short_wall.corner_outer", ws.short_wall.corner_outer),
+                ("bottom.straight", ws.bottom.straight),
+                ("bottom.corner_inner", ws.bottom.corner_inner),
+                ("bottom.corner_outer", ws.bottom.corner_outer),
+            ] {
+                if path.is_empty() {
+                    missing.push(format!("{} / {label}: (empty)", ws.id));
+                    continue;
+                }
+                let rel = path.strip_prefix("res://").unwrap_or(path);
+                let full = godot_dir.join(rel);
+                if !full.exists() {
+                    missing.push(format!("{} / {label}: {path}", ws.id));
+                }
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "ShortWall/Bottom scene paths missing on disk:\n{}",
+            missing.iter().map(|m| format!("  - {m}")).collect::<Vec<_>>().join("\n")
+        );
     }
 
     #[test]

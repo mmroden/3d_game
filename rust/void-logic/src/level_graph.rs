@@ -17,13 +17,12 @@ pub struct PlacedRoom {
 
 impl PlacedRoom {
     /// Convert grid position to world-space origin.
-    /// XZ uses cell_size (4m), Y uses CELL_HEIGHT (5m) because
-    /// vertical spacing is determined by mesh height, not cell width.
-    pub fn world_position(&self, cell_size: f32) -> [f32; 3] {
+    /// XZ uses `tile_width`, Y uses `story_height` — both derived from the wall set.
+    pub fn world_position(&self, tile_width: f32, story_height: f32) -> [f32; 3] {
         [
-            self.grid_pos[0] as f32 * cell_size,
-            self.grid_pos[1] as f32 * crate::room_assembler::CELL_HEIGHT,
-            self.grid_pos[2] as f32 * cell_size,
+            self.grid_pos[0] as f32 * tile_width,
+            self.grid_pos[1] as f32 * story_height,
+            self.grid_pos[2] as f32 * tile_width,
         ]
     }
 }
@@ -734,7 +733,7 @@ mod tests {
         let mut graph = LevelGraph::new();
         let idx = graph.place_room(room_1x1_east_west(), [3, -1, 2]).unwrap();
         let room = graph.room(idx).unwrap();
-        let pos = room.world_position(10.0);
+        let pos = room.world_position(10.0, 5.0);
         // XZ uses cell_size (10.0), Y uses CELL_HEIGHT (5.0)
         assert_eq!(pos, [30.0, -5.0, 20.0]);
     }

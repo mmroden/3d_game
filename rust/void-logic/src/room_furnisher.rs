@@ -325,50 +325,65 @@ pub struct LightSource {
 }
 
 /// Place light fixtures on ceilings and return both the fixture mesh placement
-/// and the co-located light source. One fixture per cell.
+/// and the co-located light source.
+///
+/// Lights are only placed where an actual ceiling exists: the topmost floor
+/// of each XZ column, minus any cells with active PosY connectors.
 pub fn light_fixtures(
     template: &RoomTemplate,
+    active_connectors: &[Connector],
     world_origin: [f32; 3],
     cell_size: f32,
 ) -> Vec<(MeshPlacement, LightSource)> {
     use crate::asset_catalog::CEILING_LIGHTS;
-    use crate::room_assembler::CELL_HEIGHT;
 
+    let story_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
     let mut out = Vec::new();
     let ex = template.extents[0] as i32;
     let ey = template.extents[1] as i32;
     let ez = template.extents[2] as i32;
 
     for cx in 0..ex {
-        for cy in 0..ey {
-            for cz in 0..ez {
-                // Alternate between ceiling light variants based on position
-                let fixture = &CEILING_LIGHTS[((cx + cy + cz) as usize) % CEILING_LIGHTS.len()];
-
-                let fixture_y = world_origin[1] + cy as f32 * CELL_HEIGHT + CELL_HEIGHT - 0.1;
-                let mesh = MeshPlacement {
-                    scene: fixture.scene,
-                    position: [
-                        world_origin[0] + (cx as f32 + 0.5) * cell_size,
-                        fixture_y,
-                        world_origin[2] + (cz as f32 + 0.5) * cell_size,
-                    ],
-                    rotation_x: 0.0,
-                    rotation_y: 0.0,
-                };
-
-                let light = LightSource {
-                    position: [
-                        mesh.position[0] + fixture.light_offset[0],
-                        mesh.position[1] + fixture.light_offset[1],
-                        mesh.position[2] + fixture.light_offset[2],
-                    ],
-                    range: fixture.range,
-                    energy: fixture.energy,
-                };
-
-                out.push((mesh, light));
+        for cz in 0..ez {
+            // The ceiling exists at the topmost Y level for this XZ column,
+            // unless an active PosY connector removes it.
+            let top_cy = ey - 1;
+            let has_posy = active_connectors.iter().any(|c| {
+                c.facing == ConnectorFacing::PosY
+                    && c.offset[0] == cx
+                    && c.offset[1] == top_cy
+                    && c.offset[2] == cz
+                    && template.connectors.contains(c)
+            });
+            if has_posy {
+                continue; // No ceiling here → no light.
             }
+
+            let fixture = &CEILING_LIGHTS[((cx + top_cy + cz) as usize) % CEILING_LIGHTS.len()];
+
+            let fixture_y = world_origin[1] + top_cy as f32 * story_height + story_height - 0.1;
+            let mesh = MeshPlacement {
+                scene: fixture.scene,
+                position: [
+                    world_origin[0] + (cx as f32 + 0.5) * cell_size,
+                    fixture_y,
+                    world_origin[2] + (cz as f32 + 0.5) * cell_size,
+                ],
+                rotation_x: 0.0,
+                rotation_y: 0.0,
+            };
+
+            let light = LightSource {
+                position: [
+                    mesh.position[0] + fixture.light_offset[0],
+                    mesh.position[1] + fixture.light_offset[1],
+                    mesh.position[2] + fixture.light_offset[2],
+                ],
+                range: fixture.range,
+                energy: fixture.energy,
+            };
+
+            out.push((mesh, light));
         }
     }
 

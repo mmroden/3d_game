@@ -15,12 +15,12 @@ pub enum CellKind {
     ConnectorGap,
 }
 
-/// What occupies a cell (at most one item).
+/// What occupies a cell.
 #[derive(Debug, Clone)]
 pub enum CellOccupant {
     Empty,
-    Prop(MeshPlacement),
-    // Enemy(EnemySpawn),  // future
+    /// One or more props (e.g., a column stacked at each story level).
+    Props(Vec<MeshPlacement>),
 }
 
 /// A single cell in a room's grid, classified by its structural role.
@@ -45,7 +45,7 @@ pub struct CellGrid {
 }
 
 impl CellGrid {
-    const CELL_HEIGHT: f32 = crate::room_assembler::CELL_HEIGHT;
+    const DEFAULT_STORY_HEIGHT: f32 = 5.0; // TODO: pass from WallSet
 
     /// Build a cell grid from a room template, classifying each cell by its
     /// boundary structure and active connectors.
@@ -66,7 +66,7 @@ impl CellGrid {
                 for cz in 0..ez {
                     let world_center = [
                         world_origin[0] + (cx as f32 + 0.5) * cell_size,
-                        world_origin[1] + cy as f32 * Self::CELL_HEIGHT,
+                        world_origin[1] + cy as f32 * Self::DEFAULT_STORY_HEIGHT,
                         world_origin[2] + (cz as f32 + 0.5) * cell_size,
                     ];
 
@@ -184,12 +184,33 @@ impl CellGrid {
                 CellKind::BoundaryCorner => {
                     if !theme.palette.corner.is_empty() && rng.next_usize() % corner_den < corner_num {
                         let prop = &theme.palette.corner[rng.next_usize() % theme.palette.corner.len()];
-                        cell.occupant = CellOccupant::Prop(MeshPlacement {
-                            scene: prop.scene,
-                            position: cell.world_center,
-                            rotation_x: 0.0,
-                            rotation_y: 0.0,
-                        });
+                        let is_column = prop.scene.contains("/columns/");
+                        if is_column {
+                            // Stack columns at every story level for this XZ position.
+                            let story_height = Self::DEFAULT_STORY_HEIGHT;
+                            let ey = self.extents[1];
+                            let base_y = cell.world_center[1] - cell.grid_pos[1] as f32 * story_height;
+                            let placements: Vec<MeshPlacement> = (0..ey).map(|cy| {
+                                MeshPlacement {
+                                    scene: prop.scene,
+                                    position: [
+                                        cell.world_center[0],
+                                        base_y + cy as f32 * story_height,
+                                        cell.world_center[2],
+                                    ],
+                                    rotation_x: 0.0,
+                                    rotation_y: 0.0,
+                                }
+                            }).collect();
+                            cell.occupant = CellOccupant::Props(placements);
+                        } else {
+                            cell.occupant = CellOccupant::Props(vec![MeshPlacement {
+                                scene: prop.scene,
+                                position: cell.world_center,
+                                rotation_x: 0.0,
+                                rotation_y: 0.0,
+                            }]);
+                        }
                     }
                 }
                 CellKind::BoundaryEdge => {
@@ -207,7 +228,7 @@ impl CellGrid {
                             // Y-axis faces: place prop at cell center with no XZ offset
                             ConnectorFacing::NegY | ConnectorFacing::PosY => (0.0, 0.0, 0.0),
                         };
-                        cell.occupant = CellOccupant::Prop(MeshPlacement {
+                        cell.occupant = CellOccupant::Props(vec![MeshPlacement {
                             scene: prop.scene,
                             position: [
                                 cell.world_center[0] + offset_x,
@@ -216,18 +237,18 @@ impl CellGrid {
                             ],
                             rotation_x: 0.0,
                             rotation_y: rot,
-                        });
+                        }]);
                     }
                 }
                 CellKind::Interior => {
                     if !theme.palette.center.is_empty() && rng.next_usize() % center_den < center_num {
                         let prop = &theme.palette.center[rng.next_usize() % theme.palette.center.len()];
-                        cell.occupant = CellOccupant::Prop(MeshPlacement {
+                        cell.occupant = CellOccupant::Props(vec![MeshPlacement {
                             scene: prop.scene,
                             position: cell.world_center,
                             rotation_x: 0.0,
                             rotation_y: 0.0,
-                        });
+                        }]);
                     }
                 }
                 CellKind::ConnectorGap => unreachable!(),
@@ -237,11 +258,11 @@ impl CellGrid {
 
     /// Collect all prop placements from occupied cells.
     pub fn prop_placements(&self) -> Vec<MeshPlacement> {
-        self.cells.iter().filter_map(|c| {
-            if let CellOccupant::Prop(ref p) = c.occupant {
-                Some(*p)
+        self.cells.iter().flat_map(|c| {
+            if let CellOccupant::Props(ref ps) = c.occupant {
+                ps.clone()
             } else {
-                None
+                vec![]
             }
         }).collect()
     }
@@ -635,7 +656,7 @@ mod tests {
         let mut grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0);
         grid.populate(&THEME_WAREHOUSE, 42);
         let occupied = grid.cells().iter()
-            .filter(|c| matches!(c.occupant, CellOccupant::Prop(_)))
+            .filter(|c| matches!(c.occupant, CellOccupant::Props(_)))
             .count();
         // Dense = ~60-80% fill. 9 cells → at least 5 occupied.
         assert!(occupied >= 5,
@@ -655,7 +676,7 @@ mod tests {
         let mut grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0);
         grid.populate(&sparse_theme, 42);
         let occupied = grid.cells().iter()
-            .filter(|c| matches!(c.occupant, CellOccupant::Prop(_)))
+            .filter(|c| matches!(c.occupant, CellOccupant::Props(_)))
             .count();
         // Sparse = ~12-20%. 9 cells → at most 4 occupied.
         assert!(occupied <= 4,
@@ -674,7 +695,7 @@ mod tests {
         grid.populate(&THEME_WAREHOUSE, 42);
         let gap_occupied = grid.cells().iter()
             .filter(|c| c.kind == CellKind::ConnectorGap)
-            .any(|c| matches!(c.occupant, CellOccupant::Prop(_)));
+            .any(|c| matches!(c.occupant, CellOccupant::Props(_)));
         assert!(!gap_occupied, "ConnectorGap cells should never have props");
     }
 
@@ -686,7 +707,7 @@ mod tests {
         // Each cell is either Empty or Prop — by type system this is guaranteed,
         // but verify prop_placements count matches occupied cell count.
         let occupied = grid.cells().iter()
-            .filter(|c| matches!(c.occupant, CellOccupant::Prop(_)))
+            .filter(|c| matches!(c.occupant, CellOccupant::Props(_)))
             .count();
         assert_eq!(grid.prop_placements().len(), occupied,
             "prop_placements count should match occupied cell count");
@@ -710,5 +731,51 @@ mod tests {
             assert!(warehouse_scenes.contains(&p.scene),
                 "prop '{}' not in warehouse palette", p.scene);
         }
+    }
+
+    /// Column props in multi-story rooms must be stacked at each story level.
+    #[test]
+    fn columns_stacked_in_multi_story_room() {
+        use crate::room_theme::THEME_WAREHOUSE;
+        let template = RoomTemplate {
+            id: "test_2story_3x3",
+            kind: TemplateKind::Room,
+            connectors: vec![],
+            enemy_spawns: vec![],
+            loot_spawns: vec![],
+            extents: [3, 2, 3],
+        };
+        // Try many seeds until we get at least one column placement.
+        let mut found_stacked = false;
+        for seed in 0..200 {
+            let mut grid = CellGrid::new(&template, &[], [0.0, 0.0, 0.0], 4.0);
+            grid.populate(&THEME_WAREHOUSE, seed);
+            let placements = grid.prop_placements();
+            let columns: Vec<_> = placements.iter()
+                .filter(|p| p.scene.contains("/columns/"))
+                .collect();
+            if columns.is_empty() {
+                continue;
+            }
+            // For each column, there should be a matching column at the next story level.
+            let story_height = CellGrid::DEFAULT_STORY_HEIGHT;
+            for col in &columns {
+                let has_pair = columns.iter().any(|other| {
+                    other.scene == col.scene
+                        && (other.position[0] - col.position[0]).abs() < 0.01
+                        && (other.position[2] - col.position[2]).abs() < 0.01
+                        && other.position[1] != col.position[1]
+                        && ((other.position[1] - col.position[1]).abs() - story_height).abs() < 0.01
+                });
+                assert!(
+                    has_pair,
+                    "column at {:?} should have a matching column one story above/below (story_height={})",
+                    col.position, story_height
+                );
+            }
+            found_stacked = true;
+            break;
+        }
+        assert!(found_stacked, "should find at least one stacked column across 200 seeds");
     }
 }

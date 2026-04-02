@@ -8,7 +8,8 @@ pub fn portal_position(graph: &LevelGraph, cell_size: f32) -> Option<[f32; 3]> {
     let room_indices: Vec<_> = graph.room_indices().collect();
     let last_idx = *room_indices.last()?;
     let room = graph.room(last_idx)?;
-    let origin = room.world_position(cell_size);
+    let story_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+    let origin = room.world_position(cell_size, story_height);
     let ex = room.template.extents[0] as f32;
     let ez = room.template.extents[2] as f32;
     Some([
@@ -52,7 +53,7 @@ mod tests {
         // Should be at hover height above the last room's origin Y
         let room_indices: Vec<_> = graph.room_indices().collect();
         let last_room = graph.room(*room_indices.last().unwrap()).unwrap();
-        let expected_y = last_room.world_position(cell_size)[1] + 1.5;
+        let expected_y = last_room.world_position(cell_size, 5.0)[1] + 1.5;
         assert!((pos[1] - expected_y).abs() < 0.01,
             "portal Y should be room origin Y + 1.5, expected {expected_y}, got {}", pos[1]);
     }

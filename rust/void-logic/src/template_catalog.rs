@@ -122,7 +122,6 @@ pub fn spawn_list_full(
     Vec<crate::room_assembler::CollisionBox>,
 ) {
     use crate::cell::CellGrid;
-    use crate::room_assembler::RoomStyle;
     use crate::room_furnisher;
     use crate::room_theme;
 
@@ -134,11 +133,10 @@ pub fn spawn_list_full(
     for (room_idx, idx) in graph.room_indices().enumerate() {
         let Some(room) = graph.room(idx) else { continue };
         let active = graph.active_connectors(idx);
-        let origin = room.world_position(cell_size);
-
         // Per-room theme: deterministic from seed + room index.
         let theme = room_theme::theme_for_room(seed, room_idx);
-        let style = RoomStyle::from_wall_set(theme.wall_set);
+        let story_height = theme.wall_set.story_height;
+        let origin = room.world_position(cell_size, story_height);
 
         // Build cell grid and structural geometry.
         let mut grid = CellGrid::new(&room.template, &active, origin, cell_size);
@@ -146,7 +144,7 @@ pub fn spawn_list_full(
             &grid,
             &room.template,
             &active,
-            &style,
+            theme.wall_set,
         ));
 
         // Collision boxes for walls, floors, ceilings.
@@ -154,7 +152,7 @@ pub fn spawn_list_full(
             &grid,
             &room.template,
             &active,
-            cell_size,
+            theme.wall_set,
         ));
 
         // Populate cells with themed props.
@@ -163,7 +161,7 @@ pub fn spawn_list_full(
         meshes.extend(grid.prop_placements());
 
         // Light fixtures (mesh + co-located light source).
-        for (mesh, light) in room_furnisher::light_fixtures(&room.template, origin, cell_size) {
+        for (mesh, light) in room_furnisher::light_fixtures(&room.template, &active, origin, cell_size) {
             meshes.push(mesh);
             lights.push(light);
         }
@@ -188,17 +186,19 @@ pub fn cell_centers(
     graph: &crate::level_graph::LevelGraph,
     cell_size: f32,
 ) -> Vec<[f32; 3]> {
+    // Use WALL_SET_ASTRA story_height as default for cell center computation.
+    let story_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
     graph
         .room_indices()
         .filter_map(|idx| {
             let room = graph.room(idx)?;
-            let origin = room.world_position(cell_size);
+            let origin = room.world_position(cell_size, story_height);
             let [ex, ey, ez] = room.template.extents.map(|e| e as i32);
             let centers: Vec<_> = (0..ex).flat_map(|cx| {
                 (0..ey).flat_map(move |cy| {
                     (0..ez).map(move |cz| [
                         origin[0] + (cx as f32 + 0.5) * cell_size,
-                        origin[1] + cy as f32 * crate::room_assembler::CELL_HEIGHT,
+                        origin[1] + cy as f32 * story_height,
                         origin[2] + (cz as f32 + 0.5) * cell_size,
                     ])
                 })
@@ -212,6 +212,7 @@ pub fn cell_centers(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::asset_catalog;
 
     #[test]
     fn catalog_has_at_least_one_corridor_template() {
@@ -469,12 +470,13 @@ mod tests {
                 for (idx, conn) in [(from, from_connector), (to, to_connector)] {
                     let room = level.room(idx).unwrap();
                     let active = level.active_connectors(idx);
+                    let ws = &asset_catalog::WALL_SET_ASTRA;
+                    let story_height = ws.story_height;
                     let placements = room_assembler::assemble(
                         &room.template,
                         &active,
-                        room.world_position(cell_size),
-                        cell_size,
-                        &room_assembler::RoomStyle::default(),
+                        room.world_position(cell_size, story_height),
+                        ws,
                     );
 
                     let facing = conn.facing;
@@ -484,10 +486,10 @@ mod tests {
                         continue;
                     }
                     {
-                        let origin = room.world_position(cell_size);
+                        let origin = room.world_position(cell_size, story_height);
                         let cell_pos = [
                             origin[0] + (conn.offset[0] as f32 + 0.5) * cell_size,
-                            origin[1] + conn.offset[1] as f32 * room_assembler::CELL_HEIGHT,
+                            origin[1] + conn.offset[1] as f32 * story_height,
                             origin[2] + (conn.offset[2] as f32 + 0.5) * cell_size,
                         ];
 
@@ -546,15 +548,17 @@ mod tests {
         let floor_scene = "res://addons/quaternius/modularscifimegakit/platforms/Platform_Simple.gltf";
         let floor_curve_scene = "res://addons/quaternius/modularscifimegakit/platforms/Platform_Simple_Curve.gltf";
 
+        let ws = &asset_catalog::WALL_SET_ASTRA;
+        let story_height = ws.story_height;
+
         for idx in level.room_indices() {
             let room = level.room(idx).unwrap();
             let active = level.active_connectors(idx);
             let placements = room_assembler::assemble(
                 &room.template,
                 &active,
-                room.world_position(cell_size),
-                cell_size,
-                &room_assembler::RoomStyle::default(),
+                room.world_position(cell_size, story_height),
+                ws,
             );
 
             let door_scene = "res://addons/quaternius/modularscifimegakit/platforms/Door_Frame_Square.gltf";
@@ -579,7 +583,7 @@ mod tests {
             let cell_count = (room.template.extents[0] * room.template.extents[2]) as usize;
             let expected_floors = cell_count - negy_openings;
             let floor_count = placements.iter().filter(|p| {
-                is_floor_piece(p) && (p.position[1] - room.world_position(cell_size)[1]).abs() < 0.001
+                is_floor_piece(p) && (p.position[1] - room.world_position(cell_size, story_height)[1]).abs() < 0.001
             }).count();
             assert_eq!(
                 floor_count, expected_floors,
@@ -587,9 +591,9 @@ mod tests {
                 room.template.id, room.grid_pos, expected_floors, cell_count, negy_openings, floor_count
             );
 
-            // Ceiling tiles at room top: origin_y + extents_y * CELL_HEIGHT
+            // Ceiling tiles at room top: origin_y + extents_y * story_height
             let ey = room.template.extents[1] as f32;
-            let ceiling_y = room.world_position(cell_size)[1] + ey * crate::room_assembler::CELL_HEIGHT;
+            let ceiling_y = room.world_position(cell_size, story_height)[1] + ey * story_height;
             let expected_ceilings = cell_count - posy_openings;
             let ceiling_count = placements.iter().filter(|p| {
                 is_floor_piece(p)
@@ -603,7 +607,7 @@ mod tests {
 
             // Per-edge boundary coverage: every horizontal boundary edge must have
             // a wall or archway at the correct spatial position (not just Y).
-            let origin = room.world_position(cell_size);
+            let origin = room.world_position(cell_size, story_height);
             let ex = room.template.extents[0] as i32;
             let ez = room.template.extents[2] as i32;
 
@@ -690,19 +694,19 @@ mod tests {
                 let from_room = level.room(from).unwrap();
                 let to_room = level.room(to).unwrap();
 
+                let ws = &asset_catalog::WALL_SET_ASTRA;
+                let story_height = ws.story_height;
                 let from_placements = room_assembler::assemble(
                     &from_room.template,
                     &level.active_connectors(from),
-                    from_room.world_position(cell_size),
-                    cell_size,
-                    &room_assembler::RoomStyle::default(),
+                    from_room.world_position(cell_size, story_height),
+                    ws,
                 );
                 let to_placements = room_assembler::assemble(
                     &to_room.template,
                     &level.active_connectors(to),
-                    to_room.world_position(cell_size),
-                    cell_size,
-                    &room_assembler::RoomStyle::default(),
+                    to_room.world_position(cell_size, story_height),
+                    ws,
                 );
 
                 // Two walls overlap if same position AND same rotation
@@ -756,6 +760,11 @@ mod tests {
                 all_structural.insert(triple.wall);
                 all_structural.insert(triple.ceiling);
             }
+            for layer in [&ws.short_wall, &ws.bottom] {
+                all_structural.insert(layer.straight);
+                all_structural.insert(layer.corner_inner);
+                all_structural.insert(layer.corner_outer);
+            }
         }
         // Light fixture scenes.
         let light_scenes: std::collections::HashSet<&str> =
@@ -764,8 +773,9 @@ mod tests {
         // For each room, verify non-structural props belong to that theme's palette.
         for (room_idx, idx) in level.room_indices().enumerate() {
             let room = level.room(idx).unwrap();
-            let origin = room.world_position(cell_size);
             let theme = room_theme::theme_for_room(seed, room_idx);
+            let story_height = theme.wall_set.story_height;
+            let origin = room.world_position(cell_size, story_height);
 
             // Collect allowed prop scenes for this room's theme.
             let allowed: std::collections::HashSet<&str> = theme.palette.wall_adjacent.iter()
@@ -782,7 +792,7 @@ mod tests {
             let room_props: Vec<_> = all_placements.iter()
                 .filter(|p| {
                     p.position[0] >= origin[0] && p.position[0] < origin[0] + ex * cell_size
-                    && p.position[1] >= origin[1] - 0.1 && p.position[1] < origin[1] + ey * crate::room_assembler::CELL_HEIGHT + 0.1
+                    && p.position[1] >= origin[1] - 0.1 && p.position[1] < origin[1] + ey * story_height + 0.1
                     && p.position[2] >= origin[2] && p.position[2] < origin[2] + ez * cell_size
                     && !all_structural.contains(p.scene)
                     && !light_scenes.contains(p.scene)

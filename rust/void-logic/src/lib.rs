@@ -2,7 +2,6 @@
 #![deny(clippy::match_wildcard_for_single_variants)]
 
 pub mod cell;
-pub mod cell_geometry;
 pub mod generator;
 pub mod room_theme;
 pub mod level_graph;

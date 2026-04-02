@@ -242,7 +242,7 @@ fn corridor_gets_no_center_props() {
 fn every_room_cell_gets_at_least_one_light_fixture() {
     let template = room_3x3();
     let cell_size = 4.0;
-    let fixtures = light_fixtures(&template, [0.0, 0.0, 0.0], cell_size);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], cell_size);
     let cell_count = (template.extents[0] * template.extents[2]) as usize;
     assert_eq!(
         fixtures.len(), cell_count,
@@ -253,7 +253,7 @@ fn every_room_cell_gets_at_least_one_light_fixture() {
 #[test]
 fn corridor_gets_light_fixtures() {
     let template = corridor_1x1();
-    let fixtures = light_fixtures(&template, [0.0, 0.0, 0.0], 4.0);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0);
     assert!(
         !fixtures.is_empty(),
         "corridor should get at least 1 light fixture"
@@ -264,9 +264,9 @@ fn corridor_gets_light_fixtures() {
 fn light_fixture_mesh_at_ceiling_height() {
     let template = room_3x3();
     let cell_size = 4.0;
-    let cell_height = crate::room_assembler::CELL_HEIGHT;
+    let cell_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
     let origin_y = 0.0;
-    let fixtures = light_fixtures(&template, [0.0, origin_y, 0.0], cell_size);
+    let fixtures = light_fixtures(&template, &[], [0.0, origin_y, 0.0], cell_size);
     for (mesh, _) in &fixtures {
         let expected_y = origin_y + cell_height - 0.1;
         assert!(
@@ -280,7 +280,7 @@ fn light_fixture_mesh_at_ceiling_height() {
 #[test]
 fn light_source_within_fixture_bounds() {
     let template = room_3x3();
-    let fixtures = light_fixtures(&template, [0.0, 0.0, 0.0], 4.0);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0);
     for (mesh, light) in &fixtures {
         // Find which fixture catalog entry this is
         let fixture_entry = asset_catalog::ALL_LIGHTS.iter()
@@ -307,10 +307,10 @@ fn light_source_inside_room_bounds() {
     let template = room_5x5();
     let cell_size = 4.0;
     let origin = [4.0, 2.0, 8.0];
-    let fixtures = light_fixtures(&template, origin, cell_size);
+    let fixtures = light_fixtures(&template, &[], origin, cell_size);
     let max_x = origin[0] + template.extents[0] as f32 * cell_size;
     let max_z = origin[2] + template.extents[2] as f32 * cell_size;
-    let cell_height = crate::room_assembler::CELL_HEIGHT;
+    let cell_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
     let max_y = origin[1] + template.extents[1] as f32 * cell_height;
 
     for (_, light) in &fixtures {
@@ -333,7 +333,7 @@ fn light_source_inside_room_bounds() {
 fn light_source_range_covers_cell() {
     let cell_size = 4.0;
     let template = room_3x3();
-    let fixtures = light_fixtures(&template, [0.0, 0.0, 0.0], cell_size);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], cell_size);
     for (_, light) in &fixtures {
         assert!(
             light.range >= cell_size / 2.0,
@@ -345,8 +345,10 @@ fn light_source_range_covers_cell() {
 
 // --- Multi-story light fixtures ---
 
+/// Multi-story sealed room: lights only at the top floor (where ceilings exist).
+/// Intermediate floors have no ceiling, so no lights should hang in mid-air.
 #[test]
-fn multi_story_room_gets_lights_on_every_floor() {
+fn multi_story_room_lights_only_at_top_floor() {
     let template = RoomTemplate {
         id: "test_3x2x3",
         kind: TemplateKind::Room,
@@ -355,19 +357,46 @@ fn multi_story_room_gets_lights_on_every_floor() {
         loot_spawns: vec![],
         extents: [3, 2, 3],
     };
-    let fixtures = light_fixtures(&template, [0.0, 0.0, 0.0], 4.0);
-    // 3x2x3 = 18 cells, each should get a light
-    let total_cells = (3 * 2 * 3) as usize;
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0);
+    let cell_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+    // Only top floor (cy=1) has ceilings → 3x3 = 9 lights, NOT 18.
     assert_eq!(
-        fixtures.len(), total_cells,
-        "3x2x3 room should have {} fixtures, got {}", total_cells, fixtures.len()
+        fixtures.len(), 9,
+        "3x2x3 sealed room should have 9 fixtures (top floor only), got {}", fixtures.len()
     );
-    // Verify lights exist at both Y levels
-    let cell_height = crate::room_assembler::CELL_HEIGHT;
-    let floor0_lights = fixtures.iter().filter(|(m, _)| m.position[1] < cell_height).count();
-    let floor1_lights = fixtures.iter().filter(|(m, _)| m.position[1] >= cell_height).count();
-    assert!(floor0_lights > 0, "should have lights on floor 0");
-    assert!(floor1_lights > 0, "should have lights on floor 1");
+    // All lights should be near the top ceiling (y = 2 * story_height - 0.1)
+    let top_ceiling_y = 2.0 * cell_height - 0.1;
+    for (mesh, _) in &fixtures {
+        assert!(
+            (mesh.position[1] - top_ceiling_y).abs() < 0.2,
+            "light at y={} should be near top ceiling y={}", mesh.position[1], top_ceiling_y
+        );
+    }
+}
+
+/// Active PosY connector removes ceiling at that cell → no light there.
+#[test]
+fn no_light_where_ceiling_removed_by_connector() {
+    let template = RoomTemplate {
+        id: "test_hub",
+        kind: TemplateKind::Room,
+        connectors: vec![
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosY },
+        ],
+        enemy_spawns: vec![],
+        loot_spawns: vec![],
+        extents: [1, 1, 1],
+    };
+    let active = vec![Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosY }];
+    let fixtures = light_fixtures(&template, &active, [0.0, 0.0, 0.0], 4.0);
+    assert_eq!(
+        fixtures.len(), 0,
+        "cell with active PosY connector has no ceiling → no light"
+    );
 }
 
 // --- Flyable path validation tests ---

@@ -141,7 +141,6 @@ fn posx_negz_corner_lands_in_correct_quadrant() {
             Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ },
         ],
         [0.0, 0.0, 0.0],
-        4.0,
     );
     let corners: Vec<_> = placements.iter().filter(|p| p.scene == CORNER).collect();
     assert_eq!(corners.len(), 1, "should have exactly 1 corner (PosX-NegZ)");
@@ -164,7 +163,6 @@ fn negx_posz_corner_lands_in_correct_quadrant() {
             Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ },
         ],
         [0.0, 0.0, 0.0],
-        4.0,
     );
     let corners: Vec<_> = placements.iter().filter(|p| p.scene == CORNER).collect();
     assert_eq!(corners.len(), 1, "should have exactly 1 corner (NegX-PosZ)");
