@@ -1,5 +1,5 @@
 use crate::room_assembler::MeshPlacement;
-use crate::room_template::{ConnectorFacing, RoomTemplate};
+use crate::room_template::{Connector, ConnectorFacing, RoomTemplate};
 use crate::room_theme::RoomTheme;
 
 /// What role a cell plays in the room's boundary structure.
@@ -51,7 +51,7 @@ impl CellGrid {
     /// boundary structure and active connectors.
     pub fn new(
         template: &RoomTemplate,
-        active_facings: &[ConnectorFacing],
+        active_connectors: &[Connector],
         world_origin: [f32; 3],
         cell_size: f32,
     ) -> Self {
@@ -81,13 +81,13 @@ impl CellGrid {
                     ];
 
                     let has_active_connector = boundary_faces.iter().any(|&(facing, is_boundary)| {
-                        is_boundary && Self::is_active_connector(template, active_facings, facing, cx, cy, cz)
+                        is_boundary && Self::is_active_connector(template, active_connectors, facing, cx, cy, cz)
                     });
 
                     let sealed_faces: Vec<ConnectorFacing> = boundary_faces
                         .iter()
                         .filter(|&&(facing, is_boundary)| {
-                            is_boundary && !Self::is_active_connector(template, active_facings, facing, cx, cy, cz)
+                            is_boundary && !Self::is_active_connector(template, active_connectors, facing, cx, cy, cz)
                         })
                         .map(|&(facing, _)| facing)
                         .collect();
@@ -123,18 +123,15 @@ impl CellGrid {
     /// both defined in the template AND present in the active list.
     fn is_active_connector(
         template: &RoomTemplate,
-        active: &[ConnectorFacing],
+        active: &[Connector],
         facing: ConnectorFacing,
         cx: i32,
         cy: i32,
         cz: i32,
     ) -> bool {
-        if !active.contains(&facing) {
-            return false;
-        }
-        template.connectors.iter().any(|c| {
-            c.facing == facing && c.offset[0] == cx && c.offset[1] == cy && c.offset[2] == cz
-        })
+        let candidate = Connector { offset: [cx, cy, cz], facing };
+        active.contains(&candidate)
+            && template.connectors.contains(&candidate)
     }
 
     /// Check if a set of sealed faces contains at least one perpendicular pair.
@@ -471,7 +468,7 @@ mod tests {
         // 3x3 room with NegX active at [0,0,1]
         let grid = CellGrid::new(
             &room_3x3(),
-            &[ConnectorFacing::NegX],
+            &[Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }],
             [0.0, 0.0, 0.0],
             4.0,
         );
@@ -484,7 +481,10 @@ mod tests {
     fn corridor_with_both_ends_active_is_connector_gap() {
         let grid = CellGrid::new(
             &corridor_ew(),
-            &[ConnectorFacing::NegX, ConnectorFacing::PosX],
+            &[
+                Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
+                Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
+            ],
             [0.0, 0.0, 0.0],
             4.0,
         );
@@ -500,7 +500,7 @@ mod tests {
         // 3x3 with NegX active — cell (2,0,2) is PosX+PosZ corner, unaffected
         let grid = CellGrid::new(
             &room_3x3(),
-            &[ConnectorFacing::NegX],
+            &[Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }],
             [0.0, 0.0, 0.0],
             4.0,
         );
@@ -583,7 +583,7 @@ mod tests {
         };
         let grid = CellGrid::new(
             &room_with_vertical_connector,
-            &[ConnectorFacing::PosY],
+            &[Connector { offset: [0, 1, 0], facing: ConnectorFacing::PosY }],
             [0.0, 0.0, 0.0],
             4.0,
         );
@@ -592,6 +592,38 @@ mod tests {
             "active PosY connector should prevent PosY sealed face");
         assert_eq!(cell.kind, CellKind::ConnectorGap,
             "cell with active vertical connector should be ConnectorGap");
+    }
+
+    // --- Aperture alignment: unwired Y-level must be sealed ---
+
+    #[test]
+    fn tall_room_unwired_y1_connector_is_not_gap() {
+        // A 3x2x3 room has NegX connectors at y=0 and y=1.
+        // If only y=0 is wired, cell [0,1,1] should be sealed, not ConnectorGap.
+        let template = RoomTemplate {
+            id: "tall_test",
+            kind: TemplateKind::Room,
+            connectors: vec![
+                Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX },
+                Connector { offset: [0, 1, 1], facing: ConnectorFacing::NegX },
+            ],
+            enemy_spawns: vec![],
+            loot_spawns: vec![],
+            extents: [3, 2, 3],
+        };
+        // Only the y=0 connector is active.
+        let active = &[Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }];
+        let grid = CellGrid::new(&template, active, [0.0, 0.0, 0.0], 4.0);
+
+        // y=0 cell should be ConnectorGap (it IS wired)
+        let y0 = grid.cell_at(0, 0, 1).expect("cell (0,0,1)");
+        assert_eq!(y0.kind, CellKind::ConnectorGap,
+            "y=0 NegX connector cell should be ConnectorGap");
+
+        // y=1 cell should NOT be ConnectorGap (it is NOT wired)
+        let y1 = grid.cell_at(0, 1, 1).expect("cell (0,1,1)");
+        assert_ne!(y1.kind, CellKind::ConnectorGap,
+            "y=1 NegX connector cell should be sealed — only y=0 is wired");
     }
 
     // --- Populate tests ---
@@ -635,7 +667,7 @@ mod tests {
         use crate::room_theme::THEME_WAREHOUSE;
         let mut grid = CellGrid::new(
             &room_3x3(),
-            &[ConnectorFacing::NegX],
+            &[Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }],
             [0.0, 0.0, 0.0],
             4.0,
         );

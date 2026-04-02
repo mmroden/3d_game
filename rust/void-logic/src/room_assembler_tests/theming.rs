@@ -57,7 +57,10 @@ fn door_asset_is_always_the_same_regardless_of_style() {
     let style = RoomStyle::from_wall_set(&asset_catalog::WALL_SET_WINDOW);
     let placements = assemble(
         &corridor_ew(),
-        &[ConnectorFacing::PosX, ConnectorFacing::NegX],
+        &[
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
+        ],
         [0.0, 0.0, 0.0],
         4.0,
         &style,

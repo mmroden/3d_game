@@ -96,14 +96,15 @@ fn corners_only_at_xz_corner_cells() {
 fn active_connector_removes_corner() {
     use crate::cell::{CellGrid, CellKind};
     let style = RoomStyle::default();
+    let active = &[Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX }];
     let placements = assemble(
         &room_3x3(),
-        &[ConnectorFacing::PosX],
+        active,
         [0.0, 0.0, 0.0],
         4.0,
         &style,
     );
-    let grid = CellGrid::new(&room_3x3(), &[ConnectorFacing::PosX], [0.0, 0.0, 0.0], 4.0);
+    let grid = CellGrid::new(&room_3x3(), active, [0.0, 0.0, 0.0], 4.0);
 
     let corners: Vec<_> = placements.iter()
         .filter(|p| p.scene == style.corner_inner.wall)

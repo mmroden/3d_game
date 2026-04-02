@@ -136,7 +136,10 @@ fn corner_rotations_match_reference_scenes() {
 fn posx_negz_corner_lands_in_correct_quadrant() {
     let placements = assemble_default(
         &small_room(),
-        &[ConnectorFacing::NegX, ConnectorFacing::PosZ],
+        &[
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ },
+        ],
         [0.0, 0.0, 0.0],
         4.0,
     );
@@ -156,7 +159,10 @@ fn posx_negz_corner_lands_in_correct_quadrant() {
 fn negx_posz_corner_lands_in_correct_quadrant() {
     let placements = assemble_default(
         &small_room(),
-        &[ConnectorFacing::PosX, ConnectorFacing::NegZ],
+        &[
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ },
+        ],
         [0.0, 0.0, 0.0],
         4.0,
     );

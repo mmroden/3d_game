@@ -133,7 +133,7 @@ pub fn spawn_list_full(
 
     for (room_idx, idx) in graph.room_indices().enumerate() {
         let Some(room) = graph.room(idx) else { continue };
-        let active = graph.active_facings(idx);
+        let active = graph.active_connectors(idx);
         let origin = room.world_position(cell_size);
 
         // Per-room theme: deterministic from seed + room index.
@@ -465,10 +465,10 @@ mod tests {
         //   - Corridors have archway geometry at the connector cell
         //   - Rooms have a gap (no wall AND no door) at the connector cell
         for (from, to, edge) in level.edges() {
-            if let EdgeKind::Adjacent { from_facing, to_facing } = edge {
-                for (idx, facing) in [(from, from_facing), (to, to_facing)] {
+            if let EdgeKind::Adjacent { from_connector, to_connector } = edge {
+                for (idx, conn) in [(from, from_connector), (to, to_connector)] {
                     let room = level.room(idx).unwrap();
-                    let active = level.active_facings(idx);
+                    let active = level.active_connectors(idx);
                     let placements = room_assembler::assemble(
                         &room.template,
                         &active,
@@ -477,12 +477,13 @@ mod tests {
                         &room_assembler::RoomStyle::default(),
                     );
 
+                    let facing = conn.facing;
                     // Y-axis connectors use hatches at floor/ceiling level,
                     // not vertical doors. Skip them here — tested by floor/ceiling coverage.
                     if matches!(facing, ConnectorFacing::PosY | ConnectorFacing::NegY) {
                         continue;
                     }
-                    if let Some(conn) = room.template.connectors.iter().find(|c| c.facing == *facing) {
+                    {
                         let origin = room.world_position(cell_size);
                         let cell_pos = [
                             origin[0] + (conn.offset[0] as f32 + 0.5) * cell_size,
@@ -498,7 +499,7 @@ mod tests {
                         // Use the wall rotation for this facing to distinguish walls
                         // on this face from walls on perpendicular faces at the same cell.
                         let (_, expected_wall_rot) = room_assembler::wall_placement(
-                            [0.0, 0.0, 0.0], *facing
+                            [0.0, 0.0, 0.0], facing
                         );
                         let has_door = placements.iter().any(|p| p.scene == door_scene && at_pos(p));
                         let has_wall_on_face = placements.iter().any(|p| {
@@ -547,7 +548,7 @@ mod tests {
 
         for idx in level.room_indices() {
             let room = level.room(idx).unwrap();
-            let active = level.active_facings(idx);
+            let active = level.active_connectors(idx);
             let placements = room_assembler::assemble(
                 &room.template,
                 &active,
@@ -568,11 +569,11 @@ mod tests {
 
             // Count active NegY connectors (floor openings)
             let negy_openings = room.template.connectors.iter()
-                .filter(|c| c.facing == ConnectorFacing::NegY && active.contains(&ConnectorFacing::NegY))
+                .filter(|c| c.facing == ConnectorFacing::NegY && active.contains(c))
                 .count();
             // Count active PosY connectors (ceiling openings)
             let posy_openings = room.template.connectors.iter()
-                .filter(|c| c.facing == ConnectorFacing::PosY && active.contains(&ConnectorFacing::PosY))
+                .filter(|c| c.facing == ConnectorFacing::PosY && active.contains(c))
                 .count();
 
             let cell_count = (room.template.extents[0] * room.template.extents[2]) as usize;
@@ -629,11 +630,9 @@ mod tests {
                         // Rooms with active connectors leave a gap (corridor
                         // provides the archway). Only check for geometry on
                         // sealed boundaries or corridor connectors.
-                        let is_active = active.contains(&facing)
-                            && room.template.connectors.iter().any(|c| {
+                        let is_active = active.iter().any(|c| {
                                 c.facing == facing
                                     && c.offset[0] == cx
-                                    && c.offset[1] == 0
                                     && c.offset[2] == cz
                             });
                         let is_room = room.template.kind == crate::room_template::TemplateKind::Room;
@@ -693,14 +692,14 @@ mod tests {
 
                 let from_placements = room_assembler::assemble(
                     &from_room.template,
-                    &level.active_facings(from),
+                    &level.active_connectors(from),
                     from_room.world_position(cell_size),
                     cell_size,
                     &room_assembler::RoomStyle::default(),
                 );
                 let to_placements = room_assembler::assemble(
                     &to_room.template,
-                    &level.active_facings(to),
+                    &level.active_connectors(to),
                     to_room.world_position(cell_size),
                     cell_size,
                     &room_assembler::RoomStyle::default(),

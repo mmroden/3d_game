@@ -2,7 +2,7 @@ use std::f32::consts::{FRAC_PI_2, PI};
 
 use crate::asset_catalog::{self, Triple};
 use crate::cell::{CellGrid, CellKind};
-use crate::room_template::{ConnectorFacing, RoomTemplate};
+use crate::room_template::{Connector, ConnectorFacing, RoomTemplate};
 
 // Default Astra asset paths — used by tests via `super::WALL` etc.
 #[cfg(test)]
@@ -91,13 +91,13 @@ const SLAB_THICKNESS: f32 = 0.2;
 /// Interior edges (between cells of the same multi-cell room) get nothing.
 pub fn assemble(
     template: &RoomTemplate,
-    active_facings: &[ConnectorFacing],
+    active_connectors: &[Connector],
     world_origin: [f32; 3],
     cell_size: f32,
     style: &RoomStyle,
 ) -> Vec<MeshPlacement> {
-    let grid = CellGrid::new(template, active_facings, world_origin, cell_size);
-    assemble_from_grid(&grid, template, active_facings, style)
+    let grid = CellGrid::new(template, active_connectors, world_origin, cell_size);
+    assemble_from_grid(&grid, template, active_connectors, style)
 }
 
 /// Build structural geometry from a pre-built cell grid.
@@ -110,7 +110,7 @@ pub fn assemble(
 pub fn assemble_from_grid(
     grid: &CellGrid,
     template: &RoomTemplate,
-    active_facings: &[ConnectorFacing],
+    active_connectors: &[Connector],
     style: &RoomStyle,
 ) -> Vec<MeshPlacement> {
     let mut out = Vec::new();
@@ -138,7 +138,7 @@ pub fn assemble_from_grid(
             // Find which XZ facings are active connectors at this cell.
             for facing in &[ConnectorFacing::NegX, ConnectorFacing::PosX,
                            ConnectorFacing::NegZ, ConnectorFacing::PosZ] {
-                if is_active_connector(template, active_facings, *facing,
+                if is_active_connector(template, active_connectors, *facing,
                     cell.grid_pos[0], cell.grid_pos[1], cell.grid_pos[2])
                 {
                     let (door_pos, door_rot) = door_placement(pos, *facing);
@@ -215,7 +215,7 @@ pub fn assemble_from_grid(
         // Active NegY connectors leave a clean opening (no floor tile, no hatch).
         let is_bottom = cy == 0;
         if is_bottom
-            && !is_active_connector(template, active_facings, ConnectorFacing::NegY,
+            && !is_active_connector(template, active_connectors, ConnectorFacing::NegY,
                 cell.grid_pos[0], cy, cell.grid_pos[2])
         {
             if let Some((corner_pos, rot)) = corner_placement {
@@ -230,7 +230,7 @@ pub fn assemble_from_grid(
         // Godot YXZ rotation: Rx(PI) flips Z, so compensate with rot - PI/2
         let is_top = cy == ey - 1;
         if is_top
-            && !is_active_connector(template, active_facings, ConnectorFacing::PosY,
+            && !is_active_connector(template, active_connectors, ConnectorFacing::PosY,
                 cell.grid_pos[0], cy, cell.grid_pos[2])
         {
             let ceiling_pos = [pos[0], pos[1] + CELL_HEIGHT, pos[2]];
@@ -250,18 +250,15 @@ pub fn assemble_from_grid(
 /// both defined in the template AND present in the active list.
 fn is_active_connector(
     template: &RoomTemplate,
-    active: &[ConnectorFacing],
+    active: &[Connector],
     facing: ConnectorFacing,
     cx: i32,
     cy: i32,
     cz: i32,
 ) -> bool {
-    if !active.contains(&facing) {
-        return false;
-    }
-    template.connectors.iter().any(|c| {
-        c.facing == facing && c.offset[0] == cx && c.offset[1] == cy && c.offset[2] == cz
-    })
+    let candidate = Connector { offset: [cx, cy, cz], facing };
+    active.contains(&candidate)
+        && template.connectors.contains(&candidate)
 }
 
 pub(crate) fn wall_placement(cell_pos: [f32; 3], facing: ConnectorFacing) -> ([f32; 3], f32) {
@@ -297,19 +294,19 @@ pub(crate) fn door_placement(cell_pos: [f32; 3], facing: ConnectorFacing) -> ([f
 /// the logical cell structure.
 pub fn collision_boxes(
     template: &RoomTemplate,
-    active_facings: &[ConnectorFacing],
+    active_connectors: &[Connector],
     world_origin: [f32; 3],
     cell_size: f32,
 ) -> Vec<CollisionBox> {
-    let grid = CellGrid::new(template, active_facings, world_origin, cell_size);
-    collision_boxes_from_grid(&grid, template, active_facings, cell_size)
+    let grid = CellGrid::new(template, active_connectors, world_origin, cell_size);
+    collision_boxes_from_grid(&grid, template, active_connectors, cell_size)
 }
 
 /// Generate collision boxes from a pre-built cell grid.
 pub fn collision_boxes_from_grid(
     grid: &CellGrid,
     template: &RoomTemplate,
-    active_facings: &[ConnectorFacing],
+    active_connectors: &[Connector],
     cell_size: f32,
 ) -> Vec<CollisionBox> {
     let mut out = Vec::new();
@@ -361,7 +358,7 @@ pub fn collision_boxes_from_grid(
         // Floor slab (bottom of room).
         let is_bottom = cy == 0;
         if is_bottom
-            && !is_active_connector(template, active_facings, ConnectorFacing::NegY,
+            && !is_active_connector(template, active_connectors, ConnectorFacing::NegY,
                 cell.grid_pos[0], cy, cell.grid_pos[2])
         {
             out.push(CollisionBox {
@@ -374,7 +371,7 @@ pub fn collision_boxes_from_grid(
         // Ceiling slab (top of room).
         let is_top = cy == ey - 1;
         if is_top
-            && !is_active_connector(template, active_facings, ConnectorFacing::PosY,
+            && !is_active_connector(template, active_connectors, ConnectorFacing::PosY,
                 cell.grid_pos[0], cy, cell.grid_pos[2])
         {
             out.push(CollisionBox {

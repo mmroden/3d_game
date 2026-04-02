@@ -37,7 +37,7 @@ impl ConnectorFacing {
 }
 
 /// A connection point on a room where corridors attach.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Connector {
     /// Position relative to room origin, in grid units.
     pub offset: [i32; 3],

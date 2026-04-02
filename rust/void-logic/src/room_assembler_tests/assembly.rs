@@ -14,12 +14,18 @@ use super::*;
 fn every_xz_sealed_boundary_has_wall_or_corner() {
     use crate::cell::CellGrid;
 
-    let test_cases: Vec<(RoomTemplate, Vec<ConnectorFacing>)> = vec![
+    let test_cases: Vec<(RoomTemplate, Vec<Connector>)> = vec![
         (small_room(), vec![]),
         (room_3x3(), vec![]),
         (large_room(), vec![]),
-        (room_3x3(), vec![ConnectorFacing::NegX, ConnectorFacing::PosZ]),
-        (corridor_ew(), vec![ConnectorFacing::NegX, ConnectorFacing::PosX]),
+        (room_3x3(), vec![
+            Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX },
+            Connector { offset: [1, 0, 2], facing: ConnectorFacing::PosZ },
+        ]),
+        (corridor_ew(), vec![
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
+        ]),
     ];
 
     for (template, active) in &test_cases {
@@ -160,7 +166,7 @@ fn sealed_small_room_wall_and_corner_counts() {
 fn room_active_connector_emits_door_frame() {
     let placements = assemble_default(
         &small_room(),
-        &[ConnectorFacing::PosX],
+        &[Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX }],
         [0.0, 0.0, 0.0],
         4.0,
     );
@@ -178,7 +184,10 @@ fn room_active_connector_emits_door_frame() {
 fn room_two_active_connectors_emit_two_doors() {
     let placements = assemble_default(
         &small_room(),
-        &[ConnectorFacing::PosX, ConnectorFacing::PosZ],
+        &[
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ },
+        ],
         [0.0, 0.0, 0.0],
         4.0,
     );
@@ -194,7 +203,10 @@ fn room_two_active_connectors_emit_two_doors() {
 fn corridor_active_connectors_emit_door_frames() {
     let placements = assemble_default(
         &corridor_ew(),
-        &[ConnectorFacing::PosX, ConnectorFacing::NegX],
+        &[
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
+        ],
         [0.0, 0.0, 0.0],
         4.0,
     );
@@ -206,7 +218,10 @@ fn corridor_active_connectors_emit_door_frames() {
 fn corridor_with_both_ends_active() {
     let placements = assemble_default(
         &corridor_ew(),
-        &[ConnectorFacing::NegX, ConnectorFacing::PosX],
+        &[
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
+        ],
         [0.0, 0.0, 0.0],
         4.0,
     );
@@ -301,7 +316,7 @@ fn large_room_one_connector_active() {
     // Cell (1,0,1): PosX+PosZ corner → 0 straight walls
     let placements = assemble_default(
         &large_room(),
-        &[ConnectorFacing::NegX],
+        &[Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX }],
         [0.0, 0.0, 0.0],
         4.0,
     );
@@ -313,7 +328,7 @@ fn large_room_one_connector_active() {
 fn room_active_connector_emits_door_not_wall() {
     let placements = assemble_default(
         &room_3x3(),
-        &[ConnectorFacing::NegX],
+        &[Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }],
         [0.0, 0.0, 0.0],
         4.0,
     );
@@ -415,7 +430,7 @@ fn sealed_3x3_room_full_surface_coverage() {
 fn posy_connector_removes_ceiling_no_hatch() {
     let placements = assemble_default(
         &hub_6way(),
-        &[ConnectorFacing::PosY],
+        &[Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosY }],
         [0.0, 0.0, 0.0],
         4.0,
     );
@@ -434,7 +449,7 @@ fn posy_connector_removes_ceiling_no_hatch() {
 fn negy_connector_removes_floor_no_hatch() {
     let placements = assemble_default(
         &hub_6way(),
-        &[ConnectorFacing::NegY],
+        &[Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegY }],
         [0.0, 0.0, 0.0],
         4.0,
     );
@@ -482,13 +497,13 @@ fn multi_story_room_geometry_fits_within_height() {
 fn adjacent_rooms_walls_do_not_overlap() {
     let room_a_placements = assemble_default(
         &small_room(),
-        &[ConnectorFacing::PosX],
+        &[Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX }],
         [0.0, 0.0, 0.0],
         4.0,
     );
     let room_b_placements = assemble_default(
         &small_room(),
-        &[ConnectorFacing::NegX],
+        &[Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX }],
         [4.0, 0.0, 0.0],
         4.0,
     );
@@ -519,7 +534,10 @@ fn vertical_connector_emits_zero_doors() {
     // Both PosY and NegY active — no door/hatch meshes anywhere
     let placements = assemble_default(
         &hub_6way(),
-        &[ConnectorFacing::PosY, ConnectorFacing::NegY],
+        &[
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosY },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegY },
+        ],
         [0.0, 0.0, 0.0],
         4.0,
     );
@@ -566,7 +584,7 @@ fn sealed_small_room_collision_box_count() {
 #[test]
 fn active_connector_removes_wall_collider() {
     let all_sealed = collision_boxes(&small_room(), &[], [0.0, 0.0, 0.0], 4.0);
-    let one_open = collision_boxes(&small_room(), &[ConnectorFacing::PosX], [0.0, 0.0, 0.0], 4.0);
+    let one_open = collision_boxes(&small_room(), &[Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX }], [0.0, 0.0, 0.0], 4.0);
     assert_eq!(one_open.len(), all_sealed.len() - 1,
         "opening one connector should remove exactly one collision box");
 }
@@ -621,8 +639,8 @@ fn collision_boxes_form_closed_boundary() {
 #[test]
 fn vertical_connector_removes_floor_ceiling_collider() {
     let sealed = collision_boxes(&hub_6way(), &[], [0.0, 0.0, 0.0], 4.0);
-    let floor_open = collision_boxes(&hub_6way(), &[ConnectorFacing::NegY], [0.0, 0.0, 0.0], 4.0);
-    let ceiling_open = collision_boxes(&hub_6way(), &[ConnectorFacing::PosY], [0.0, 0.0, 0.0], 4.0);
+    let floor_open = collision_boxes(&hub_6way(), &[Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegY }], [0.0, 0.0, 0.0], 4.0);
+    let ceiling_open = collision_boxes(&hub_6way(), &[Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosY }], [0.0, 0.0, 0.0], 4.0);
 
     assert_eq!(floor_open.len(), sealed.len() - 1, "NegY removes floor slab");
     assert_eq!(ceiling_open.len(), sealed.len() - 1, "PosY removes ceiling slab");
@@ -635,7 +653,10 @@ fn vertical_connector_removes_floor_ceiling_collider() {
 fn corridor_collision_matches_sealed_faces() {
     let boxes = collision_boxes(
         &corridor_ew(),
-        &[ConnectorFacing::NegX, ConnectorFacing::PosX],
+        &[
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
+        ],
         [0.0, 0.0, 0.0],
         4.0,
     );

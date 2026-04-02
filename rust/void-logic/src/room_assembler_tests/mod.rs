@@ -10,11 +10,11 @@ mod theming;
 /// Convenience wrapper: assemble with default Astra style.
 fn assemble_default(
     template: &RoomTemplate,
-    active_facings: &[ConnectorFacing],
+    active_connectors: &[Connector],
     world_origin: [f32; 3],
     cell_size: f32,
 ) -> Vec<MeshPlacement> {
-    assemble(template, active_facings, world_origin, cell_size, &RoomStyle::default())
+    assemble(template, active_connectors, world_origin, cell_size, &RoomStyle::default())
 }
 
 fn small_room() -> RoomTemplate {
