@@ -31,11 +31,13 @@ if [ "$TRES_ONLY" = "--tres-only" ]; then
         find "$ESSENTIALS_SRC/materials" -maxdepth 1 -name "*.tres" -exec cp {} "$ADDON_DIR/materials/" \;
     fi
     chmod -R u+w "$ADDON_DIR/materials"
-    # Strip Textures/ subdirectory prefix, stale UIDs, and stale .s3tc.ctex load_path entries
+    # Strip Textures/ subdirectory prefix and stale UIDs
     find "$ADDON_DIR/materials" -maxdepth 1 -name "*.tres" \
         -exec sed -i '' 's|materials/Textures/|materials/|g' {} + \
-        -exec sed -i '' 's| uid="uid://[^"]*"||g' {} + \
-        -exec sed -i '' '/load_path.*\.s3tc\.ctex/d' {} +
+        -exec sed -i '' 's| uid="uid://[^"]*"||g' {} +
+    # Convert embedded CompressedTexture2D (with S3TC load_paths) to ext_resource
+    # references pointing to the actual .png files (works on any platform)
+    python3 "$(dirname "$0")/fix-embedded-textures.py" "$ADDON_DIR/materials"
     echo "  Materials restored."
     exit 0
 fi
@@ -73,6 +75,18 @@ for subdir in walls platforms props columns aliens decals; do
     fi
 done
 
+# Symlink shared textures into each mesh subdirectory so bare-filename URIs
+# in the .gltf files (e.g. "T_Trim_01_Normal.png") resolve correctly.
+for subdir in walls platforms props columns aliens decals; do
+    target="$ADDON_DIR/modularscifimegakit/$subdir"
+    [ -d "$target" ] || continue
+    for tex in "$ADDON_DIR/materials"/*.png; do
+        [ -f "$tex" ] || continue
+        base="$(basename "$tex")"
+        [ -e "$target/$base" ] || ln -s "../../materials/$base" "$target/$base"
+    done
+done
+
 # Make everything writable (source packs may be read-only)
 chmod -R u+w "$ADDON_DIR"
 
@@ -102,14 +116,26 @@ if [ -d "$ESSENTIALS_GLTF" ]; then
     for category in props enemies guns; do
         mkdir -p "$ADDON_DIR/essentials/$category"
     done
-    for f in "$ESSENTIALS_GLTF"/*.gltf "$ESSENTIALS_GLTF"/*.bin; do
+    for f in "$ESSENTIALS_GLTF"/*.gltf "$ESSENTIALS_GLTF"/*.bin "$ESSENTIALS_GLTF"/*.png "$ESSENTIALS_GLTF"/*.jpg; do
         [ -f "$f" ] || continue
         base="$(basename "$f")"
         case "$base" in
-            Prop_*) cp "$f" "$ADDON_DIR/essentials/props/" ;;
-            Enemy_*) cp "$f" "$ADDON_DIR/essentials/enemies/" ;;
-            Gun_*) cp "$f" "$ADDON_DIR/essentials/guns/" ;;
+            Prop_*|T_Props_*|T_Screens*|T_Table*|T_Rings*|T_Trim_*) cp "$f" "$ADDON_DIR/essentials/props/" ;;
+            Enemy_*|T_Enemies_*)                                      cp "$f" "$ADDON_DIR/essentials/enemies/" ;;
+            Gun_*|T_Guns_*)                                           cp "$f" "$ADDON_DIR/essentials/guns/" ;;
         esac
+    done
+
+    # Symlink shared textures into each essentials subdirectory so bare-filename
+    # URIs in the .gltf files (e.g. "T_Trim_03_Normal.png") resolve correctly.
+    for category in props enemies guns; do
+        target="$ADDON_DIR/essentials/$category"
+        [ -d "$target" ] || continue
+        for tex in "$ADDON_DIR/materials"/*.png "$ADDON_DIR/materials"/*.jpg; do
+            [ -f "$tex" ] || continue
+            base="$(basename "$tex")"
+            [ -e "$target/$base" ] || ln -s "../../materials/$base" "$target/$base"
+        done
     done
 
     chmod -R u+w "$ADDON_DIR"

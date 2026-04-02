@@ -3,6 +3,7 @@ use crate::enemy_type::EnemyType;
 use crate::kill_tracker::KillTracker;
 use crate::laser::LaserLevel;
 use crate::loadout::Loadout;
+use crate::newtypes::{Health, Damage};
 
 /// Tracks the state of a single roguelike run.
 #[derive(Debug)]
@@ -10,7 +11,7 @@ pub struct RunState {
     pub loadout: Loadout,
     pub current_room: usize,
     pub rooms_cleared: Vec<usize>,
-    pub health: f32,
+    pub health: Health,
     pub score: u32,
     pub run_seed: u64,
     pub credits: CreditAccount,
@@ -38,11 +39,11 @@ impl RunState {
     }
 
     pub fn is_alive(&self) -> bool {
-        self.health > 0.0
+        self.health.is_alive()
     }
 
-    pub fn take_damage(&mut self, amount: f32) {
-        self.health = (self.health - amount).max(0.0);
+    pub fn take_damage(&mut self, amount: Damage) {
+        self.health = self.health.take(amount);
     }
 
     pub fn clear_room(&mut self, room_index: usize) {
@@ -60,8 +61,8 @@ impl RunState {
     }
 
     /// Current laser damage per beam.
-    pub fn laser_damage(&self) -> f32 {
-        self.laser_level.damage()
+    pub fn laser_damage(&self) -> Damage {
+        Damage::new(self.laser_level.damage())
     }
 
     /// Apply death penalty: halve laser level, reset credits and kills.
@@ -84,23 +85,23 @@ mod tests {
     fn new_run_starts_alive() {
         let run = RunState::new(42);
         assert!(run.is_alive());
-        assert_eq!(run.health, 100.0);
+        assert_eq!(run.health, Health::new(100.0));
         assert_eq!(run.score, 0);
     }
 
     #[test]
     fn damage_reduces_health() {
         let mut run = RunState::new(42);
-        run.take_damage(30.0);
-        assert_eq!(run.health, 70.0);
+        run.take_damage(Damage::new(30.0));
+        assert_eq!(run.health, Health::new(70.0));
         assert!(run.is_alive());
     }
 
     #[test]
     fn lethal_damage_kills() {
         let mut run = RunState::new(42);
-        run.take_damage(150.0);
-        assert_eq!(run.health, 0.0);
+        run.take_damage(Damage::new(150.0));
+        assert_eq!(run.health, Health::new(0.0));
         assert!(!run.is_alive());
     }
 
@@ -117,7 +118,7 @@ mod tests {
     fn starts_with_red_laser() {
         let run = RunState::new(42);
         assert_eq!(run.laser_level, LaserLevel::Red);
-        assert_eq!(run.laser_damage(), 1.0);
+        assert_eq!(run.laser_damage(), Damage::new(1.0));
     }
 
     #[test]

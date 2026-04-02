@@ -1,6 +1,7 @@
 use crate::credits::CreditAccount;
 use crate::laser::LaserLevel;
 use crate::loadout::Loadout;
+use crate::newtypes::Health;
 use crate::run_state::RunState;
 
 /// A snapshot of game state, saved at end-of-level and on death.
@@ -12,7 +13,7 @@ pub struct SaveGame {
     pub current_level: u32,
     pub run_seed: u64,
     pub credits: CreditAccount,
-    pub health: f32,
+    pub health: Health,
 }
 
 impl SaveGame {
@@ -23,7 +24,7 @@ impl SaveGame {
             score: run.score,
             current_level: run.current_level,
             run_seed: run.run_seed,
-            credits: run.credits.clone(),
+            credits: run.credits,
             health: run.health,
         }
     }
@@ -34,7 +35,7 @@ impl SaveGame {
         run.score = self.score;
         run.current_level = self.current_level;
         run.run_seed = self.run_seed;
-        run.credits = self.credits.clone();
+        run.credits = self.credits;
         run.health = self.health;
         // Reset ephemeral state
         run.kills.reset();
@@ -81,9 +82,9 @@ mod tests {
     #[test]
     fn snapshot_captures_health() {
         let mut run = RunState::new(42);
-        run.take_damage(25.0);
+        run.take_damage(crate::newtypes::Damage::new(25.0));
         let save = SaveGame::from_run_state(&run);
-        assert_eq!(save.health, 75.0);
+        assert_eq!(save.health, Health::new(75.0));
     }
 
     #[test]

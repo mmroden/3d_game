@@ -1,4 +1,5 @@
 #![deny(warnings)]
+#![deny(clippy::match_wildcard_for_single_variants)]
 
 pub mod cell;
 pub mod cell_geometry;
@@ -27,4 +28,5 @@ pub mod ui_style;
 pub mod game_options;
 pub mod save_game;
 pub mod menu_cursor;
+pub mod newtypes;
 pub mod util;

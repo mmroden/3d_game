@@ -1,5 +1,7 @@
 //! Enemy type taxonomy with stats, display names, and scene paths.
 
+use crate::newtypes::{Health, Damage};
+
 /// All enemy types in the game, ordered by difficulty tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EnemyType {
@@ -31,20 +33,35 @@ impl EnemyType {
         EnemyType::Dragon,
     ];
 
+    /// Compile-time stat table indexed by variant order in `ALL`.
+    const STATS: &[EnemyStats] = &[
+        // Slime
+        EnemyStats { hp: Health::new(2.0),  speed: 4.0,  damage: Damage::new(2.0),  detection_range: 20.0, attack_range: 4.0,  attack_cooldown: 1.5, credits: 1_000 },
+        // GunDrone
+        EnemyStats { hp: Health::new(3.0),  speed: 8.0,  damage: Damage::new(3.0),  detection_range: 25.0, attack_range: 5.0,  attack_cooldown: 1.0, credits: 1_000 },
+        // Bat
+        EnemyStats { hp: Health::new(3.0),  speed: 10.0, damage: Damage::new(2.0),  detection_range: 22.0, attack_range: 3.0,  attack_cooldown: 0.8, credits: 1_000 },
+        // EyeDrone
+        EnemyStats { hp: Health::new(5.0),  speed: 7.0,  damage: Damage::new(4.0),  detection_range: 30.0, attack_range: 8.0,  attack_cooldown: 1.2, credits: 1_000 },
+        // QuadOrb
+        EnemyStats { hp: Health::new(8.0),  speed: 6.0,  damage: Damage::new(5.0),  detection_range: 25.0, attack_range: 6.0,  attack_cooldown: 1.0, credits: 1_000 },
+        // Shark
+        EnemyStats { hp: Health::new(10.0), speed: 9.0,  damage: Damage::new(6.0),  detection_range: 28.0, attack_range: 4.0,  attack_cooldown: 0.7, credits: 1_000 },
+        // QuadShell
+        EnemyStats { hp: Health::new(12.0), speed: 6.0,  damage: Damage::new(5.0),  detection_range: 25.0, attack_range: 6.0,  attack_cooldown: 1.0, credits: 1_000 },
+        // Raptor
+        EnemyStats { hp: Health::new(18.0), speed: 11.0, damage: Damage::new(7.0),  detection_range: 30.0, attack_range: 5.0,  attack_cooldown: 0.6, credits: 1_000 },
+        // Skeleton
+        EnemyStats { hp: Health::new(22.0), speed: 7.0,  damage: Damage::new(8.0),  detection_range: 28.0, attack_range: 7.0,  attack_cooldown: 0.9, credits: 1_000 },
+        // Trilobite
+        EnemyStats { hp: Health::new(30.0), speed: 5.0,  damage: Damage::new(10.0), detection_range: 20.0, attack_range: 5.0,  attack_cooldown: 1.2, credits: 1_000 },
+        // Dragon
+        EnemyStats { hp: Health::new(50.0), speed: 8.0,  damage: Damage::new(15.0), detection_range: 35.0, attack_range: 10.0, attack_cooldown: 0.5, credits: 1_000 },
+    ];
+
     pub fn stats(&self) -> EnemyStats {
-        match self {
-            Self::Slime =>     EnemyStats { hp: 2.0,  speed: 4.0,  damage: 2.0,  detection_range: 20.0, attack_range: 4.0, attack_cooldown: 1.5, credits: 1_000 },
-            Self::GunDrone =>  EnemyStats { hp: 3.0,  speed: 8.0,  damage: 3.0,  detection_range: 25.0, attack_range: 5.0, attack_cooldown: 1.0, credits: 1_000 },
-            Self::Bat =>       EnemyStats { hp: 3.0,  speed: 10.0, damage: 2.0,  detection_range: 22.0, attack_range: 3.0, attack_cooldown: 0.8, credits: 1_000 },
-            Self::EyeDrone =>  EnemyStats { hp: 5.0,  speed: 7.0,  damage: 4.0,  detection_range: 30.0, attack_range: 8.0, attack_cooldown: 1.2, credits: 1_000 },
-            Self::QuadOrb =>   EnemyStats { hp: 8.0,  speed: 6.0,  damage: 5.0,  detection_range: 25.0, attack_range: 6.0, attack_cooldown: 1.0, credits: 1_000 },
-            Self::Shark =>     EnemyStats { hp: 10.0, speed: 9.0,  damage: 6.0,  detection_range: 28.0, attack_range: 4.0, attack_cooldown: 0.7, credits: 1_000 },
-            Self::QuadShell => EnemyStats { hp: 12.0, speed: 6.0,  damage: 5.0,  detection_range: 25.0, attack_range: 6.0, attack_cooldown: 1.0, credits: 1_000 },
-            Self::Raptor =>    EnemyStats { hp: 18.0, speed: 11.0, damage: 7.0,  detection_range: 30.0, attack_range: 5.0, attack_cooldown: 0.6, credits: 1_000 },
-            Self::Skeleton =>  EnemyStats { hp: 22.0, speed: 7.0,  damage: 8.0,  detection_range: 28.0, attack_range: 7.0, attack_cooldown: 0.9, credits: 1_000 },
-            Self::Trilobite => EnemyStats { hp: 30.0, speed: 5.0,  damage: 10.0, detection_range: 20.0, attack_range: 5.0, attack_cooldown: 1.2, credits: 1_000 },
-            Self::Dragon =>    EnemyStats { hp: 50.0, speed: 8.0,  damage: 15.0, detection_range: 35.0, attack_range: 10.0, attack_cooldown: 0.5, credits: 1_000 },
-        }
+        Self::STATS[Self::ALL.iter().position(|e| e == self)
+            .expect("EnemyType::ALL must contain every variant")]
     }
 
     pub fn display_name(&self) -> &'static str {
@@ -84,7 +101,8 @@ impl EnemyType {
     }
 
     pub fn id(&self) -> i32 {
-        Self::ALL.iter().position(|e| e == self).unwrap() as i32
+        Self::ALL.iter().position(|e| e == self)
+            .expect("EnemyType::ALL must contain every variant") as i32
     }
 
     /// Minimum level at which this enemy type first appears.
@@ -113,23 +131,33 @@ pub fn enemies_for_level(level: u32) -> Vec<EnemyType> {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EnemyStats {
-    pub hp: f32,
+    pub hp: Health,
     pub speed: f32,
-    pub damage: f32,
+    pub damage: Damage,
     pub detection_range: f32,
     pub attack_range: f32,
     pub attack_cooldown: f32,
-    pub credits: u32,
+    pub(crate) credits: u32,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::newtypes::Health;
+
+    #[test]
+    fn stats_table_matches_all_length() {
+        assert_eq!(
+            EnemyType::ALL.len(), EnemyType::STATS.len(),
+            "STATS table ({}) must have same length as ALL ({})",
+            EnemyType::STATS.len(), EnemyType::ALL.len()
+        );
+    }
 
     #[test]
     fn all_enemies_have_positive_hp() {
         for enemy in EnemyType::ALL {
-            assert!(enemy.stats().hp > 0.0, "{:?} has non-positive hp", enemy);
+            assert!(enemy.stats().hp.as_f32() > 0.0, "{:?} has non-positive hp", enemy);
         }
     }
 
@@ -142,22 +170,22 @@ mod tests {
 
     #[test]
     fn gun_drone_has_3_hp() {
-        assert_eq!(EnemyType::GunDrone.stats().hp, 3.0);
+        assert_eq!(EnemyType::GunDrone.stats().hp, Health::new(3.0));
     }
 
     #[test]
     fn slime_is_weakest() {
-        assert_eq!(EnemyType::Slime.stats().hp, 2.0);
+        assert_eq!(EnemyType::Slime.stats().hp, Health::new(2.0));
     }
 
     #[test]
     fn dragon_is_strongest() {
-        assert_eq!(EnemyType::Dragon.stats().hp, 50.0);
+        assert_eq!(EnemyType::Dragon.stats().hp, Health::new(50.0));
     }
 
     #[test]
     fn hp_scales_with_tier() {
-        let hps: Vec<f32> = EnemyType::ALL.iter().map(|e| e.stats().hp).collect();
+        let hps: Vec<f32> = EnemyType::ALL.iter().map(|e| e.stats().hp.as_f32()).collect();
         // Each enemy should have HP >= the previous one (monotonically non-decreasing)
         for w in hps.windows(2) {
             assert!(w[1] >= w[0], "hp should scale: {} >= {}", w[1], w[0]);

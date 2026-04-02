@@ -1,3 +1,4 @@
+use crate::newtypes::{Health, Damage};
 use crate::upgrade::{Upgrade, UpgradeKind};
 
 /// Base stats for the ship before upgrades.
@@ -6,10 +7,10 @@ pub struct BaseStats {
     pub thrust_power: f32,
     pub rotation_speed: f32,
     pub damping: f32,
-    pub max_health: f32,
+    pub max_health: Health,
     pub fire_rate: f32,
     pub projectile_speed: f32,
-    pub projectile_damage: f32,
+    pub projectile_damage: Damage,
 }
 
 impl Default for BaseStats {
@@ -18,10 +19,10 @@ impl Default for BaseStats {
             thrust_power: 20.0,
             rotation_speed: 2.5,
             damping: 0.95,
-            max_health: 100.0,
+            max_health: Health::new(100.0),
             fire_rate: 5.0,
             projectile_speed: 50.0,
-            projectile_damage: 1.0,
+            projectile_damage: Damage::new(1.0),
         }
     }
 }
@@ -62,8 +63,8 @@ impl Loadout {
         self.effective(UpgradeKind::Damping, self.base.damping)
     }
 
-    pub fn max_health(&self) -> f32 {
-        self.effective(UpgradeKind::MaxHealth, self.base.max_health)
+    pub fn max_health(&self) -> Health {
+        Health::new(self.effective(UpgradeKind::MaxHealth, self.base.max_health.as_f32()))
     }
 
     pub fn fire_rate(&self) -> f32 {
@@ -74,8 +75,8 @@ impl Loadout {
         self.effective(UpgradeKind::ProjectileSpeed, self.base.projectile_speed)
     }
 
-    pub fn projectile_damage(&self) -> f32 {
-        self.effective(UpgradeKind::ProjectileDamage, self.base.projectile_damage)
+    pub fn projectile_damage(&self) -> Damage {
+        Damage::new(self.effective(UpgradeKind::ProjectileDamage, self.base.projectile_damage.as_f32()))
     }
 }
 

@@ -44,12 +44,17 @@ mod tests {
     #[test]
     fn portal_position_is_in_last_room() {
         let graph = make_test_level(42);
-        let pos = portal_position(&graph, 4.0).unwrap();
+        let cell_size = 4.0;
+        let pos = portal_position(&graph, cell_size).unwrap();
         // Should have positive coordinates (all rooms placed in positive space)
         assert!(pos[0] > 0.0);
         assert!(pos[2] > 0.0);
-        // Should be at hover height
-        assert!((pos[1] - 1.5).abs() < 0.01);
+        // Should be at hover height above the last room's origin Y
+        let room_indices: Vec<_> = graph.room_indices().collect();
+        let last_room = graph.room(*room_indices.last().unwrap()).unwrap();
+        let expected_y = last_room.world_position(cell_size)[1] + 1.5;
+        assert!((pos[1] - expected_y).abs() < 0.01,
+            "portal Y should be room origin Y + 1.5, expected {expected_y}, got {}", pos[1]);
     }
 
     #[test]

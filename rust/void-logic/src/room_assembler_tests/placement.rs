@@ -13,10 +13,9 @@ fn wall_placement_returns_cell_pos_unchanged() {
     // Ground truth: room_small.tscn places ALL walls at (0,0,0) — the cell center.
     // wall_placement must return the input position unchanged for all facings.
     let pos = [7.0, 3.0, 11.0];
-    let cs = 4.0;
     for facing in [ConnectorFacing::NegX, ConnectorFacing::PosX,
                    ConnectorFacing::NegZ, ConnectorFacing::PosZ] {
-        let (result_pos, _rot) = wall_placement(pos, facing, cs);
+        let (result_pos, _rot) = wall_placement(pos, facing);
         assert_eq!(
             result_pos, pos,
             "wall_placement({pos:?}, {facing:?}) returned {result_pos:?}, expected {pos:?}. \
@@ -30,10 +29,9 @@ fn door_placement_returns_cell_pos_unchanged() {
     // Ground truth: corridor_ew.tscn places ALL doors at (0,0,0) — the cell center.
     // door_placement must return the input position unchanged for all facings.
     let pos = [7.0, 3.0, 11.0];
-    let cs = 4.0;
     for facing in [ConnectorFacing::NegX, ConnectorFacing::PosX,
                    ConnectorFacing::NegZ, ConnectorFacing::PosZ] {
-        let (result_pos, _rot) = door_placement(pos, facing, cs);
+        let (result_pos, _rot) = door_placement(pos, facing);
         assert_eq!(
             result_pos, pos,
             "door_placement({pos:?}, {facing:?}) returned {result_pos:?}, expected {pos:?}. \
@@ -45,7 +43,6 @@ fn door_placement_returns_cell_pos_unchanged() {
 #[test]
 fn wall_rotations_match_reference_scenes() {
     let pos = [0.0, 0.0, 0.0];
-    let cs = 4.0;
     let cases = [
         (ConnectorFacing::NegX, 0.0),
         (ConnectorFacing::PosX, PI),
@@ -53,7 +50,7 @@ fn wall_rotations_match_reference_scenes() {
         (ConnectorFacing::PosZ, FRAC_PI_2),
     ];
     for (facing, expected_rot) in cases {
-        let (_pos, rot) = wall_placement(pos, facing, cs);
+        let (_pos, rot) = wall_placement(pos, facing);
         assert!(
             (rot - expected_rot).abs() < 0.001,
             "wall_placement {facing:?}: rotation {rot}, expected {expected_rot}. \
@@ -65,7 +62,6 @@ fn wall_rotations_match_reference_scenes() {
 #[test]
 fn door_rotations_match_reference_scenes() {
     let pos = [0.0, 0.0, 0.0];
-    let cs = 4.0;
     let cases = [
         (ConnectorFacing::NegX, FRAC_PI_2),
         (ConnectorFacing::PosX, -FRAC_PI_2),
@@ -73,7 +69,7 @@ fn door_rotations_match_reference_scenes() {
         (ConnectorFacing::PosZ, PI),
     ];
     for (facing, expected_rot) in cases {
-        let (_pos, rot) = door_placement(pos, facing, cs);
+        let (_pos, rot) = door_placement(pos, facing);
         assert!(
             (rot - expected_rot).abs() < 0.001,
             "door_placement {facing:?}: rotation {rot}, expected {expected_rot}. \
@@ -94,7 +90,7 @@ fn door_rotations_match_reference_scenes() {
 
 #[test]
 fn negz_wall_rotation_places_strip_at_negative_z() {
-    let (_, rot) = wall_placement([0.0, 0.0, 0.0], ConnectorFacing::NegZ, 4.0);
+    let (_, rot) = wall_placement([0.0, 0.0, 0.0], ConnectorFacing::NegZ);
     let (_, new_z) = rotate_y(-2.2, 0.0, rot);
     assert!(
         new_z < -1.0,
@@ -104,7 +100,7 @@ fn negz_wall_rotation_places_strip_at_negative_z() {
 
 #[test]
 fn posz_wall_rotation_places_strip_at_positive_z() {
-    let (_, rot) = wall_placement([0.0, 0.0, 0.0], ConnectorFacing::PosZ, 4.0);
+    let (_, rot) = wall_placement([0.0, 0.0, 0.0], ConnectorFacing::PosZ);
     let (_, new_z) = rotate_y(-2.2, 0.0, rot);
     assert!(
         new_z > 1.0,

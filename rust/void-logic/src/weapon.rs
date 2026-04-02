@@ -1,11 +1,13 @@
 //! Hitscan laser weapon state and logic.
 //! Pure data — no Godot dependency, fully testable.
 
+use crate::newtypes::Damage;
+
 /// Result of attempting to fire the weapon.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FireResult {
     /// Weapon fired successfully. Contains damage dealt.
-    Fired { damage: f32 },
+    Fired { damage: Damage },
     /// Weapon still on cooldown.
     OnCooldown,
 }
@@ -14,13 +16,13 @@ pub enum FireResult {
 #[derive(Debug, Clone)]
 pub struct WeaponState {
     pub fire_rate: f32,
-    pub damage: f32,
+    pub damage: Damage,
     pub max_range: f32,
     cooldown: f32,
 }
 
 impl WeaponState {
-    pub fn new(fire_rate: f32, damage: f32, max_range: f32) -> Self {
+    pub fn new(fire_rate: f32, damage: Damage, max_range: f32) -> Self {
         Self {
             fire_rate,
             damage,
@@ -50,7 +52,7 @@ impl WeaponState {
 
 impl Default for WeaponState {
     fn default() -> Self {
-        Self::new(5.0, 1.0, 100.0)
+        Self::new(5.0, Damage::new(1.0), 100.0)
     }
 }
 
@@ -68,7 +70,7 @@ mod tests {
     fn firing_puts_weapon_on_cooldown() {
         let mut weapon = WeaponState::default();
         let result = weapon.try_fire();
-        assert_eq!(result, FireResult::Fired { damage: 1.0 });
+        assert_eq!(result, FireResult::Fired { damage: Damage::new(1.0) });
         assert!(!weapon.is_ready());
     }
 
@@ -82,7 +84,7 @@ mod tests {
 
     #[test]
     fn cooldown_expires_after_sufficient_ticks() {
-        let mut weapon = WeaponState::new(5.0, 1.0, 100.0);
+        let mut weapon = WeaponState::new(5.0, Damage::new(1.0), 100.0);
         weapon.try_fire();
         // Cooldown = 1/5 = 0.2s
         weapon.tick(0.1);
@@ -93,16 +95,16 @@ mod tests {
 
     #[test]
     fn can_fire_again_after_cooldown() {
-        let mut weapon = WeaponState::new(5.0, 1.0, 100.0);
+        let mut weapon = WeaponState::new(5.0, Damage::new(1.0), 100.0);
         weapon.try_fire();
         weapon.tick(0.2);
         let result = weapon.try_fire();
-        assert_eq!(result, FireResult::Fired { damage: 1.0 });
+        assert_eq!(result, FireResult::Fired { damage: Damage::new(1.0) });
     }
 
     #[test]
     fn fire_rate_affects_cooldown_duration() {
-        let mut weapon = WeaponState::new(2.0, 1.0, 100.0);
+        let mut weapon = WeaponState::new(2.0, Damage::new(1.0), 100.0);
         weapon.try_fire();
         // Cooldown = 1/2 = 0.5s
         weapon.tick(0.4);
@@ -113,9 +115,9 @@ mod tests {
 
     #[test]
     fn damage_value_is_returned_on_fire() {
-        let mut weapon = WeaponState::new(5.0, 25.0, 100.0);
+        let mut weapon = WeaponState::new(5.0, Damage::new(25.0), 100.0);
         let result = weapon.try_fire();
-        assert_eq!(result, FireResult::Fired { damage: 25.0 });
+        assert_eq!(result, FireResult::Fired { damage: Damage::new(25.0) });
     }
 
     #[test]

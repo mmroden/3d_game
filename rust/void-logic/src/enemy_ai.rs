@@ -1,5 +1,7 @@
 //! Pure-data enemy AI state machine. No Godot dependency.
 
+use crate::newtypes::{Health, Damage};
+
 /// Possible states for a drone enemy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DroneState {
@@ -15,7 +17,7 @@ pub struct DroneConfig {
     pub detection_range: f32,
     pub attack_range: f32,
     pub disengage_range: f32,
-    pub health: f32,
+    pub health: Health,
     pub attack_cooldown: f32,
 }
 
@@ -25,7 +27,7 @@ impl Default for DroneConfig {
             detection_range: 25.0,
             attack_range: 5.0,
             disengage_range: 30.0, // detection_range * 1.2
-            health: 3.0,
+            health: Health::new(3.0),
             attack_cooldown: 1.0,
         }
     }
@@ -35,7 +37,7 @@ impl Default for DroneConfig {
 #[derive(Debug, Clone)]
 pub struct DroneAi {
     pub state: DroneState,
-    pub health: f32,
+    pub health: Health,
     pub attack_timer: f32,
     pub config: DroneConfig,
 }
@@ -92,12 +94,12 @@ impl DroneAi {
     }
 
     /// Apply damage. Returns true if the drone just died.
-    pub fn take_damage(&mut self, amount: f32) -> bool {
+    pub fn take_damage(&mut self, amount: Damage) -> bool {
         if self.state == DroneState::Dead {
             return false;
         }
-        self.health -= amount;
-        if self.health <= 0.0 {
+        self.health = self.health.take(amount);
+        if !self.health.is_alive() {
             self.state = DroneState::Dead;
             true
         } else {
@@ -202,15 +204,15 @@ mod tests {
     #[test]
     fn damage_reduces_health() {
         let mut ai = default_ai();
-        ai.take_damage(1.0);
-        assert_eq!(ai.health, 2.0);
+        ai.take_damage(Damage::new(1.0));
+        assert_eq!(ai.health, Health::new(2.0));
         assert_eq!(ai.state, DroneState::Idle); // Not dead yet
     }
 
     #[test]
     fn lethal_damage_kills() {
         let mut ai = default_ai();
-        let died = ai.take_damage(3.0);
+        let died = ai.take_damage(Damage::new(3.0));
         assert!(died);
         assert!(ai.is_dead());
         assert_eq!(ai.state, DroneState::Dead);
@@ -219,7 +221,7 @@ mod tests {
     #[test]
     fn overkill_damage_kills() {
         let mut ai = default_ai();
-        let died = ai.take_damage(99.0);
+        let died = ai.take_damage(Damage::new(99.0));
         assert!(died);
         assert!(ai.is_dead());
     }
@@ -227,7 +229,7 @@ mod tests {
     #[test]
     fn dead_drone_does_not_update() {
         let mut ai = default_ai();
-        ai.take_damage(30.0);
+        ai.take_damage(Damage::new(30.0));
         let should_fire = ai.update(1.0, 0.016);
         assert!(!should_fire);
         assert_eq!(ai.state, DroneState::Dead);
@@ -236,8 +238,8 @@ mod tests {
     #[test]
     fn dead_drone_ignores_further_damage() {
         let mut ai = default_ai();
-        ai.take_damage(3.0);
-        let died_again = ai.take_damage(1.0);
+        ai.take_damage(Damage::new(3.0));
+        let died_again = ai.take_damage(Damage::new(1.0));
         assert!(!died_again);
     }
 

@@ -238,7 +238,8 @@ fn wall_adjacent_offset(facing: ConnectorFacing, cell_size: f32) -> (f32, f32, f
         ConnectorFacing::PosX => (offset, 0.0, PI),
         ConnectorFacing::NegZ => (0.0, -offset, -FRAC_PI_2),
         ConnectorFacing::PosZ => (0.0, offset, FRAC_PI_2),
-        _ => (0.0, 0.0, 0.0),
+        // Y-axis faces don't have wall-adjacent offsets — no XZ displacement.
+        ConnectorFacing::NegY | ConnectorFacing::PosY => (0.0, 0.0, 0.0),
     }
 }
 
@@ -344,36 +345,39 @@ pub fn light_fixtures(
 
     let mut out = Vec::new();
     let ex = template.extents[0] as i32;
+    let ey = template.extents[1] as i32;
     let ez = template.extents[2] as i32;
 
     for cx in 0..ex {
-        for cz in 0..ez {
-            // Alternate between ceiling light variants based on position
-            let fixture = &CEILING_LIGHTS[((cx + cz) as usize) % CEILING_LIGHTS.len()];
+        for cy in 0..ey {
+            for cz in 0..ez {
+                // Alternate between ceiling light variants based on position
+                let fixture = &CEILING_LIGHTS[((cx + cy + cz) as usize) % CEILING_LIGHTS.len()];
 
-            let fixture_y = world_origin[1] + CELL_HEIGHT - 0.1;
-            let mesh = MeshPlacement {
-                scene: fixture.scene,
-                position: [
-                    world_origin[0] + (cx as f32 + 0.5) * cell_size,
-                    fixture_y,
-                    world_origin[2] + (cz as f32 + 0.5) * cell_size,
-                ],
-                rotation_x: 0.0,
-                rotation_y: 0.0,
-            };
+                let fixture_y = world_origin[1] + cy as f32 * CELL_HEIGHT + CELL_HEIGHT - 0.1;
+                let mesh = MeshPlacement {
+                    scene: fixture.scene,
+                    position: [
+                        world_origin[0] + (cx as f32 + 0.5) * cell_size,
+                        fixture_y,
+                        world_origin[2] + (cz as f32 + 0.5) * cell_size,
+                    ],
+                    rotation_x: 0.0,
+                    rotation_y: 0.0,
+                };
 
-            let light = LightSource {
-                position: [
-                    mesh.position[0] + fixture.light_offset[0],
-                    mesh.position[1] + fixture.light_offset[1],
-                    mesh.position[2] + fixture.light_offset[2],
-                ],
-                range: fixture.range,
-                energy: fixture.energy,
-            };
+                let light = LightSource {
+                    position: [
+                        mesh.position[0] + fixture.light_offset[0],
+                        mesh.position[1] + fixture.light_offset[1],
+                        mesh.position[2] + fixture.light_offset[2],
+                    ],
+                    range: fixture.range,
+                    energy: fixture.energy,
+                };
 
-            out.push((mesh, light));
+                out.push((mesh, light));
+            }
         }
     }
 

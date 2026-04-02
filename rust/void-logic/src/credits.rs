@@ -14,7 +14,7 @@ impl fmt::Display for NotEnoughCredits {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CreditAccount {
     pub balance: u32,
 }

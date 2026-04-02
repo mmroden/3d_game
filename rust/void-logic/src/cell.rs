@@ -45,8 +45,7 @@ pub struct CellGrid {
 }
 
 impl CellGrid {
-    /// Vertical cell height in meters (matches room_assembler::CELL_HEIGHT).
-    const CELL_HEIGHT: f32 = 5.0;
+    const CELL_HEIGHT: f32 = crate::room_assembler::CELL_HEIGHT;
 
     /// Build a cell grid from a room template, classifying each cell by its
     /// boundary structure and active connectors.
@@ -77,6 +76,8 @@ impl CellGrid {
                         (ConnectorFacing::PosX, cx == ex - 1),
                         (ConnectorFacing::NegZ, cz == 0),
                         (ConnectorFacing::PosZ, cz == ez - 1),
+                        (ConnectorFacing::NegY, cy == 0),
+                        (ConnectorFacing::PosY, cy == ey - 1),
                     ];
 
                     let has_active_connector = boundary_faces.iter().any(|&(facing, is_boundary)| {
@@ -137,10 +138,13 @@ impl CellGrid {
     }
 
     /// Check if a set of sealed faces contains at least one perpendicular pair.
+    /// Two faces are perpendicular if they lie on different axes (X, Y, or Z).
     fn has_perpendicular_pair(faces: &[ConnectorFacing]) -> bool {
         let has_x = faces.iter().any(|f| matches!(f, ConnectorFacing::NegX | ConnectorFacing::PosX));
+        let has_y = faces.iter().any(|f| matches!(f, ConnectorFacing::NegY | ConnectorFacing::PosY));
         let has_z = faces.iter().any(|f| matches!(f, ConnectorFacing::NegZ | ConnectorFacing::PosZ));
-        has_x && has_z
+        // Perpendicular if faces span at least 2 distinct axes
+        (has_x as u8 + has_y as u8 + has_z as u8) >= 2
     }
 
     /// Iterate over all cells in the grid.
@@ -203,7 +207,8 @@ impl CellGrid {
                             ConnectorFacing::PosX => (PI, 1.0, 0.0),
                             ConnectorFacing::NegZ => (-FRAC_PI_2, 0.0, -1.0),
                             ConnectorFacing::PosZ => (FRAC_PI_2, 0.0, 1.0),
-                            _ => (0.0, 0.0, 0.0),
+                            // Y-axis faces: place prop at cell center with no XZ offset
+                            ConnectorFacing::NegY | ConnectorFacing::PosY => (0.0, 0.0, 0.0),
                         };
                         cell.occupant = CellOccupant::Prop(MeshPlacement {
                             scene: prop.scene,
@@ -368,59 +373,94 @@ mod tests {
         let grid = CellGrid::new(&small_room(), &[], [0.0, 0.0, 0.0], 4.0);
         let cell = grid.cell_at(0, 0, 0).expect("cell should exist");
         assert_eq!(cell.kind, CellKind::BoundaryCorner,
-            "1x1 sealed room with 4 perpendicular sealed faces should be BoundaryCorner");
-        assert_eq!(cell.sealed_faces.len(), 4,
-            "1x1 sealed room should have 4 sealed faces");
+            "1x1 sealed room with 6 perpendicular sealed faces should be BoundaryCorner");
+        assert_eq!(cell.sealed_faces.len(), 6,
+            "1x1x1 sealed room should have 6 sealed faces (all directions)");
     }
 
     #[test]
-    fn sealed_3x3_has_4_corners_4_edges_1_interior() {
+    fn sealed_3x1x3_has_no_interior_cells() {
+        // In a single-story room, every cell has NegY+PosY sealed faces.
+        // A 3x1x3 room: 4 XZ-corners get Y faces too → still BoundaryCorner.
+        // The 4 XZ-edges now also have Y faces → BoundaryCorner (X+Y or Z+Y).
+        // The center cell has only Y faces → BoundaryEdge (parallel pair, not corner).
         let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0);
 
         let corners: Vec<_> = grid.cells().iter()
             .filter(|c| c.kind == CellKind::BoundaryCorner)
             .collect();
-        assert_eq!(corners.len(), 4, "sealed 3x3 should have 4 BoundaryCorner cells");
+        assert_eq!(corners.len(), 8,
+            "3x1x3: 4 XZ-corners + 4 XZ-edges (each has Y+X or Y+Z) = 8 BoundaryCorner");
 
         let edges: Vec<_> = grid.cells().iter()
             .filter(|c| c.kind == CellKind::BoundaryEdge)
             .collect();
-        assert_eq!(edges.len(), 4, "sealed 3x3 should have 4 BoundaryEdge cells");
+        assert_eq!(edges.len(), 1,
+            "3x1x3: center cell has only NegY+PosY (parallel) = 1 BoundaryEdge");
 
         let interiors: Vec<_> = grid.cells().iter()
             .filter(|c| c.kind == CellKind::Interior)
             .collect();
-        assert_eq!(interiors.len(), 1, "sealed 3x3 should have 1 Interior cell");
+        assert_eq!(interiors.len(), 0,
+            "single-story room has no Interior cells (all have Y boundaries)");
     }
 
     #[test]
-    fn corner_cell_has_two_perpendicular_sealed_faces() {
+    fn corner_cell_has_perpendicular_sealed_faces_including_y() {
         let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0);
-        // Cell (0,0,0) is at NegX + NegZ corner
+        // Cell (0,0,0) is at NegX + NegZ corner, plus NegY + PosY (single story)
         let cell = grid.cell_at(0, 0, 0).expect("cell should exist");
         assert_eq!(cell.kind, CellKind::BoundaryCorner);
-        assert!(cell.sealed_faces.contains(&ConnectorFacing::NegX),
-            "cell (0,0,0) should have NegX sealed face");
-        assert!(cell.sealed_faces.contains(&ConnectorFacing::NegZ),
-            "cell (0,0,0) should have NegZ sealed face");
-        assert_eq!(cell.sealed_faces.len(), 2);
+        assert!(cell.sealed_faces.contains(&ConnectorFacing::NegX));
+        assert!(cell.sealed_faces.contains(&ConnectorFacing::NegZ));
+        assert!(cell.sealed_faces.contains(&ConnectorFacing::NegY));
+        assert!(cell.sealed_faces.contains(&ConnectorFacing::PosY));
+        assert_eq!(cell.sealed_faces.len(), 4,
+            "single-story XZ-corner cell should have 4 sealed faces (NegX, NegZ, NegY, PosY)");
     }
 
     #[test]
-    fn edge_cell_has_one_sealed_face() {
+    fn xz_edge_cell_with_y_faces_is_corner() {
         let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0);
-        // Cell (1,0,0) is on NegZ edge only (not a corner)
+        // Cell (1,0,0) has NegZ sealed + NegY + PosY (single story).
+        // NegZ + NegY are perpendicular → BoundaryCorner.
         let cell = grid.cell_at(1, 0, 0).expect("cell should exist");
-        assert_eq!(cell.kind, CellKind::BoundaryEdge);
-        assert_eq!(cell.sealed_faces, vec![ConnectorFacing::NegZ]);
+        assert_eq!(cell.kind, CellKind::BoundaryCorner,
+            "single-story edge cell with Z+Y faces is a corner in true 3D");
+        assert!(cell.sealed_faces.contains(&ConnectorFacing::NegZ));
+        assert!(cell.sealed_faces.contains(&ConnectorFacing::NegY));
+        assert!(cell.sealed_faces.contains(&ConnectorFacing::PosY));
     }
 
     #[test]
-    fn interior_cell_has_no_sealed_faces() {
+    fn xz_interior_cell_single_story_has_y_faces_only() {
         let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0);
-        // Cell (1,0,1) is fully interior
+        // Cell (1,0,1) has no XZ boundary faces, but NegY + PosY (single story).
+        // Parallel Y faces only → BoundaryEdge.
         let cell = grid.cell_at(1, 0, 1).expect("cell should exist");
-        assert_eq!(cell.kind, CellKind::Interior);
+        assert_eq!(cell.kind, CellKind::BoundaryEdge,
+            "single-story center cell has only parallel Y faces → BoundaryEdge");
+        assert_eq!(cell.sealed_faces.len(), 2);
+        assert!(cell.sealed_faces.contains(&ConnectorFacing::NegY));
+        assert!(cell.sealed_faces.contains(&ConnectorFacing::PosY));
+    }
+
+    #[test]
+    fn multi_story_interior_cell_is_truly_interior() {
+        // In a 3x2x3 room, cell (1,_,1) at cy not on boundary has no XZ or Y faces
+        // But we need at least 3 stories for a truly interior cell.
+        let tall_room = RoomTemplate {
+            id: "test_3x3x3_tall",
+            kind: TemplateKind::Room,
+            connectors: vec![],
+            enemy_spawns: vec![],
+            loot_spawns: vec![],
+            extents: [3, 3, 3],
+        };
+        let grid = CellGrid::new(&tall_room, &[], [0.0, 0.0, 0.0], 4.0);
+        let cell = grid.cell_at(1, 1, 1).expect("cell (1,1,1) should exist");
+        assert_eq!(cell.kind, CellKind::Interior,
+            "center cell in 3x3x3 room should be truly Interior");
         assert!(cell.sealed_faces.is_empty());
     }
 
@@ -467,6 +507,91 @@ mod tests {
         let cell = grid.cell_at(2, 0, 2).expect("cell should exist");
         assert_eq!(cell.kind, CellKind::BoundaryCorner,
             "cell (2,0,2) far from connector should still be BoundaryCorner");
+    }
+
+    // --- Y-axis boundary detection (true 3D) ---
+
+    fn multi_story_room() -> RoomTemplate {
+        RoomTemplate {
+            id: "test_3x2x3",
+            kind: TemplateKind::Room,
+            connectors: vec![
+                Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX },
+                Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX },
+                Connector { offset: [1, 0, 0], facing: ConnectorFacing::NegZ },
+                Connector { offset: [1, 0, 2], facing: ConnectorFacing::PosZ },
+            ],
+            enemy_spawns: vec![],
+            loot_spawns: vec![],
+            extents: [3, 2, 3],
+        }
+    }
+
+    #[test]
+    fn multi_story_room_has_correct_cell_count() {
+        let grid = CellGrid::new(&multi_story_room(), &[], [0.0, 0.0, 0.0], 4.0);
+        assert_eq!(grid.extents, [3, 2, 3]);
+        assert_eq!(grid.cells().len(), 18, "3x2x3 grid should have 18 cells");
+    }
+
+    #[test]
+    fn bottom_cell_has_negy_sealed_face() {
+        let grid = CellGrid::new(&multi_story_room(), &[], [0.0, 0.0, 0.0], 4.0);
+        let cell = grid.cell_at(1, 0, 1).expect("cell (1,0,1) should exist");
+        assert!(cell.sealed_faces.contains(&ConnectorFacing::NegY),
+            "interior cell at cy==0 should have NegY sealed face, got {:?}", cell.sealed_faces);
+    }
+
+    #[test]
+    fn top_cell_has_posy_sealed_face() {
+        let grid = CellGrid::new(&multi_story_room(), &[], [0.0, 0.0, 0.0], 4.0);
+        let cell = grid.cell_at(1, 1, 1).expect("cell (1,1,1) should exist");
+        assert!(cell.sealed_faces.contains(&ConnectorFacing::PosY),
+            "interior cell at cy==ey-1 should have PosY sealed face, got {:?}", cell.sealed_faces);
+    }
+
+    #[test]
+    fn mid_cell_has_no_y_sealed_faces() {
+        // In a 3-story room, the middle floor should have no Y sealed faces
+        let tall_room = RoomTemplate {
+            id: "test_1x3x1",
+            kind: TemplateKind::Room,
+            connectors: vec![],
+            enemy_spawns: vec![],
+            loot_spawns: vec![],
+            extents: [1, 3, 1],
+        };
+        let grid = CellGrid::new(&tall_room, &[], [0.0, 0.0, 0.0], 4.0);
+        let cell = grid.cell_at(0, 1, 0).expect("cell (0,1,0) should exist");
+        assert!(!cell.sealed_faces.contains(&ConnectorFacing::NegY),
+            "mid-floor cell should not have NegY sealed");
+        assert!(!cell.sealed_faces.contains(&ConnectorFacing::PosY),
+            "mid-floor cell should not have PosY sealed");
+    }
+
+    #[test]
+    fn posy_active_connector_prevents_sealed_face() {
+        let room_with_vertical_connector = RoomTemplate {
+            id: "test_1x2x1_vert",
+            kind: TemplateKind::Room,
+            connectors: vec![
+                Connector { offset: [0, 1, 0], facing: ConnectorFacing::PosY },
+            ],
+            enemy_spawns: vec![],
+            loot_spawns: vec![],
+            extents: [1, 2, 1],
+        };
+        let grid = CellGrid::new(
+            &room_with_vertical_connector,
+            &[ConnectorFacing::PosY],
+            [0.0, 0.0, 0.0],
+            4.0,
+        );
+        let cell = grid.cell_at(0, 1, 0).expect("cell (0,1,0) should exist");
+        assert!(!cell.sealed_faces.contains(&ConnectorFacing::PosY),
+            "active PosY connector should prevent PosY sealed face");
+        assert_eq!(cell.kind, CellKind::ConnectorGap,
+            "cell with active vertical connector should be ConnectorGap");
     }
 
     // --- Populate tests ---

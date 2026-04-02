@@ -99,13 +99,13 @@ impl ICharacterBody3D for ShipController {
 
         // --- Weapon ---
         self.weapon.fire_rate = self.loadout.fire_rate();
-        self.weapon.damage = self.laser_level.damage();
+        self.weapon.damage = void_logic::newtypes::Damage::new(self.laser_level.damage());
         self.weapon.tick(delta);
         self.age_beams(delta);
 
         if input.is_action_pressed(actions::FIRE) {
             if let FireResult::Fired { damage } = self.weapon.try_fire() {
-                self.fire_dual_lasers(damage);
+                self.fire_dual_lasers(damage.as_f32());
             }
         }
     }
@@ -162,8 +162,9 @@ impl ShipController {
     fn fire_single_ray(&mut self, origin: Vector3, forward: Vector3, damage: f32) {
         let end = origin + forward * self.weapon.max_range;
 
-        let mut space = self.base().get_world_3d().unwrap().get_direct_space_state().unwrap();
-        let mut query = PhysicsRayQueryParameters3D::create(origin, end).unwrap();
+        let Some(world) = self.base().get_world_3d() else { return };
+        let Some(mut space) = world.get_direct_space_state() else { return };
+        let Some(mut query) = PhysicsRayQueryParameters3D::create(origin, end) else { return };
         let self_rid = self.base().get_rid();
         query.set_exclude(&array![self_rid]);
 
@@ -171,7 +172,8 @@ impl ShipController {
         let hit_point = if result.is_empty() {
             end
         } else {
-            let hit_pos = result.get("position").unwrap().to::<Vector3>();
+            let Some(hit_pos_var) = result.get("position") else { return };
+            let hit_pos = hit_pos_var.to::<Vector3>();
 
             if let Some(collider) = result.get("collider") {
                 let mut obj = collider.to::<Gd<Node3D>>();
@@ -217,17 +219,20 @@ impl ShipController {
         particles.set_draw_pass_mesh(0, &sphere);
 
         particles.set_transform(Transform3D::new(Basis::IDENTITY, position));
-        self.base_mut().get_tree().get_root().unwrap().add_child(&particles);
-        particles.set_emitting(true);
-
-        particles.set_meta(meta_keys::SPARK_TIMER, &Variant::from(0.5_f32));
+        if let Some(root) = godot_util::scene_root(self.base().get_tree()) {
+            root.clone().add_child(&particles);
+            particles.set_emitting(true);
+            particles.set_meta(meta_keys::SPARK_TIMER, &Variant::from(0.5_f32));
+        }
     }
 
     fn spawn_beam(&mut self, from: Vector3, to: Vector3) {
         if let Some(mesh_instance) = godot_util::create_beam_mesh(from, to, &self.laser_level.color()) {
-            let node = mesh_instance.clone();
-            self.base_mut().get_tree().get_root().unwrap().add_child(&mesh_instance);
-            self.beam_nodes.push(node);
+            if let Some(root) = godot_util::scene_root(self.base().get_tree()) {
+                let node = mesh_instance.clone();
+                root.clone().add_child(&mesh_instance);
+                self.beam_nodes.push(node);
+            }
         }
     }
 

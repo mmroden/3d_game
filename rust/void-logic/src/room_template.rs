@@ -37,7 +37,7 @@ impl ConnectorFacing {
 }
 
 /// A connection point on a room where corridors attach.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Connector {
     /// Position relative to room origin, in grid units.
     pub offset: [i32; 3],
@@ -64,7 +64,7 @@ impl Connector {
 }
 
 /// A point where enemies or loot can spawn within a room.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct SpawnPoint {
     /// Position relative to room origin, in world units.
     pub position: [f32; 3],

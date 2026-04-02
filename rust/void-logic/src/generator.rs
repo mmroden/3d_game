@@ -56,13 +56,15 @@ pub fn generate(config: &GeneratorConfig) -> Result<LevelGraph, GenerateError> {
 
         let &source_idx = frontier.choose(&mut rng)
             .expect("already checked non-empty");
-        let source = graph.room(source_idx)
-            .expect("frontier contains valid indices");
-        let source_origin = source.grid_pos;
-        let source_connectors = source.template.connectors.clone();
+        // Extract what we need from the source room before mutating the graph.
+        let (source_origin, source_connector_count, source_connectors) = {
+            let source = graph.room(source_idx)
+                .expect("frontier contains valid indices");
+            (source.grid_pos, source.template.connectors.len(), source.template.connectors.clone())
+        };
 
         // Try each connector on the source in random order
-        let mut connector_order: Vec<usize> = (0..source_connectors.len()).collect();
+        let mut connector_order: Vec<usize> = (0..source_connector_count).collect();
         connector_order.shuffle(&mut rng);
 
         let mut placed = false;
@@ -84,16 +86,16 @@ pub fn generate(config: &GeneratorConfig) -> Result<LevelGraph, GenerateError> {
                 continue;
             };
 
+            // Find the corridor's outgoing connector before consuming the template.
+            let outgoing = corridor_template.connectors.iter()
+                .find(|c| c.facing != needed_facing)
+                .copied();
+
             // Place the corridor
             let Ok(corridor_idx) = graph.place_room(corridor_template.clone(), target_pos) else {
                 continue;
             };
             let _ = graph.connect_adjacent(source_idx, corridor_idx);
-
-            // Find the corridor's outgoing connector (not the one facing back to source)
-            let corridor_connectors = corridor_template.connectors.clone();
-            let outgoing = corridor_connectors.iter()
-                .find(|c| c.facing != needed_facing);
 
             let Some(out_connector) = outgoing else {
                 // Corridor only faces one way — dead end, remove it
@@ -343,6 +345,89 @@ mod tests {
             snap_a, snap_b,
             "different seeds should produce different layouts"
         );
+    }
+
+    // --- Degenerate template tests ---
+
+    /// A room with only one connector can still generate a level of size 1.
+    /// But it can't grow beyond that because the corridor can't reach a new room.
+    #[test]
+    fn single_connector_room_generates_target_one() {
+        let room = RoomTemplate {
+            id: "one_exit",
+            kind: TemplateKind::Room,
+            connectors: vec![
+                Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
+            ],
+            enemy_spawns: vec![],
+            loot_spawns: vec![],
+            extents: [1, 1, 1],
+        };
+        let config = GeneratorConfig {
+            seed: 42,
+            room_templates: vec![room],
+            corridor_templates: vec![corridor_ew()],
+            target_room_count: 1,
+        };
+        let level = generate(&config).expect("target 1 should always succeed");
+        assert_eq!(count_by_kind(&level, TemplateKind::Room), 1);
+    }
+
+    /// Large target count with minimal templates still terminates and
+    /// produces a connected graph (even if it can't reach the target).
+    #[test]
+    fn large_target_terminates() {
+        let config = basic_config(7, 50);
+        let result = generate(&config);
+        // Should either succeed or return IncompatibleTemplates — never hang.
+        match result {
+            Ok(level) => {
+                assert!(level.is_fully_connected(), "large level should be connected");
+                let rooms = count_by_kind(&level, TemplateKind::Room);
+                assert!(rooms >= 1, "should have placed at least 1 room");
+            }
+            Err(e) => {
+                assert_eq!(e, GenerateError::IncompatibleTemplates,
+                    "only valid failure for large target: {e:?}");
+            }
+        }
+    }
+
+    /// A room template with large extents (e.g. 5x1x5) should still work.
+    #[test]
+    fn large_extent_room_generates_successfully() {
+        let big_room = RoomTemplate {
+            id: "big_room",
+            kind: TemplateKind::Room,
+            connectors: vec![
+                Connector { offset: [0, 0, 2], facing: ConnectorFacing::NegX },
+                Connector { offset: [4, 0, 2], facing: ConnectorFacing::PosX },
+                Connector { offset: [2, 0, 0], facing: ConnectorFacing::NegZ },
+                Connector { offset: [2, 0, 4], facing: ConnectorFacing::PosZ },
+            ],
+            enemy_spawns: vec![],
+            loot_spawns: vec![],
+            extents: [5, 1, 5],
+        };
+        let config = GeneratorConfig {
+            seed: 42,
+            room_templates: vec![big_room],
+            corridor_templates: vec![corridor_ew()],
+            target_room_count: 3,
+        };
+        let level = generate(&config).expect("big room generation should succeed");
+        assert!(level.is_fully_connected());
+        assert_eq!(count_by_kind(&level, TemplateKind::Room), 3);
+    }
+
+    /// Templates with no enemy or loot spawns still generate valid levels.
+    #[test]
+    fn templates_without_spawns_generate_valid_level() {
+        let config = basic_config(42, 5);
+        let level = generate(&config).expect("generation should succeed");
+        // basic_room() and corridor_ew() have no spawns — that's fine.
+        assert_eq!(count_by_kind(&level, TemplateKind::Room), 5);
+        assert!(level.is_fully_connected());
     }
 
     // STEP 9: incompatible templates — corridors can't mate with rooms

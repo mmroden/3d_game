@@ -2,7 +2,7 @@ use std::f32::consts::{FRAC_PI_2, PI};
 
 use crate::asset_catalog::{self, Triple};
 use crate::cell::{CellGrid, CellKind};
-use crate::room_template::{ConnectorFacing, RoomTemplate, TemplateKind};
+use crate::room_template::{ConnectorFacing, RoomTemplate};
 
 // Default Astra asset paths — used by tests via `super::WALL` etc.
 #[cfg(test)]
@@ -54,7 +54,7 @@ impl Default for RoomStyle {
 /// Vertical cell height in meters, determined by the Quaternius mesh geometry.
 /// Wall + top-strip extend from Y≈0.2 to Y=5.0, so one story is 5m.
 /// This is independent of the horizontal cell_size (4m).
-pub(crate) const CELL_HEIGHT: f32 = 5.0;
+pub const CELL_HEIGHT: f32 = 5.0;
 
 /// A single mesh to place in the level.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -64,6 +64,21 @@ pub struct MeshPlacement {
     pub rotation_x: f32,
     pub rotation_y: f32,
 }
+
+/// An axis-aligned box collider for physics.
+/// `half_extents` is the half-size along each axis BEFORE rotation.
+/// `rotation_y` rotates the box around Y (same convention as MeshPlacement).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CollisionBox {
+    pub position: [f32; 3],
+    pub half_extents: [f32; 3],
+    pub rotation_y: f32,
+}
+
+/// Wall thickness for collision boxes (meters).
+const WALL_THICKNESS: f32 = 0.3;
+/// Floor/ceiling thickness for collision boxes (meters).
+const SLAB_THICKNESS: f32 = 0.2;
 
 /// Build all geometry for a room based on its template, which connectors
 /// are actively connected to neighbors, the world origin, and the cell size.
@@ -82,7 +97,7 @@ pub fn assemble(
     style: &RoomStyle,
 ) -> Vec<MeshPlacement> {
     let grid = CellGrid::new(template, active_facings, world_origin, cell_size);
-    assemble_from_grid(&grid, template, active_facings, style, cell_size)
+    assemble_from_grid(&grid, template, active_facings, style)
 }
 
 /// Build structural geometry from a pre-built cell grid.
@@ -97,7 +112,6 @@ pub fn assemble_from_grid(
     template: &RoomTemplate,
     active_facings: &[ConnectorFacing],
     style: &RoomStyle,
-    _cell_size: f32,
 ) -> Vec<MeshPlacement> {
     let mut out = Vec::new();
     let ey = grid.extents[1] as i32;
@@ -116,15 +130,18 @@ pub fn assemble_from_grid(
             (has_face(ConnectorFacing::PosX) && has_face(ConnectorFacing::PosZ), PI),
         ];
 
-        // Place doors at active connectors (corridors only).
-        if cell.kind == CellKind::ConnectorGap && template.kind == TemplateKind::Corridor {
-            // Find which facings are active connectors at this cell.
+        // Place door frames at active XZ connectors for both rooms and corridors.
+        // This creates an airlock-style double door at every junction, ensuring
+        // no visual gap between room and corridor.
+        // Y-axis connectors leave a clean floor/ceiling opening (no door frame).
+        if cell.kind == CellKind::ConnectorGap {
+            // Find which XZ facings are active connectors at this cell.
             for facing in &[ConnectorFacing::NegX, ConnectorFacing::PosX,
                            ConnectorFacing::NegZ, ConnectorFacing::PosZ] {
                 if is_active_connector(template, active_facings, *facing,
                     cell.grid_pos[0], cell.grid_pos[1], cell.grid_pos[2])
                 {
-                    let (door_pos, door_rot) = door_placement(pos, *facing, 0.0);
+                    let (door_pos, door_rot) = door_placement(pos, *facing);
                     out.push(MeshPlacement { scene: door, position: door_pos, rotation_x: 0.0, rotation_y: door_rot });
                 }
             }
@@ -148,7 +165,7 @@ pub fn assemble_from_grid(
                         ConnectorFacing::PosX => corner_faces[1] = true,
                         ConnectorFacing::NegZ => corner_faces[2] = true,
                         ConnectorFacing::PosZ => corner_faces[3] = true,
-                        _ => {}
+                        ConnectorFacing::NegY | ConnectorFacing::PosY => {}
                     }
                 }
             }
@@ -159,17 +176,21 @@ pub fn assemble_from_grid(
                 ConnectorFacing::PosX => corner_faces[1],
                 ConnectorFacing::NegZ => corner_faces[2],
                 ConnectorFacing::PosZ => corner_faces[3],
-                _ => false,
+                ConnectorFacing::NegY | ConnectorFacing::PosY => false,
             }
         };
 
-        // Place straight walls only on sealed faces that are NOT part of a corner.
+        // Place straight walls only on sealed XZ faces that are NOT part of a corner.
         // Corner pieces are self-contained and seal the boundary themselves.
+        // Y-axis faces are handled by the floor/ceiling code below.
         for &facing in &cell.sealed_faces {
+            if matches!(facing, ConnectorFacing::NegY | ConnectorFacing::PosY) {
+                continue;
+            }
             if is_corner_face(facing) {
                 continue;
             }
-            let (wall_pos, rot) = wall_placement(pos, facing, 0.0);
+            let (wall_pos, rot) = wall_placement(pos, facing);
             out.push(MeshPlacement { scene: style.straight.wall, position: wall_pos, rotation_x: 0.0, rotation_y: rot });
             out.push(MeshPlacement { scene: style.straight.ceiling, position: wall_pos, rotation_x: 0.0, rotation_y: rot });
         }
@@ -191,37 +212,33 @@ pub fn assemble_from_grid(
         }
 
         // Floor — use curved variant at corner cells (at corner offset position).
+        // Active NegY connectors leave a clean opening (no floor tile, no hatch).
         let is_bottom = cy == 0;
-        if is_bottom {
-            if !is_active_connector(template, active_facings, ConnectorFacing::NegY,
+        if is_bottom
+            && !is_active_connector(template, active_facings, ConnectorFacing::NegY,
                 cell.grid_pos[0], cy, cell.grid_pos[2])
-            {
-                if let Some((corner_pos, rot)) = corner_placement {
-                    out.push(MeshPlacement { scene: style.corner_inner.floor, position: corner_pos, rotation_x: 0.0, rotation_y: rot });
-                } else {
-                    out.push(MeshPlacement { scene: style.straight.floor, position: pos, rotation_x: 0.0, rotation_y: 0.0 });
-                }
+        {
+            if let Some((corner_pos, rot)) = corner_placement {
+                out.push(MeshPlacement { scene: style.corner_inner.floor, position: corner_pos, rotation_x: 0.0, rotation_y: rot });
             } else {
-                out.push(MeshPlacement { scene: door, position: pos, rotation_x: -FRAC_PI_2, rotation_y: 0.0 });
+                out.push(MeshPlacement { scene: style.straight.floor, position: pos, rotation_x: 0.0, rotation_y: 0.0 });
             }
         }
 
         // Ceiling tile — use curved variant at corner cells (at corner offset position).
+        // Active PosY connectors leave a clean opening (no ceiling tile, no hatch).
         // Godot YXZ rotation: Rx(PI) flips Z, so compensate with rot - PI/2
         let is_top = cy == ey - 1;
-        if is_top {
-            let ceiling_pos = [pos[0], pos[1] + CELL_HEIGHT, pos[2]];
-            if !is_active_connector(template, active_facings, ConnectorFacing::PosY,
+        if is_top
+            && !is_active_connector(template, active_facings, ConnectorFacing::PosY,
                 cell.grid_pos[0], cy, cell.grid_pos[2])
-            {
-                if let Some((corner_pos, rot)) = corner_placement {
-                    let corner_ceiling = [corner_pos[0], corner_pos[1] + CELL_HEIGHT, corner_pos[2]];
-                    out.push(MeshPlacement { scene: style.corner_inner.floor, position: corner_ceiling, rotation_x: PI, rotation_y: rot - FRAC_PI_2 });
-                } else {
-                    out.push(MeshPlacement { scene: style.straight.floor, position: ceiling_pos, rotation_x: PI, rotation_y: 0.0 });
-                }
+        {
+            let ceiling_pos = [pos[0], pos[1] + CELL_HEIGHT, pos[2]];
+            if let Some((corner_pos, rot)) = corner_placement {
+                let corner_ceiling = [corner_pos[0], corner_pos[1] + CELL_HEIGHT, corner_pos[2]];
+                out.push(MeshPlacement { scene: style.corner_inner.floor, position: corner_ceiling, rotation_x: PI, rotation_y: rot - FRAC_PI_2 });
             } else {
-                out.push(MeshPlacement { scene: door, position: ceiling_pos, rotation_x: FRAC_PI_2, rotation_y: 0.0 });
+                out.push(MeshPlacement { scene: style.straight.floor, position: ceiling_pos, rotation_x: PI, rotation_y: 0.0 });
             }
         }
     }
@@ -247,24 +264,128 @@ fn is_active_connector(
     })
 }
 
-pub(crate) fn wall_placement(cell_pos: [f32; 3], facing: ConnectorFacing, _cell_size: f32) -> ([f32; 3], f32) {
+pub(crate) fn wall_placement(cell_pos: [f32; 3], facing: ConnectorFacing) -> ([f32; 3], f32) {
     match facing {
         ConnectorFacing::NegX => (cell_pos, 0.0),
         ConnectorFacing::PosX => (cell_pos, PI),
         ConnectorFacing::NegZ => (cell_pos, -FRAC_PI_2),
         ConnectorFacing::PosZ => (cell_pos, FRAC_PI_2),
-        _ => (cell_pos, 0.0),
+        ConnectorFacing::NegY | ConnectorFacing::PosY => {
+            unreachable!("wall_placement called with Y-axis facing {:?}", facing)
+        }
     }
 }
 
-pub(crate) fn door_placement(cell_pos: [f32; 3], facing: ConnectorFacing, _cell_size: f32) -> ([f32; 3], f32) {
+pub(crate) fn door_placement(cell_pos: [f32; 3], facing: ConnectorFacing) -> ([f32; 3], f32) {
     match facing {
         ConnectorFacing::NegX => (cell_pos, FRAC_PI_2),
         ConnectorFacing::PosX => (cell_pos, -FRAC_PI_2),
         ConnectorFacing::NegZ => (cell_pos, 0.0),
         ConnectorFacing::PosZ => (cell_pos, PI),
-        _ => (cell_pos, 0.0),
+        ConnectorFacing::NegY | ConnectorFacing::PosY => {
+            unreachable!("door_placement called with Y-axis facing {:?}", facing)
+        }
     }
+}
+
+/// Generate collision boxes for a room's sealed boundaries, floor, and ceiling.
+///
+/// Each sealed XZ face gets a wall collider (thin box at the cell boundary).
+/// Bottom cells get a floor slab. Top cells get a ceiling slab.
+/// Active connectors leave gaps — no collider on that face.
+/// This is independent of the visual mesh system; collision always matches
+/// the logical cell structure.
+pub fn collision_boxes(
+    template: &RoomTemplate,
+    active_facings: &[ConnectorFacing],
+    world_origin: [f32; 3],
+    cell_size: f32,
+) -> Vec<CollisionBox> {
+    let grid = CellGrid::new(template, active_facings, world_origin, cell_size);
+    collision_boxes_from_grid(&grid, template, active_facings, cell_size)
+}
+
+/// Generate collision boxes from a pre-built cell grid.
+pub fn collision_boxes_from_grid(
+    grid: &CellGrid,
+    template: &RoomTemplate,
+    active_facings: &[ConnectorFacing],
+    cell_size: f32,
+) -> Vec<CollisionBox> {
+    let mut out = Vec::new();
+    let ey = grid.extents[1] as i32;
+    let half_cell = cell_size / 2.0;
+    let half_height = CELL_HEIGHT / 2.0;
+
+    for cell in grid.cells() {
+        let pos = cell.world_center;
+        let cy = cell.grid_pos[1];
+
+        // XZ wall colliders on sealed faces.
+        for &facing in &cell.sealed_faces {
+            match facing {
+                ConnectorFacing::NegX => {
+                    out.push(CollisionBox {
+                        position: [pos[0] - half_cell, pos[1] + half_height, pos[2]],
+                        half_extents: [WALL_THICKNESS / 2.0, half_height, half_cell],
+                        rotation_y: 0.0,
+                    });
+                }
+                ConnectorFacing::PosX => {
+                    out.push(CollisionBox {
+                        position: [pos[0] + half_cell, pos[1] + half_height, pos[2]],
+                        half_extents: [WALL_THICKNESS / 2.0, half_height, half_cell],
+                        rotation_y: 0.0,
+                    });
+                }
+                ConnectorFacing::NegZ => {
+                    out.push(CollisionBox {
+                        position: [pos[0], pos[1] + half_height, pos[2] - half_cell],
+                        half_extents: [half_cell, half_height, WALL_THICKNESS / 2.0],
+                        rotation_y: 0.0,
+                    });
+                }
+                ConnectorFacing::PosZ => {
+                    out.push(CollisionBox {
+                        position: [pos[0], pos[1] + half_height, pos[2] + half_cell],
+                        half_extents: [half_cell, half_height, WALL_THICKNESS / 2.0],
+                        rotation_y: 0.0,
+                    });
+                }
+                ConnectorFacing::NegY | ConnectorFacing::PosY => {
+                    // Y-axis sealed faces are handled by floor/ceiling slabs below.
+                }
+            }
+        }
+
+        // Floor slab (bottom of room).
+        let is_bottom = cy == 0;
+        if is_bottom
+            && !is_active_connector(template, active_facings, ConnectorFacing::NegY,
+                cell.grid_pos[0], cy, cell.grid_pos[2])
+        {
+            out.push(CollisionBox {
+                position: [pos[0], pos[1] - SLAB_THICKNESS / 2.0, pos[2]],
+                half_extents: [half_cell, SLAB_THICKNESS / 2.0, half_cell],
+                rotation_y: 0.0,
+            });
+        }
+
+        // Ceiling slab (top of room).
+        let is_top = cy == ey - 1;
+        if is_top
+            && !is_active_connector(template, active_facings, ConnectorFacing::PosY,
+                cell.grid_pos[0], cy, cell.grid_pos[2])
+        {
+            out.push(CollisionBox {
+                position: [pos[0], pos[1] + CELL_HEIGHT + SLAB_THICKNESS / 2.0, pos[2]],
+                half_extents: [half_cell, SLAB_THICKNESS / 2.0, half_cell],
+                rotation_y: 0.0,
+            });
+        }
+    }
+
+    out
 }
 
 #[cfg(test)]

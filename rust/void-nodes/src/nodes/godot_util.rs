@@ -10,6 +10,13 @@ use godot::classes::{
 
 use super::constants::meta_keys;
 
+/// Get the scene tree root node from a SceneTree (or Optional SceneTree).
+/// Returns `None` during early initialization or after the tree is torn down.
+/// Usage: `scene_root(self.base().get_tree())`
+pub fn scene_root(tree: impl Into<Option<Gd<godot::classes::SceneTree>>>) -> Option<Gd<godot::classes::Node>> {
+    tree.into().and_then(|t| t.get_root()).map(|r| r.upcast())
+}
+
 /// Compute an orientation basis pointing along `forward`.
 /// Falls back to `Vector3::RIGHT` as up-reference when forward is near-parallel to UP.
 pub fn basis_from_direction(forward: Vector3) -> Basis {

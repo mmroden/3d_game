@@ -48,22 +48,29 @@ deps-godot:
 		echo "Godot $(GODOT_VERSION) installed to $(GODOT_APP)"; \
 	fi
 
-assets: $(GODOT)
+assets: build
 	@test -d $(ASSETS_DIR)/quaternius-megakit || { echo "ERROR: assets/ not found. Download paid assets manually into assets/."; exit 1; }
 	@echo "==> Installing Godot addons from asset packs..."
 	@./scripts/install-addons.sh $(ASSETS_DIR) $(GODOT_DIR)
 	@echo "Addons installed."
-	@echo "==> Importing assets (pass 1: generate .import sidecars)..."
 	@rm -f $(GODOT_DIR)/.godot/uid_cache.bin
 	@chmod -R u+w $(GODOT_DIR)/.godot/imported 2>/dev/null; rm -rf $(GODOT_DIR)/.godot/imported || true
-	@$(GODOT) --headless --import --path $(GODOT_DIR) 2>/dev/null || true
+	@echo "==> Importing assets (pass 1: generates .import sidecars)..."
+	$(GODOT) --headless --import --path $(GODOT_DIR)
 	@echo "==> Configuring Quaternius material import script..."
 	@find $(GODOT_DIR)/addons/quaternius -name "*.gltf.import" \
 		-exec sed -i '' 's|import_script/path=""|import_script/path="res://addons/quaternius/quaternius_import_script.gd"|' {} +
-	@echo "==> Importing assets (pass 2: bake materials via import script)..."
-	@$(GODOT) --headless --import --path $(GODOT_DIR) 2>/dev/null || true
+	@echo "==> Configuring 3D texture settings (mipmaps + VRAM compression)..."
+	@find $(GODOT_DIR)/addons/quaternius/materials -name "*.png.import" \
+		-exec sed -i '' 's|mipmaps/generate=false|mipmaps/generate=true|' {} + \
+		-exec sed -i '' 's|compress/mode=0|compress/mode=2|' {} +
+	@echo "==> Reimporting assets (pass 2: with material script + mipmaps)..."
+	$(GODOT) --headless --import --path $(GODOT_DIR)
 	@echo "==> Restoring material definitions (undo Godot path rewrites)..."
 	@./scripts/install-addons.sh $(ASSETS_DIR) $(GODOT_DIR) --tres-only
+	@echo "==> Enabling anisotropic texture filtering on VisualShader materials..."
+	@python3 -c "import re,sys;p=sys.argv[1];t=open(p).read();t=re.sub(r'(\[sub_resource type=\"VisualShaderNodeTexture2DParameter\"[^\]]*\]\nparameter_name = [^\n]+)',r'\1\ntexture_filter = 6',t);open(p,'w').write(t)" \
+		$(GODOT_DIR)/addons/quaternius/materials/M_Trim_Base.tres
 	@echo "Import complete."
 
 check: deps

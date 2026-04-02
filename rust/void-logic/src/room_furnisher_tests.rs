@@ -344,6 +344,33 @@ fn light_source_range_covers_cell() {
     }
 }
 
+// --- Multi-story light fixtures ---
+
+#[test]
+fn multi_story_room_gets_lights_on_every_floor() {
+    let template = RoomTemplate {
+        id: "test_3x2x3",
+        kind: TemplateKind::Room,
+        connectors: vec![],
+        enemy_spawns: vec![],
+        loot_spawns: vec![],
+        extents: [3, 2, 3],
+    };
+    let fixtures = light_fixtures(&template, [0.0, 0.0, 0.0], 4.0);
+    // 3x2x3 = 18 cells, each should get a light
+    let total_cells = (3 * 2 * 3) as usize;
+    assert_eq!(
+        fixtures.len(), total_cells,
+        "3x2x3 room should have {} fixtures, got {}", total_cells, fixtures.len()
+    );
+    // Verify lights exist at both Y levels
+    let cell_height = crate::room_assembler::CELL_HEIGHT;
+    let floor0_lights = fixtures.iter().filter(|(m, _)| m.position[1] < cell_height).count();
+    let floor1_lights = fixtures.iter().filter(|(m, _)| m.position[1] >= cell_height).count();
+    assert!(floor0_lights > 0, "should have lights on floor 0");
+    assert!(floor1_lights > 0, "should have lights on floor 1");
+}
+
 // --- Flyable path validation tests ---
 
 #[test]
@@ -502,17 +529,28 @@ fn sparse_room_leaves_most_cells_empty() {
 }
 
 #[test]
-fn normal_density_preserves_original_prop_count() {
-    // Regression guard: Normal density should produce the same output as before.
+fn normal_density_between_sparse_and_dense() {
+    // Behavioral invariant: across many seeds, Normal produces more props
+    // than Sparse and fewer than Dense on average.
     let template = room_3x3();
     let active = vec![ConnectorFacing::NegX, ConnectorFacing::PosX];
-    let props = furnish(&template, &active, [0.0, 0.0, 0.0], 4.0, 42, RoomDensity::Normal);
-    // Pin the count from the current Normal behavior. If this changes, the test
-    // catches accidental regressions in the default density path.
-    let count = props.len();
+    let origin = [0.0, 0.0, 0.0];
+    let cs = 4.0;
+    let mut sparse_total = 0;
+    let mut normal_total = 0;
+    let mut dense_total = 0;
+    for seed in 0..100 {
+        sparse_total += furnish(&template, &active, origin, cs, seed, RoomDensity::Sparse).len();
+        normal_total += furnish(&template, &active, origin, cs, seed, RoomDensity::Normal).len();
+        dense_total += furnish(&template, &active, origin, cs, seed, RoomDensity::Dense).len();
+    }
     assert!(
-        count > 0,
-        "seed 42 on 3x3 with Normal density should produce at least 1 prop"
+        sparse_total < normal_total,
+        "Normal ({normal_total}) should produce more props than Sparse ({sparse_total})"
+    );
+    assert!(
+        normal_total < dense_total,
+        "Dense ({dense_total}) should produce more props than Normal ({normal_total})"
     );
 }
 

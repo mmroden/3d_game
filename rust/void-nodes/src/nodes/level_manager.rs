@@ -1,5 +1,5 @@
 use godot::prelude::*;
-use godot::classes::{Node3D, INode3D, OmniLight3D, PackedScene, ResourceLoader};
+use godot::classes::{BoxShape3D, CollisionShape3D, Node3D, INode3D, OmniLight3D, PackedScene, ResourceLoader, StaticBody3D};
 
 use super::constants::{nodes, scenes};
 use rand::SeedableRng;
@@ -73,8 +73,9 @@ impl LevelManager {
             }
         };
 
-        // Assemble all room geometry, furniture, light fixtures, and enemy positions
-        let (placements, light_sources, enemy_positions) =
+        // Assemble all room geometry, furniture, light fixtures, enemy positions,
+        // and collision boxes for physics.
+        let (placements, light_sources, enemy_positions, collision_boxes) =
             template_catalog::spawn_list_full(&graph, self.grid_cell_size, seed as u64);
         let mut loader = ResourceLoader::singleton();
         let mut mesh_count = 0;
@@ -102,6 +103,27 @@ impl LevelManager {
 
             self.base_mut().add_child(&node);
             mesh_count += 1;
+        }
+
+        // Spawn collision boxes (StaticBody3D + BoxShape3D) for walls/floors/ceilings.
+        for cb in &collision_boxes {
+            let mut body = StaticBody3D::new_alloc();
+            body.set_position(vec3(cb.position));
+            if cb.rotation_y.abs() > 0.001 {
+                body.set_rotation(Vector3::new(0.0, cb.rotation_y, 0.0));
+            }
+
+            let mut box_shape = BoxShape3D::new_gd();
+            box_shape.set_size(Vector3::new(
+                cb.half_extents[0] * 2.0,
+                cb.half_extents[1] * 2.0,
+                cb.half_extents[2] * 2.0,
+            ));
+
+            let mut col_shape = CollisionShape3D::new_alloc();
+            col_shape.set_shape(&box_shape);
+            body.add_child(&col_shape);
+            self.base_mut().add_child(&body);
         }
 
         // Spawn OmniLight3D for each light fixture
@@ -176,9 +198,10 @@ impl LevelManager {
         }
 
         godot_print!(
-            "Level generated: {} rooms, {} meshes, {} lights, {} enemies",
+            "Level generated: {} rooms, {} meshes, {} colliders, {} lights, {} enemies",
             target_rooms,
             mesh_count,
+            collision_boxes.len(),
             light_sources.len(),
             enemy_count,
         );

@@ -16,10 +16,10 @@ pub struct CellExtents {
 }
 
 impl CellExtents {
-    pub fn width_x(&self) -> f32 {
+    pub const fn width_x(&self) -> f32 {
         self.neg_x + self.pos_x
     }
-    pub fn width_z(&self) -> f32 {
+    pub const fn width_z(&self) -> f32 {
         self.neg_z + self.pos_z
     }
 
@@ -114,10 +114,11 @@ const CORNER_REACH: f32 = 4.468;
 /// Floor platform: [-2.0, 2.0] × [-2.0, 2.0]
 const INTERIOR_HALF: f32 = 2.0;
 /// Wall + top-strip extend from Y≈0.2 to Y=5.0
-const CELL_HEIGHT: f32 = 5.0;
+use crate::room_assembler::CELL_HEIGHT;
 
 // ── Rotation helpers ───────────────────────────────────────────────────
 
+/// Y-axis rotation for an XZ wall mesh. Only valid for XZ facings.
 fn wall_rotation(facing: ConnectorFacing) -> f32 {
     use std::f32::consts::{FRAC_PI_2, PI};
     match facing {
@@ -125,10 +126,13 @@ fn wall_rotation(facing: ConnectorFacing) -> f32 {
         ConnectorFacing::PosX => PI,
         ConnectorFacing::NegZ => -FRAC_PI_2,
         ConnectorFacing::PosZ => FRAC_PI_2,
-        _ => 0.0,
+        ConnectorFacing::NegY | ConnectorFacing::PosY => {
+            unreachable!("wall_rotation called with Y-axis facing {:?}", facing)
+        }
     }
 }
 
+/// Y-axis rotation for an XZ door frame. Only valid for XZ facings.
 fn door_rotation(facing: ConnectorFacing) -> f32 {
     use std::f32::consts::{FRAC_PI_2, PI};
     match facing {
@@ -136,10 +140,13 @@ fn door_rotation(facing: ConnectorFacing) -> f32 {
         ConnectorFacing::PosX => -FRAC_PI_2,
         ConnectorFacing::NegZ => 0.0,
         ConnectorFacing::PosZ => PI,
-        _ => 0.0,
+        ConnectorFacing::NegY | ConnectorFacing::PosY => {
+            unreachable!("door_rotation called with Y-axis facing {:?}", facing)
+        }
     }
 }
 
+/// Y-axis rotation for an XZ corner piece. Only valid for XZ pairs.
 fn corner_rotation(pair: (ConnectorFacing, ConnectorFacing)) -> f32 {
     use std::f32::consts::{FRAC_PI_2, PI};
     match pair {
@@ -147,7 +154,7 @@ fn corner_rotation(pair: (ConnectorFacing, ConnectorFacing)) -> f32 {
         (ConnectorFacing::PosX, ConnectorFacing::NegZ) => -FRAC_PI_2,
         (ConnectorFacing::NegX, ConnectorFacing::PosZ) => FRAC_PI_2,
         (ConnectorFacing::PosX, ConnectorFacing::PosZ) => PI,
-        _ => 0.0,
+        _ => unreachable!("corner_rotation called with non-XZ pair {:?}", pair),
     }
 }
 
@@ -190,12 +197,21 @@ impl CellGeometry for EdgeCell<'_> {
     }
 
     fn placements(&self) -> Vec<MeshPlacement> {
-        let rot = wall_rotation(self.sealed_face);
         let origin = [0.0, 0.0, 0.0];
-        vec![
-            MeshPlacement { scene: self.mesh_set.straight.wall, position: origin, rotation_x: 0.0, rotation_y: rot },
-            MeshPlacement { scene: self.mesh_set.straight.ceiling, position: origin, rotation_x: 0.0, rotation_y: rot },
-        ]
+        match self.sealed_face {
+            // XZ faces emit horizontal wall + ceiling strip
+            ConnectorFacing::NegX | ConnectorFacing::PosX
+            | ConnectorFacing::NegZ | ConnectorFacing::PosZ => {
+                let rot = wall_rotation(self.sealed_face);
+                vec![
+                    MeshPlacement { scene: self.mesh_set.straight.wall, position: origin, rotation_x: 0.0, rotation_y: rot },
+                    MeshPlacement { scene: self.mesh_set.straight.ceiling, position: origin, rotation_x: 0.0, rotation_y: rot },
+                ]
+            }
+            // Y faces are floor/ceiling — handled by the assembler's floor/ceiling code.
+            // EdgeCell emits no wall geometry for these.
+            ConnectorFacing::NegY | ConnectorFacing::PosY => Vec::new(),
+        }
     }
 }
 
@@ -217,15 +233,24 @@ impl CellGeometry for ConnectorCell<'_> {
 
     fn placements(&self) -> Vec<MeshPlacement> {
         if self.is_corridor {
-            let rot = door_rotation(self.facing);
-            vec![
-                MeshPlacement {
-                    scene: crate::asset_catalog::DOOR,
-                    position: [0.0, 0.0, 0.0],
-                    rotation_x: 0.0,
-                    rotation_y: rot,
-                },
-            ]
+            let origin = [0.0, 0.0, 0.0];
+            match self.facing {
+                // XZ connectors: vertical door frame
+                ConnectorFacing::NegX | ConnectorFacing::PosX
+                | ConnectorFacing::NegZ | ConnectorFacing::PosZ => {
+                    let rot = door_rotation(self.facing);
+                    vec![MeshPlacement {
+                        scene: crate::asset_catalog::DOOR,
+                        position: origin,
+                        rotation_x: 0.0,
+                        rotation_y: rot,
+                    }]
+                }
+                // Y connectors: clean opening (no hatch mesh).
+                // The door frame is designed for vertical doorways and
+                // doesn't visually work as a horizontal floor/ceiling hatch.
+                ConnectorFacing::NegY | ConnectorFacing::PosY => Vec::new(),
+            }
         } else {
             // Room connectors leave a gap — no geometry.
             Vec::new()
@@ -521,20 +546,40 @@ mod tests {
         }
     }
 
-    // ── CellType enum dispatches correctly ─────────────────────────────
+    // ── Y-axis face handling ─────────────────────────────────────────
 
+    /// EdgeCell with a Y-axis sealed face must NOT emit horizontal wall geometry.
+    /// Y faces are floor/ceiling — handled separately from XZ wall meshes.
     #[test]
-    fn cell_type_enum_dispatches_extents() {
-        let ws = &WALL_SET_ASTRA;
-        let corner = CellType::Corner(CornerCell {
-            mesh_set: ws,
-            corner_pair: (ConnectorFacing::NegX, ConnectorFacing::NegZ),
-        });
-        let interior = CellType::Interior(InteriorCell { mesh_set: ws });
+    fn edge_cell_y_face_emits_no_horizontal_walls() {
+        for ws in all_wall_sets() {
+            for face in [ConnectorFacing::NegY, ConnectorFacing::PosY] {
+                let cell = EdgeCell { mesh_set: ws, sealed_face: face };
+                let placements = cell.placements();
+                let horizontal_walls = placements.iter().filter(|p| {
+                    p.scene == ws.straight.wall || p.scene == ws.straight.ceiling
+                }).count();
+                assert_eq!(horizontal_walls, 0,
+                    "wall set '{}' edge {:?}: Y-axis face should emit 0 horizontal wall pieces, got {}",
+                    ws.id, face, horizontal_walls);
+            }
+        }
+    }
 
-        // Just verify dispatch works (values tested by type-specific tests)
-        assert!(corner.extents().width_x() > 0.0 || corner.extents().width_x() == 0.0);
-        assert!(interior.extents().width_x() > 0.0 || interior.extents().width_x() == 0.0);
+    /// ConnectorCell with a Y-axis facing emits no geometry — vertical openings
+    /// are clean holes in the floor/ceiling. The door frame mesh is designed for
+    /// vertical doorways and doesn't work as a horizontal hatch.
+    #[test]
+    fn connector_cell_y_face_emits_no_geometry() {
+        for ws in all_wall_sets() {
+            for face in [ConnectorFacing::NegY, ConnectorFacing::PosY] {
+                let cell = ConnectorCell { mesh_set: ws, facing: face, is_corridor: true };
+                let placements = cell.placements();
+                assert!(placements.is_empty(),
+                    "wall set '{}' connector {:?}: Y-axis connector should emit no geometry, got {} placements",
+                    ws.id, face, placements.len());
+            }
+        }
     }
 
     // ── CellExtents::interior_offset tests ────────────────────────────

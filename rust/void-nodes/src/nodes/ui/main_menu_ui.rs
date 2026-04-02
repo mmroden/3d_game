@@ -245,7 +245,7 @@ impl MainMenuUI {
                 label.set_visible(false);
             }
         }
-        let parent = self.labels[0].get_parent().unwrap();
+        let Some(parent) = self.labels[0].get_parent() else { return };
         let mut parent: Gd<Node> = parent;
 
         let options = [

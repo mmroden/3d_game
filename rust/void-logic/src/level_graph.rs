@@ -17,12 +17,33 @@ pub struct PlacedRoom {
 
 impl PlacedRoom {
     /// Convert grid position to world-space origin.
+    /// XZ uses cell_size (4m), Y uses CELL_HEIGHT (5m) because
+    /// vertical spacing is determined by mesh height, not cell width.
     pub fn world_position(&self, cell_size: f32) -> [f32; 3] {
         [
             self.grid_pos[0] as f32 * cell_size,
-            self.grid_pos[1] as f32 * cell_size,
+            self.grid_pos[1] as f32 * crate::room_assembler::CELL_HEIGHT,
             self.grid_pos[2] as f32 * cell_size,
         ]
+    }
+}
+
+/// Identifies which key opens a locked door.
+/// Exhaustive — adding a variant forces handling at every match site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KeyId {
+    Red,
+    Blue,
+    Gold,
+}
+
+impl std::fmt::Display for KeyId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KeyId::Red => write!(f, "red_key"),
+            KeyId::Blue => write!(f, "blue_key"),
+            KeyId::Gold => write!(f, "gold_key"),
+        }
     }
 }
 
@@ -48,7 +69,7 @@ pub enum EdgeKind {
     Locked {
         from_facing: ConnectorFacing,
         to_facing: ConnectorFacing,
-        key_id: String,
+        key_id: KeyId,
     },
 }
 
@@ -166,7 +187,7 @@ impl LevelGraph {
     }
 
     /// Connect two rooms via locked door through matching connectors.
-    pub fn connect_locked(&mut self, from: NodeIndex, to: NodeIndex, key_id: String) -> Result<(), ConnectError> {
+    pub fn connect_locked(&mut self, from: NodeIndex, to: NodeIndex, key_id: KeyId) -> Result<(), ConnectError> {
         let from_room = self.graph.node_weight(from)
             .ok_or(ConnectError::InvalidRoomIndex)?;
         let to_room = self.graph.node_weight(to)
@@ -259,7 +280,14 @@ impl LevelGraph {
                         facings.push(*to_facing);
                     }
                 }
-                _ => {}
+                // Teleporters have no spatial facing.
+                EdgeKind::Teleporter => {}
+                // One-way edges only contribute from the source side.
+                EdgeKind::OneWay { from_facing } => {
+                    if from == index {
+                        facings.push(*from_facing);
+                    }
+                }
             }
         }
         facings
@@ -268,15 +296,12 @@ impl LevelGraph {
 
 /// Enumerate all grid cells a room occupies given its origin.
 fn cells_for(template: &RoomTemplate, origin: [i32; 3]) -> Vec<[i32; 3]> {
-    let mut cells = Vec::new();
-    for x in 0..template.extents[0] as i32 {
-        for y in 0..template.extents[1] as i32 {
-            for z in 0..template.extents[2] as i32 {
-                cells.push([origin[0] + x, origin[1] + y, origin[2] + z]);
-            }
-        }
-    }
-    cells
+    let [ex, ey, ez] = template.extents.map(|e| e as i32);
+    (0..ex).flat_map(|x| {
+        (0..ey).flat_map(move |y| {
+            (0..ez).map(move |z| [origin[0] + x, origin[1] + y, origin[2] + z])
+        })
+    }).collect()
 }
 
 #[cfg(test)]
@@ -383,6 +408,23 @@ mod tests {
         let idx = graph.place_room(room_1x1_east_west(), [-5, -3, -1]);
         assert!(idx.is_ok());
         assert!(!graph.is_free([-5, -3, -1]));
+    }
+
+    // --- KeyId tests ---
+
+    #[test]
+    fn key_id_display_matches_legacy_string() {
+        assert_eq!(format!("{}", KeyId::Red), "red_key");
+        assert_eq!(format!("{}", KeyId::Blue), "blue_key");
+        assert_eq!(format!("{}", KeyId::Gold), "gold_key");
+    }
+
+    #[test]
+    fn key_id_roundtrips_through_display() {
+        for key in [KeyId::Red, KeyId::Blue, KeyId::Gold] {
+            let s = format!("{}", key);
+            assert!(!s.is_empty());
+        }
     }
 
     // --- Adjacent connection tests ---
@@ -576,7 +618,7 @@ mod tests {
         let mut graph = LevelGraph::new();
         let a = graph.place_room(room_1x1_east_west(), [0, 0, 0]).unwrap();
         let b = graph.place_room(room_1x1_east_west(), [5, 0, 0]).unwrap();
-        let result = graph.connect_locked(a, b, "red_key".to_string());
+        let result = graph.connect_locked(a, b, KeyId::Red);
         assert!(matches!(result, Err(ConnectError::NoMatchingConnectors)));
     }
 
@@ -585,12 +627,12 @@ mod tests {
         let mut graph = LevelGraph::new();
         let a = graph.place_room(room_1x1_east_west(), [0, 0, 0]).unwrap();
         let b = graph.place_room(room_1x1_east_west(), [1, 0, 0]).unwrap();
-        let result = graph.connect_locked(a, b, "red_key".to_string());
+        let result = graph.connect_locked(a, b, KeyId::Red);
         assert!(result.is_ok());
 
         let (_, _, edge) = graph.edges().next().unwrap();
         match edge {
-            EdgeKind::Locked { key_id, .. } => assert_eq!(key_id, "red_key"),
+            EdgeKind::Locked { key_id, .. } => assert_eq!(*key_id, KeyId::Red),
             _ => panic!("Expected Locked edge"),
         }
     }
@@ -670,12 +712,13 @@ mod tests {
     // --- World position tests ---
 
     #[test]
-    fn world_position_scales_grid_by_cell_size() {
+    fn world_position_scales_grid_by_cell_size_and_cell_height() {
         let mut graph = LevelGraph::new();
         let idx = graph.place_room(room_1x1_east_west(), [3, -1, 2]).unwrap();
         let room = graph.room(idx).unwrap();
         let pos = room.world_position(10.0);
-        assert_eq!(pos, [30.0, -10.0, 20.0]);
+        // XZ uses cell_size (10.0), Y uses CELL_HEIGHT (5.0)
+        assert_eq!(pos, [30.0, -5.0, 20.0]);
     }
 
     // --- R2: Hub room with 6 cardinal connections ---

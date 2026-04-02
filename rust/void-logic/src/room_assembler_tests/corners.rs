@@ -43,40 +43,50 @@ fn ceiling_corners_emitted_at_same_positions_as_wall_corners() {
 
 // --- Corner detection via cell grid ---
 
-/// Corners appear only at cells classified as BoundaryCorner (perpendicular
-/// sealed faces). Verified via CellGrid classification, not hardcoded positions.
+/// XZ corner pieces appear only at cells with perpendicular XZ sealed faces.
+/// In 3D, BoundaryCorner includes cells with Y+XZ perpendicular faces too,
+/// but those don't emit XZ corner geometry — only XZ×XZ pairs do.
 #[test]
-fn corners_only_at_boundary_corner_cells() {
-    use crate::cell::{CellGrid, CellKind};
+fn corners_only_at_xz_corner_cells() {
+    use crate::cell::CellGrid;
     let style = RoomStyle::default();
     let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0, &style);
     let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0);
 
-    let corner_cells: Vec<_> = grid.cells().iter()
-        .filter(|c| c.kind == CellKind::BoundaryCorner)
+    // Count cells that have at least one XZ perpendicular corner pair.
+    let has_xz_corner_pair = |cell: &crate::cell::Cell| -> bool {
+        let has = |f: ConnectorFacing| cell.sealed_faces.contains(&f);
+        (has(ConnectorFacing::NegX) && has(ConnectorFacing::NegZ))
+            || (has(ConnectorFacing::PosX) && has(ConnectorFacing::NegZ))
+            || (has(ConnectorFacing::NegX) && has(ConnectorFacing::PosZ))
+            || (has(ConnectorFacing::PosX) && has(ConnectorFacing::PosZ))
+    };
+
+    let xz_corner_cells: Vec<_> = grid.cells().iter()
+        .filter(|c| has_xz_corner_pair(c))
         .collect();
-    let non_corner_cells: Vec<_> = grid.cells().iter()
-        .filter(|c| c.kind != CellKind::BoundaryCorner)
+    let non_xz_corner_cells: Vec<_> = grid.cells().iter()
+        .filter(|c| !has_xz_corner_pair(c))
         .collect();
 
-    // Total inner wall corners = number of BoundaryCorner cells
+    // Total inner wall corners = number of cells with XZ corner pairs
     let total_corners = placements.iter()
         .filter(|p| p.scene == style.corner_inner.wall)
         .count();
     assert_eq!(
-        total_corners, corner_cells.len(),
-        "total inner wall corners ({total_corners}) should equal BoundaryCorner cell count ({})",
-        corner_cells.len()
+        total_corners, xz_corner_cells.len(),
+        "total inner wall corners ({total_corners}) should equal XZ corner cell count ({})",
+        xz_corner_cells.len()
     );
 
-    // No corner pieces at non-corner cell centers (straight walls are still at center)
-    for cell in &non_corner_cells {
+    // No corner pieces near non-XZ-corner cell centers
+    for cell in &non_xz_corner_cells {
         let count = placements.iter().filter(|p| {
             p.scene == style.corner_inner.wall
             && (p.position[0] - cell.world_center[0]).abs() < 0.01
             && (p.position[2] - cell.world_center[2]).abs() < 0.01
         }).count();
-        assert_eq!(count, 0, "non-corner cell {:?} should have 0 inner wall corners at its center", cell.grid_pos);
+        assert_eq!(count, 0, "non-XZ-corner cell {:?} should have 0 inner wall corners near its center", cell.grid_pos);
     }
 }
 

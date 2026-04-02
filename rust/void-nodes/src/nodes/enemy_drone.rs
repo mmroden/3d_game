@@ -10,6 +10,7 @@ use super::constants::{groups, meta_keys, scenes, signals};
 use super::godot_util;
 use void_logic::enemy_ai::{DroneAi, DroneConfig};
 use void_logic::enemy_type::EnemyType;
+use void_logic::newtypes::{Health, Damage};
 
 /// A hostile drone that chases and attacks the player.
 #[derive(GodotClass)]
@@ -60,9 +61,9 @@ impl ICharacterBody3D for EnemyDrone {
         // Configure from EnemyType if valid, otherwise use exported values
         if let Some(enemy_type) = EnemyType::from_id(self.enemy_type_id) {
             let stats = enemy_type.stats();
-            self.health = stats.hp;
+            self.health = stats.hp.as_f32();
             self.speed = stats.speed;
-            self.damage = stats.damage;
+            self.damage = stats.damage.as_f32();
             self.detection_range = stats.detection_range;
             self.attack_range = stats.attack_range;
             self.ai = DroneAi::new(DroneConfig {
@@ -77,7 +78,7 @@ impl ICharacterBody3D for EnemyDrone {
                 detection_range: self.detection_range,
                 attack_range: self.attack_range,
                 disengage_range: self.detection_range * 1.2,
-                health: self.health,
+                health: Health::new(self.health),
                 attack_cooldown: 1.0,
             });
         }
@@ -147,7 +148,7 @@ impl EnemyDrone {
 
     #[func]
     pub fn take_damage(&mut self, amount: f32) {
-        let died = self.ai.take_damage(amount);
+        let died = self.ai.take_damage(Damage::new(amount));
         self.update_health_bar_fill();
 
         if !died {
@@ -170,7 +171,10 @@ impl EnemyDrone {
         );
 
         let pos = self.base().get_global_position();
-        let root: Gd<Node> = self.base().get_tree().get_root().unwrap().upcast();
+        let Some(root) = godot_util::scene_root(self.base().get_tree()) else {
+            self.base_mut().queue_free();
+            return;
+        };
 
         // Spawn explosion particles
         Self::spawn_explosion(&root, pos);
@@ -309,7 +313,7 @@ impl EnemyDrone {
     }
 
     fn update_health_bar_fill(&mut self) {
-        let fraction = (self.ai.health / self.ai.config.health).clamp(0.0, 1.0);
+        let fraction = self.ai.health.fraction(self.ai.config.health);
 
         if let Some(fill) = &mut self.health_bar_fill {
             if !fill.is_instance_valid() {
@@ -370,7 +374,9 @@ impl EnemyDrone {
         particles.set_draw_pass_mesh(0, &sphere);
 
         particles.set_transform(Transform3D::new(Basis::IDENTITY, pos));
-        self.base_mut().get_tree().get_root().unwrap().add_child(&particles);
-        particles.set_emitting(true);
+        if let Some(root) = godot_util::scene_root(self.base().get_tree()) {
+            root.clone().add_child(&particles);
+            particles.set_emitting(true);
+        }
     }
 }

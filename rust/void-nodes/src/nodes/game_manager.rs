@@ -236,7 +236,7 @@ impl GameManager {
 
     #[func]
     pub fn get_laser_damage(&self) -> f32 {
-        self.run_state.laser_damage()
+        self.run_state.laser_damage().as_f32()
     }
 
     #[func]
@@ -246,12 +246,12 @@ impl GameManager {
 
     #[func]
     pub fn get_health(&self) -> f32 {
-        self.run_state.health
+        self.run_state.health.as_f32()
     }
 
     #[func]
     pub fn get_max_health(&self) -> f32 {
-        self.run_state.loadout.max_health()
+        self.run_state.loadout.max_health().as_f32()
     }
 
     #[func]
@@ -400,7 +400,7 @@ impl GameManager {
                 Variant::from(self.run_state.credits.balance as i64),
                 Variant::from(GString::from(self.run_state.laser_level.display_name())),
                 Variant::from(color),
-                Variant::from(self.run_state.laser_damage()),
+                Variant::from(self.run_state.laser_damage().as_f32()),
                 Variant::from(self.get_next_upgrade_cost()),
                 Variant::from(self.can_afford_upgrade()),
                 Variant::from(self.is_max_laser()),
@@ -483,8 +483,8 @@ impl GameManager {
             let c = self.run_state.laser_level.color();
             let color = Color::from_rgba(c[0], c[1], c[2], c[3]);
             hud.call(methods::UPDATE_HEALTH, &[
-                Variant::from(self.run_state.health),
-                Variant::from(self.run_state.loadout.max_health()),
+                Variant::from(self.run_state.health.as_f32()),
+                Variant::from(self.run_state.loadout.max_health().as_f32()),
             ]);
             hud.call(methods::UPDATE_CREDITS, &[
                 Variant::from(self.run_state.credits.balance as i64),

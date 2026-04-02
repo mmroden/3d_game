@@ -149,7 +149,9 @@ impl ViewManager {
         let [eye_w, eye_h] = single_viewport_size(&config);
 
         // Share the main scene's World3D so stereo cameras see the same geometry
-        let main_world = self.base().get_viewport().unwrap().get_world_3d();
+        let main_world = self.base().get_viewport()
+            .expect("ViewManager must be in the scene tree during setup")
+            .get_world_3d();
 
         // CanvasLayer renders on top of the 3D scene
         let mut canvas_layer = CanvasLayer::new_alloc();
@@ -243,7 +245,8 @@ impl ViewManager {
         self.base_mut().add_child(&mono_ui_layer);
 
         // Set UIViewport texture on all three overlay rects
-        let ui_texture = ui_viewport.get_texture().unwrap();
+        let ui_texture = ui_viewport.get_texture()
+            .expect("UIViewport must have a texture after creation");
         left_ui_rect.set_texture(&ui_texture);
         right_ui_rect.set_texture(&ui_texture);
         mono_ui_rect.set_texture(&ui_texture);

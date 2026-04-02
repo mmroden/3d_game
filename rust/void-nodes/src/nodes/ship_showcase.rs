@@ -148,9 +148,11 @@ impl ShipShowcase {
 
     fn spawn_beam(&mut self, from: Vector3, to: Vector3) {
         if let Some(mesh_instance) = godot_util::create_beam_mesh(from, to, &self.laser_color) {
-            let node = mesh_instance.clone();
-            self.base_mut().get_tree().get_root().unwrap().add_child(&mesh_instance);
-            self.beams.push(node);
+            if let Some(root) = godot_util::scene_root(self.base().get_tree()) {
+                let node = mesh_instance.clone();
+                root.clone().add_child(&mesh_instance);
+                self.beams.push(node);
+            }
         }
     }
 
