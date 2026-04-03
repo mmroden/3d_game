@@ -4,6 +4,7 @@
 pub enum GamePhase {
     MainMenu,
     Playing,
+    Paused,
     LevelComplete,
     KillSummary,
     Shop,
@@ -16,6 +17,9 @@ impl GamePhase {
         matches!(
             (self, next),
             (GamePhase::MainMenu, GamePhase::Playing)
+                | (GamePhase::Playing, GamePhase::Paused)
+                | (GamePhase::Paused, GamePhase::Playing)
+                | (GamePhase::Paused, GamePhase::MainMenu)
                 | (GamePhase::Playing, GamePhase::LevelComplete)
                 | (GamePhase::Playing, GamePhase::Death)
                 | (GamePhase::LevelComplete, GamePhase::KillSummary)
@@ -63,6 +67,26 @@ mod tests {
     #[test]
     fn death_to_main_menu() {
         assert!(GamePhase::Death.can_transition_to(GamePhase::MainMenu));
+    }
+
+    #[test]
+    fn playing_to_paused() {
+        assert!(GamePhase::Playing.can_transition_to(GamePhase::Paused));
+    }
+
+    #[test]
+    fn paused_to_playing() {
+        assert!(GamePhase::Paused.can_transition_to(GamePhase::Playing));
+    }
+
+    #[test]
+    fn paused_to_main_menu() {
+        assert!(GamePhase::Paused.can_transition_to(GamePhase::MainMenu));
+    }
+
+    #[test]
+    fn cannot_pause_from_menu() {
+        assert!(!GamePhase::MainMenu.can_transition_to(GamePhase::Paused));
     }
 
     #[test]

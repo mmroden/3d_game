@@ -1,12 +1,11 @@
 use godot::prelude::*;
-use godot::global::Key;
 use godot::classes::{
     CanvasLayer, ICanvasLayer, Label, Control,
-    Engine, InputEvent, InputEventKey,
+    Engine, Input,
 };
 
 use super::menu_panel;
-use crate::nodes::constants::{signals, theme};
+use crate::nodes::constants::{actions, signals, theme};
 use void_logic::ui_style;
 
 /// Death screen: shows stats and penalty, press key to return to menu.
@@ -29,15 +28,12 @@ impl ICanvasLayer for DeathScreenUI {
         self.base_mut().set_visible(false);
     }
 
-    fn input(&mut self, event: Gd<InputEvent>) {
+    fn process(&mut self, _delta: f64) {
         if !self.base().is_visible() {
             return;
         }
-        let Ok(key_event) = event.try_cast::<InputEventKey>() else { return };
-        if !key_event.is_pressed() || key_event.is_echo() {
-            return;
-        }
-        if key_event.get_keycode() == Key::ENTER || key_event.get_keycode() == Key::SPACE {
+        let input = Input::singleton();
+        if input.is_action_just_pressed(actions::MENU_SELECT) {
             self.base_mut().emit_signal(signals::RETURN_PRESSED, &[]);
         }
     }

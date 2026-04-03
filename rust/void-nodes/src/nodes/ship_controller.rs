@@ -3,7 +3,7 @@ use godot::classes::{
     CharacterBody3D, ICharacterBody3D, PhysicsRayQueryParameters3D,
     MeshInstance3D,
     GpuParticles3D, SphereMesh, StandardMaterial3D,
-    Input,
+    Input, InputEvent, InputEventMouseMotion,
 };
 
 use super::constants::{actions, groups, meta_keys, methods};
@@ -30,9 +30,12 @@ pub struct ShipController {
     rotation_speed: f32,
     #[export]
     damping: f32,
+    #[export]
+    mouse_sensitivity: f32,
 
     linear_velocity: Vector3,
     angular_velocity: Vector3,
+    mouse_delta: Vector2,
     weapon: WeaponState,
     beam_nodes: Vec<Gd<MeshInstance3D>>,
     loadout: Loadout,
@@ -44,11 +47,13 @@ impl ICharacterBody3D for ShipController {
     fn init(base: Base<CharacterBody3D>) -> Self {
         Self {
             base,
-            thrust_power: 20.0,
-            rotation_speed: 2.5,
+            thrust_power: 40.0,
+            rotation_speed: 6.0,
             damping: 0.95,
+            mouse_sensitivity: 0.002,
             linear_velocity: Vector3::ZERO,
             angular_velocity: Vector3::ZERO,
+            mouse_delta: Vector2::ZERO,
             weapon: WeaponState::default(),
             beam_nodes: Vec::new(),
             loadout: Loadout::new(),
@@ -60,6 +65,12 @@ impl ICharacterBody3D for ShipController {
         self.base_mut().add_to_group(groups::PLAYER);
     }
 
+    fn input(&mut self, event: Gd<InputEvent>) {
+        if let Ok(mouse_event) = event.try_cast::<InputEventMouseMotion>() {
+            self.mouse_delta += mouse_event.get_relative();
+        }
+    }
+
     fn physics_process(&mut self, delta: f64) {
         let delta = delta as f32;
         let input = Input::singleton();
@@ -69,9 +80,12 @@ impl ICharacterBody3D for ShipController {
         let strafe = input.get_action_strength(actions::MOVE_RIGHT) - input.get_action_strength(actions::MOVE_LEFT);
         let vertical = input.get_action_strength(actions::MOVE_UP) - input.get_action_strength(actions::MOVE_DOWN);
 
-        let pitch = input.get_action_strength(actions::LOOK_DOWN) - input.get_action_strength(actions::LOOK_UP);
-        let yaw = input.get_action_strength(actions::LOOK_LEFT) - input.get_action_strength(actions::LOOK_RIGHT);
+        let pitch = input.get_action_strength(actions::LOOK_UP) - input.get_action_strength(actions::LOOK_DOWN)
+            - self.mouse_delta.y * self.mouse_sensitivity;
+        let yaw = input.get_action_strength(actions::LOOK_LEFT) - input.get_action_strength(actions::LOOK_RIGHT)
+            + self.mouse_delta.x * self.mouse_sensitivity;
         let roll = input.get_action_strength(actions::ROLL_RIGHT) - input.get_action_strength(actions::ROLL_LEFT);
+        self.mouse_delta = Vector2::ZERO;
 
         let basis = self.base().get_transform().basis;
         let thrust = basis.col_c() * (-forward)
@@ -93,9 +107,15 @@ impl ICharacterBody3D for ShipController {
 
         self.base_mut().set_velocity(vel);
         self.base_mut().move_and_slide();
-        self.base_mut().rotate_x(rot.x);
-        self.base_mut().rotate_y(rot.y);
-        self.base_mut().rotate_z(rot.z);
+
+        // Quaternion-based rotation: compose pitch/yaw/roll independently
+        // then apply to current orientation. Avoids gimbal lock and
+        // frame-of-reference contamination from sequential rotate_x/y/z.
+        let local_rotation = Quaternion::from_axis_angle(Vector3::RIGHT, rot.x)
+            * Quaternion::from_axis_angle(Vector3::UP, rot.y)
+            * Quaternion::from_axis_angle(Vector3::BACK, rot.z);
+        let current_quat = self.base().get_quaternion();
+        self.base_mut().set_quaternion((current_quat * local_rotation).normalized());
 
         // --- Weapon ---
         self.weapon.fire_rate = self.loadout.fire_rate();

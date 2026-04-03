@@ -1,12 +1,11 @@
 use godot::prelude::*;
-use godot::global::Key;
 use godot::classes::{
     CanvasLayer, ICanvasLayer, Label, Control,
-    Engine, InputEvent, InputEventKey,
+    Engine, Input,
 };
 
 use super::menu_panel;
-use crate::nodes::constants::{signals, theme};
+use crate::nodes::constants::{actions, signals, theme};
 use void_logic::menu_cursor::MenuCursor;
 use void_logic::ui_style;
 
@@ -36,36 +35,28 @@ impl ICanvasLayer for ShopUI {
         self.base_mut().set_visible(false);
     }
 
-    fn input(&mut self, event: Gd<InputEvent>) {
+    fn process(&mut self, _delta: f64) {
         if !self.base().is_visible() {
             return;
         }
-        let Ok(key_event) = event.try_cast::<InputEventKey>() else { return };
-        if !key_event.is_pressed() || key_event.is_echo() {
-            return;
-        }
+        let input = Input::singleton();
 
-        match key_event.get_keycode() {
-            Key::UP | Key::W => {
-                self.cursor.move_up();
-                self.update_cursor();
-            }
-            Key::DOWN | Key::S => {
-                self.cursor.move_down();
-                self.update_cursor();
-            }
-            Key::ENTER | Key::SPACE => {
-                match self.cursor.index() {
-                    0 => {
-                        self.base_mut().emit_signal(signals::BUY_PRESSED, &[]);
-                    }
-                    1 => {
-                        self.base_mut().emit_signal(signals::CONTINUE_PRESSED, &[]);
-                    }
-                    _ => {}
+        if input.is_action_just_pressed(actions::MENU_UP) {
+            self.cursor.move_up();
+            self.update_cursor();
+        } else if input.is_action_just_pressed(actions::MENU_DOWN) {
+            self.cursor.move_down();
+            self.update_cursor();
+        } else if input.is_action_just_pressed(actions::MENU_SELECT) {
+            match self.cursor.index() {
+                0 => {
+                    self.base_mut().emit_signal(signals::BUY_PRESSED, &[]);
                 }
+                1 => {
+                    self.base_mut().emit_signal(signals::CONTINUE_PRESSED, &[]);
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
 }

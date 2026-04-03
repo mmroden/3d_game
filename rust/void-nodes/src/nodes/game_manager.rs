@@ -1,10 +1,15 @@
 use godot::prelude::*;
-use godot::classes::{Node, INode, Engine, CanvasLayer, viewport::Msaa};
+use godot::classes::{
+    Node, INode, Engine, CanvasLayer, Input, InputEvent,
+    input::MouseMode,
+    viewport::Msaa,
+};
 
-use super::constants::{signals, methods, nodes};
+use super::constants::{actions, signals, methods, nodes};
 use void_logic::enemy_type::EnemyType;
 use void_logic::game_options::GameOptions;
 use void_logic::game_phase::GamePhase;
+use void_logic::input_method::InputMethod;
 use void_logic::run_state::RunState;
 use void_logic::save_game::SaveGame;
 
@@ -18,6 +23,7 @@ pub struct GameManager {
     phase: GamePhase,
     game_options: GameOptions,
     save_game: Option<SaveGame>,
+    active_input: InputMethod,
 }
 
 #[godot_api]
@@ -29,6 +35,7 @@ impl INode for GameManager {
             phase: GamePhase::MainMenu,
             game_options: GameOptions::new(),
             save_game: None,
+            active_input: InputMethod::Keyboard,
         }
     }
 
@@ -37,12 +44,43 @@ impl INode for GameManager {
             return;
         }
 
+        // GameManager must process even when tree is paused (for pause toggle)
+        self.base_mut().set_process_mode(godot::classes::node::ProcessMode::ALWAYS);
+
+        // Detect controller on startup
+        let input = Input::singleton();
+        if !input.get_connected_joypads().is_empty() {
+            self.active_input = InputMethod::Controller;
+        }
+
         // Connect UI signals
         self.connect_ui_signals();
         self.show_phase(GamePhase::MainMenu);
     }
 
+    fn input(&mut self, event: Gd<InputEvent>) {
+        // Live-switch active input method based on last event type
+        let class = event.get_class().to_string();
+        if class.starts_with("InputEventJoypad") {
+            self.active_input = InputMethod::Controller;
+        } else if class.starts_with("InputEventKey")
+            || class.starts_with("InputEventMouse")
+        {
+            self.active_input = InputMethod::Keyboard;
+        }
+    }
+
     fn process(&mut self, _delta: f64) {
+        // Check for pause toggle
+        let input = Input::singleton();
+        if input.is_action_just_pressed(actions::OPEN_MENU)
+            && self.phase == GamePhase::Playing
+        {
+            self.transition_to(GamePhase::Paused);
+            self.set_scene_paused(true);
+            return;
+        }
+
         if self.phase != GamePhase::Playing {
             return;
         }
@@ -66,6 +104,11 @@ impl GameManager {
     /// Called from UI: start a fresh new game.
     #[func]
     pub fn start_new_game(&mut self) {
+        // If paused, unpause and go to menu first
+        if self.phase == GamePhase::Paused {
+            self.set_scene_paused(false);
+            self.transition_to(GamePhase::MainMenu);
+        }
         self.run_state = RunState::new(42);
         self.save_game = None;
         self.transition_to(GamePhase::Playing);
@@ -209,6 +252,24 @@ impl GameManager {
         self.base_mut().emit_signal(signals::OPTIONS_CHANGED, &[sbs.to_variant(), msaa.to_variant()]);
     }
 
+    /// Called from pause menu: resume gameplay.
+    #[func]
+    pub fn resume_game(&mut self) {
+        if self.phase == GamePhase::Paused {
+            self.set_scene_paused(false);
+            self.transition_to(GamePhase::Playing);
+        }
+    }
+
+    /// Called from pause menu: quit to main menu.
+    #[func]
+    pub fn quit_to_menu(&mut self) {
+        if self.phase == GamePhase::Paused {
+            self.set_scene_paused(false);
+            self.transition_to(GamePhase::MainMenu);
+        }
+    }
+
     /// Called from death screen: return to main menu.
     #[func]
     pub fn return_to_menu(&mut self) {
@@ -299,6 +360,11 @@ impl GameManager {
 }
 
 impl GameManager {
+    fn set_scene_paused(&self, paused: bool) {
+        let mut tree = self.base().get_tree();
+        tree.set_pause(paused);
+    }
+
     fn transition_to(&mut self, next: GamePhase) {
         if !self.phase.can_transition_to(next) {
             godot_warn!(
@@ -315,27 +381,38 @@ impl GameManager {
     }
 
     fn show_phase(&self, phase: GamePhase) {
+        // Capture mouse during gameplay, release for menus
+        let mut input = Input::singleton();
+        if phase == GamePhase::Playing {
+            input.set_mouse_mode(MouseMode::CAPTURED);
+        } else {
+            input.set_mouse_mode(MouseMode::VISIBLE);
+        }
+
         // Show/hide UI layers by calling into the tree
         let Some(parent) = self.base().get_parent() else { return };
 
         let menu_vis = phase == GamePhase::MainMenu;
-        let hud_vis = phase == GamePhase::Playing;
+        let hud_vis = phase == GamePhase::Playing || phase == GamePhase::Paused;
+        let pause_vis = phase == GamePhase::Paused;
         let summary_vis = phase == GamePhase::KillSummary;
         let shop_vis = phase == GamePhase::Shop;
         let death_vis = phase == GamePhase::Death;
 
         Self::set_ui_visible(&parent, nodes::MAIN_MENU_UI, menu_vis);
         Self::set_ui_visible(&parent, nodes::HUD, hud_vis);
+        Self::set_ui_visible(&parent, nodes::PAUSE_MENU_UI, pause_vis);
         Self::set_ui_visible(&parent, nodes::KILL_SUMMARY_UI, summary_vis);
         Self::set_ui_visible(&parent, nodes::SHOP_UI, shop_vis);
         Self::set_ui_visible(&parent, nodes::DEATH_SCREEN_UI, death_vis);
 
-        // Show/hide gameplay elements
+        // Show/hide gameplay elements (keep visible when paused)
+        let gameplay_vis = phase == GamePhase::Playing || phase == GamePhase::Paused;
         if let Some(mut player) = parent.try_get_node_as::<Node3D>(nodes::PLAYER) {
-            player.set_visible(hud_vis);
+            player.set_visible(gameplay_vis);
         }
         if let Some(mut level) = parent.try_get_node_as::<Node3D>(nodes::LEVEL_MANAGER) {
-            level.set_visible(hud_vis);
+            level.set_visible(gameplay_vis);
         }
 
         // Show/hide ship showcase for end-of-level screens
@@ -423,6 +500,23 @@ impl GameManager {
                 menu.connect(signals::SBS_TOGGLED, &sbs);
                 let msaa = self.base().callable(methods::ON_MSAA_TOGGLED);
                 menu.connect(signals::MSAA_TOGGLED, &msaa);
+            }
+        }
+
+        // Connect PauseMenuUI signals
+        if let Some(pause_ui) = Self::find_ui_node(&parent, nodes::PAUSE_MENU_UI) {
+            let resume = self.base().callable(methods::RESUME_GAME);
+            if !pause_ui.is_connected(signals::RESUME_SELECTED, &resume) {
+                let mut pause_ui = pause_ui;
+                pause_ui.connect(signals::RESUME_SELECTED, &resume);
+                let new_game = self.base().callable(methods::START_NEW_GAME);
+                pause_ui.connect(signals::NEW_GAME_SELECTED, &new_game);
+                let quit = self.base().callable(methods::QUIT_TO_MENU);
+                pause_ui.connect(signals::QUIT_SELECTED, &quit);
+                let sbs = self.base().callable(methods::ON_SBS_TOGGLED);
+                pause_ui.connect(signals::SBS_TOGGLED, &sbs);
+                let msaa = self.base().callable(methods::ON_MSAA_TOGGLED);
+                pause_ui.connect(signals::MSAA_TOGGLED, &msaa);
             }
         }
 
