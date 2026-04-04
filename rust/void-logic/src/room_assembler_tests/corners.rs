@@ -9,16 +9,16 @@ use crate::asset_catalog::ALL_WALL_SETS;
 /// wall corners. This ensures the ceiling junction is sealed wherever two walls meet.
 #[test]
 fn ceiling_corners_emitted_at_same_positions_as_wall_corners() {
-    let style = RoomStyle::default();
-    let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0, &style);
+    let ws = &asset_catalog::WALL_SET_ASTRA;
+    let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], ws);
 
     let wall_corners: Vec<_> = placements.iter()
-        .filter(|p| p.scene == style.corner_inner.wall)
+        .filter(|p| p.scene == ws.corner_inner.wall)
         .map(|p| ((p.position[0] * 100.0) as i32, (p.position[2] * 100.0) as i32, (p.rotation_y * 1000.0) as i32))
         .collect();
 
     let ceil_corners: Vec<_> = placements.iter()
-        .filter(|p| p.scene == style.corner_inner.ceiling)
+        .filter(|p| p.scene == ws.corner_inner.ceiling)
         .map(|p| ((p.position[0] * 100.0) as i32, (p.position[2] * 100.0) as i32, (p.rotation_y * 1000.0) as i32))
         .collect();
 
@@ -49,9 +49,9 @@ fn ceiling_corners_emitted_at_same_positions_as_wall_corners() {
 #[test]
 fn corners_only_at_xz_corner_cells() {
     use crate::cell::CellGrid;
-    let style = RoomStyle::default();
-    let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0, &style);
-    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0);
+    let ws = &asset_catalog::WALL_SET_ASTRA;
+    let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], ws);
+    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], ws.tile_width);
 
     // Count cells that have at least one XZ perpendicular corner pair.
     let has_xz_corner_pair = |cell: &crate::cell::Cell| -> bool {
@@ -71,7 +71,7 @@ fn corners_only_at_xz_corner_cells() {
 
     // Total inner wall corners = number of cells with XZ corner pairs
     let total_corners = placements.iter()
-        .filter(|p| p.scene == style.corner_inner.wall)
+        .filter(|p| p.scene == ws.corner_inner.wall)
         .count();
     assert_eq!(
         total_corners, xz_corner_cells.len(),
@@ -82,7 +82,7 @@ fn corners_only_at_xz_corner_cells() {
     // No corner pieces near non-XZ-corner cell centers
     for cell in &non_xz_corner_cells {
         let count = placements.iter().filter(|p| {
-            p.scene == style.corner_inner.wall
+            p.scene == ws.corner_inner.wall
             && (p.position[0] - cell.world_center[0]).abs() < 0.01
             && (p.position[2] - cell.world_center[2]).abs() < 0.01
         }).count();
@@ -95,18 +95,18 @@ fn corners_only_at_xz_corner_cells() {
 #[test]
 fn active_connector_removes_corner() {
     use crate::cell::{CellGrid, CellKind};
-    let style = RoomStyle::default();
+    let ws = &asset_catalog::WALL_SET_ASTRA;
+    let active = &[Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX }];
     let placements = assemble(
         &room_3x3(),
-        &[ConnectorFacing::PosX],
+        active,
         [0.0, 0.0, 0.0],
-        4.0,
-        &style,
+        ws,
     );
-    let grid = CellGrid::new(&room_3x3(), &[ConnectorFacing::PosX], [0.0, 0.0, 0.0], 4.0);
+    let grid = CellGrid::new(&room_3x3(), active, [0.0, 0.0, 0.0], ws.tile_width);
 
     let corners: Vec<_> = placements.iter()
-        .filter(|p| p.scene == style.corner_inner.wall)
+        .filter(|p| p.scene == ws.corner_inner.wall)
         .collect();
 
     // The connector gap cell should not have any corners
@@ -130,8 +130,8 @@ fn active_connector_removes_corner() {
 /// square floor platform, so the floor/ceiling geometry matches the rounded wall corners.
 #[test]
 fn corner_cells_use_curved_floor_platform() {
-    let style = RoomStyle::default();
-    let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0, &style);
+    let ws = &asset_catalog::WALL_SET_ASTRA;
+    let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], ws);
 
     // Count curved floor tiles at floor level (Y ~ 0).
     let curved_floors = placements.iter().filter(|p| {
@@ -139,9 +139,9 @@ fn corner_cells_use_curved_floor_platform() {
     }).count();
     assert_eq!(curved_floors, 4, "4 corner cells should use curved floor, got {curved_floors}");
 
-    // Count curved ceiling tiles at ceiling level (Y ~ CELL_HEIGHT).
+    // Count curved ceiling tiles at ceiling level (Y ~ STORY_HEIGHT).
     let curved_ceilings = placements.iter().filter(|p| {
-        p.scene == FLOOR_CURVE && (p.position[1] - CELL_HEIGHT).abs() < 0.001
+        p.scene == FLOOR_CURVE && (p.position[1] - STORY_HEIGHT).abs() < 0.001
     }).count();
     assert_eq!(curved_ceilings, 4, "4 corner cells should use curved ceiling, got {curved_ceilings}");
 
@@ -158,8 +158,8 @@ fn corner_cells_use_curved_floor_platform() {
 /// rotations as inner corners, completing the rounded corner geometry.
 #[test]
 fn outer_corners_emitted_at_same_positions_as_inner_corners() {
-    let style = RoomStyle::default();
-    let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0, &style);
+    let ws = &asset_catalog::WALL_SET_ASTRA;
+    let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], ws);
 
     let key = |p: &MeshPlacement| -> (i32, i32, i32) {
         ((p.position[0] * 100.0) as i32, (p.position[2] * 100.0) as i32, (p.rotation_y * 1000.0) as i32)
@@ -180,9 +180,9 @@ fn outer_corners_emitted_at_same_positions_as_inner_corners() {
     }
 
     let inner_ceilings: Vec<_> = placements.iter()
-        .filter(|p| p.scene == style.corner_inner.ceiling).map(|p| key(p)).collect();
+        .filter(|p| p.scene == ws.corner_inner.ceiling).map(|p| key(p)).collect();
     let outer_ceilings: Vec<_> = placements.iter()
-        .filter(|p| p.scene == style.corner_outer.ceiling).map(|p| key(p)).collect();
+        .filter(|p| p.scene == ws.corner_outer.ceiling).map(|p| key(p)).collect();
 
     assert_eq!(inner_ceilings.len(), 4);
     assert_eq!(outer_ceilings.len(), 4);
@@ -195,18 +195,6 @@ fn outer_corners_emitted_at_same_positions_as_inner_corners() {
         );
     }
 }
-
-// --- Ceiling curved tile rotation ---
-
-// --- Corner cells use corner pieces, not straight walls ---
-
-// `corner_cells_have_straight_walls_and_corner_pieces` — DELETED.
-// Corner cells emit only corner pieces, no straight walls.
-// Validated by cell_geometry::CornerCell tests.
-
-// `every_sealed_face_has_straight_wall_even_at_corners` — DELETED.
-// Corner cells emit only corner pieces, no straight walls. The corner mesh
-// seals the boundary itself. Validated by cell_geometry::CornerCell tests.
 
 // --- No thin-strip ceiling corner pieces ---
 
@@ -236,15 +224,15 @@ fn corner_ceiling_pieces_are_full_quarter_cylinders() {
 /// The assembler must compensate by using rotation_y = rot - PI/2 for ceiling curves.
 #[test]
 fn ceiling_curved_tiles_land_in_same_quadrant_as_floor_curved_tiles() {
-    let style = RoomStyle::default();
-    let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0, &style);
+    let ws = &asset_catalog::WALL_SET_ASTRA;
+    let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], ws);
 
     let floor_curves: Vec<_> = placements.iter()
         .filter(|p| p.scene == FLOOR_CURVE && p.position[1].abs() < 0.001)
         .collect();
 
     let ceil_curves: Vec<_> = placements.iter()
-        .filter(|p| p.scene == FLOOR_CURVE && (p.position[1] - CELL_HEIGHT).abs() < 0.001)
+        .filter(|p| p.scene == FLOOR_CURVE && (p.position[1] - STORY_HEIGHT).abs() < 0.001)
         .collect();
 
     assert_eq!(floor_curves.len(), 4);

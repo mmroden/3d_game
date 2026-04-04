@@ -1,6 +1,6 @@
 use godot::prelude::*;
 use godot::classes::{
-    CanvasLayer, ICanvasLayer, Label, Control, Engine, Input, Node,
+    CanvasLayer, ICanvasLayer, Label, Control, Engine, Input,
 };
 
 use super::menu_panel;
@@ -8,11 +8,11 @@ use crate::nodes::constants::{actions, methods, nodes, signals, theme};
 use void_logic::menu_cursor::MenuCursor;
 use void_logic::ui_style;
 
-/// FF-style main menu: Continue / New Game / Options / Exit.
-/// Pure view — emits signals for all actions, never reaches into the scene tree.
+/// In-game pause menu: Resume / Options / New Game / Quit to Main Menu.
+/// Uses Godot input actions so both keyboard and controller work seamlessly.
 #[derive(GodotClass)]
 #[class(base=CanvasLayer)]
-pub struct MainMenuUI {
+pub struct PauseMenuUI {
     base: Base<CanvasLayer>,
     cursor: MenuCursor,
     menu_items: Vec<String>,
@@ -25,16 +25,16 @@ pub struct MainMenuUI {
 }
 
 #[godot_api]
-impl ICanvasLayer for MainMenuUI {
+impl ICanvasLayer for PauseMenuUI {
     fn init(base: Base<CanvasLayer>) -> Self {
         Self {
             base,
-            cursor: MenuCursor::new_at(1, 4), // Default to New Game
+            cursor: MenuCursor::new(4),
             menu_items: vec![
-                "Continue".to_string(),
-                "New Game".to_string(),
+                "Resume".to_string(),
                 "Options".to_string(),
-                "Exit".to_string(),
+                "New Game".to_string(),
+                "Quit to Main Menu".to_string(),
             ],
             labels: Vec::new(),
             in_options: false,
@@ -49,6 +49,8 @@ impl ICanvasLayer for MainMenuUI {
         if Engine::singleton().is_editor_hint() {
             return;
         }
+        self.base_mut().set_visible(false);
+        self.base_mut().set_process_mode(godot::classes::node::ProcessMode::ALWAYS);
         self.build_ui();
         self.connect_to_game_manager();
     }
@@ -69,15 +71,15 @@ impl ICanvasLayer for MainMenuUI {
 }
 
 #[godot_api]
-impl MainMenuUI {
+impl PauseMenuUI {
+    #[signal]
+    fn resume_selected();
+
     #[signal]
     fn new_game_selected();
 
     #[signal]
-    fn continue_selected();
-
-    #[signal]
-    fn exit_selected();
+    fn quit_selected();
 
     #[signal]
     fn sbs_toggled();
@@ -85,64 +87,44 @@ impl MainMenuUI {
     #[signal]
     fn msaa_toggled();
 
-    /// Called by GameManager to update displayed option states.
     #[func]
-    pub fn set_option_states(&mut self, sbs_on: bool, msaa_on: bool) {
-        self.sbs_enabled = sbs_on;
-        self.msaa_enabled = msaa_on;
+    pub fn on_options_changed(&mut self, sbs_enabled: bool, msaa_enabled: bool) {
+        self.sbs_enabled = sbs_enabled;
+        self.msaa_enabled = msaa_enabled;
         if self.in_options {
             self.refresh_options();
         }
     }
-
-    /// Called when GameManager emits options_changed signal.
-    #[func]
-    pub fn on_options_changed(&mut self, sbs_enabled: bool, msaa_enabled: bool) {
-        self.set_option_states(sbs_enabled, msaa_enabled);
-    }
 }
 
-impl MainMenuUI {
+impl PauseMenuUI {
     fn connect_to_game_manager(&mut self) {
-        // MainMenuUI is a child of Main, GameManager is also a child of Main
         let Some(parent) = self.base().get_parent() else {
-            godot_warn!("MainMenuUI: could not find parent");
+            godot_warn!("PauseMenuUI: could not find parent");
             return;
         };
-        if let Some(game_mgr) = parent.try_get_node_as::<Node>(nodes::GAME_MANAGER) {
+        if let Some(game_mgr) = parent.try_get_node_as::<godot::classes::Node>(nodes::GAME_MANAGER) {
             let callable = self.base().callable(methods::ON_OPTIONS_CHANGED);
             if !game_mgr.is_connected(signals::OPTIONS_CHANGED, &callable) {
                 let mut gm = game_mgr;
                 gm.connect(signals::OPTIONS_CHANGED, &callable);
             }
-        } else {
-            godot_warn!("MainMenuUI: GameManager not found");
         }
     }
 
     fn build_ui(&mut self) {
         let (panel, mut vbox) = menu_panel::create_menu_panel();
 
-        // Title
         let mut title = Label::new_alloc();
-        title.set_text("VOID SCAVENGER");
-        title.add_theme_font_size_override(theme::FONT_SIZE, 64);
+        title.set_text("PAUSED");
+        title.add_theme_font_size_override(theme::FONT_SIZE, 56);
         title.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.6, 0.8, 1.0));
         vbox.add_child(&title);
 
-        // Subtitle
-        let mut subtitle = Label::new_alloc();
-        subtitle.set_text("6DOF Roguelike Space Shooter");
-        subtitle.add_theme_font_size_override(theme::FONT_SIZE, 20);
-        subtitle.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.4, 0.5, 0.7));
-        vbox.add_child(&subtitle);
-
-        // Spacer
         let mut spacer = Control::new_alloc();
         spacer.set_custom_minimum_size(Vector2::new(0.0, 40.0));
         vbox.add_child(&spacer);
 
-        // Menu items
         self.labels.clear();
         for (i, item) in self.menu_items.iter().enumerate() {
             let mut label = Label::new_alloc();
@@ -175,25 +157,27 @@ impl MainMenuUI {
             self.update_cursor();
         } else if input.is_action_just_pressed(actions::MENU_SELECT) {
             self.select_item();
+        } else if input.is_action_just_pressed(actions::OPEN_MENU) || input.is_action_just_pressed(actions::MENU_BACK) {
+            // ESC / Circle / Menu button while on pause menu = resume
+            self.base_mut().emit_signal(signals::RESUME_SELECTED, &[]);
         }
     }
 
     fn select_item(&mut self) {
         match self.cursor.index() {
             0 => {
-                self.base_mut().emit_signal(signals::CONTINUE_SELECTED, &[]);
+                self.base_mut().emit_signal(signals::RESUME_SELECTED, &[]);
             }
             1 => {
-                self.base_mut().emit_signal(signals::NEW_GAME_SELECTED, &[]);
-            }
-            2 => {
                 self.in_options = true;
                 self.option_cursor.reset();
                 self.show_options();
             }
+            2 => {
+                self.base_mut().emit_signal(signals::NEW_GAME_SELECTED, &[]);
+            }
             3 => {
-                self.base_mut().emit_signal(signals::EXIT_SELECTED, &[]);
-                self.base().get_tree().quit();
+                self.base_mut().emit_signal(signals::QUIT_SELECTED, &[]);
             }
             _ => {}
         }
@@ -221,8 +205,6 @@ impl MainMenuUI {
     }
 
     fn show_options(&mut self) {
-        // Free any lingering option labels from a prior entry.
-        // queue_free() is deferred, so guard against rapid re-entry.
         for mut label in self.option_labels.drain(..) {
             if label.is_instance_valid() {
                 label.queue_free();
@@ -235,7 +217,7 @@ impl MainMenuUI {
             }
         }
         let Some(parent) = self.labels[0].get_parent() else { return };
-        let mut parent: Gd<Node> = parent;
+        let mut parent: Gd<godot::classes::Node> = parent;
 
         let options = [
             format!("  SBS Stereo: {}", if self.sbs_enabled { "ON" } else { "OFF" }),
@@ -328,5 +310,4 @@ impl MainMenuUI {
         self.in_options = false;
         self.update_cursor();
     }
-
 }

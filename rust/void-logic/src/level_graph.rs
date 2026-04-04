@@ -3,7 +3,7 @@ use petgraph::graph::UnGraph;
 use petgraph::algo::connected_components;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
-use crate::room_template::{RoomTemplate, ConnectorFacing};
+use crate::room_template::{Connector, RoomTemplate, ConnectorFacing};
 
 /// A placed room in the level, with its position on the grid.
 /// "Room" here means any flyable space: arena, corridor segment,
@@ -17,13 +17,12 @@ pub struct PlacedRoom {
 
 impl PlacedRoom {
     /// Convert grid position to world-space origin.
-    /// XZ uses cell_size (4m), Y uses CELL_HEIGHT (5m) because
-    /// vertical spacing is determined by mesh height, not cell width.
-    pub fn world_position(&self, cell_size: f32) -> [f32; 3] {
+    /// XZ uses `tile_width`, Y uses `story_height` — both derived from the wall set.
+    pub fn world_position(&self, tile_width: f32, story_height: f32) -> [f32; 3] {
         [
-            self.grid_pos[0] as f32 * cell_size,
-            self.grid_pos[1] as f32 * crate::room_assembler::CELL_HEIGHT,
-            self.grid_pos[2] as f32 * cell_size,
+            self.grid_pos[0] as f32 * tile_width,
+            self.grid_pos[1] as f32 * story_height,
+            self.grid_pos[2] as f32 * tile_width,
         ]
     }
 }
@@ -53,8 +52,8 @@ pub enum EdgeKind {
     /// Physically adjacent — player flies directly between them.
     /// Requires matching connectors on the grid.
     Adjacent {
-        from_facing: ConnectorFacing,
-        to_facing: ConnectorFacing,
+        from_connector: Connector,
+        to_connector: Connector,
     },
     /// Teleporter — no spatial adjacency required.
     /// Player steps on a pad/trigger and is transported.
@@ -63,12 +62,12 @@ pub enum EdgeKind {
     /// Stored in an undirected graph but the direction is semantic:
     /// the player can only traverse from → to.
     OneWay {
-        from_facing: ConnectorFacing,
+        from_connector: Connector,
     },
     /// Locked door — requires a key or trigger to open.
     Locked {
-        from_facing: ConnectorFacing,
-        to_facing: ConnectorFacing,
+        from_connector: Connector,
+        to_connector: Connector,
         key_id: KeyId,
     },
 }
@@ -136,8 +135,10 @@ impl LevelGraph {
         Ok(node)
     }
 
-    /// Connect two spatially adjacent rooms through matching connectors.
-    pub fn connect_adjacent(&mut self, from: NodeIndex, to: NodeIndex) -> Result<(), ConnectError> {
+    /// Connect two spatially adjacent rooms through ALL matching connector pairs.
+    /// Returns the number of edges created. Multi-story rooms may have multiple
+    /// matching connectors on the same face at different Y levels.
+    pub fn connect_adjacent(&mut self, from: NodeIndex, to: NodeIndex) -> Result<usize, ConnectError> {
         let from_room = self.graph.node_weight(from)
             .ok_or(ConnectError::InvalidRoomIndex)?;
         let to_room = self.graph.node_weight(to)
@@ -149,8 +150,8 @@ impl LevelGraph {
         let to_template = to_room.template.clone();
 
         let to_cells = cells_for(&to_template, to_origin);
-        let from_cells = cells_for(&from_template, from_origin);
 
+        let mut count = 0;
         for fc in &from_template.connectors {
             let target = fc.target_cell(from_origin);
             if !to_cells.contains(&target) {
@@ -159,19 +160,25 @@ impl LevelGraph {
 
             for tc in &to_template.connectors {
                 if fc.mates_with(tc) {
-                    let tc_target = tc.target_cell(to_origin);
-                    if from_cells.contains(&tc_target) {
+                    // Both connectors must point at each other's source cell.
+                    let tc_source = [to_origin[0] + tc.offset[0], to_origin[1] + tc.offset[1], to_origin[2] + tc.offset[2]];
+                    let fc_source = [from_origin[0] + fc.offset[0], from_origin[1] + fc.offset[1], from_origin[2] + fc.offset[2]];
+                    if target == tc_source && tc.target_cell(to_origin) == fc_source {
                         self.graph.add_edge(from, to, EdgeKind::Adjacent {
-                            from_facing: fc.facing,
-                            to_facing: tc.facing,
+                            from_connector: *fc,
+                            to_connector: *tc,
                         });
-                        return Ok(());
+                        count += 1;
                     }
                 }
             }
         }
 
-        Err(ConnectError::NoMatchingConnectors)
+        if count == 0 {
+            Err(ConnectError::NoMatchingConnectors)
+        } else {
+            Ok(count)
+        }
     }
 
     /// Connect two rooms via teleporter. No spatial adjacency required.
@@ -186,8 +193,8 @@ impl LevelGraph {
         Ok(())
     }
 
-    /// Connect two rooms via locked door through matching connectors.
-    pub fn connect_locked(&mut self, from: NodeIndex, to: NodeIndex, key_id: KeyId) -> Result<(), ConnectError> {
+    /// Connect two rooms via locked door through ALL matching connectors.
+    pub fn connect_locked(&mut self, from: NodeIndex, to: NodeIndex, key_id: KeyId) -> Result<usize, ConnectError> {
         let from_room = self.graph.node_weight(from)
             .ok_or(ConnectError::InvalidRoomIndex)?;
         let to_room = self.graph.node_weight(to)
@@ -199,8 +206,8 @@ impl LevelGraph {
         let to_template = to_room.template.clone();
 
         let to_cells = cells_for(&to_template, to_origin);
-        let from_cells = cells_for(&from_template, from_origin);
 
+        let mut count = 0;
         for fc in &from_template.connectors {
             let target = fc.target_cell(from_origin);
             if !to_cells.contains(&target) {
@@ -209,20 +216,25 @@ impl LevelGraph {
 
             for tc in &to_template.connectors {
                 if fc.mates_with(tc) {
-                    let tc_target = tc.target_cell(to_origin);
-                    if from_cells.contains(&tc_target) {
+                    let tc_source = [to_origin[0] + tc.offset[0], to_origin[1] + tc.offset[1], to_origin[2] + tc.offset[2]];
+                    let fc_source = [from_origin[0] + fc.offset[0], from_origin[1] + fc.offset[1], from_origin[2] + fc.offset[2]];
+                    if target == tc_source && tc.target_cell(to_origin) == fc_source {
                         self.graph.add_edge(from, to, EdgeKind::Locked {
-                            from_facing: fc.facing,
-                            to_facing: tc.facing,
+                            from_connector: *fc,
+                            to_connector: *tc,
                             key_id,
                         });
-                        return Ok(());
+                        count += 1;
                     }
                 }
             }
         }
 
-        Err(ConnectError::NoMatchingConnectors)
+        if count == 0 {
+            Err(ConnectError::NoMatchingConnectors)
+        } else {
+            Ok(count)
+        }
     }
 
     pub fn room_count(&self) -> usize {
@@ -243,6 +255,25 @@ impl LevelGraph {
         self.graph.node_weight(index)
     }
 
+    /// Find the room node farthest from `start` by BFS hop count.
+    /// Only considers Room nodes, not corridors.
+    pub fn farthest_room_from(&self, start: NodeIndex) -> Option<NodeIndex> {
+        use petgraph::visit::Bfs;
+
+        let mut bfs = Bfs::new(&self.graph, start);
+        let mut farthest = None;
+
+        while let Some(node) = bfs.next(&self.graph) {
+            if let Some(room) = self.graph.node_weight(node) {
+                if room.template.kind == crate::room_template::TemplateKind::Room {
+                    farthest = Some(node);
+                }
+            }
+        }
+
+        farthest
+    }
+
     /// Iterate over all room node indices.
     pub fn room_indices(&self) -> impl Iterator<Item = NodeIndex> + '_ {
         self.graph.node_indices()
@@ -261,36 +292,41 @@ impl LevelGraph {
         self.graph.neighbors(index)
     }
 
-    /// Return the connector facings that are actually wired to a neighbor
-    /// via an Adjacent or Locked edge. Used by the room assembler to know
-    /// which cell edges get doors vs walls.
-    pub fn active_facings(&self, index: NodeIndex) -> Vec<ConnectorFacing> {
-        let mut facings = Vec::new();
+    /// Return the specific connectors that are actually wired to a neighbor.
+    /// Each returned `Connector` has the exact offset + facing of the wired
+    /// connection point, so consumers can distinguish y=0 from y=1 on the
+    /// same face.
+    pub fn active_connectors(&self, index: NodeIndex) -> Vec<Connector> {
+        let mut connectors = Vec::new();
         for edge_ref in self.graph.edges(index) {
-            // Use edge_endpoints() to get the original add_edge(from, to) order.
-            // In petgraph's UnGraph, edge_ref.source() always returns the queried
-            // node for incoming edges, which breaks our from/to distinction.
             let (from, _to) = self.graph.edge_endpoints(edge_ref.id()).unwrap();
             match edge_ref.weight() {
-                EdgeKind::Adjacent { from_facing, to_facing } |
-                EdgeKind::Locked { from_facing, to_facing, .. } => {
+                EdgeKind::Adjacent { from_connector, to_connector } |
+                EdgeKind::Locked { from_connector, to_connector, .. } => {
                     if from == index {
-                        facings.push(*from_facing);
+                        connectors.push(*from_connector);
                     } else {
-                        facings.push(*to_facing);
+                        connectors.push(*to_connector);
                     }
                 }
-                // Teleporters have no spatial facing.
                 EdgeKind::Teleporter => {}
-                // One-way edges only contribute from the source side.
-                EdgeKind::OneWay { from_facing } => {
+                EdgeKind::OneWay { from_connector } => {
                     if from == index {
-                        facings.push(*from_facing);
+                        connectors.push(*from_connector);
                     }
                 }
             }
         }
-        facings
+        connectors
+    }
+
+    /// Return just the facings of active connectors. Convenience method
+    /// for code that only needs direction, not position.
+    pub fn active_facings(&self, index: NodeIndex) -> Vec<ConnectorFacing> {
+        self.active_connectors(index)
+            .into_iter()
+            .map(|c| c.facing)
+            .collect()
     }
 }
 
@@ -313,7 +349,6 @@ mod tests {
 
     fn room_1x1_east_west() -> RoomTemplate {
         RoomTemplate {
-            id: "1x1_ew",
             kind: TemplateKind::Room,
             connectors: vec![
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
@@ -327,7 +362,6 @@ mod tests {
 
     fn room_2x1_east_west() -> RoomTemplate {
         RoomTemplate {
-            id: "2x1_ew",
             kind: TemplateKind::Room,
             connectors: vec![
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
@@ -341,7 +375,6 @@ mod tests {
 
     fn room_1x1_north_south() -> RoomTemplate {
         RoomTemplate {
-            id: "1x1_ns",
             kind: TemplateKind::Room,
             connectors: vec![
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ },
@@ -355,7 +388,6 @@ mod tests {
 
     fn corridor_1x1_east_west() -> RoomTemplate {
         RoomTemplate {
-            id: "corridor_ew",
             kind: TemplateKind::Corridor,
             connectors: vec![
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
@@ -484,9 +516,9 @@ mod tests {
 
         let (_, _, edge) = graph.edges().next().unwrap();
         match edge {
-            EdgeKind::Adjacent { from_facing, to_facing } => {
-                assert_eq!(*from_facing, ConnectorFacing::PosX);
-                assert_eq!(*to_facing, ConnectorFacing::NegX);
+            EdgeKind::Adjacent { from_connector, to_connector } => {
+                assert_eq!(from_connector.facing, ConnectorFacing::PosX);
+                assert_eq!(to_connector.facing, ConnectorFacing::NegX);
             }
             _ => panic!("Expected Adjacent edge"),
         }
@@ -716,7 +748,7 @@ mod tests {
         let mut graph = LevelGraph::new();
         let idx = graph.place_room(room_1x1_east_west(), [3, -1, 2]).unwrap();
         let room = graph.room(idx).unwrap();
-        let pos = room.world_position(10.0);
+        let pos = room.world_position(10.0, 5.0);
         // XZ uses cell_size (10.0), Y uses CELL_HEIGHT (5.0)
         assert_eq!(pos, [30.0, -5.0, 20.0]);
     }
@@ -725,7 +757,6 @@ mod tests {
 
     fn room_3x1x3_hub_6way() -> RoomTemplate {
         RoomTemplate {
-            id: "3x3_hub",
             kind: TemplateKind::Room,
             connectors: vec![
                 Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX },
@@ -743,7 +774,6 @@ mod tests {
 
     fn room_1x1_vertical() -> RoomTemplate {
         RoomTemplate {
-            id: "1x1_vert",
             kind: TemplateKind::Room,
             connectors: vec![
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosY },
@@ -825,19 +855,67 @@ mod tests {
 
         let (_, _, edge) = graph.edges().next().unwrap();
         match edge {
-            EdgeKind::Adjacent { from_facing, to_facing } => {
-                assert_eq!(*from_facing, ConnectorFacing::PosY);
-                assert_eq!(*to_facing, ConnectorFacing::NegY);
+            EdgeKind::Adjacent { from_connector, to_connector } => {
+                assert_eq!(from_connector.facing, ConnectorFacing::PosY);
+                assert_eq!(to_connector.facing, ConnectorFacing::NegY);
             }
             _ => panic!("Expected Adjacent edge"),
         }
+    }
+
+    // --- Aperture alignment: multi-Y connector tests ---
+
+    fn room_3x2x3_tall() -> RoomTemplate {
+        RoomTemplate {
+            kind: TemplateKind::Room,
+            connectors: vec![
+                Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX },
+                Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX },
+                Connector { offset: [0, 1, 1], facing: ConnectorFacing::NegX },
+                Connector { offset: [2, 1, 1], facing: ConnectorFacing::PosX },
+            ],
+            enemy_spawns: vec![],
+            loot_spawns: vec![],
+            extents: [3, 2, 3],
+        }
+    }
+
+    #[test]
+    fn connect_adjacent_wires_all_matching_y_levels() {
+        // Two tall rooms side by side should create edges for BOTH y=0 and y=1 pairs.
+        let mut graph = LevelGraph::new();
+        let a = graph.place_room(room_3x2x3_tall(), [0, 0, 0]).unwrap();
+        let b = graph.place_room(room_3x2x3_tall(), [3, 0, 0]).unwrap();
+        graph.connect_adjacent(a, b).unwrap();
+        assert_eq!(graph.edge_count(), 2,
+            "two matching connector pairs (y=0 and y=1) should produce 2 edges");
+    }
+
+    #[test]
+    fn tall_room_to_short_corridor_active_facings_precise() {
+        // A tall room connected to a 1-cell corridor at y=0.
+        // active_facings currently returns [NegX] which activates BOTH y=0 and y=1.
+        // After fix: active_connectors should return only the y=0 connector.
+        let mut graph = LevelGraph::new();
+        let tall = graph.place_room(room_3x2x3_tall(), [0, 0, 0]).unwrap();
+        let corridor = graph.place_room(corridor_1x1_east_west(), [-1, 0, 1]).unwrap();
+        graph.connect_adjacent(tall, corridor).unwrap();
+
+        let active = graph.active_connectors(tall);
+        // Should contain the y=0 NegX connector
+        assert!(active.iter().any(|c|
+            c.facing == ConnectorFacing::NegX && c.offset == [0, 0, 1]),
+            "should have y=0 NegX connector active");
+        // Should NOT contain the y=1 NegX connector
+        assert!(!active.iter().any(|c|
+            c.facing == ConnectorFacing::NegX && c.offset == [0, 1, 1]),
+            "y=1 NegX connector should NOT be active — nothing is wired there");
     }
 
     // --- R3: Multiple connections on the same face ---
 
     fn room_3x1x3_multi_negz() -> RoomTemplate {
         RoomTemplate {
-            id: "3x3_multi_negz",
             kind: TemplateKind::Room,
             connectors: vec![
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ },
@@ -863,5 +941,27 @@ mod tests {
 
         assert_eq!(graph.edge_count(), 2, "two connections on the same face");
         assert!(graph.is_fully_connected());
+    }
+
+    #[test]
+    fn farthest_room_from_linear_chain() {
+        // Build: R0 -- C -- R1 -- C -- R2 -- C -- R3
+        let mut graph = LevelGraph::new();
+        let r0 = graph.place_room(room_1x1_east_west(), [0, 0, 0]).unwrap();
+        let c0 = graph.place_room(corridor_1x1_east_west(), [1, 0, 0]).unwrap();
+        graph.connect_adjacent(r0, c0).unwrap();
+        let r1 = graph.place_room(room_1x1_east_west(), [2, 0, 0]).unwrap();
+        graph.connect_adjacent(c0, r1).unwrap();
+        let c1 = graph.place_room(corridor_1x1_east_west(), [3, 0, 0]).unwrap();
+        graph.connect_adjacent(r1, c1).unwrap();
+        let r2 = graph.place_room(room_1x1_east_west(), [4, 0, 0]).unwrap();
+        graph.connect_adjacent(c1, r2).unwrap();
+        let c2 = graph.place_room(corridor_1x1_east_west(), [5, 0, 0]).unwrap();
+        graph.connect_adjacent(r2, c2).unwrap();
+        let r3 = graph.place_room(room_1x1_east_west(), [6, 0, 0]).unwrap();
+        graph.connect_adjacent(c2, r3).unwrap();
+
+        let farthest = graph.farthest_room_from(r0);
+        assert_eq!(farthest, Some(r3), "farthest room from r0 should be r3");
     }
 }

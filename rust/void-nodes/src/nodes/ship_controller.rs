@@ -3,7 +3,7 @@ use godot::classes::{
     CharacterBody3D, ICharacterBody3D, PhysicsRayQueryParameters3D,
     MeshInstance3D,
     GpuParticles3D, SphereMesh, StandardMaterial3D,
-    Input,
+    Input, InputEvent, InputEventMouseMotion,
 };
 
 use super::constants::{actions, groups, meta_keys, methods};
@@ -13,6 +13,25 @@ use void_logic::laser::LaserLevel;
 use void_logic::loadout::Loadout;
 use void_logic::upgrade::{Upgrade, UpgradeKind};
 use void_logic::weapon::{WeaponState, FireResult};
+
+/// Clamp velocity to max magnitude, reset to zero if NaN.
+fn sanitize_velocity(v: Vector3, max_speed: f32) -> Vector3 {
+    if v.x.is_nan() || v.y.is_nan() || v.z.is_nan() {
+        return Vector3::ZERO;
+    }
+    let len = v.length();
+    if len > max_speed {
+        v * (max_speed / len)
+    } else {
+        v
+    }
+}
+
+/// Check if all quaternion components are finite.
+fn is_quat_finite(q: Quaternion) -> bool {
+    q.x.is_finite() && q.y.is_finite() && q.z.is_finite() && q.w.is_finite()
+}
+
 
 /// Wing offset from ship center (local X axis), in meters.
 const WING_OFFSET: f32 = 0.3;
@@ -30,9 +49,12 @@ pub struct ShipController {
     rotation_speed: f32,
     #[export]
     damping: f32,
+    #[export]
+    mouse_sensitivity: f32,
 
     linear_velocity: Vector3,
     angular_velocity: Vector3,
+    mouse_delta: Vector2,
     weapon: WeaponState,
     beam_nodes: Vec<Gd<MeshInstance3D>>,
     loadout: Loadout,
@@ -44,11 +66,13 @@ impl ICharacterBody3D for ShipController {
     fn init(base: Base<CharacterBody3D>) -> Self {
         Self {
             base,
-            thrust_power: 20.0,
-            rotation_speed: 2.5,
+            thrust_power: 40.0,
+            rotation_speed: 6.0,
             damping: 0.95,
+            mouse_sensitivity: 0.002,
             linear_velocity: Vector3::ZERO,
             angular_velocity: Vector3::ZERO,
+            mouse_delta: Vector2::ZERO,
             weapon: WeaponState::default(),
             beam_nodes: Vec::new(),
             loadout: Loadout::new(),
@@ -60,6 +84,12 @@ impl ICharacterBody3D for ShipController {
         self.base_mut().add_to_group(groups::PLAYER);
     }
 
+    fn input(&mut self, event: Gd<InputEvent>) {
+        if let Ok(mouse_event) = event.try_cast::<InputEventMouseMotion>() {
+            self.mouse_delta += mouse_event.get_relative();
+        }
+    }
+
     fn physics_process(&mut self, delta: f64) {
         let delta = delta as f32;
         let input = Input::singleton();
@@ -69,9 +99,12 @@ impl ICharacterBody3D for ShipController {
         let strafe = input.get_action_strength(actions::MOVE_RIGHT) - input.get_action_strength(actions::MOVE_LEFT);
         let vertical = input.get_action_strength(actions::MOVE_UP) - input.get_action_strength(actions::MOVE_DOWN);
 
-        let pitch = input.get_action_strength(actions::LOOK_DOWN) - input.get_action_strength(actions::LOOK_UP);
-        let yaw = input.get_action_strength(actions::LOOK_LEFT) - input.get_action_strength(actions::LOOK_RIGHT);
+        let pitch = input.get_action_strength(actions::LOOK_UP) - input.get_action_strength(actions::LOOK_DOWN)
+            - self.mouse_delta.y * self.mouse_sensitivity;
+        let yaw = input.get_action_strength(actions::LOOK_LEFT) - input.get_action_strength(actions::LOOK_RIGHT)
+            + self.mouse_delta.x * self.mouse_sensitivity;
         let roll = input.get_action_strength(actions::ROLL_RIGHT) - input.get_action_strength(actions::ROLL_LEFT);
+        self.mouse_delta = Vector2::ZERO;
 
         let basis = self.base().get_transform().basis;
         let thrust = basis.col_c() * (-forward)
@@ -88,14 +121,31 @@ impl ICharacterBody3D for ShipController {
         self.angular_velocity += Vector3::new(pitch, yaw, roll) * effective_rotation * delta;
         self.angular_velocity *= effective_damping;
 
+        // Sanitize: clamp velocities to sane maximums and reset NaN.
+        const MAX_LINEAR_SPEED: f32 = 50.0;
+        const MAX_ANGULAR_SPEED: f32 = 5.0;
+        self.linear_velocity = sanitize_velocity(self.linear_velocity, MAX_LINEAR_SPEED);
+        self.angular_velocity = sanitize_velocity(self.angular_velocity, MAX_ANGULAR_SPEED);
+
         let vel = self.linear_velocity;
         let rot = self.angular_velocity * delta;
 
         self.base_mut().set_velocity(vel);
         self.base_mut().move_and_slide();
-        self.base_mut().rotate_x(rot.x);
-        self.base_mut().rotate_y(rot.y);
-        self.base_mut().rotate_z(rot.z);
+
+        // Quaternion-based rotation: compose pitch/yaw/roll independently
+        // then apply to current orientation. Avoids gimbal lock and
+        // frame-of-reference contamination from sequential rotate_x/y/z.
+        let local_rotation = Quaternion::from_axis_angle(Vector3::RIGHT, rot.x)
+            * Quaternion::from_axis_angle(Vector3::UP, rot.y)
+            * Quaternion::from_axis_angle(Vector3::BACK, rot.z);
+        let current_quat = self.base().get_quaternion();
+        let new_quat = (current_quat * local_rotation).normalized();
+
+        // Guard: if the quaternion became NaN, keep the previous one.
+        if is_quat_finite(new_quat) {
+            self.base_mut().set_quaternion(new_quat);
+        }
 
         // --- Weapon ---
         self.weapon.fire_rate = self.loadout.fire_rate();

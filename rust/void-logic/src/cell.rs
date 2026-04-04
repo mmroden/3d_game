@@ -1,5 +1,5 @@
 use crate::room_assembler::MeshPlacement;
-use crate::room_template::{ConnectorFacing, RoomTemplate};
+use crate::room_template::{Connector, ConnectorFacing, RoomTemplate};
 use crate::room_theme::RoomTheme;
 
 /// What role a cell plays in the room's boundary structure.
@@ -15,12 +15,12 @@ pub enum CellKind {
     ConnectorGap,
 }
 
-/// What occupies a cell (at most one item).
+/// What occupies a cell.
 #[derive(Debug, Clone)]
 pub enum CellOccupant {
     Empty,
-    Prop(MeshPlacement),
-    // Enemy(EnemySpawn),  // future
+    /// One or more props (e.g., a column stacked at each story level).
+    Props(Vec<MeshPlacement>),
 }
 
 /// A single cell in a room's grid, classified by its structural role.
@@ -45,13 +45,13 @@ pub struct CellGrid {
 }
 
 impl CellGrid {
-    const CELL_HEIGHT: f32 = crate::room_assembler::CELL_HEIGHT;
+    const DEFAULT_STORY_HEIGHT: f32 = 5.0; // TODO: pass from WallSet
 
     /// Build a cell grid from a room template, classifying each cell by its
     /// boundary structure and active connectors.
     pub fn new(
         template: &RoomTemplate,
-        active_facings: &[ConnectorFacing],
+        active_connectors: &[Connector],
         world_origin: [f32; 3],
         cell_size: f32,
     ) -> Self {
@@ -66,7 +66,7 @@ impl CellGrid {
                 for cz in 0..ez {
                     let world_center = [
                         world_origin[0] + (cx as f32 + 0.5) * cell_size,
-                        world_origin[1] + cy as f32 * Self::CELL_HEIGHT,
+                        world_origin[1] + cy as f32 * Self::DEFAULT_STORY_HEIGHT,
                         world_origin[2] + (cz as f32 + 0.5) * cell_size,
                     ];
 
@@ -81,20 +81,26 @@ impl CellGrid {
                     ];
 
                     let has_active_connector = boundary_faces.iter().any(|&(facing, is_boundary)| {
-                        is_boundary && Self::is_active_connector(template, active_facings, facing, cx, cy, cz)
+                        is_boundary && Self::is_active_connector(template, active_connectors, facing, cx, cy, cz)
                     });
 
                     let sealed_faces: Vec<ConnectorFacing> = boundary_faces
                         .iter()
                         .filter(|&&(facing, is_boundary)| {
-                            is_boundary && !Self::is_active_connector(template, active_facings, facing, cx, cy, cz)
+                            is_boundary && !Self::is_active_connector(template, active_connectors, facing, cx, cy, cz)
                         })
                         .map(|&(facing, _)| facing)
                         .collect();
 
+                    // Classify by XZ boundary structure. Y-axis faces (floor/ceiling)
+                    // are structural but don't affect prop placement classification.
+                    let has_xz_face = sealed_faces.iter().any(|f| matches!(f,
+                        ConnectorFacing::NegX | ConnectorFacing::PosX |
+                        ConnectorFacing::NegZ | ConnectorFacing::PosZ));
+
                     let kind = if has_active_connector {
                         CellKind::ConnectorGap
-                    } else if sealed_faces.is_empty() {
+                    } else if !has_xz_face {
                         CellKind::Interior
                     } else if Self::has_perpendicular_pair(&sealed_faces) {
                         CellKind::BoundaryCorner
@@ -123,28 +129,24 @@ impl CellGrid {
     /// both defined in the template AND present in the active list.
     fn is_active_connector(
         template: &RoomTemplate,
-        active: &[ConnectorFacing],
+        active: &[Connector],
         facing: ConnectorFacing,
         cx: i32,
         cy: i32,
         cz: i32,
     ) -> bool {
-        if !active.contains(&facing) {
-            return false;
-        }
-        template.connectors.iter().any(|c| {
-            c.facing == facing && c.offset[0] == cx && c.offset[1] == cy && c.offset[2] == cz
-        })
+        let candidate = Connector { offset: [cx, cy, cz], facing };
+        active.contains(&candidate)
+            && template.connectors.contains(&candidate)
     }
 
-    /// Check if a set of sealed faces contains at least one perpendicular pair.
-    /// Two faces are perpendicular if they lie on different axes (X, Y, or Z).
+    /// Check if a set of sealed faces contains at least one perpendicular XZ pair.
+    /// Y-axis faces (floor/ceiling) are universal in single-story rooms and don't
+    /// define structural corners for prop placement purposes.
     fn has_perpendicular_pair(faces: &[ConnectorFacing]) -> bool {
         let has_x = faces.iter().any(|f| matches!(f, ConnectorFacing::NegX | ConnectorFacing::PosX));
-        let has_y = faces.iter().any(|f| matches!(f, ConnectorFacing::NegY | ConnectorFacing::PosY));
         let has_z = faces.iter().any(|f| matches!(f, ConnectorFacing::NegZ | ConnectorFacing::PosZ));
-        // Perpendicular if faces span at least 2 distinct axes
-        (has_x as u8 + has_y as u8 + has_z as u8) >= 2
+        has_x && has_z
     }
 
     /// Iterate over all cells in the grid.
@@ -165,6 +167,7 @@ impl CellGrid {
     /// palette based on the cell's kind. Density controls probability.
     /// ConnectorGap cells stay empty. Blocking props skip reserved path cells.
     pub fn populate(&mut self, theme: &RoomTheme, seed: u64) {
+        use crate::asset_catalog::is_loose_prop;
         use crate::room_furnisher::RoomDensity;
         use std::f32::consts::{FRAC_PI_2, PI};
 
@@ -177,6 +180,12 @@ impl CellGrid {
 
         let mut rng = SimpleRng::new(seed);
 
+        // Collect ConnectorGap positions so we can skip columns adjacent to entrances.
+        let gap_positions: std::collections::HashSet<[i32; 3]> = self.cells.iter()
+            .filter(|c| c.kind == CellKind::ConnectorGap)
+            .map(|c| c.grid_pos)
+            .collect();
+
         for cell in &mut self.cells {
             // Skip connector gaps — must stay clear for passage.
             if cell.kind == CellKind::ConnectorGap {
@@ -185,14 +194,46 @@ impl CellGrid {
 
             match cell.kind {
                 CellKind::BoundaryCorner => {
-                    if !theme.palette.corner.is_empty() && rng.next_usize() % corner_den < corner_num {
+                    // Skip columns near entrances (within 2 cells on XZ plane).
+                    // Ignore Y: columns stack through all stories, and gaps
+                    // may exist at any Y level.
+                    let near_gap = gap_positions.iter().any(|gap| {
+                        let dx = (gap[0] - cell.grid_pos[0]).abs();
+                        let dz = (gap[2] - cell.grid_pos[2]).abs();
+                        dx <= 2 && dz <= 2
+                    });
+                    if !theme.palette.corner.is_empty() && !near_gap && rng.next_usize() % corner_den < corner_num {
                         let prop = &theme.palette.corner[rng.next_usize() % theme.palette.corner.len()];
-                        cell.occupant = CellOccupant::Prop(MeshPlacement {
-                            scene: prop.scene,
-                            position: cell.world_center,
-                            rotation_x: 0.0,
-                            rotation_y: 0.0,
-                        });
+                        let is_column = prop.scene.contains("/columns/");
+                        let loose = is_loose_prop(prop.scene);
+                        if is_column {
+                            // Stack columns at every story level for this XZ position.
+                            let story_height = Self::DEFAULT_STORY_HEIGHT;
+                            let ey = self.extents[1];
+                            let base_y = cell.world_center[1] - cell.grid_pos[1] as f32 * story_height;
+                            let placements: Vec<MeshPlacement> = (0..ey).map(|cy| {
+                                MeshPlacement {
+                                    scene: prop.scene,
+                                    position: [
+                                        cell.world_center[0],
+                                        base_y + cy as f32 * story_height,
+                                        cell.world_center[2],
+                                    ],
+                                    rotation_x: 0.0,
+                                    rotation_y: 0.0,
+                                    loose,
+                                }
+                            }).collect();
+                            cell.occupant = CellOccupant::Props(placements);
+                        } else {
+                            cell.occupant = CellOccupant::Props(vec![MeshPlacement {
+                                scene: prop.scene,
+                                position: cell.world_center,
+                                rotation_x: 0.0,
+                                rotation_y: 0.0,
+                                loose,
+                            }]);
+                        }
                     }
                 }
                 CellKind::BoundaryEdge => {
@@ -210,7 +251,7 @@ impl CellGrid {
                             // Y-axis faces: place prop at cell center with no XZ offset
                             ConnectorFacing::NegY | ConnectorFacing::PosY => (0.0, 0.0, 0.0),
                         };
-                        cell.occupant = CellOccupant::Prop(MeshPlacement {
+                        cell.occupant = CellOccupant::Props(vec![MeshPlacement {
                             scene: prop.scene,
                             position: [
                                 cell.world_center[0] + offset_x,
@@ -219,18 +260,20 @@ impl CellGrid {
                             ],
                             rotation_x: 0.0,
                             rotation_y: rot,
-                        });
+                            loose: is_loose_prop(prop.scene),
+                        }]);
                     }
                 }
                 CellKind::Interior => {
                     if !theme.palette.center.is_empty() && rng.next_usize() % center_den < center_num {
                         let prop = &theme.palette.center[rng.next_usize() % theme.palette.center.len()];
-                        cell.occupant = CellOccupant::Prop(MeshPlacement {
+                        cell.occupant = CellOccupant::Props(vec![MeshPlacement {
                             scene: prop.scene,
                             position: cell.world_center,
                             rotation_x: 0.0,
                             rotation_y: 0.0,
-                        });
+                            loose: is_loose_prop(prop.scene),
+                        }]);
                     }
                 }
                 CellKind::ConnectorGap => unreachable!(),
@@ -240,11 +283,11 @@ impl CellGrid {
 
     /// Collect all prop placements from occupied cells.
     pub fn prop_placements(&self) -> Vec<MeshPlacement> {
-        self.cells.iter().filter_map(|c| {
-            if let CellOccupant::Prop(ref p) = c.occupant {
-                Some(*p)
+        self.cells.iter().flat_map(|c| {
+            if let CellOccupant::Props(ref ps) = c.occupant {
+                ps.clone()
             } else {
-                None
+                vec![]
             }
         }).collect()
     }
@@ -285,7 +328,7 @@ mod tests {
 
     fn small_room() -> RoomTemplate {
         RoomTemplate {
-            id: "test_small",
+
             kind: TemplateKind::Room,
             connectors: vec![
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
@@ -301,7 +344,6 @@ mod tests {
 
     fn room_3x3() -> RoomTemplate {
         RoomTemplate {
-            id: "test_3x3",
             kind: TemplateKind::Room,
             connectors: vec![
                 Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX },
@@ -317,7 +359,6 @@ mod tests {
 
     fn corridor_ew() -> RoomTemplate {
         RoomTemplate {
-            id: "test_corridor_ew",
             kind: TemplateKind::Corridor,
             connectors: vec![
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
@@ -379,30 +420,28 @@ mod tests {
     }
 
     #[test]
-    fn sealed_3x1x3_has_no_interior_cells() {
-        // In a single-story room, every cell has NegY+PosY sealed faces.
-        // A 3x1x3 room: 4 XZ-corners get Y faces too → still BoundaryCorner.
-        // The 4 XZ-edges now also have Y faces → BoundaryCorner (X+Y or Z+Y).
-        // The center cell has only Y faces → BoundaryEdge (parallel pair, not corner).
+    fn sealed_3x1x3_cell_kinds() {
+        // Y-axis faces don't affect classification for prop placement.
+        // 3x1x3: 4 XZ-corner cells, 4 XZ-edge cells, 1 XZ-interior cell.
         let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0);
 
         let corners: Vec<_> = grid.cells().iter()
             .filter(|c| c.kind == CellKind::BoundaryCorner)
             .collect();
-        assert_eq!(corners.len(), 8,
-            "3x1x3: 4 XZ-corners + 4 XZ-edges (each has Y+X or Y+Z) = 8 BoundaryCorner");
+        assert_eq!(corners.len(), 4,
+            "3x1x3: 4 XZ-corners = 4 BoundaryCorner");
 
         let edges: Vec<_> = grid.cells().iter()
             .filter(|c| c.kind == CellKind::BoundaryEdge)
             .collect();
-        assert_eq!(edges.len(), 1,
-            "3x1x3: center cell has only NegY+PosY (parallel) = 1 BoundaryEdge");
+        assert_eq!(edges.len(), 4,
+            "3x1x3: 4 XZ-edge cells = 4 BoundaryEdge");
 
         let interiors: Vec<_> = grid.cells().iter()
             .filter(|c| c.kind == CellKind::Interior)
             .collect();
-        assert_eq!(interiors.len(), 0,
-            "single-story room has no Interior cells (all have Y boundaries)");
+        assert_eq!(interiors.len(), 1,
+            "3x1x3: center cell [1,0,1] is Interior (only Y faces)");
     }
 
     #[test]
@@ -420,29 +459,25 @@ mod tests {
     }
 
     #[test]
-    fn xz_edge_cell_with_y_faces_is_corner() {
+    fn xz_edge_cell_with_y_faces_is_edge() {
         let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0);
-        // Cell (1,0,0) has NegZ sealed + NegY + PosY (single story).
-        // NegZ + NegY are perpendicular → BoundaryCorner.
+        // Cell (1,0,0) has NegZ sealed + NegY + PosY. Only one XZ axis → BoundaryEdge.
         let cell = grid.cell_at(1, 0, 0).expect("cell should exist");
-        assert_eq!(cell.kind, CellKind::BoundaryCorner,
-            "single-story edge cell with Z+Y faces is a corner in true 3D");
+        assert_eq!(cell.kind, CellKind::BoundaryEdge,
+            "single-story XZ-edge cell should be BoundaryEdge, not corner");
         assert!(cell.sealed_faces.contains(&ConnectorFacing::NegZ));
         assert!(cell.sealed_faces.contains(&ConnectorFacing::NegY));
         assert!(cell.sealed_faces.contains(&ConnectorFacing::PosY));
     }
 
     #[test]
-    fn xz_interior_cell_single_story_has_y_faces_only() {
+    fn xz_interior_cell_single_story_is_interior() {
         let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0);
-        // Cell (1,0,1) has no XZ boundary faces, but NegY + PosY (single story).
-        // Parallel Y faces only → BoundaryEdge.
+        // Cell (1,0,1) has no XZ boundary faces, only NegY + PosY → Interior.
         let cell = grid.cell_at(1, 0, 1).expect("cell should exist");
-        assert_eq!(cell.kind, CellKind::BoundaryEdge,
-            "single-story center cell has only parallel Y faces → BoundaryEdge");
+        assert_eq!(cell.kind, CellKind::Interior,
+            "single-story center cell with only Y faces should be Interior");
         assert_eq!(cell.sealed_faces.len(), 2);
-        assert!(cell.sealed_faces.contains(&ConnectorFacing::NegY));
-        assert!(cell.sealed_faces.contains(&ConnectorFacing::PosY));
     }
 
     #[test]
@@ -450,7 +485,6 @@ mod tests {
         // In a 3x2x3 room, cell (1,_,1) at cy not on boundary has no XZ or Y faces
         // But we need at least 3 stories for a truly interior cell.
         let tall_room = RoomTemplate {
-            id: "test_3x3x3_tall",
             kind: TemplateKind::Room,
             connectors: vec![],
             enemy_spawns: vec![],
@@ -471,7 +505,7 @@ mod tests {
         // 3x3 room with NegX active at [0,0,1]
         let grid = CellGrid::new(
             &room_3x3(),
-            &[ConnectorFacing::NegX],
+            &[Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }],
             [0.0, 0.0, 0.0],
             4.0,
         );
@@ -484,7 +518,10 @@ mod tests {
     fn corridor_with_both_ends_active_is_connector_gap() {
         let grid = CellGrid::new(
             &corridor_ew(),
-            &[ConnectorFacing::NegX, ConnectorFacing::PosX],
+            &[
+                Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
+                Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
+            ],
             [0.0, 0.0, 0.0],
             4.0,
         );
@@ -500,7 +537,7 @@ mod tests {
         // 3x3 with NegX active — cell (2,0,2) is PosX+PosZ corner, unaffected
         let grid = CellGrid::new(
             &room_3x3(),
-            &[ConnectorFacing::NegX],
+            &[Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }],
             [0.0, 0.0, 0.0],
             4.0,
         );
@@ -513,7 +550,6 @@ mod tests {
 
     fn multi_story_room() -> RoomTemplate {
         RoomTemplate {
-            id: "test_3x2x3",
             kind: TemplateKind::Room,
             connectors: vec![
                 Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX },
@@ -554,7 +590,6 @@ mod tests {
     fn mid_cell_has_no_y_sealed_faces() {
         // In a 3-story room, the middle floor should have no Y sealed faces
         let tall_room = RoomTemplate {
-            id: "test_1x3x1",
             kind: TemplateKind::Room,
             connectors: vec![],
             enemy_spawns: vec![],
@@ -572,7 +607,6 @@ mod tests {
     #[test]
     fn posy_active_connector_prevents_sealed_face() {
         let room_with_vertical_connector = RoomTemplate {
-            id: "test_1x2x1_vert",
             kind: TemplateKind::Room,
             connectors: vec![
                 Connector { offset: [0, 1, 0], facing: ConnectorFacing::PosY },
@@ -583,7 +617,7 @@ mod tests {
         };
         let grid = CellGrid::new(
             &room_with_vertical_connector,
-            &[ConnectorFacing::PosY],
+            &[Connector { offset: [0, 1, 0], facing: ConnectorFacing::PosY }],
             [0.0, 0.0, 0.0],
             4.0,
         );
@@ -592,6 +626,37 @@ mod tests {
             "active PosY connector should prevent PosY sealed face");
         assert_eq!(cell.kind, CellKind::ConnectorGap,
             "cell with active vertical connector should be ConnectorGap");
+    }
+
+    // --- Aperture alignment: unwired Y-level must be sealed ---
+
+    #[test]
+    fn tall_room_unwired_y1_connector_is_not_gap() {
+        // A 3x2x3 room has NegX connectors at y=0 and y=1.
+        // If only y=0 is wired, cell [0,1,1] should be sealed, not ConnectorGap.
+        let template = RoomTemplate {
+            kind: TemplateKind::Room,
+            connectors: vec![
+                Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX },
+                Connector { offset: [0, 1, 1], facing: ConnectorFacing::NegX },
+            ],
+            enemy_spawns: vec![],
+            loot_spawns: vec![],
+            extents: [3, 2, 3],
+        };
+        // Only the y=0 connector is active.
+        let active = &[Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }];
+        let grid = CellGrid::new(&template, active, [0.0, 0.0, 0.0], 4.0);
+
+        // y=0 cell should be ConnectorGap (it IS wired)
+        let y0 = grid.cell_at(0, 0, 1).expect("cell (0,0,1)");
+        assert_eq!(y0.kind, CellKind::ConnectorGap,
+            "y=0 NegX connector cell should be ConnectorGap");
+
+        // y=1 cell should NOT be ConnectorGap (it is NOT wired)
+        let y1 = grid.cell_at(0, 1, 1).expect("cell (0,1,1)");
+        assert_ne!(y1.kind, CellKind::ConnectorGap,
+            "y=1 NegX connector cell should be sealed — only y=0 is wired");
     }
 
     // --- Populate tests ---
@@ -603,7 +668,7 @@ mod tests {
         let mut grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0);
         grid.populate(&THEME_WAREHOUSE, 42);
         let occupied = grid.cells().iter()
-            .filter(|c| matches!(c.occupant, CellOccupant::Prop(_)))
+            .filter(|c| matches!(c.occupant, CellOccupant::Props(_)))
             .count();
         // Dense = ~60-80% fill. 9 cells → at least 5 occupied.
         assert!(occupied >= 5,
@@ -623,7 +688,7 @@ mod tests {
         let mut grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0);
         grid.populate(&sparse_theme, 42);
         let occupied = grid.cells().iter()
-            .filter(|c| matches!(c.occupant, CellOccupant::Prop(_)))
+            .filter(|c| matches!(c.occupant, CellOccupant::Props(_)))
             .count();
         // Sparse = ~12-20%. 9 cells → at most 4 occupied.
         assert!(occupied <= 4,
@@ -635,14 +700,14 @@ mod tests {
         use crate::room_theme::THEME_WAREHOUSE;
         let mut grid = CellGrid::new(
             &room_3x3(),
-            &[ConnectorFacing::NegX],
+            &[Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }],
             [0.0, 0.0, 0.0],
             4.0,
         );
         grid.populate(&THEME_WAREHOUSE, 42);
         let gap_occupied = grid.cells().iter()
             .filter(|c| c.kind == CellKind::ConnectorGap)
-            .any(|c| matches!(c.occupant, CellOccupant::Prop(_)));
+            .any(|c| matches!(c.occupant, CellOccupant::Props(_)));
         assert!(!gap_occupied, "ConnectorGap cells should never have props");
     }
 
@@ -654,7 +719,7 @@ mod tests {
         // Each cell is either Empty or Prop — by type system this is guaranteed,
         // but verify prop_placements count matches occupied cell count.
         let occupied = grid.cells().iter()
-            .filter(|c| matches!(c.occupant, CellOccupant::Prop(_)))
+            .filter(|c| matches!(c.occupant, CellOccupant::Props(_)))
             .count();
         assert_eq!(grid.prop_placements().len(), occupied,
             "prop_placements count should match occupied cell count");
@@ -677,6 +742,186 @@ mod tests {
         for p in &placements {
             assert!(warehouse_scenes.contains(&p.scene),
                 "prop '{}' not in warehouse palette", p.scene);
+        }
+    }
+
+    /// Column props in multi-story rooms must be stacked at each story level.
+    #[test]
+    fn columns_stacked_in_multi_story_room() {
+        use crate::room_theme::THEME_WAREHOUSE;
+        let template = RoomTemplate {
+            kind: TemplateKind::Room,
+            connectors: vec![],
+            enemy_spawns: vec![],
+            loot_spawns: vec![],
+            extents: [3, 2, 3],
+        };
+        // Try many seeds until we get at least one column placement.
+        let mut found_stacked = false;
+        for seed in 0..200 {
+            let mut grid = CellGrid::new(&template, &[], [0.0, 0.0, 0.0], 4.0);
+            grid.populate(&THEME_WAREHOUSE, seed);
+            let placements = grid.prop_placements();
+            let columns: Vec<_> = placements.iter()
+                .filter(|p| p.scene.contains("/columns/"))
+                .collect();
+            if columns.is_empty() {
+                continue;
+            }
+            // For each column, there should be a matching column at the next story level.
+            let story_height = CellGrid::DEFAULT_STORY_HEIGHT;
+            for col in &columns {
+                let has_pair = columns.iter().any(|other| {
+                    other.scene == col.scene
+                        && (other.position[0] - col.position[0]).abs() < 0.01
+                        && (other.position[2] - col.position[2]).abs() < 0.01
+                        && other.position[1] != col.position[1]
+                        && ((other.position[1] - col.position[1]).abs() - story_height).abs() < 0.01
+                });
+                assert!(
+                    has_pair,
+                    "column at {:?} should have a matching column one story above/below (story_height={})",
+                    col.position, story_height
+                );
+            }
+            found_stacked = true;
+            break;
+        }
+        assert!(found_stacked, "should find at least one stacked column across 200 seeds");
+    }
+
+    #[test]
+    fn single_story_5x5_has_interior_cells() {
+        let room = RoomTemplate {
+            kind: TemplateKind::Room,
+            connectors: vec![],
+            enemy_spawns: vec![],
+            loot_spawns: vec![],
+            extents: [5, 1, 5],
+        };
+        let grid = CellGrid::new(&room, &[], [0.0, 0.0, 0.0], 4.0);
+        let interior_count = grid.cells().iter()
+            .filter(|c| c.kind == CellKind::Interior)
+            .count();
+        // 5x5 room: the 3x3 inner cells should be Interior (9 cells)
+        assert!(interior_count >= 1,
+            "single-story 5x5 should have ≥1 Interior cell, got {interior_count}");
+    }
+
+    #[test]
+    fn center_props_placed_in_single_story_room() {
+        use crate::room_theme::THEME_GENERIC;
+        let room = RoomTemplate {
+            kind: TemplateKind::Room,
+            connectors: vec![],
+            enemy_spawns: vec![],
+            loot_spawns: vec![],
+            extents: [5, 1, 5],
+        };
+        let center_scenes: std::collections::HashSet<&str> = crate::asset_catalog::CENTER_PROPS
+            .iter().map(|p| p.scene).collect();
+        let mut found_center = false;
+        for seed in 0..100 {
+            let mut grid = CellGrid::new(&room, &[], [0.0, 0.0, 0.0], 4.0);
+            grid.populate(&THEME_GENERIC, seed);
+            if grid.prop_placements().iter().any(|p| center_scenes.contains(p.scene)) {
+                found_center = true;
+                break;
+            }
+        }
+        assert!(found_center, "center props should appear in single-story rooms across 100 seeds");
+    }
+
+    #[test]
+    fn no_column_near_connector_gap_in_generated_rooms() {
+        // Test with procedurally generated rooms — the actual production path.
+        use crate::generator::{generate_room, GeneratorConfig};
+        use crate::room_theme::THEME_WAREHOUSE;
+        use rand::SeedableRng;
+        use rand::rngs::SmallRng;
+
+        let config = GeneratorConfig {
+            seed: 42,
+            max_rooms: 10,
+            min_room_xz: 3,
+            max_room_xz: 6,
+            min_room_y: 1,
+            max_room_y: 3,
+        };
+
+        for room_seed in 0..50 {
+            let mut rng = SmallRng::seed_from_u64(room_seed);
+            let room = generate_room(&mut rng, &config);
+
+            // Activate a random subset of connectors (simulating connected rooms)
+            let active: Vec<_> = room.connectors.iter()
+                .enumerate()
+                .filter(|(i, _)| i % 2 == 0)
+                .map(|(_, c)| *c)
+                .collect();
+
+            for populate_seed in 0..20 {
+                let mut grid = CellGrid::new(&room, &active, [0.0, 0.0, 0.0], 4.0);
+                grid.populate(&THEME_WAREHOUSE, populate_seed);
+
+                let gap_positions: std::collections::HashSet<[i32; 3]> = grid.cells().iter()
+                    .filter(|c| c.kind == CellKind::ConnectorGap)
+                    .map(|c| c.grid_pos)
+                    .collect();
+
+                for cell in grid.cells() {
+                    if let CellOccupant::Props(ref props) = cell.occupant {
+                        for p in props {
+                            if p.scene.contains("/columns/") {
+                                let near = gap_positions.iter().any(|gap| {
+                                    let dx = (gap[0] - cell.grid_pos[0]).abs();
+                                    let dz = (gap[2] - cell.grid_pos[2]).abs();
+                                    gap[1] == cell.grid_pos[1] && dx <= 2 && dz <= 2
+                                });
+                                assert!(
+                                    !near,
+                                    "room_seed {room_seed}, pop_seed {populate_seed}: \
+                                     column at {:?} within 2 cells of ConnectorGap",
+                                    cell.grid_pos
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_column_adjacent_to_connector_gap() {
+        // 3x1x3 room with active NegX connector at [0,0,1].
+        // Cell [0,0,0] is a BoundaryCorner adjacent to the gap.
+        // No column should be placed there regardless of seed.
+        use crate::room_theme::THEME_WAREHOUSE;
+        let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }];
+        for seed in 0..200 {
+            let mut grid = CellGrid::new(&room_3x3(), &active, [0.0, 0.0, 0.0], 4.0);
+            grid.populate(&THEME_WAREHOUSE, seed);
+            for cell in grid.cells() {
+                if let CellOccupant::Props(ref props) = cell.occupant {
+                    for p in props {
+                        if p.scene.contains("/columns/") {
+                            // Check if this cell is XZ-adjacent to a ConnectorGap
+                            let [cx, _, cz] = cell.grid_pos;
+                            let adjacent_to_gap = grid.cells().iter().any(|other| {
+                                other.kind == CellKind::ConnectorGap
+                                    && ((other.grid_pos[0] - cx).abs() + (other.grid_pos[2] - cz).abs() == 1)
+                                    && other.grid_pos[1] == cell.grid_pos[1]
+                            });
+                            assert!(
+                                !adjacent_to_gap,
+                                "seed {seed}: column at cell {:?} is adjacent to ConnectorGap",
+                                cell.grid_pos
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 }

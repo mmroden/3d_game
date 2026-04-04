@@ -7,19 +7,17 @@ mod assembly;
 mod corners;
 mod theming;
 
-/// Convenience wrapper: assemble with default Astra style.
+/// Convenience wrapper: assemble with default Astra wall set.
 fn assemble_default(
     template: &RoomTemplate,
-    active_facings: &[ConnectorFacing],
+    active_connectors: &[Connector],
     world_origin: [f32; 3],
-    cell_size: f32,
 ) -> Vec<MeshPlacement> {
-    assemble(template, active_facings, world_origin, cell_size, &RoomStyle::default())
+    assemble(template, active_connectors, world_origin, &asset_catalog::WALL_SET_ASTRA)
 }
 
 fn small_room() -> RoomTemplate {
     RoomTemplate {
-        id: "test_small",
         kind: TemplateKind::Room,
         connectors: vec![
             Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
@@ -35,7 +33,6 @@ fn small_room() -> RoomTemplate {
 
 fn corridor_ew() -> RoomTemplate {
     RoomTemplate {
-        id: "test_corridor_ew",
         kind: TemplateKind::Corridor,
         connectors: vec![
             Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
@@ -49,7 +46,6 @@ fn corridor_ew() -> RoomTemplate {
 
 fn large_room() -> RoomTemplate {
     RoomTemplate {
-        id: "test_large",
         kind: TemplateKind::Room,
         connectors: vec![
             Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
@@ -69,7 +65,6 @@ fn count(placements: &[MeshPlacement], scene: &str) -> usize {
 
 fn hub_6way() -> RoomTemplate {
     RoomTemplate {
-        id: "test_hub_6way",
         kind: TemplateKind::Room,
         connectors: vec![
             Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
@@ -87,7 +82,6 @@ fn hub_6way() -> RoomTemplate {
 
 fn room_3x3() -> RoomTemplate {
     RoomTemplate {
-        id: "test_3x3",
         kind: TemplateKind::Room,
         connectors: vec![
             Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX },
@@ -106,6 +100,8 @@ fn is_floor_scene(scene: &str) -> bool {
     scene == FLOOR || scene == FLOOR_CURVE
 }
 
+/// Story height from the default (Astra) wall set.
+const STORY_HEIGHT: f32 = 5.0;
 
 fn count_floors(placements: &[MeshPlacement], origin_y: f32) -> usize {
     placements.iter().filter(|p| {
@@ -113,9 +109,9 @@ fn count_floors(placements: &[MeshPlacement], origin_y: f32) -> usize {
     }).count()
 }
 
-fn count_ceiling_tiles(placements: &[MeshPlacement], origin_y: f32, cell_height: f32) -> usize {
+fn count_ceiling_tiles(placements: &[MeshPlacement], origin_y: f32, story_height: f32) -> usize {
     placements.iter().filter(|p| {
-        is_floor_scene(p.scene) && (p.position[1] - (origin_y + cell_height)).abs() < 0.001
+        is_floor_scene(p.scene) && (p.position[1] - (origin_y + story_height)).abs() < 0.001
     }).count()
 }
 
@@ -124,3 +120,4 @@ fn rotate_y(x: f32, z: f32, theta: f32) -> (f32, f32) {
     let (s, c) = theta.sin_cos();
     (x * c + z * s, -x * s + z * c)
 }
+

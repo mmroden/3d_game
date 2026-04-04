@@ -21,6 +21,8 @@ pub mod signals {
     pub const SBS_TOGGLED: &str = "sbs_toggled";
     pub const MSAA_TOGGLED: &str = "msaa_toggled";
     pub const EXIT_SELECTED: &str = "exit_selected";
+    pub const RESUME_SELECTED: &str = "resume_selected";
+    pub const QUIT_SELECTED: &str = "quit_selected";
     pub const BODY_ENTERED: &str = "body_entered";
 }
 
@@ -39,6 +41,8 @@ pub mod methods {
     pub const ADVANCE_TO_NEXT_LEVEL: &str = "advance_to_next_level";
     pub const BUY_LASER_UPGRADE: &str = "buy_laser_upgrade";
     pub const RETURN_TO_MENU: &str = "return_to_menu";
+    pub const RESUME_GAME: &str = "resume_game";
+    pub const QUIT_TO_MENU: &str = "quit_to_menu";
     pub const TAKE_DAMAGE: &str = "take_damage";
     pub const APPLY_UPGRADE: &str = "apply_upgrade";
     pub const SHOW_SUMMARY: &str = "show_summary";
@@ -70,6 +74,11 @@ pub mod actions {
     pub const ROLL_LEFT: &str = "roll_left";
     pub const ROLL_RIGHT: &str = "roll_right";
     pub const FIRE: &str = "fire";
+    pub const OPEN_MENU: &str = "open_menu";
+    pub const MENU_UP: &str = "menu_up";
+    pub const MENU_DOWN: &str = "menu_down";
+    pub const MENU_SELECT: &str = "menu_select";
+    pub const MENU_BACK: &str = "menu_back";
 }
 
 // ── Group names ───────────────────────────────────────────────────────
@@ -106,6 +115,7 @@ pub mod nodes {
     pub const KILL_SUMMARY_UI: &str = "KillSummaryUI";
     pub const SHOP_UI: &str = "ShopUI";
     pub const DEATH_SCREEN_UI: &str = "DeathScreenUI";
+    pub const PAUSE_MENU_UI: &str = "PauseMenuUI";
     pub const STEREO_CANVAS: &str = "StereoCanvas";
     pub const MONO_UI_LAYER: &str = "MonoUILayer";
     pub const UI_VIEWPORT: &str = "UIViewport";
@@ -148,6 +158,8 @@ mod tests {
             signals::SBS_TOGGLED,
             signals::MSAA_TOGGLED,
             signals::EXIT_SELECTED,
+            signals::RESUME_SELECTED,
+            signals::QUIT_SELECTED,
             signals::BODY_ENTERED,
         ];
         for sig in &all_signals {
@@ -189,6 +201,8 @@ mod tests {
             methods::UPDATE_LASER,
             methods::UPDATE_LEVEL,
             methods::GENERATE_LEVEL,
+            methods::RESUME_GAME,
+            methods::QUIT_TO_MENU,
         ];
         for method in &all_methods {
             assert!(
@@ -210,6 +224,11 @@ mod tests {
             actions::LOOK_LEFT, actions::LOOK_RIGHT,
             actions::ROLL_LEFT, actions::ROLL_RIGHT,
             actions::FIRE,
+            actions::OPEN_MENU,
+            actions::MENU_UP,
+            actions::MENU_DOWN,
+            actions::MENU_SELECT,
+            actions::MENU_BACK,
         ];
         for action in &all_actions {
             assert!(!action.is_empty());
@@ -253,6 +272,7 @@ mod tests {
             signals::RETURN_PRESSED, signals::NEW_GAME_SELECTED,
             signals::CONTINUE_SELECTED, signals::SBS_TOGGLED,
             signals::MSAA_TOGGLED, signals::EXIT_SELECTED,
+            signals::RESUME_SELECTED, signals::QUIT_SELECTED,
             signals::BODY_ENTERED,
         ];
         for (i, a) in all.iter().enumerate() {
@@ -274,6 +294,7 @@ mod tests {
             methods::ON_OPTIONS_CHANGED, methods::ON_BODY_ENTERED,
             methods::ADVANCE_TO_SHOP, methods::ADVANCE_TO_NEXT_LEVEL,
             methods::BUY_LASER_UPGRADE, methods::RETURN_TO_MENU,
+            methods::RESUME_GAME, methods::QUIT_TO_MENU,
             methods::TAKE_DAMAGE, methods::APPLY_UPGRADE,
             methods::SHOW_SUMMARY, methods::SHOW_DEATH,
             methods::SHOW_SHOP, methods::SHOW_SHOWCASE,
@@ -300,6 +321,7 @@ mod tests {
             nodes::SHIP_SHOWCASE, nodes::MAIN_MENU_UI,
             nodes::HUD, nodes::KILL_SUMMARY_UI,
             nodes::SHOP_UI, nodes::DEATH_SCREEN_UI,
+            nodes::PAUSE_MENU_UI,
             nodes::STEREO_CANVAS, nodes::MONO_UI_LAYER,
             nodes::UI_VIEWPORT, nodes::LEFT_CAMERA,
             nodes::RIGHT_CAMERA, nodes::LEFT_CONTAINER,

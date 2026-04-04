@@ -7,8 +7,7 @@ use super::*;
 #[test]
 fn pipe_style_uses_pipe_wall_assets() {
     // Use 3x3 room: 4 non-corner edges get straight walls.
-    let style = RoomStyle::from_wall_set(&asset_catalog::WALL_SET_PIPE);
-    let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0, &style);
+    let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], &asset_catalog::WALL_SET_PIPE);
     let walls: Vec<_> = placements.iter()
         .filter(|p| p.scene == asset_catalog::WALL_SET_PIPE.straight.wall)
         .collect();
@@ -21,8 +20,7 @@ fn pipe_style_uses_pipe_wall_assets() {
 
 #[test]
 fn pipe_style_uses_pipe_corner_assets() {
-    let style = RoomStyle::from_wall_set(&asset_catalog::WALL_SET_PIPE);
-    let placements = assemble(&small_room(), &[], [0.0, 0.0, 0.0], 4.0, &style);
+    let placements = assemble(&small_room(), &[], [0.0, 0.0, 0.0], &asset_catalog::WALL_SET_PIPE);
     let corners: Vec<_> = placements.iter()
         .filter(|p| p.scene == asset_catalog::WALL_SET_PIPE.corner_inner.wall)
         .collect();
@@ -32,8 +30,7 @@ fn pipe_style_uses_pipe_corner_assets() {
 #[test]
 fn pipe_style_uses_pipe_ceiling_assets() {
     // Use 3x3 room: 4 non-corner edges get straight ceiling strips.
-    let style = RoomStyle::from_wall_set(&asset_catalog::WALL_SET_PIPE);
-    let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0, &style);
+    let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], &asset_catalog::WALL_SET_PIPE);
     let ceilings: Vec<_> = placements.iter()
         .filter(|p| p.scene == asset_catalog::WALL_SET_PIPE.straight.ceiling)
         .collect();
@@ -42,8 +39,7 @@ fn pipe_style_uses_pipe_ceiling_assets() {
 
 #[test]
 fn pipe_style_uses_pipe_floor_assets() {
-    let style = RoomStyle::from_wall_set(&asset_catalog::WALL_SET_PIPE);
-    let placements = assemble(&small_room(), &[], [0.0, 0.0, 0.0], 4.0, &style);
+    let placements = assemble(&small_room(), &[], [0.0, 0.0, 0.0], &asset_catalog::WALL_SET_PIPE);
     let pipe_floors: Vec<_> = placements.iter()
         .filter(|p| (p.scene == asset_catalog::WALL_SET_PIPE.straight.floor
                 || p.scene == asset_catalog::WALL_SET_PIPE.corner_inner.floor)
@@ -54,13 +50,14 @@ fn pipe_style_uses_pipe_floor_assets() {
 
 #[test]
 fn door_asset_is_always_the_same_regardless_of_style() {
-    let style = RoomStyle::from_wall_set(&asset_catalog::WALL_SET_WINDOW);
     let placements = assemble(
         &corridor_ew(),
-        &[ConnectorFacing::PosX, ConnectorFacing::NegX],
+        &[
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
+        ],
         [0.0, 0.0, 0.0],
-        4.0,
-        &style,
+        &asset_catalog::WALL_SET_WINDOW,
     );
     let doors: Vec<_> = placements.iter()
         .filter(|p| p.scene == asset_catalog::DOOR)

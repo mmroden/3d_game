@@ -16,8 +16,8 @@ pub struct BaseStats {
 impl Default for BaseStats {
     fn default() -> Self {
         Self {
-            thrust_power: 20.0,
-            rotation_speed: 2.5,
+            thrust_power: 40.0,
+            rotation_speed: 6.0,
             damping: 0.95,
             max_health: Health::new(100.0),
             fire_rate: 5.0,
@@ -87,8 +87,8 @@ mod tests {
     #[test]
     fn default_stats_unchanged_without_upgrades() {
         let loadout = Loadout::new();
-        assert_eq!(loadout.thrust_power(), 20.0);
-        assert_eq!(loadout.rotation_speed(), 2.5);
+        assert_eq!(loadout.thrust_power(), 40.0);
+        assert_eq!(loadout.rotation_speed(), 6.0);
     }
 
     #[test]
@@ -99,9 +99,9 @@ mod tests {
             kind: UpgradeKind::Thrust,
             multiplier: 1.5,
         });
-        assert_eq!(loadout.thrust_power(), 30.0);
+        assert_eq!(loadout.thrust_power(), 60.0);
         // Other stats unaffected
-        assert_eq!(loadout.rotation_speed(), 2.5);
+        assert_eq!(loadout.rotation_speed(), 6.0);
     }
 
     #[test]
@@ -117,6 +117,6 @@ mod tests {
             kind: UpgradeKind::Thrust,
             multiplier: 2.0,
         });
-        assert_eq!(loadout.thrust_power(), 60.0); // 20 * 1.5 * 2.0
+        assert_eq!(loadout.thrust_power(), 120.0); // 40 * 1.5 * 2.0
     }
 }

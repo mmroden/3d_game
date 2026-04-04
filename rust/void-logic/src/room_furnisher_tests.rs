@@ -4,7 +4,6 @@ use crate::room_template::*;
 
 fn room_3x3() -> RoomTemplate {
     RoomTemplate {
-        id: "test_3x3",
         kind: TemplateKind::Room,
         connectors: vec![
             Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX },
@@ -20,7 +19,6 @@ fn room_3x3() -> RoomTemplate {
 
 fn room_5x5() -> RoomTemplate {
     RoomTemplate {
-        id: "test_5x5",
         kind: TemplateKind::Room,
         connectors: vec![
             Connector { offset: [0, 0, 2], facing: ConnectorFacing::NegX },
@@ -36,7 +34,6 @@ fn room_5x5() -> RoomTemplate {
 
 fn corridor_1x1() -> RoomTemplate {
     RoomTemplate {
-        id: "test_corridor",
         kind: TemplateKind::Corridor,
         connectors: vec![
             Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
@@ -69,7 +66,7 @@ fn is_boundary(cx: i32, cz: i32, ex: i32, ez: i32) -> bool {
 fn room_3x3_gets_at_least_one_prop() {
     // A 3x3 room should always get at least 1 prop across any seed.
     let template = room_3x3();
-    let active = vec![ConnectorFacing::NegX, ConnectorFacing::PosX];
+    let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }, Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX }];
     let mut found_any = false;
     for seed in 0..20 {
         let props = furnish(&template, &active, [0.0, 0.0, 0.0], 4.0, seed, RoomDensity::Normal);
@@ -85,7 +82,7 @@ fn room_3x3_gets_at_least_one_prop() {
 fn wall_adjacent_props_are_at_boundary_cells() {
     let template = room_3x3();
     let cell_size = 4.0;
-    let active = vec![ConnectorFacing::NegX, ConnectorFacing::PosX];
+    let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }, Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX }];
     let wall_scenes = wall_adjacent_scenes();
     let ex = template.extents[0] as i32;
     let ez = template.extents[2] as i32;
@@ -111,7 +108,7 @@ fn wall_adjacent_props_are_at_boundary_cells() {
 fn center_props_are_at_non_boundary_cells() {
     let template = room_5x5();
     let cell_size = 4.0;
-    let active = vec![ConnectorFacing::NegX, ConnectorFacing::PosX];
+    let active = vec![Connector { offset: [0, 0, 2], facing: ConnectorFacing::NegX }, Connector { offset: [4, 0, 2], facing: ConnectorFacing::PosX }];
     let center_sc = center_scenes();
     let ex = template.extents[0] as i32;
     let ez = template.extents[2] as i32;
@@ -137,15 +134,14 @@ fn no_props_at_active_connector_cells() {
     let template = room_3x3();
     let cell_size = 4.0;
     let active = vec![
-        ConnectorFacing::NegX,
-        ConnectorFacing::PosX,
-        ConnectorFacing::NegZ,
-        ConnectorFacing::PosZ,
+        Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX },
+        Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX },
+        Connector { offset: [1, 0, 0], facing: ConnectorFacing::NegZ },
+        Connector { offset: [1, 0, 2], facing: ConnectorFacing::PosZ },
     ];
 
     // Connector cells in meter coords: offset * cell_size + 0.5 * cell_size
-    let connector_cells: Vec<(i32, i32)> = template.connectors.iter()
-        .filter(|c| active.contains(&c.facing))
+    let connector_cells: Vec<(i32, i32)> = active.iter()
         .map(|c| (c.offset[0], c.offset[2]))
         .collect();
 
@@ -167,7 +163,7 @@ fn no_props_at_active_connector_cells() {
 fn no_prop_position_overlaps() {
     let template = room_5x5();
     let cell_size = 4.0;
-    let active = vec![ConnectorFacing::NegX, ConnectorFacing::PosX];
+    let active = vec![Connector { offset: [0, 0, 2], facing: ConnectorFacing::NegX }, Connector { offset: [4, 0, 2], facing: ConnectorFacing::PosX }];
 
     for seed in 0..10 {
         let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Normal);
@@ -193,7 +189,7 @@ fn wall_adjacent_props_are_rotated_to_match_wall() {
     let template = room_3x3();
     let cell_size = 4.0;
     // Only NegX active, so PosX/NegZ/PosZ are sealed walls
-    let active = vec![ConnectorFacing::NegX];
+    let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }];
     let wall_scenes = wall_adjacent_scenes();
 
     for seed in 0..20 {
@@ -223,7 +219,7 @@ fn wall_adjacent_props_are_rotated_to_match_wall() {
 fn corridor_gets_no_center_props() {
     let template = corridor_1x1();
     let cell_size = 4.0;
-    let active = vec![ConnectorFacing::NegX, ConnectorFacing::PosX];
+    let active = vec![Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX }, Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX }];
     let center_sc = center_scenes();
 
     for seed in 0..20 {
@@ -243,7 +239,7 @@ fn corridor_gets_no_center_props() {
 fn every_room_cell_gets_at_least_one_light_fixture() {
     let template = room_3x3();
     let cell_size = 4.0;
-    let fixtures = light_fixtures(&template, [0.0, 0.0, 0.0], cell_size);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], cell_size);
     let cell_count = (template.extents[0] * template.extents[2]) as usize;
     assert_eq!(
         fixtures.len(), cell_count,
@@ -254,7 +250,7 @@ fn every_room_cell_gets_at_least_one_light_fixture() {
 #[test]
 fn corridor_gets_light_fixtures() {
     let template = corridor_1x1();
-    let fixtures = light_fixtures(&template, [0.0, 0.0, 0.0], 4.0);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0);
     assert!(
         !fixtures.is_empty(),
         "corridor should get at least 1 light fixture"
@@ -265,9 +261,9 @@ fn corridor_gets_light_fixtures() {
 fn light_fixture_mesh_at_ceiling_height() {
     let template = room_3x3();
     let cell_size = 4.0;
-    let cell_height = crate::room_assembler::CELL_HEIGHT;
+    let cell_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
     let origin_y = 0.0;
-    let fixtures = light_fixtures(&template, [0.0, origin_y, 0.0], cell_size);
+    let fixtures = light_fixtures(&template, &[], [0.0, origin_y, 0.0], cell_size);
     for (mesh, _) in &fixtures {
         let expected_y = origin_y + cell_height - 0.1;
         assert!(
@@ -281,7 +277,7 @@ fn light_fixture_mesh_at_ceiling_height() {
 #[test]
 fn light_source_within_fixture_bounds() {
     let template = room_3x3();
-    let fixtures = light_fixtures(&template, [0.0, 0.0, 0.0], 4.0);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0);
     for (mesh, light) in &fixtures {
         // Find which fixture catalog entry this is
         let fixture_entry = asset_catalog::ALL_LIGHTS.iter()
@@ -308,10 +304,10 @@ fn light_source_inside_room_bounds() {
     let template = room_5x5();
     let cell_size = 4.0;
     let origin = [4.0, 2.0, 8.0];
-    let fixtures = light_fixtures(&template, origin, cell_size);
+    let fixtures = light_fixtures(&template, &[], origin, cell_size);
     let max_x = origin[0] + template.extents[0] as f32 * cell_size;
     let max_z = origin[2] + template.extents[2] as f32 * cell_size;
-    let cell_height = crate::room_assembler::CELL_HEIGHT;
+    let cell_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
     let max_y = origin[1] + template.extents[1] as f32 * cell_height;
 
     for (_, light) in &fixtures {
@@ -334,7 +330,7 @@ fn light_source_inside_room_bounds() {
 fn light_source_range_covers_cell() {
     let cell_size = 4.0;
     let template = room_3x3();
-    let fixtures = light_fixtures(&template, [0.0, 0.0, 0.0], cell_size);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], cell_size);
     for (_, light) in &fixtures {
         assert!(
             light.range >= cell_size / 2.0,
@@ -346,29 +342,56 @@ fn light_source_range_covers_cell() {
 
 // --- Multi-story light fixtures ---
 
+/// Multi-story sealed room: lights only at the top floor (where ceilings exist).
+/// Intermediate floors have no ceiling, so no lights should hang in mid-air.
 #[test]
-fn multi_story_room_gets_lights_on_every_floor() {
+fn multi_story_room_lights_only_at_top_floor() {
     let template = RoomTemplate {
-        id: "test_3x2x3",
         kind: TemplateKind::Room,
         connectors: vec![],
         enemy_spawns: vec![],
         loot_spawns: vec![],
         extents: [3, 2, 3],
     };
-    let fixtures = light_fixtures(&template, [0.0, 0.0, 0.0], 4.0);
-    // 3x2x3 = 18 cells, each should get a light
-    let total_cells = (3 * 2 * 3) as usize;
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0);
+    let cell_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+    // Only top floor (cy=1) has ceilings → 3x3 = 9 lights, NOT 18.
     assert_eq!(
-        fixtures.len(), total_cells,
-        "3x2x3 room should have {} fixtures, got {}", total_cells, fixtures.len()
+        fixtures.len(), 9,
+        "3x2x3 sealed room should have 9 fixtures (top floor only), got {}", fixtures.len()
     );
-    // Verify lights exist at both Y levels
-    let cell_height = crate::room_assembler::CELL_HEIGHT;
-    let floor0_lights = fixtures.iter().filter(|(m, _)| m.position[1] < cell_height).count();
-    let floor1_lights = fixtures.iter().filter(|(m, _)| m.position[1] >= cell_height).count();
-    assert!(floor0_lights > 0, "should have lights on floor 0");
-    assert!(floor1_lights > 0, "should have lights on floor 1");
+    // All lights should be near the top ceiling (y = 2 * story_height - 0.1)
+    let top_ceiling_y = 2.0 * cell_height - 0.1;
+    for (mesh, _) in &fixtures {
+        assert!(
+            (mesh.position[1] - top_ceiling_y).abs() < 0.2,
+            "light at y={} should be near top ceiling y={}", mesh.position[1], top_ceiling_y
+        );
+    }
+}
+
+/// Active PosY connector removes ceiling at that cell → no light there.
+#[test]
+fn no_light_where_ceiling_removed_by_connector() {
+    let template = RoomTemplate {
+        kind: TemplateKind::Room,
+        connectors: vec![
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosY },
+        ],
+        enemy_spawns: vec![],
+        loot_spawns: vec![],
+        extents: [1, 1, 1],
+    };
+    let active = vec![Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosY }];
+    let fixtures = light_fixtures(&template, &active, [0.0, 0.0, 0.0], 4.0);
+    assert_eq!(
+        fixtures.len(), 0,
+        "cell with active PosY connector has no ceiling → no light"
+    );
 }
 
 // --- Flyable path validation tests ---
@@ -376,7 +399,7 @@ fn multi_story_room_gets_lights_on_every_floor() {
 #[test]
 fn empty_room_paths_between_opposite_openings() {
     let template = room_3x3();
-    let active = vec![ConnectorFacing::NegX, ConnectorFacing::PosX];
+    let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }, Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX }];
     let props = vec![]; // no props
     assert!(
         flight_paths_clear(&template, &active, &props, 4.0),
@@ -387,7 +410,7 @@ fn empty_room_paths_between_opposite_openings() {
 #[test]
 fn empty_room_paths_between_adjacent_openings() {
     let template = room_3x3();
-    let active = vec![ConnectorFacing::NegX, ConnectorFacing::NegZ];
+    let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }, Connector { offset: [1, 0, 0], facing: ConnectorFacing::NegZ }];
     assert!(
         flight_paths_clear(&template, &active, &[], 4.0),
         "empty room should have L-shaped path"
@@ -397,7 +420,7 @@ fn empty_room_paths_between_adjacent_openings() {
 #[test]
 fn single_opening_always_passes() {
     let template = room_3x3();
-    let active = vec![ConnectorFacing::NegX];
+    let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }];
     // Even with a blocking prop in the middle
     let block = MeshPlacement {
         scene: asset_catalog::CENTER_PROPS.iter()
@@ -405,6 +428,7 @@ fn single_opening_always_passes() {
         position: [6.0, 0.0, 6.0], // center of 3x3 room at origin
         rotation_x: 0.0,
         rotation_y: 0.0,
+        loose: false,
     };
     assert!(
         flight_paths_clear(&template, &active, &[block], 4.0),
@@ -417,14 +441,14 @@ fn blocking_prop_in_path_detected() {
     // 3x1x3 room with NegX(0,1) and PosX(2,1) openings.
     // Block the middle cell (1,1) which is the only path.
     let template = room_3x3();
-    let active = vec![ConnectorFacing::NegX, ConnectorFacing::PosX];
+    let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }, Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX }];
     // Block ALL cells in the middle column to ensure no path exists
     let blocking_scene = asset_catalog::CENTER_PROPS.iter()
         .find(|p| p.blocks_flight).unwrap().scene;
     let blocks = vec![
-        MeshPlacement { scene: blocking_scene, position: [6.0, 0.0, 2.0], rotation_x: 0.0, rotation_y: 0.0 },  // cell (1,0)
-        MeshPlacement { scene: blocking_scene, position: [6.0, 0.0, 6.0], rotation_x: 0.0, rotation_y: 0.0 },  // cell (1,1)
-        MeshPlacement { scene: blocking_scene, position: [6.0, 0.0, 10.0], rotation_x: 0.0, rotation_y: 0.0 }, // cell (1,2)
+        MeshPlacement { scene: blocking_scene, position: [6.0, 0.0, 2.0], rotation_x: 0.0, rotation_y: 0.0, loose: false },  // cell (1,0)
+        MeshPlacement { scene: blocking_scene, position: [6.0, 0.0, 6.0], rotation_x: 0.0, rotation_y: 0.0, loose: false },  // cell (1,1)
+        MeshPlacement { scene: blocking_scene, position: [6.0, 0.0, 10.0], rotation_x: 0.0, rotation_y: 0.0, loose: false }, // cell (1,2)
     ];
     assert!(
         !flight_paths_clear(&template, &active, &blocks, 4.0),
@@ -436,7 +460,7 @@ fn blocking_prop_in_path_detected() {
 fn furnished_3x3_preserves_paths() {
     let template = room_3x3();
     let cell_size = 4.0;
-    let active = vec![ConnectorFacing::NegX, ConnectorFacing::PosX];
+    let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }, Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX }];
     for seed in 0..50 {
         let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Normal);
         assert!(
@@ -451,10 +475,10 @@ fn furnished_5x5_with_4_openings_preserves_paths() {
     let template = room_5x5();
     let cell_size = 4.0;
     let active = vec![
-        ConnectorFacing::NegX,
-        ConnectorFacing::PosX,
-        ConnectorFacing::NegZ,
-        ConnectorFacing::PosZ,
+        Connector { offset: [0, 0, 2], facing: ConnectorFacing::NegX },
+        Connector { offset: [4, 0, 2], facing: ConnectorFacing::PosX },
+        Connector { offset: [2, 0, 0], facing: ConnectorFacing::NegZ },
+        Connector { offset: [2, 0, 4], facing: ConnectorFacing::PosZ },
     ];
     for seed in 0..50 {
         let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Normal);
@@ -470,7 +494,7 @@ fn furnished_5x5_with_4_openings_preserves_paths() {
 #[test]
 fn dense_rooms_produce_more_props_than_sparse() {
     let template = room_5x5();
-    let active = vec![ConnectorFacing::NegX, ConnectorFacing::PosX];
+    let active = vec![Connector { offset: [0, 0, 2], facing: ConnectorFacing::NegX }, Connector { offset: [4, 0, 2], facing: ConnectorFacing::PosX }];
 
     let mut sparse_total = 0usize;
     let mut dense_total = 0usize;
@@ -490,7 +514,7 @@ fn dense_rooms_produce_more_props_than_sparse() {
 fn dense_room_fills_majority_of_eligible_cells() {
     let template = room_5x5();
     let cell_size = 4.0;
-    let active = vec![ConnectorFacing::NegX, ConnectorFacing::PosX];
+    let active = vec![Connector { offset: [0, 0, 2], facing: ConnectorFacing::NegX }, Connector { offset: [4, 0, 2], facing: ConnectorFacing::PosX }];
     let num_seeds = 50usize;
     let total_cells = (template.extents[0] * template.extents[2]) as usize;
     let threshold = (total_cells as f32 * 0.6) as usize;
@@ -511,7 +535,7 @@ fn dense_room_fills_majority_of_eligible_cells() {
 fn sparse_room_leaves_most_cells_empty() {
     let template = room_5x5();
     let cell_size = 4.0;
-    let active = vec![ConnectorFacing::NegX, ConnectorFacing::PosX];
+    let active = vec![Connector { offset: [0, 0, 2], facing: ConnectorFacing::NegX }, Connector { offset: [4, 0, 2], facing: ConnectorFacing::PosX }];
     let num_seeds = 50usize;
     let total_cells = (template.extents[0] * template.extents[2]) as usize;
     let max_avg = (total_cells as f32 * 0.30) as usize;
@@ -533,7 +557,7 @@ fn normal_density_between_sparse_and_dense() {
     // Behavioral invariant: across many seeds, Normal produces more props
     // than Sparse and fewer than Dense on average.
     let template = room_3x3();
-    let active = vec![ConnectorFacing::NegX, ConnectorFacing::PosX];
+    let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }, Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX }];
     let origin = [0.0, 0.0, 0.0];
     let cs = 4.0;
     let mut sparse_total = 0;
@@ -558,7 +582,7 @@ fn normal_density_between_sparse_and_dense() {
 fn dense_furnished_room_preserves_flight_paths() {
     let template = room_3x3();
     let cell_size = 4.0;
-    let active = vec![ConnectorFacing::NegX, ConnectorFacing::PosX];
+    let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }, Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX }];
     for seed in 0..50 {
         let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Dense);
         assert!(
@@ -602,7 +626,10 @@ fn all_furnished_props_within_cell_bounds() {
     let cell_size = 4.0;
 
     for template in &templates {
-        let active = vec![ConnectorFacing::NegX, ConnectorFacing::PosX];
+        let active: Vec<_> = template.connectors.iter()
+            .filter(|c| matches!(c.facing, ConnectorFacing::NegX | ConnectorFacing::PosX))
+            .copied()
+            .collect();
         let origin = [4.0, 2.0, 8.0]; // non-zero origin to catch offset bugs
         let max_x = origin[0] + template.extents[0] as f32 * cell_size;
         let max_z = origin[2] + template.extents[2] as f32 * cell_size;
@@ -612,13 +639,13 @@ fn all_furnished_props_within_cell_bounds() {
             for p in &props {
                 assert!(
                     p.position[0] >= origin[0] && p.position[0] <= max_x,
-                    "seed {seed}, template {}: prop '{}' x={} outside [{}, {}]",
-                    template.id, p.scene, p.position[0], origin[0], max_x
+                    "seed {seed}, template {:?}: prop '{}' x={} outside [{}, {}]",
+                    template.extents, p.scene, p.position[0], origin[0], max_x
                 );
                 assert!(
                     p.position[2] >= origin[2] && p.position[2] <= max_z,
-                    "seed {seed}, template {}: prop '{}' z={} outside [{}, {}]",
-                    template.id, p.scene, p.position[2], origin[2], max_z
+                    "seed {seed}, template {:?}: prop '{}' z={} outside [{}, {}]",
+                    template.extents, p.scene, p.position[2], origin[2], max_z
                 );
             }
         }
@@ -631,7 +658,7 @@ fn wall_adjacent_props_closer_to_wall_than_center() {
     // their wall than to the cell center.
     let template = room_5x5();
     let cell_size = 4.0;
-    let active = vec![ConnectorFacing::NegX];
+    let active = vec![Connector { offset: [0, 0, 2], facing: ConnectorFacing::NegX }];
     let wall_scenes = wall_adjacent_scenes();
     let origin = [0.0, 0.0, 0.0];
     let ex = template.extents[0] as f32;

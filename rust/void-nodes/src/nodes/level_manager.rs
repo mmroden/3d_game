@@ -6,8 +6,8 @@ use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use rand::seq::IndexedRandom;
 
-use void_logic::generator::{generate, GeneratorConfig};
-use void_logic::template_catalog;
+use void_logic::generator::{generate, rooms_for_level, GeneratorConfig};
+use void_logic::level_assembly;
 use void_logic::portal as portal_sys;
 use void_logic::enemy_type;
 
@@ -42,14 +42,14 @@ impl INode3D for LevelManager {
             base,
             grid_cell_size: 4.0,
             seed: 42_i64,
-            target_rooms: 5_i32,
+            target_rooms: 8_i32,
             current_level: 1_i32,
         }
     }
 
     fn ready(&mut self) {
         let seed = self.seed;
-        let target = self.target_rooms as u32;
+        let target = rooms_for_level(self.current_level as u32) as u32;
         self.generate_level(seed, target);
     }
 }
@@ -60,9 +60,11 @@ impl LevelManager {
     pub fn generate_level(&mut self, seed: i64, target_rooms: u32) {
         let config = GeneratorConfig {
             seed: seed as u64,
-            room_templates: template_catalog::room_templates(),
-            corridor_templates: template_catalog::corridor_templates(),
-            target_room_count: target_rooms as usize,
+            max_rooms: if target_rooms == 0 { 0 } else { target_rooms as usize },
+            min_room_xz: 3,
+            max_room_xz: 6,
+            min_room_y: 1,
+            max_room_y: 6,
         };
 
         let graph = match generate(&config) {
@@ -76,9 +78,11 @@ impl LevelManager {
         // Assemble all room geometry, furniture, light fixtures, enemy positions,
         // and collision boxes for physics.
         let (placements, light_sources, enemy_positions, collision_boxes) =
-            template_catalog::spawn_list_full(&graph, self.grid_cell_size, seed as u64);
+            level_assembly::spawn_list_full(&graph, self.grid_cell_size, seed as u64);
         let mut loader = ResourceLoader::singleton();
         let mut mesh_count = 0;
+
+        let mut loose_rng = SmallRng::seed_from_u64(seed as u64);
 
         for entry in &placements {
             let scene_res = loader.load(entry.scene);
@@ -93,15 +97,31 @@ impl LevelManager {
                 continue;
             };
 
-            let mut node: Gd<Node3D> = instance.cast();
-            let pos = vec3(entry.position);
-            node.set_position(pos);
+            if entry.loose {
+                // Zero-g floating prop: use AnimatableBody3D for gentle drift
+                // without physics simulation artifacts (NaN transforms).
+                let mut node: Gd<Node3D> = instance.cast();
+                node.set_position(vec3(entry.position));
 
-            if entry.rotation_x.abs() > 0.001 || entry.rotation_y.abs() > 0.001 {
-                node.set_rotation(Vector3::new(entry.rotation_x, entry.rotation_y, 0.0));
+                // Apply a random initial rotation for visual variety.
+                use rand::RngExt;
+                let rx: f32 = loose_rng.random_range(0.0..std::f32::consts::TAU);
+                let ry: f32 = loose_rng.random_range(0.0..std::f32::consts::TAU);
+                let rz: f32 = loose_rng.random_range(0.0..std::f32::consts::TAU);
+                node.set_rotation(Vector3::new(rx, ry, rz));
+
+                self.base_mut().add_child(&node);
+            } else {
+                let mut node: Gd<Node3D> = instance.cast();
+                let pos = vec3(entry.position);
+                node.set_position(pos);
+
+                if entry.rotation_x.abs() > 0.001 || entry.rotation_y.abs() > 0.001 {
+                    node.set_rotation(Vector3::new(entry.rotation_x, entry.rotation_y, 0.0));
+                }
+
+                self.base_mut().add_child(&node);
             }
-
-            self.base_mut().add_child(&node);
             mesh_count += 1;
         }
 
@@ -182,7 +202,7 @@ impl LevelManager {
         }
 
         // Move player to the first room's center
-        let centers = template_catalog::cell_centers(&graph, self.grid_cell_size);
+        let centers = level_assembly::cell_centers(&graph, self.grid_cell_size);
         if let Some(first_center) = centers.first() {
             let spawn = Vector3::new(
                 first_center[0],
@@ -207,3 +227,5 @@ impl LevelManager {
         );
     }
 }
+
+

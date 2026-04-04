@@ -28,8 +28,8 @@ script = ExtResource("1")
 
 [node name="Player" type="ShipController" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2, 0)
-thrust_power = 20.0
-rotation_speed = 2.5
+thrust_power = 40.0
+rotation_speed = 6.0
 damping = 0.95
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="Player"]
@@ -68,3 +68,5 @@ environment = SubResource("env")
 [node name="ShopUI" type="ShopUI" parent="."]
 
 [node name="DeathScreenUI" type="DeathScreenUI" parent="."]
+
+[node name="PauseMenuUI" type="PauseMenuUI" parent="."]

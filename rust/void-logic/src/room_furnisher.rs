@@ -1,6 +1,6 @@
-use crate::asset_catalog::{WALL_ADJACENT_PROPS, CENTER_PROPS, CORNER_PROPS};
+use crate::asset_catalog::{self, WALL_ADJACENT_PROPS, CENTER_PROPS, CORNER_PROPS};
 use crate::room_assembler::MeshPlacement;
-use crate::room_template::{ConnectorFacing, RoomTemplate};
+use crate::room_template::{Connector, ConnectorFacing, RoomTemplate};
 
 /// Room furnishing density — controls how many props are placed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,7 +20,7 @@ pub enum RoomDensity {
 /// No props are placed at active connector cells (openings must stay clear).
 pub fn furnish(
     template: &RoomTemplate,
-    active_facings: &[ConnectorFacing],
+    active_connectors: &[Connector],
     world_origin: [f32; 3],
     cell_size: f32,
     seed: u64,
@@ -39,16 +39,15 @@ pub fn furnish(
         RoomDensity::Dense   => (4, 5, 3, 5, 2, 3),
     };
 
-    // Collect active connector cells so we can skip them.
-    let connector_cells: Vec<(i32, i32)> = template
-        .connectors
+    // Collect active connector cells so we can skip them (XZ projection).
+    let connector_cells: Vec<(i32, i32)> = active_connectors
         .iter()
-        .filter(|c| active_facings.contains(&c.facing))
+        .filter(|c| template.connectors.contains(c))
         .map(|c| (c.offset[0], c.offset[2]))
         .collect();
 
     // Pre-compute path-reserved cells: cells that must stay free for flight paths.
-    let reserved = path_reserved_cells(template, active_facings);
+    let reserved = path_reserved_cells(template, active_connectors);
 
     for cx in 0..ex {
         for cz in 0..ez {
@@ -66,7 +65,7 @@ pub fn furnish(
 
             if on_boundary {
                 // Determine which faces of this cell are sealed walls (boundary + no active connector).
-                let wall_faces = sealed_wall_faces(template, active_facings, cx, cz, ex, ez);
+                let wall_faces = sealed_wall_faces(template, active_connectors, cx, cz, ex, ez);
 
                 // Try to place a wall-adjacent prop against one of the walls.
                 if !wall_faces.is_empty() {
@@ -81,6 +80,7 @@ pub fn furnish(
                                 position: [cell_center_x + offset_x, y, cell_center_z + offset_z],
                                 rotation_x: 0.0,
                                 rotation_y: rot,
+                                loose: asset_catalog::is_loose_prop(prop.scene),
                             });
                         }
                     }
@@ -95,6 +95,7 @@ pub fn furnish(
                             position: [cell_center_x, y, cell_center_z],
                             rotation_x: 0.0,
                             rotation_y: 0.0,
+                            loose: asset_catalog::is_loose_prop(prop.scene),
                         });
                     }
                 }
@@ -109,6 +110,7 @@ pub fn furnish(
                             position: [cell_center_x, y, cell_center_z],
                             rotation_x: 0.0,
                             rotation_y: 0.0,
+                            loose: asset_catalog::is_loose_prop(prop.scene),
                         });
                     }
                 }
@@ -123,17 +125,16 @@ pub fn furnish(
 /// Uses BFS to find shortest paths between all pairs of active connectors.
 fn path_reserved_cells(
     template: &RoomTemplate,
-    active_facings: &[ConnectorFacing],
+    active_connectors: &[Connector],
 ) -> std::collections::HashSet<(i32, i32)> {
     use std::collections::{HashSet, VecDeque, HashMap};
 
     let ex = template.extents[0] as i32;
     let ez = template.extents[2] as i32;
 
-    let openings: Vec<(i32, i32)> = template
-        .connectors
+    let openings: Vec<(i32, i32)> = active_connectors
         .iter()
-        .filter(|c| active_facings.contains(&c.facing))
+        .filter(|c| template.connectors.contains(c))
         .map(|c| (c.offset[0], c.offset[2]))
         .collect();
 
@@ -188,8 +189,8 @@ fn path_reserved_cells(
 
 /// Return which boundary faces of a cell are sealed walls (not openings).
 fn sealed_wall_faces(
-    template: &RoomTemplate,
-    active_facings: &[ConnectorFacing],
+    _template: &RoomTemplate,
+    active_connectors: &[Connector],
     cx: i32,
     cz: i32,
     ex: i32,
@@ -205,27 +206,21 @@ fn sealed_wall_faces(
     candidates
         .iter()
         .filter(|(facing, is_boundary)| {
-            *is_boundary && !is_active_connector(template, active_facings, *facing, cx, cz)
+            *is_boundary && !is_active_connector_xz(active_connectors, *facing, cx, cz)
         })
         .map(|(facing, _)| *facing)
         .collect()
 }
 
-/// Check if a connector at cell (cx, 0, cz) with the given facing is active.
-fn is_active_connector(
-    template: &RoomTemplate,
-    active: &[ConnectorFacing],
+/// Check if any active connector at column (cx, *, cz) has the given facing.
+/// This is a 2D (XZ) projection — any Y level counts.
+fn is_active_connector_xz(
+    active: &[Connector],
     facing: ConnectorFacing,
     cx: i32,
     cz: i32,
 ) -> bool {
-    if !active.contains(&facing) {
-        return false;
-    }
-    template
-        .connectors
-        .iter()
-        .any(|c| c.facing == facing && c.offset[0] == cx && c.offset[2] == cz)
+    active.iter().any(|c| c.facing == facing && c.offset[0] == cx && c.offset[2] == cz)
 }
 
 /// Compute (offset_x, offset_z, rotation_y) for a wall-adjacent prop.
@@ -251,7 +246,7 @@ fn wall_adjacent_offset(facing: ConnectorFacing, cell_size: f32) -> (f32, f32, f
 /// Props with `blocks_flight: true` mark cells as occupied.
 pub fn flight_paths_clear(
     template: &RoomTemplate,
-    active_facings: &[ConnectorFacing],
+    active_connectors: &[Connector],
     props: &[MeshPlacement],
     cell_size: f32,
 ) -> bool {
@@ -270,11 +265,10 @@ pub fn flight_paths_clear(
         }
     }
 
-    // Find active connector cell positions.
-    let openings: Vec<(i32, i32)> = template
-        .connectors
+    // Find active connector cell positions (XZ projection).
+    let openings: Vec<(i32, i32)> = active_connectors
         .iter()
-        .filter(|c| active_facings.contains(&c.facing))
+        .filter(|c| template.connectors.contains(c))
         .map(|c| (c.offset[0], c.offset[2]))
         .collect();
 
@@ -334,50 +328,66 @@ pub struct LightSource {
 }
 
 /// Place light fixtures on ceilings and return both the fixture mesh placement
-/// and the co-located light source. One fixture per cell.
+/// and the co-located light source.
+///
+/// Lights are only placed where an actual ceiling exists: the topmost floor
+/// of each XZ column, minus any cells with active PosY connectors.
 pub fn light_fixtures(
     template: &RoomTemplate,
+    active_connectors: &[Connector],
     world_origin: [f32; 3],
     cell_size: f32,
 ) -> Vec<(MeshPlacement, LightSource)> {
     use crate::asset_catalog::CEILING_LIGHTS;
-    use crate::room_assembler::CELL_HEIGHT;
 
+    let story_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
     let mut out = Vec::new();
     let ex = template.extents[0] as i32;
     let ey = template.extents[1] as i32;
     let ez = template.extents[2] as i32;
 
     for cx in 0..ex {
-        for cy in 0..ey {
-            for cz in 0..ez {
-                // Alternate between ceiling light variants based on position
-                let fixture = &CEILING_LIGHTS[((cx + cy + cz) as usize) % CEILING_LIGHTS.len()];
-
-                let fixture_y = world_origin[1] + cy as f32 * CELL_HEIGHT + CELL_HEIGHT - 0.1;
-                let mesh = MeshPlacement {
-                    scene: fixture.scene,
-                    position: [
-                        world_origin[0] + (cx as f32 + 0.5) * cell_size,
-                        fixture_y,
-                        world_origin[2] + (cz as f32 + 0.5) * cell_size,
-                    ],
-                    rotation_x: 0.0,
-                    rotation_y: 0.0,
-                };
-
-                let light = LightSource {
-                    position: [
-                        mesh.position[0] + fixture.light_offset[0],
-                        mesh.position[1] + fixture.light_offset[1],
-                        mesh.position[2] + fixture.light_offset[2],
-                    ],
-                    range: fixture.range,
-                    energy: fixture.energy,
-                };
-
-                out.push((mesh, light));
+        for cz in 0..ez {
+            // The ceiling exists at the topmost Y level for this XZ column,
+            // unless an active PosY connector removes it.
+            let top_cy = ey - 1;
+            let has_posy = active_connectors.iter().any(|c| {
+                c.facing == ConnectorFacing::PosY
+                    && c.offset[0] == cx
+                    && c.offset[1] == top_cy
+                    && c.offset[2] == cz
+                    && template.connectors.contains(c)
+            });
+            if has_posy {
+                continue; // No ceiling here → no light.
             }
+
+            let fixture = &CEILING_LIGHTS[((cx + top_cy + cz) as usize) % CEILING_LIGHTS.len()];
+
+            let fixture_y = world_origin[1] + top_cy as f32 * story_height + story_height - 0.1;
+            let mesh = MeshPlacement {
+                scene: fixture.scene,
+                position: [
+                    world_origin[0] + (cx as f32 + 0.5) * cell_size,
+                    fixture_y,
+                    world_origin[2] + (cz as f32 + 0.5) * cell_size,
+                ],
+                rotation_x: 0.0,
+                rotation_y: 0.0,
+                loose: false,
+            };
+
+            let light = LightSource {
+                position: [
+                    mesh.position[0] + fixture.light_offset[0],
+                    mesh.position[1] + fixture.light_offset[1],
+                    mesh.position[2] + fixture.light_offset[2],
+                ],
+                range: fixture.range,
+                energy: fixture.energy,
+            };
+
+            out.push((mesh, light));
         }
     }
 
