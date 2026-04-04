@@ -6,10 +6,10 @@ fn small_room() -> RoomTemplate {
 
         kind: TemplateKind::Room,
         connectors: vec![
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ, frame: FrameStyle::Door },
         ],
         enemy_spawns: vec![],
         loot_spawns: vec![],
@@ -21,10 +21,10 @@ fn room_3x3() -> RoomTemplate {
     RoomTemplate {
         kind: TemplateKind::Room,
         connectors: vec![
-            Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX },
-            Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX },
-            Connector { offset: [1, 0, 0], facing: ConnectorFacing::NegZ },
-            Connector { offset: [1, 0, 2], facing: ConnectorFacing::PosZ },
+            Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX, frame: FrameStyle::Door },
+            Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX, frame: FrameStyle::Door },
+            Connector { offset: [1, 0, 0], facing: ConnectorFacing::NegZ, frame: FrameStyle::Door },
+            Connector { offset: [1, 0, 2], facing: ConnectorFacing::PosZ, frame: FrameStyle::Door },
         ],
         enemy_spawns: vec![],
         loot_spawns: vec![],
@@ -36,8 +36,8 @@ fn corridor_ew() -> RoomTemplate {
     RoomTemplate {
         kind: TemplateKind::Corridor,
         connectors: vec![
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX, frame: FrameStyle::Door },
         ],
         enemy_spawns: vec![],
         loot_spawns: vec![],
@@ -180,7 +180,7 @@ fn active_connector_cell_is_connector_gap() {
     // 3x3 room with NegX active at [0,0,1]
     let grid = CellGrid::new(
         &room_3x3(),
-        &[Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }],
+        &[Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX, frame: FrameStyle::Door }],
         [0.0, 0.0, 0.0],
         4.0,
     );
@@ -194,8 +194,8 @@ fn corridor_with_both_ends_active_is_connector_gap() {
     let grid = CellGrid::new(
         &corridor_ew(),
         &[
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX, frame: FrameStyle::Door },
         ],
         [0.0, 0.0, 0.0],
         4.0,
@@ -212,7 +212,7 @@ fn non_connector_cells_unaffected_by_active_facings() {
     // 3x3 with NegX active — cell (2,0,2) is PosX+PosZ corner, unaffected
     let grid = CellGrid::new(
         &room_3x3(),
-        &[Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }],
+        &[Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX, frame: FrameStyle::Door }],
         [0.0, 0.0, 0.0],
         4.0,
     );
@@ -227,10 +227,10 @@ fn multi_story_room() -> RoomTemplate {
     RoomTemplate {
         kind: TemplateKind::Room,
         connectors: vec![
-            Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX },
-            Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX },
-            Connector { offset: [1, 0, 0], facing: ConnectorFacing::NegZ },
-            Connector { offset: [1, 0, 2], facing: ConnectorFacing::PosZ },
+            Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX, frame: FrameStyle::Door },
+            Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX, frame: FrameStyle::Door },
+            Connector { offset: [1, 0, 0], facing: ConnectorFacing::NegZ, frame: FrameStyle::Door },
+            Connector { offset: [1, 0, 2], facing: ConnectorFacing::PosZ, frame: FrameStyle::Door },
         ],
         enemy_spawns: vec![],
         loot_spawns: vec![],
@@ -284,7 +284,7 @@ fn posy_active_connector_prevents_sealed_face() {
     let room_with_vertical_connector = RoomTemplate {
         kind: TemplateKind::Room,
         connectors: vec![
-            Connector { offset: [0, 1, 0], facing: ConnectorFacing::PosY },
+            Connector { offset: [0, 1, 0], facing: ConnectorFacing::PosY, frame: FrameStyle::Door },
         ],
         enemy_spawns: vec![],
         loot_spawns: vec![],
@@ -292,7 +292,7 @@ fn posy_active_connector_prevents_sealed_face() {
     };
     let grid = CellGrid::new(
         &room_with_vertical_connector,
-        &[Connector { offset: [0, 1, 0], facing: ConnectorFacing::PosY }],
+        &[Connector { offset: [0, 1, 0], facing: ConnectorFacing::PosY, frame: FrameStyle::Door }],
         [0.0, 0.0, 0.0],
         4.0,
     );
@@ -312,15 +312,15 @@ fn tall_room_unwired_y1_connector_is_not_gap() {
     let template = RoomTemplate {
         kind: TemplateKind::Room,
         connectors: vec![
-            Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX },
-            Connector { offset: [0, 1, 1], facing: ConnectorFacing::NegX },
+            Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX, frame: FrameStyle::Door },
+            Connector { offset: [0, 1, 1], facing: ConnectorFacing::NegX, frame: FrameStyle::Door },
         ],
         enemy_spawns: vec![],
         loot_spawns: vec![],
         extents: [3, 2, 3],
     };
     // Only the y=0 connector is active.
-    let active = &[Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }];
+    let active = &[Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX, frame: FrameStyle::Door }];
     let grid = CellGrid::new(&template, active, [0.0, 0.0, 0.0], 4.0);
 
     // y=0 cell should be ConnectorGap (it IS wired)
@@ -375,7 +375,7 @@ fn connector_gap_cells_never_occupied() {
     use crate::room_theme::THEME_WAREHOUSE;
     let mut grid = CellGrid::new(
         &room_3x3(),
-        &[Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }],
+        &[Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX, frame: FrameStyle::Door }],
         [0.0, 0.0, 0.0],
         4.0,
     );
@@ -573,7 +573,7 @@ fn no_column_adjacent_to_connector_gap() {
     // Cell [0,0,0] is a BoundaryCorner adjacent to the gap.
     // No column should be placed there regardless of seed.
     use crate::room_theme::THEME_WAREHOUSE;
-    let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX }];
+    let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX, frame: FrameStyle::Door }];
     for seed in 0..200 {
         let mut grid = CellGrid::new(&room_3x3(), &active, [0.0, 0.0, 0.0], 4.0);
         grid.populate(&THEME_WAREHOUSE, seed);

@@ -139,9 +139,9 @@ impl CellGrid {
         cy: i32,
         cz: i32,
     ) -> bool {
-        let candidate = Connector { offset: [cx, cy, cz], facing };
-        active.contains(&candidate)
-            && template.connectors.contains(&candidate)
+        let matches = |c: &Connector| c.offset == [cx, cy, cz] && c.facing == facing;
+        active.iter().any(matches)
+            && template.connectors.iter().any(matches)
     }
 
     /// Check if a set of sealed faces contains at least one perpendicular XZ pair.

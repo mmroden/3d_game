@@ -20,10 +20,10 @@ fn small_room() -> RoomTemplate {
     RoomTemplate {
         kind: TemplateKind::Room,
         connectors: vec![
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ, frame: FrameStyle::Door },
         ],
         enemy_spawns: vec![],
         loot_spawns: vec![],
@@ -35,8 +35,8 @@ fn corridor_ew() -> RoomTemplate {
     RoomTemplate {
         kind: TemplateKind::Corridor,
         connectors: vec![
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX, frame: FrameStyle::Door },
         ],
         enemy_spawns: vec![],
         loot_spawns: vec![],
@@ -48,10 +48,10 @@ fn large_room() -> RoomTemplate {
     RoomTemplate {
         kind: TemplateKind::Room,
         connectors: vec![
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
-            Connector { offset: [1, 0, 0], facing: ConnectorFacing::PosX },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ },
-            Connector { offset: [0, 0, 1], facing: ConnectorFacing::PosZ },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX, frame: FrameStyle::Door },
+            Connector { offset: [1, 0, 0], facing: ConnectorFacing::PosX, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 1], facing: ConnectorFacing::PosZ, frame: FrameStyle::Door },
         ],
         enemy_spawns: vec![],
         loot_spawns: vec![],
@@ -67,12 +67,12 @@ fn hub_6way() -> RoomTemplate {
     RoomTemplate {
         kind: TemplateKind::Room,
         connectors: vec![
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosY },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegY },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosY, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegY, frame: FrameStyle::Door },
         ],
         enemy_spawns: vec![],
         loot_spawns: vec![],
@@ -84,10 +84,10 @@ fn room_3x3() -> RoomTemplate {
     RoomTemplate {
         kind: TemplateKind::Room,
         connectors: vec![
-            Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX },
-            Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX },
-            Connector { offset: [1, 0, 0], facing: ConnectorFacing::NegZ },
-            Connector { offset: [1, 0, 2], facing: ConnectorFacing::PosZ },
+            Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX, frame: FrameStyle::Door },
+            Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX, frame: FrameStyle::Door },
+            Connector { offset: [1, 0, 0], facing: ConnectorFacing::NegZ, frame: FrameStyle::Door },
+            Connector { offset: [1, 0, 2], facing: ConnectorFacing::PosZ, frame: FrameStyle::Door },
         ],
         enemy_spawns: vec![],
         loot_spawns: vec![],

@@ -149,8 +149,8 @@ fn posx_negz_corner_lands_in_correct_quadrant() {
     let placements = assemble_default(
         &small_room(),
         &[
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ, frame: FrameStyle::Door },
         ],
         [0.0, 0.0, 0.0],
     );
@@ -171,8 +171,8 @@ fn negx_posz_corner_lands_in_correct_quadrant() {
     let placements = assemble_default(
         &small_room(),
         &[
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ, frame: FrameStyle::Door },
         ],
         [0.0, 0.0, 0.0],
     );
