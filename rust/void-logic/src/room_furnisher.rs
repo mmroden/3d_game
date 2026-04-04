@@ -1,6 +1,8 @@
 use crate::asset_catalog::{self, WALL_ADJACENT_PROPS, CENTER_PROPS, CORNER_PROPS};
 use crate::room_assembler::MeshPlacement;
 use crate::room_template::{Connector, ConnectorFacing, RoomTemplate};
+use rand::rngs::SmallRng;
+use rand::{RngExt, SeedableRng};
 
 /// Room furnishing density — controls how many props are placed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,7 +31,7 @@ pub fn furnish(
     let mut out = Vec::new();
     let ex = template.extents[0] as i32;
     let ez = template.extents[2] as i32;
-    let mut rng = SimpleRng::new(seed);
+    let mut rng = SmallRng::seed_from_u64(seed);
 
     // Density-driven probability thresholds: (numerator, denominator).
     // A prop is placed when `rng % denom < num`.
@@ -69,9 +71,9 @@ pub fn furnish(
 
                 // Try to place a wall-adjacent prop against one of the walls.
                 if !wall_faces.is_empty() {
-                    let face = wall_faces[rng.next_usize() % wall_faces.len()];
-                    if rng.next_usize() % wall_den < wall_num {
-                        let prop = &WALL_ADJACENT_PROPS[rng.next_usize() % WALL_ADJACENT_PROPS.len()];
+                    let face = wall_faces[rng.random_range(0..wall_faces.len())];
+                    if rng.random_range(0..wall_den) < wall_num {
+                        let prop = &WALL_ADJACENT_PROPS[rng.random_range(0..WALL_ADJACENT_PROPS.len())];
                         // Skip blocking props on reserved path cells.
                         if !(prop.blocks_flight && on_reserved_path) {
                             let (offset_x, offset_z, rot) = wall_adjacent_offset(face, cell_size);
@@ -87,8 +89,8 @@ pub fn furnish(
                 }
 
                 // Corner props where two walls meet — skip if blocking and on path.
-                if wall_faces.len() >= 2 && rng.next_usize() % corner_den < corner_num {
-                    let prop = &CORNER_PROPS[rng.next_usize() % CORNER_PROPS.len()];
+                if wall_faces.len() >= 2 && rng.random_range(0..corner_den) < corner_num {
+                    let prop = &CORNER_PROPS[rng.random_range(0..CORNER_PROPS.len())];
                     if !(prop.blocks_flight && on_reserved_path) {
                         out.push(MeshPlacement {
                             scene: prop.scene,
@@ -101,8 +103,8 @@ pub fn furnish(
                 }
             } else {
                 // Interior cell — place center props.
-                if rng.next_usize() % center_den < center_num {
-                    let prop = &CENTER_PROPS[rng.next_usize() % CENTER_PROPS.len()];
+                if rng.random_range(0..center_den) < center_num {
+                    let prop = &CENTER_PROPS[rng.random_range(0..CENTER_PROPS.len())];
                     // Skip blocking props on reserved path cells.
                     if !(prop.blocks_flight && on_reserved_path) {
                         out.push(MeshPlacement {
@@ -392,34 +394,6 @@ pub fn light_fixtures(
     }
 
     out
-}
-
-// ── RNG ─────────────────────────────────────────────────────────────────
-
-/// Minimal deterministic RNG (xorshift64) for prop selection.
-struct SimpleRng {
-    state: u64,
-}
-
-impl SimpleRng {
-    fn new(seed: u64) -> Self {
-        Self {
-            state: if seed == 0 { 1 } else { seed },
-        }
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.state;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.state = x;
-        x
-    }
-
-    fn next_usize(&mut self) -> usize {
-        self.next_u64() as usize
-    }
 }
 
 #[cfg(test)]
