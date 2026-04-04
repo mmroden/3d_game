@@ -6,7 +6,7 @@ use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use rand::seq::IndexedRandom;
 
-use void_logic::generator::{generate, GeneratorConfig};
+use void_logic::generator::{generate, rooms_for_level, GeneratorConfig};
 use void_logic::level_assembly;
 use void_logic::portal as portal_sys;
 use void_logic::enemy_type;
@@ -49,7 +49,7 @@ impl INode3D for LevelManager {
 
     fn ready(&mut self) {
         let seed = self.seed;
-        let target = self.target_rooms as u32;
+        let target = rooms_for_level(self.current_level as u32) as u32;
         self.generate_level(seed, target);
     }
 }

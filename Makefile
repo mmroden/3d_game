@@ -71,6 +71,9 @@ assets: build
 	@echo "==> Enabling anisotropic texture filtering on VisualShader materials..."
 	@python3 -c "import re,sys;p=sys.argv[1];t=open(p).read();t=re.sub(r'(\[sub_resource type=\"VisualShaderNodeTexture2DParameter\"[^\]]*\]\nparameter_name = [^\n]+)',r'\1\ntexture_filter = 6',t);open(p,'w').write(t)" \
 		$(GODOT_DIR)/addons/quaternius/materials/M_Trim_Base.tres
+	@echo "==> Reimporting assets (pass 3: with restored materials)..."
+	@rm -f $(GODOT_DIR)/.godot/uid_cache.bin
+	$(GODOT) --headless --import --path $(GODOT_DIR)
 	@echo "Import complete."
 
 test-godot: build

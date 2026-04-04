@@ -52,12 +52,94 @@ pub fn make_corridor(facing: ConnectorFacing, length: u32) -> RoomTemplate {
     }
 }
 
+/// Try placing a child room connected to a parent via a specific connector pair.
+/// Returns `Some((corridor_idx, child_idx))` on success.
+fn try_place_child(
+    level: &mut LevelGraph,
+    parent_level_idx: petgraph::graph::NodeIndex,
+    parent_ci: usize,
+    child_room: &RoomTemplate,
+    child_ci: usize,
+    max_probe: i32,
+) -> Option<(petgraph::graph::NodeIndex, petgraph::graph::NodeIndex)> {
+    let parent_room = level.room(parent_level_idx)?;
+    let parent_pos = parent_room.grid_pos;
+    let parent_connector = &parent_room.template.connectors[parent_ci];
+    let parent_facing = parent_connector.facing;
+    let direction = parent_facing.grid_offset();
+
+    let corridor_start = [
+        parent_pos[0] + parent_connector.offset[0] + direction[0],
+        parent_pos[1] + parent_connector.offset[1] + direction[1],
+        parent_pos[2] + parent_connector.offset[2] + direction[2],
+    ];
+
+    let child_connector = &child_room.connectors[child_ci];
+
+    for corridor_len in 1..=max_probe {
+        let corridor_end = [
+            corridor_start[0] + direction[0] * (corridor_len - 1),
+            corridor_start[1] + direction[1] * (corridor_len - 1),
+            corridor_start[2] + direction[2] * (corridor_len - 1),
+        ];
+
+        let child_connector_cell = [
+            corridor_end[0] + direction[0],
+            corridor_end[1] + direction[1],
+            corridor_end[2] + direction[2],
+        ];
+        let child_pos = [
+            child_connector_cell[0] - child_connector.offset[0],
+            child_connector_cell[1] - child_connector.offset[1],
+            child_connector_cell[2] - child_connector.offset[2],
+        ];
+
+        let corridor = make_corridor(parent_facing, corridor_len as u32);
+        let corridor_origin = corridor_start_origin(corridor_start, parent_facing, &corridor);
+
+        let corridor_cells = cells_for_at(&corridor, corridor_origin);
+        if !corridor_cells.iter().all(|c| level.is_free(*c)) {
+            continue;
+        }
+
+        let child_cells = cells_for_at(child_room, child_pos);
+        if !child_cells.iter().all(|c| level.is_free(*c)) {
+            continue;
+        }
+
+        if let Ok(corridor_idx) = level.place_room(corridor, corridor_origin) {
+            let _ = level.connect_adjacent(parent_level_idx, corridor_idx);
+
+            if let Ok(child_idx) = level.place_room(child_room.clone(), child_pos) {
+                let _ = level.connect_adjacent(corridor_idx, child_idx);
+                return Some((corridor_idx, child_idx));
+            }
+        }
+        break;
+    }
+
+    None
+}
+
+/// Build all compatible connector pairs between a parent and child room.
+fn all_compatible_pairs(parent: &RoomTemplate, child: &RoomTemplate) -> Vec<(usize, usize)> {
+    let mut pairs = Vec::new();
+    for (pi, pc) in parent.connectors.iter().enumerate() {
+        for (ci, cc) in child.connectors.iter().enumerate() {
+            if pc.facing.opposite() == cc.facing {
+                pairs.push((pi, ci));
+            }
+        }
+    }
+    pairs
+}
+
 /// Assign grid positions to rooms in an abstract graph, producing a fully
 /// positioned LevelGraph with dynamically generated corridors.
 ///
-/// BFS from the root. For each edge, probe outward from the parent connector
-/// until the child room fits without overlapping. Generate a corridor to
-/// fill the gap.
+/// BFS from the root. For each edge, try the designated connector pair first,
+/// then fall back to all compatible pairs. Deferred rooms get a retry pass
+/// against every already-placed room.
 pub fn assign_positions(abstract_graph: &AbstractGraph) -> LevelGraph {
     use petgraph::visit::Bfs;
     use std::collections::{HashMap, HashSet};
@@ -65,6 +147,8 @@ pub fn assign_positions(abstract_graph: &AbstractGraph) -> LevelGraph {
     let mut level = LevelGraph::new();
     let mut placed: HashMap<petgraph::graph::NodeIndex, petgraph::graph::NodeIndex> = HashMap::new();
     let mut visited: HashSet<petgraph::graph::NodeIndex> = HashSet::new();
+
+    let max_probe: i32 = 100;
 
     // Place root at origin.
     let root = abstract_graph.root();
@@ -74,10 +158,12 @@ pub fn assign_positions(abstract_graph: &AbstractGraph) -> LevelGraph {
     placed.insert(root, root_level_idx);
     visited.insert(root);
 
+    // Track rooms that couldn't be placed during BFS for a retry pass.
+    let mut deferred: Vec<petgraph::graph::NodeIndex> = Vec::new();
+
     // BFS traversal.
     let mut bfs = Bfs::new(&abstract_graph.graph, root);
-    // Skip root (already placed).
-    bfs.next(&abstract_graph.graph);
+    bfs.next(&abstract_graph.graph); // skip root
 
     while let Some(abs_node) = bfs.next(&abstract_graph.graph) {
         if visited.contains(&abs_node) {
@@ -85,98 +171,77 @@ pub fn assign_positions(abstract_graph: &AbstractGraph) -> LevelGraph {
         }
         visited.insert(abs_node);
 
-        // Find the edge connecting this node to its BFS parent (an already-placed node).
         let edge = abstract_graph.edges().find(|(from, to, _)| {
             (*to == abs_node && placed.contains_key(from))
                 || (*from == abs_node && placed.contains_key(to))
         });
 
         let Some((edge_from, edge_to, pair)) = edge else {
+            deferred.push(abs_node);
             continue;
         };
 
-        // Determine which end is the parent (already placed) and which is the child.
-        let (parent_abs, child_abs, parent_ci, child_ci) = if placed.contains_key(&edge_from) {
-            (edge_from, edge_to, pair.from_connector_idx, pair.to_connector_idx)
-        } else {
-            (edge_to, edge_from, pair.to_connector_idx, pair.from_connector_idx)
-        };
+        let (parent_abs, _child_abs, designated_pci, designated_cci) =
+            if placed.contains_key(&edge_from) {
+                (edge_from, edge_to, pair.from_connector_idx, pair.to_connector_idx)
+            } else {
+                (edge_to, edge_from, pair.to_connector_idx, pair.from_connector_idx)
+            };
 
         let parent_level_idx = placed[&parent_abs];
-        let parent_room = level.room(parent_level_idx).unwrap();
-        let parent_pos = parent_room.grid_pos;
-        let parent_connector = &parent_room.template.connectors[parent_ci];
-        let parent_facing = parent_connector.facing;
-        let direction = parent_facing.grid_offset();
+        let child_room = abstract_graph.room(abs_node).unwrap().clone();
 
-        // The cell the parent connector points to (one step outside the room).
-        let corridor_start = [
-            parent_pos[0] + parent_connector.offset[0] + direction[0],
-            parent_pos[1] + parent_connector.offset[1] + direction[1],
-            parent_pos[2] + parent_connector.offset[2] + direction[2],
-        ];
-
-        let child_room = abstract_graph.room(child_abs).unwrap().clone();
-        let child_connector = &child_room.connectors[child_ci];
-
-        // Probe outward to find a clear position for the child.
-        // Start at distance 1 (minimum corridor length).
-        let max_probe: i32 = 50;
-        let mut placed_child = false;
-
-        for corridor_len in 1..=max_probe {
-            let corridor_end = [
-                corridor_start[0] + direction[0] * (corridor_len - 1),
-                corridor_start[1] + direction[1] * (corridor_len - 1),
-                corridor_start[2] + direction[2] * (corridor_len - 1),
-            ];
-
-            // The child's connector must be at the cell after the corridor end.
-            let child_connector_cell = [
-                corridor_end[0] + direction[0],
-                corridor_end[1] + direction[1],
-                corridor_end[2] + direction[2],
-            ];
-            let child_pos = [
-                child_connector_cell[0] - child_connector.offset[0],
-                child_connector_cell[1] - child_connector.offset[1],
-                child_connector_cell[2] - child_connector.offset[2],
-            ];
-
-            // Check if both the corridor and child would fit.
-            let corridor = make_corridor(parent_facing, corridor_len as u32); // i32→u32 safe: corridor_len ≥ 1
-            let corridor_origin = corridor_start_origin(corridor_start, parent_facing, &corridor);
-
-            // Check corridor cells.
-            let corridor_cells = cells_for_at(&corridor, corridor_origin);
-            let corridor_clear = corridor_cells.iter().all(|c| level.is_free(*c));
-            if !corridor_clear {
-                continue;
-            }
-
-            // Check child cells.
-            let child_cells = cells_for_at(&child_room, child_pos);
-            let child_clear = child_cells.iter().all(|c| level.is_free(*c));
-            if !child_clear {
-                continue;
-            }
-
-            // Place corridor and child.
-            if let Ok(corridor_idx) = level.place_room(corridor, corridor_origin) {
-                let _ = level.connect_adjacent(parent_level_idx, corridor_idx);
-
-                if let Ok(child_idx) = level.place_room(child_room.clone(), child_pos) {
-                    let _ = level.connect_adjacent(corridor_idx, child_idx);
-                    placed.insert(child_abs, child_idx);
-                    placed_child = true;
-                }
-            }
-            break;
+        // Try the designated connector pair first.
+        if let Some((_corr, child_idx)) =
+            try_place_child(&mut level, parent_level_idx, designated_pci, &child_room, designated_cci, max_probe)
+        {
+            placed.insert(abs_node, child_idx);
+            continue;
         }
 
-        if !placed_child {
-            // If we couldn't place, skip this room.
-            // The level will still be connected via other paths.
+        // Fall back: try all compatible pairs between this parent and child.
+        let parent_template = level.room(parent_level_idx).unwrap().template.clone();
+        let pairs = all_compatible_pairs(&parent_template, &child_room);
+        let mut success = false;
+        for (pci, cci) in &pairs {
+            if *pci == designated_pci && *cci == designated_cci {
+                continue; // already tried
+            }
+            if let Some((_corr, child_idx)) =
+                try_place_child(&mut level, parent_level_idx, *pci, &child_room, *cci, max_probe)
+            {
+                placed.insert(abs_node, child_idx);
+                success = true;
+                break;
+            }
+        }
+
+        if !success {
+            deferred.push(abs_node);
+        }
+    }
+
+    // Retry pass: try deferred rooms against ALL placed rooms.
+    for abs_node in &deferred {
+        let child_room = abstract_graph.room(*abs_node).unwrap().clone();
+        let placed_snapshot: Vec<_> = placed.values().copied().collect();
+
+        let mut success = false;
+        for parent_level_idx in &placed_snapshot {
+            let parent_template = level.room(*parent_level_idx).unwrap().template.clone();
+            let pairs = all_compatible_pairs(&parent_template, &child_room);
+            for (pci, cci) in &pairs {
+                if let Some((_corr, child_idx)) =
+                    try_place_child(&mut level, *parent_level_idx, *pci, &child_room, *cci, max_probe)
+                {
+                    placed.insert(*abs_node, child_idx);
+                    success = true;
+                    break;
+                }
+            }
+            if success {
+                break;
+            }
         }
     }
 
@@ -402,6 +467,27 @@ mod tests {
                         room.grid_pos, room.template.extents);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn fifteen_rooms_mostly_placed() {
+        use crate::generator;
+        // With 15 rooms requested, at least 12 should survive spatial placement.
+        for seed in 0..20 {
+            let config = GeneratorConfig {
+                seed,
+                max_rooms: 15,
+                min_room_xz: 3,
+                max_room_xz: 6,
+                min_room_y: 1,
+                max_room_y: 6,
+            };
+            let level = generator::generate(&config).expect("generation should succeed");
+            let rooms = level.room_indices()
+                .filter(|&idx| level.room(idx).map(|r| r.template.kind == TemplateKind::Room).unwrap_or(false))
+                .count();
+            assert!(rooms >= 12, "seed {seed}: expected ≥12 rooms, got {rooms}");
         }
     }
 

@@ -194,11 +194,13 @@ impl CellGrid {
 
             match cell.kind {
                 CellKind::BoundaryCorner => {
-                    // Skip columns near entrances (within 2 cells).
+                    // Skip columns near entrances (within 2 cells on XZ plane).
+                    // Ignore Y: columns stack through all stories, and gaps
+                    // may exist at any Y level.
                     let near_gap = gap_positions.iter().any(|gap| {
                         let dx = (gap[0] - cell.grid_pos[0]).abs();
                         let dz = (gap[2] - cell.grid_pos[2]).abs();
-                        gap[1] == cell.grid_pos[1] && dx <= 2 && dz <= 2
+                        dx <= 2 && dz <= 2
                     });
                     if !theme.palette.corner.is_empty() && !near_gap && rng.next_usize() % corner_den < corner_num {
                         let prop = &theme.palette.corner[rng.next_usize() % theme.palette.corner.len()];
