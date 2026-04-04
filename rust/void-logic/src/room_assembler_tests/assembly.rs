@@ -54,8 +54,8 @@ fn every_xz_sealed_boundary_has_wall_or_corner() {
             let has_corner = placements.iter().any(|p| p.scene == CORNER && near_center(p));
             assert!(
                 has_wall || has_corner,
-                "room '{}' cell {:?}: XZ sealed boundary should have WALL or CORNER",
-                template.id, cell.grid_pos
+                "room {:?} cell {:?}: XZ sealed boundary should have WALL or CORNER",
+                template.extents, cell.grid_pos
             );
         }
     }
@@ -459,7 +459,6 @@ fn negy_connector_removes_floor_no_hatch() {
 #[test]
 fn multi_story_room_geometry_fits_within_height() {
     let two_story = RoomTemplate {
-        id: "test_2story",
         kind: TemplateKind::Room,
         connectors: vec![],
         enemy_spawns: vec![],
@@ -749,7 +748,6 @@ fn no_geometry_at_interior_positions() {
 #[test]
 fn multi_story_room_has_floor_only_at_bottom_ceiling_only_at_top() {
     let two_story = RoomTemplate {
-        id: "test_2story",
         kind: TemplateKind::Room,
         connectors: vec![],
         enemy_spawns: vec![],

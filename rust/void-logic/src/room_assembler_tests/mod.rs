@@ -18,7 +18,6 @@ fn assemble_default(
 
 fn small_room() -> RoomTemplate {
     RoomTemplate {
-        id: "test_small",
         kind: TemplateKind::Room,
         connectors: vec![
             Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
@@ -34,7 +33,6 @@ fn small_room() -> RoomTemplate {
 
 fn corridor_ew() -> RoomTemplate {
     RoomTemplate {
-        id: "test_corridor_ew",
         kind: TemplateKind::Corridor,
         connectors: vec![
             Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
@@ -48,7 +46,6 @@ fn corridor_ew() -> RoomTemplate {
 
 fn large_room() -> RoomTemplate {
     RoomTemplate {
-        id: "test_large",
         kind: TemplateKind::Room,
         connectors: vec![
             Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
@@ -68,7 +65,6 @@ fn count(placements: &[MeshPlacement], scene: &str) -> usize {
 
 fn hub_6way() -> RoomTemplate {
     RoomTemplate {
-        id: "test_hub_6way",
         kind: TemplateKind::Room,
         connectors: vec![
             Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
@@ -86,7 +82,6 @@ fn hub_6way() -> RoomTemplate {
 
 fn room_3x3() -> RoomTemplate {
     RoomTemplate {
-        id: "test_3x3",
         kind: TemplateKind::Room,
         connectors: vec![
             Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX },

@@ -83,7 +83,6 @@ pub enum TemplateKind {
 /// template IDs to actual scene files.
 #[derive(Debug, Clone)]
 pub struct RoomTemplate {
-    pub id: &'static str,
     pub kind: TemplateKind,
     pub connectors: Vec<Connector>,
     pub enemy_spawns: Vec<SpawnPoint>,

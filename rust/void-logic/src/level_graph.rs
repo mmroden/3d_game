@@ -255,6 +255,25 @@ impl LevelGraph {
         self.graph.node_weight(index)
     }
 
+    /// Find the room node farthest from `start` by BFS hop count.
+    /// Only considers Room nodes, not corridors.
+    pub fn farthest_room_from(&self, start: NodeIndex) -> Option<NodeIndex> {
+        use petgraph::visit::Bfs;
+
+        let mut bfs = Bfs::new(&self.graph, start);
+        let mut farthest = None;
+
+        while let Some(node) = bfs.next(&self.graph) {
+            if let Some(room) = self.graph.node_weight(node) {
+                if room.template.kind == crate::room_template::TemplateKind::Room {
+                    farthest = Some(node);
+                }
+            }
+        }
+
+        farthest
+    }
+
     /// Iterate over all room node indices.
     pub fn room_indices(&self) -> impl Iterator<Item = NodeIndex> + '_ {
         self.graph.node_indices()
@@ -330,7 +349,6 @@ mod tests {
 
     fn room_1x1_east_west() -> RoomTemplate {
         RoomTemplate {
-            id: "1x1_ew",
             kind: TemplateKind::Room,
             connectors: vec![
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
@@ -344,7 +362,6 @@ mod tests {
 
     fn room_2x1_east_west() -> RoomTemplate {
         RoomTemplate {
-            id: "2x1_ew",
             kind: TemplateKind::Room,
             connectors: vec![
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
@@ -358,7 +375,6 @@ mod tests {
 
     fn room_1x1_north_south() -> RoomTemplate {
         RoomTemplate {
-            id: "1x1_ns",
             kind: TemplateKind::Room,
             connectors: vec![
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ },
@@ -372,7 +388,6 @@ mod tests {
 
     fn corridor_1x1_east_west() -> RoomTemplate {
         RoomTemplate {
-            id: "corridor_ew",
             kind: TemplateKind::Corridor,
             connectors: vec![
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
@@ -742,7 +757,6 @@ mod tests {
 
     fn room_3x1x3_hub_6way() -> RoomTemplate {
         RoomTemplate {
-            id: "3x3_hub",
             kind: TemplateKind::Room,
             connectors: vec![
                 Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX },
@@ -760,7 +774,6 @@ mod tests {
 
     fn room_1x1_vertical() -> RoomTemplate {
         RoomTemplate {
-            id: "1x1_vert",
             kind: TemplateKind::Room,
             connectors: vec![
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosY },
@@ -854,7 +867,6 @@ mod tests {
 
     fn room_3x2x3_tall() -> RoomTemplate {
         RoomTemplate {
-            id: "3x2x3_tall",
             kind: TemplateKind::Room,
             connectors: vec![
                 Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX },
@@ -904,7 +916,6 @@ mod tests {
 
     fn room_3x1x3_multi_negz() -> RoomTemplate {
         RoomTemplate {
-            id: "3x3_multi_negz",
             kind: TemplateKind::Room,
             connectors: vec![
                 Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ },
@@ -930,5 +941,27 @@ mod tests {
 
         assert_eq!(graph.edge_count(), 2, "two connections on the same face");
         assert!(graph.is_fully_connected());
+    }
+
+    #[test]
+    fn farthest_room_from_linear_chain() {
+        // Build: R0 -- C -- R1 -- C -- R2 -- C -- R3
+        let mut graph = LevelGraph::new();
+        let r0 = graph.place_room(room_1x1_east_west(), [0, 0, 0]).unwrap();
+        let c0 = graph.place_room(corridor_1x1_east_west(), [1, 0, 0]).unwrap();
+        graph.connect_adjacent(r0, c0).unwrap();
+        let r1 = graph.place_room(room_1x1_east_west(), [2, 0, 0]).unwrap();
+        graph.connect_adjacent(c0, r1).unwrap();
+        let c1 = graph.place_room(corridor_1x1_east_west(), [3, 0, 0]).unwrap();
+        graph.connect_adjacent(r1, c1).unwrap();
+        let r2 = graph.place_room(room_1x1_east_west(), [4, 0, 0]).unwrap();
+        graph.connect_adjacent(c1, r2).unwrap();
+        let c2 = graph.place_room(corridor_1x1_east_west(), [5, 0, 0]).unwrap();
+        graph.connect_adjacent(r2, c2).unwrap();
+        let r3 = graph.place_room(room_1x1_east_west(), [6, 0, 0]).unwrap();
+        graph.connect_adjacent(c2, r3).unwrap();
+
+        let farthest = graph.farthest_room_from(r0);
+        assert_eq!(farthest, Some(r3), "farthest room from r0 should be r3");
     }
 }

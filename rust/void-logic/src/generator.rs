@@ -1,145 +1,139 @@
-use rand::prelude::IndexedRandom;
-use rand::prelude::SliceRandom;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
+use crate::abstract_graph;
 use crate::level_graph::LevelGraph;
-use crate::room_template::RoomTemplate;
+use crate::room_template::{Connector, ConnectorFacing, RoomTemplate, SpawnPoint, TemplateKind};
+use crate::spatial_layout;
 
 /// Configuration for level generation.
 pub struct GeneratorConfig {
     pub seed: u64,
-    /// Room templates to choose from.
-    pub room_templates: Vec<RoomTemplate>,
-    /// Corridor templates used to connect rooms.
-    pub corridor_templates: Vec<RoomTemplate>,
-    /// Desired number of rooms (not counting corridors).
-    pub target_room_count: usize,
+    /// Maximum number of rooms. If 0, defaults to 200.
+    pub max_rooms: usize,
+    /// Minimum XZ extent for generated rooms.
+    pub min_room_xz: u32,
+    /// Maximum XZ extent for generated rooms.
+    pub max_room_xz: u32,
+    /// Minimum Y extent (stories) for generated rooms.
+    pub min_room_y: u32,
+    /// Maximum Y extent (stories) for generated rooms.
+    pub max_room_y: u32,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum GenerateError {
-    NoRoomTemplates,
-    NoCorridorTemplates,
-    ZeroTargetRooms,
-    IncompatibleTemplates,
+    Empty,
 }
 
-/// Generate a level from a seed and template pool.
+/// Generate a room shape procedurally with random extents and auto-computed connectors.
+pub(crate) fn generate_room(rng: &mut SmallRng, config: &GeneratorConfig) -> RoomTemplate {
+    use rand::RngExt;
+
+    let ex = rng.random_range(config.min_room_xz..=config.max_room_xz);
+    let ey = rng.random_range(config.min_room_y..=config.max_room_y);
+    let ez = rng.random_range(config.min_room_xz..=config.max_room_xz);
+
+    let connectors = auto_connectors(ex, ey, ez, rng);
+    let enemy_spawns = auto_enemy_spawns(ex, ey, ez, rng);
+
+    RoomTemplate {
+        kind: TemplateKind::Room,
+        connectors,
+        enemy_spawns,
+        loot_spawns: vec![],
+        extents: [ex, ey, ez],
+    }
+}
+
+/// Compute connectors for a room with the given extents.
+fn auto_connectors(ex: u32, ey: u32, ez: u32, rng: &mut SmallRng) -> Vec<Connector> {
+    use ConnectorFacing::*;
+
+    let mid_x = (ex as i32) / 2;
+    let mid_z = (ez as i32) / 2;
+    let mut connectors = vec![
+        Connector { offset: [0, 0, mid_z], facing: NegX },
+        Connector { offset: [ex as i32 - 1, 0, mid_z], facing: PosX },
+        Connector { offset: [mid_x, 0, 0], facing: NegZ },
+        Connector { offset: [mid_x, 0, ez as i32 - 1], facing: PosZ },
+    ];
+
+    // All rooms get vertical connectors.
+    connectors.push(Connector { offset: [mid_x, (ey as i32) - 1, mid_z], facing: PosY });
+    connectors.push(Connector { offset: [mid_x, 0, mid_z], facing: NegY });
+
+    // Multi-story rooms also get upper-story horizontal connectors.
+    if ey > 1 {
+        let top_y = (ey as i32) - 1;
+        connectors.push(Connector { offset: [0, top_y, mid_z], facing: NegX });
+        connectors.push(Connector { offset: [ex as i32 - 1, top_y, mid_z], facing: PosX });
+    }
+
+    // Extra connectors on larger faces.
+    let _ = rng;
+    if ex >= 5 {
+        let q1 = (ez as i32) / 4;
+        let q3 = (ez as i32) * 3 / 4;
+        if q1 != mid_z {
+            connectors.push(Connector { offset: [0, 0, q1], facing: NegX });
+            connectors.push(Connector { offset: [ex as i32 - 1, 0, q1], facing: PosX });
+        }
+        if q3 != mid_z {
+            connectors.push(Connector { offset: [0, 0, q3], facing: NegX });
+            connectors.push(Connector { offset: [ex as i32 - 1, 0, q3], facing: PosX });
+        }
+    }
+    if ez >= 5 {
+        let q1 = (ex as i32) / 4;
+        let q3 = (ex as i32) * 3 / 4;
+        if q1 != mid_x {
+            connectors.push(Connector { offset: [q1, 0, 0], facing: NegZ });
+            connectors.push(Connector { offset: [q1, 0, ez as i32 - 1], facing: PosZ });
+        }
+        if q3 != mid_x {
+            connectors.push(Connector { offset: [q3, 0, 0], facing: NegZ });
+            connectors.push(Connector { offset: [q3, 0, ez as i32 - 1], facing: PosZ });
+        }
+    }
+
+    connectors
+}
+
+/// Generate enemy spawn points at random interior positions.
+fn auto_enemy_spawns(ex: u32, ey: u32, ez: u32, rng: &mut SmallRng) -> Vec<SpawnPoint> {
+    use rand::RngExt;
+
+    let cell_size = 4.0_f32;
+    let story_height = 5.0_f32;
+    let count = rng.random_range(1..=3u32);
+    (0..count).map(|_| {
+        let x = rng.random_range(1.0..(ex as f32 - 1.0).max(1.5)) * cell_size;
+        let y = rng.random_range(0.0..ey as f32) * story_height;
+        let z = rng.random_range(1.0..(ez as f32 - 1.0).max(1.5)) * cell_size;
+        SpawnPoint { position: [x, y, z] }
+    }).collect()
+}
+
+/// Generate a level using the sweep pipeline:
+///   Sweep 1: Build abstract topology (rooms + edges, no positions)
+///   Sweep 2: Assign spatial positions (rooms placed, corridors generated)
 pub fn generate(config: &GeneratorConfig) -> Result<LevelGraph, GenerateError> {
-    if config.room_templates.is_empty() {
-        return Err(GenerateError::NoRoomTemplates);
-    }
-    if config.corridor_templates.is_empty() {
-        return Err(GenerateError::NoCorridorTemplates);
-    }
-    if config.target_room_count == 0 {
-        return Err(GenerateError::ZeroTargetRooms);
-    }
+    let room_count = if config.max_rooms > 0 { config.max_rooms } else { 200 };
 
     let mut rng = SmallRng::seed_from_u64(config.seed);
-    let mut graph = LevelGraph::new();
 
-    let first_template = config.room_templates.choose(&mut rng)
-        .expect("already validated non-empty")
-        .clone();
-    let first_idx = graph.place_room(first_template, [0, 0, 0])
-        .expect("origin placement cannot overlap");
+    // Sweep 1: topology.
+    let abstract_graph = abstract_graph::generate_topology(&mut rng, room_count, config);
 
-    let mut frontier = vec![first_idx];
-    let mut rooms_placed: usize = 1;
+    // Sweep 2: spatial layout.
+    let level = spatial_layout::assign_positions(&abstract_graph);
 
-    while rooms_placed < config.target_room_count {
-        if frontier.is_empty() {
-            return Err(GenerateError::IncompatibleTemplates);
-        }
-
-        let &source_idx = frontier.choose(&mut rng)
-            .expect("already checked non-empty");
-        // Extract what we need from the source room before mutating the graph.
-        let (source_origin, source_connector_count, source_connectors) = {
-            let source = graph.room(source_idx)
-                .expect("frontier contains valid indices");
-            (source.grid_pos, source.template.connectors.len(), source.template.connectors.clone())
-        };
-
-        // Try each connector on the source in random order
-        let mut connector_order: Vec<usize> = (0..source_connector_count).collect();
-        connector_order.shuffle(&mut rng);
-
-        let mut placed = false;
-        for ci in connector_order {
-            let connector = &source_connectors[ci];
-            let target_pos = connector.target_cell(source_origin);
-
-            if !graph.is_free(target_pos) {
-                continue;
-            }
-
-            // Find a corridor template that can mate with this connector
-            let needed_facing = connector.facing.opposite();
-            let corridor_candidates: Vec<_> = config.corridor_templates.iter()
-                .filter(|t| t.connectors.iter().any(|c| c.facing == needed_facing))
-                .collect();
-
-            let Some(&corridor_template) = corridor_candidates.choose(&mut rng) else {
-                continue;
-            };
-
-            // Find the corridor's outgoing connector before consuming the template.
-            let outgoing = corridor_template.connectors.iter()
-                .find(|c| c.facing != needed_facing)
-                .copied();
-
-            // Place the corridor
-            let Ok(corridor_idx) = graph.place_room(corridor_template.clone(), target_pos) else {
-                continue;
-            };
-            let _ = graph.connect_adjacent(source_idx, corridor_idx);
-
-            let Some(out_connector) = outgoing else {
-                // Corridor only faces one way — dead end, remove it
-                continue;
-            };
-
-            let target_cell = out_connector.target_cell(target_pos);
-
-            // Find a room template that mates with the corridor's outgoing connector
-            let room_needed = out_connector.facing.opposite();
-            let room_candidates: Vec<_> = config.room_templates.iter()
-                .filter(|t| t.connectors.iter().any(|c| c.facing == room_needed))
-                .collect();
-
-            if let Some(&room_template) = room_candidates.choose(&mut rng) {
-                // Find the matching connector on the room to compute the correct origin.
-                // The room origin = target_cell - connector.offset so the connector
-                // aligns with the corridor's outgoing target.
-                let matching_connector = room_template.connectors.iter()
-                    .find(|c| c.facing == room_needed);
-                let Some(mc) = matching_connector else { continue };
-                let room_pos = [
-                    target_cell[0] - mc.offset[0],
-                    target_cell[1] - mc.offset[1],
-                    target_cell[2] - mc.offset[2],
-                ];
-
-                if let Ok(new_idx) = graph.place_room(room_template.clone(), room_pos) {
-                    let _ = graph.connect_adjacent(corridor_idx, new_idx);
-                    frontier.push(new_idx);
-                    rooms_placed += 1;
-                    placed = true;
-                    break;
-                }
-            }
-        }
-
-        if !placed {
-            // Remove exhausted node from frontier
-            frontier.retain(|&idx| idx != source_idx);
-        }
+    if level.room_count() == 0 {
+        return Err(GenerateError::Empty);
     }
 
-    Ok(graph)
+    Ok(level)
 }
 
 #[cfg(test)]
@@ -147,315 +141,158 @@ mod tests {
     use super::*;
     use crate::room_template::*;
 
-    // --- Fixtures ---
-
-    fn basic_room() -> RoomTemplate {
-        RoomTemplate {
-            id: "room_4way",
-            kind: TemplateKind::Room,
-            connectors: vec![
-                Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
-                Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
-                Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ },
-                Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ },
-            ],
-            enemy_spawns: vec![
-                SpawnPoint { position: [0.0, 0.0, 0.0] },
-            ],
-            loot_spawns: vec![],
-            extents: [1, 1, 1],
-        }
-    }
-
-    fn corridor_ew() -> RoomTemplate {
-        RoomTemplate {
-            id: "corridor_ew",
-            kind: TemplateKind::Corridor,
-            connectors: vec![
-                Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
-                Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
-            ],
-            enemy_spawns: vec![],
-            loot_spawns: vec![],
-            extents: [1, 1, 1],
-        }
-    }
-
-    fn corridor_ns() -> RoomTemplate {
-        RoomTemplate {
-            id: "corridor_ns",
-            kind: TemplateKind::Corridor,
-            connectors: vec![
-                Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ },
-                Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ },
-            ],
-            enemy_spawns: vec![],
-            loot_spawns: vec![],
-            extents: [1, 1, 1],
-        }
-    }
-
-    fn basic_config(seed: u64, target: usize) -> GeneratorConfig {
+    fn test_config(seed: u64) -> GeneratorConfig {
         GeneratorConfig {
             seed,
-            room_templates: vec![basic_room()],
-            corridor_templates: vec![corridor_ew(), corridor_ns()],
-            target_room_count: target,
+            max_rooms: 10,
+            min_room_xz: 3,
+            max_room_xz: 6,
+            min_room_y: 1,
+            max_room_y: 6,
         }
     }
 
-    fn count_by_kind(level: &LevelGraph, kind: TemplateKind) -> usize {
-        level.room_indices()
-            .filter(|&idx| {
-                level.room(idx)
-                    .map(|r| r.template.kind == kind)
-                    .unwrap_or(false)
-            })
-            .count()
-    }
-
-    fn layout_snapshot(level: &LevelGraph) -> Vec<(&'static str, [i32; 3])> {
-        let mut snap: Vec<_> = level.room_indices()
-            .filter_map(|idx| {
-                let r = level.room(idx)?;
-                Some((r.template.id, r.grid_pos))
-            })
-            .collect();
-        snap.sort_by_key(|(_, pos)| *pos);
-        snap
-    }
-
-    // --- Error path tests ---
+    // --- Procedural room shape tests ---
 
     #[test]
-    fn empty_room_templates_returns_error() {
-        let config = GeneratorConfig {
-            seed: 42,
-            room_templates: vec![],
-            corridor_templates: vec![corridor_ew()],
-            target_room_count: 5,
-        };
-        let result = generate(&config);
-        assert!(
-            matches!(result, Err(GenerateError::NoRoomTemplates)),
-            "expected NoRoomTemplates, got {result:?}"
-        );
+    fn generated_rooms_have_varied_extents() {
+        let mut rng = SmallRng::seed_from_u64(42);
+        let config = test_config(42);
+        let mut extent_set = std::collections::HashSet::new();
+        for _ in 0..20 {
+            let room = generate_room(&mut rng, &config);
+            extent_set.insert(room.extents);
+        }
+        assert!(extent_set.len() >= 3);
     }
 
     #[test]
-    fn empty_corridor_templates_returns_error() {
-        let config = GeneratorConfig {
-            seed: 42,
-            room_templates: vec![basic_room()],
-            corridor_templates: vec![],
-            target_room_count: 5,
-        };
-        let result = generate(&config);
-        assert!(
-            matches!(result, Err(GenerateError::NoCorridorTemplates)),
-            "expected NoCorridorTemplates, got {result:?}"
-        );
+    fn generated_room_extents_within_bounds() {
+        let mut rng = SmallRng::seed_from_u64(42);
+        let config = test_config(42);
+        for _ in 0..50 {
+            let room = generate_room(&mut rng, &config);
+            assert!(room.extents[0] >= config.min_room_xz && room.extents[0] <= config.max_room_xz);
+            assert!(room.extents[1] >= config.min_room_y && room.extents[1] <= config.max_room_y);
+            assert!(room.extents[2] >= config.min_room_xz && room.extents[2] <= config.max_room_xz);
+        }
     }
 
     #[test]
-    fn zero_target_returns_error() {
-        let result = generate(&basic_config(42, 0));
-        assert!(
-            matches!(result, Err(GenerateError::ZeroTargetRooms)),
-            "expected ZeroTargetRooms, got {result:?}"
-        );
+    fn generated_room_has_at_least_four_connectors() {
+        let mut rng = SmallRng::seed_from_u64(42);
+        let config = test_config(42);
+        for _ in 0..50 {
+            let room = generate_room(&mut rng, &config);
+            assert!(room.connectors.len() >= 4);
+        }
     }
 
-    // --- Happy path, built incrementally ---
-
     #[test]
-    fn generate_target_one_returns_exactly_one_room() {
-        let level = generate(&basic_config(42, 1)).expect("generation should succeed");
-        let rooms = count_by_kind(&level, TemplateKind::Room);
-        assert_eq!(rooms, 1, "expected exactly 1 room, got {rooms}");
-    }
-
-    // STEP 2: second room — forces growth logic
-    #[test]
-    fn generate_target_two_returns_two_rooms() {
-        let level = generate(&basic_config(42, 2)).expect("generation should succeed");
-        let rooms = count_by_kind(&level, TemplateKind::Room);
-        assert_eq!(rooms, 2, "expected 2 rooms, got {rooms}");
-    }
-
-    // STEP 3: all rooms must be reachable
-    #[test]
-    fn all_rooms_reachable() {
-        let level = generate(&basic_config(42, 3)).expect("generation should succeed");
-        assert!(
-            level.is_fully_connected(),
-            "generated level should be fully connected"
-        );
-    }
-
-    // STEP 4: rooms connected through corridors, not directly
-    #[test]
-    fn rooms_connected_through_corridors() {
-        let level = generate(&basic_config(42, 3)).expect("generation should succeed");
-        let corridors = count_by_kind(&level, TemplateKind::Corridor);
-        let rooms = count_by_kind(&level, TemplateKind::Room);
-        assert_eq!(rooms, 3, "expected 3 rooms, got {rooms}");
-        // Each room beyond the first needs a corridor to connect it
-        assert!(
-            corridors >= rooms - 1,
-            "expected at least {} corridors, got {corridors}",
-            rooms - 1
-        );
-    }
-
-    // STEP 5: no orphaned nodes — graph is connected at larger scale
-    #[test]
-    fn no_orphaned_nodes_at_scale() {
-        let level = generate(&basic_config(42, 8)).expect("generation should succeed");
-        let rooms = count_by_kind(&level, TemplateKind::Room);
-        assert_eq!(rooms, 8, "expected 8 rooms, got {rooms}");
-        assert!(
-            level.is_fully_connected(),
-            "generated level with 8 rooms should be fully connected"
-        );
-    }
-
-    // STEP 7: determinism — same seed produces same layout
-    #[test]
-    fn deterministic_with_same_seed() {
-        let config = basic_config(99, 5);
-        let level_a = generate(&config).expect("generation should succeed");
-        let level_b = generate(&config).expect("generation should succeed");
-        let snap_a = layout_snapshot(&level_a);
-        let snap_b = layout_snapshot(&level_b);
-        assert_eq!(
-            snap_a, snap_b,
-            "same seed should produce identical layouts"
-        );
-    }
-
-    // STEP 8: different seeds produce different layouts
-    #[test]
-    fn different_seeds_differ() {
-        let level_a = generate(&basic_config(1, 5)).expect("generation should succeed");
-        let level_b = generate(&basic_config(2, 5)).expect("generation should succeed");
-        let snap_a = layout_snapshot(&level_a);
-        let snap_b = layout_snapshot(&level_b);
-        assert_ne!(
-            snap_a, snap_b,
-            "different seeds should produce different layouts"
-        );
-    }
-
-    // --- Degenerate template tests ---
-
-    /// A room with only one connector can still generate a level of size 1.
-    /// But it can't grow beyond that because the corridor can't reach a new room.
-    #[test]
-    fn single_connector_room_generates_target_one() {
-        let room = RoomTemplate {
-            id: "one_exit",
-            kind: TemplateKind::Room,
-            connectors: vec![
-                Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
-            ],
-            enemy_spawns: vec![],
-            loot_spawns: vec![],
-            extents: [1, 1, 1],
-        };
-        let config = GeneratorConfig {
-            seed: 42,
-            room_templates: vec![room],
-            corridor_templates: vec![corridor_ew()],
-            target_room_count: 1,
-        };
-        let level = generate(&config).expect("target 1 should always succeed");
-        assert_eq!(count_by_kind(&level, TemplateKind::Room), 1);
-    }
-
-    /// Large target count with minimal templates still terminates and
-    /// produces a connected graph (even if it can't reach the target).
-    #[test]
-    fn large_target_terminates() {
-        let config = basic_config(7, 50);
-        let result = generate(&config);
-        // Should either succeed or return IncompatibleTemplates — never hang.
-        match result {
-            Ok(level) => {
-                assert!(level.is_fully_connected(), "large level should be connected");
-                let rooms = count_by_kind(&level, TemplateKind::Room);
-                assert!(rooms >= 1, "should have placed at least 1 room");
-            }
-            Err(e) => {
-                assert_eq!(e, GenerateError::IncompatibleTemplates,
-                    "only valid failure for large target: {e:?}");
+    fn connectors_face_outward_from_boundary() {
+        let mut rng = SmallRng::seed_from_u64(42);
+        let config = test_config(42);
+        for _ in 0..50 {
+            let room = generate_room(&mut rng, &config);
+            for c in &room.connectors {
+                match c.facing {
+                    ConnectorFacing::NegX => assert_eq!(c.offset[0], 0),
+                    ConnectorFacing::PosX => assert_eq!(c.offset[0], room.extents[0] as i32 - 1),
+                    ConnectorFacing::NegZ => assert_eq!(c.offset[2], 0),
+                    ConnectorFacing::PosZ => assert_eq!(c.offset[2], room.extents[2] as i32 - 1),
+                    ConnectorFacing::PosY => assert_eq!(c.offset[1], room.extents[1] as i32 - 1),
+                    ConnectorFacing::NegY => assert_eq!(c.offset[1], 0),
+                }
             }
         }
     }
 
-    /// A room template with large extents (e.g. 5x1x5) should still work.
     #[test]
-    fn large_extent_room_generates_successfully() {
-        let big_room = RoomTemplate {
-            id: "big_room",
-            kind: TemplateKind::Room,
-            connectors: vec![
-                Connector { offset: [0, 0, 2], facing: ConnectorFacing::NegX },
-                Connector { offset: [4, 0, 2], facing: ConnectorFacing::PosX },
-                Connector { offset: [2, 0, 0], facing: ConnectorFacing::NegZ },
-                Connector { offset: [2, 0, 4], facing: ConnectorFacing::PosZ },
-            ],
-            enemy_spawns: vec![],
-            loot_spawns: vec![],
-            extents: [5, 1, 5],
-        };
-        let config = GeneratorConfig {
-            seed: 42,
-            room_templates: vec![big_room],
-            corridor_templates: vec![corridor_ew()],
-            target_room_count: 3,
-        };
-        let level = generate(&config).expect("big room generation should succeed");
-        assert!(level.is_fully_connected());
-        assert_eq!(count_by_kind(&level, TemplateKind::Room), 3);
+    fn connectors_cover_all_four_xz_faces() {
+        let mut rng = SmallRng::seed_from_u64(42);
+        let config = test_config(42);
+        for _ in 0..50 {
+            let room = generate_room(&mut rng, &config);
+            let has_neg_x = room.connectors.iter().any(|c| c.facing == ConnectorFacing::NegX);
+            let has_pos_x = room.connectors.iter().any(|c| c.facing == ConnectorFacing::PosX);
+            let has_neg_z = room.connectors.iter().any(|c| c.facing == ConnectorFacing::NegZ);
+            let has_pos_z = room.connectors.iter().any(|c| c.facing == ConnectorFacing::PosZ);
+            assert!(has_neg_x && has_pos_x && has_neg_z && has_pos_z);
+        }
     }
 
-    /// Templates with no enemy or loot spawns still generate valid levels.
     #[test]
-    fn templates_without_spawns_generate_valid_level() {
-        let config = basic_config(42, 5);
+    fn multi_story_rooms_have_vertical_connectors() {
+        let mut rng = SmallRng::seed_from_u64(42);
+        let config = GeneratorConfig {
+            min_room_y: 2,
+            max_room_y: 6,
+            ..test_config(42)
+        };
+        for _ in 0..50 {
+            let room = generate_room(&mut rng, &config);
+            let has_pos_y = room.connectors.iter().any(|c| c.facing == ConnectorFacing::PosY);
+            let has_neg_y = room.connectors.iter().any(|c| c.facing == ConnectorFacing::NegY);
+            assert!(has_pos_y && has_neg_y);
+        }
+    }
+
+    #[test]
+    fn generated_room_has_enemy_spawns() {
+        let mut rng = SmallRng::seed_from_u64(42);
+        let config = test_config(42);
+        for _ in 0..50 {
+            let room = generate_room(&mut rng, &config);
+            assert!(!room.enemy_spawns.is_empty());
+        }
+    }
+
+    #[test]
+    fn generated_room_is_tagged_as_room() {
+        let mut rng = SmallRng::seed_from_u64(42);
+        let config = test_config(42);
+        let room = generate_room(&mut rng, &config);
+        assert_eq!(room.kind, TemplateKind::Room);
+    }
+
+    // --- Level generation tests ---
+
+    #[test]
+    fn generate_produces_connected_level() {
+        let config = test_config(42);
         let level = generate(&config).expect("generation should succeed");
-        // basic_room() and corridor_ew() have no spawns — that's fine.
-        assert_eq!(count_by_kind(&level, TemplateKind::Room), 5);
         assert!(level.is_fully_connected());
     }
 
-    // STEP 9: incompatible templates — corridors can't mate with rooms
     #[test]
-    fn incompatible_templates_returns_error() {
-        // Room only has PosY/NegY connectors, corridor only has PosX/NegX.
-        // They can never mate.
-        let room = RoomTemplate {
-            id: "room_up_down",
-            kind: TemplateKind::Room,
-            connectors: vec![
-                Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosY },
-                Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegY },
-            ],
-            enemy_spawns: vec![],
-            loot_spawns: vec![],
-            extents: [1, 1, 1],
-        };
-        let config = GeneratorConfig {
-            seed: 42,
-            room_templates: vec![room],
-            corridor_templates: vec![corridor_ew()],
-            target_room_count: 3,
-        };
-        let result = generate(&config);
-        assert!(
-            matches!(result, Err(GenerateError::IncompatibleTemplates)),
-            "expected IncompatibleTemplates, got {result:?}"
-        );
+    fn generate_places_multiple_rooms() {
+        let config = test_config(42);
+        let level = generate(&config).expect("generation should succeed");
+        let rooms = level.room_indices()
+            .filter(|&idx| level.room(idx).map(|r| r.template.kind == TemplateKind::Room).unwrap_or(false))
+            .count();
+        assert!(rooms >= 3, "expected ≥3 rooms, got {rooms}");
+    }
+
+    #[test]
+    fn generate_is_deterministic() {
+        let config = test_config(42);
+        let level_a = generate(&config).expect("gen a");
+        let level_b = generate(&config).expect("gen b");
+        let positions_a: Vec<_> = level_a.room_indices()
+            .filter_map(|idx| level_a.room(idx).map(|r| r.grid_pos))
+            .collect();
+        let positions_b: Vec<_> = level_b.room_indices()
+            .filter_map(|idx| level_b.room(idx).map(|r| r.grid_pos))
+            .collect();
+        assert_eq!(positions_a, positions_b);
+    }
+
+    #[test]
+    fn generate_always_succeeds() {
+        for seed in 0..20 {
+            let config = test_config(seed);
+            assert!(generate(&config).is_ok(), "seed {seed} should succeed");
+        }
     }
 }

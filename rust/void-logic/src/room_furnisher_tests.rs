@@ -4,7 +4,6 @@ use crate::room_template::*;
 
 fn room_3x3() -> RoomTemplate {
     RoomTemplate {
-        id: "test_3x3",
         kind: TemplateKind::Room,
         connectors: vec![
             Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX },
@@ -20,7 +19,6 @@ fn room_3x3() -> RoomTemplate {
 
 fn room_5x5() -> RoomTemplate {
     RoomTemplate {
-        id: "test_5x5",
         kind: TemplateKind::Room,
         connectors: vec![
             Connector { offset: [0, 0, 2], facing: ConnectorFacing::NegX },
@@ -36,7 +34,6 @@ fn room_5x5() -> RoomTemplate {
 
 fn corridor_1x1() -> RoomTemplate {
     RoomTemplate {
-        id: "test_corridor",
         kind: TemplateKind::Corridor,
         connectors: vec![
             Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
@@ -350,7 +347,6 @@ fn light_source_range_covers_cell() {
 #[test]
 fn multi_story_room_lights_only_at_top_floor() {
     let template = RoomTemplate {
-        id: "test_3x2x3",
         kind: TemplateKind::Room,
         connectors: vec![],
         enemy_spawns: vec![],
@@ -378,7 +374,6 @@ fn multi_story_room_lights_only_at_top_floor() {
 #[test]
 fn no_light_where_ceiling_removed_by_connector() {
     let template = RoomTemplate {
-        id: "test_hub",
         kind: TemplateKind::Room,
         connectors: vec![
             Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
@@ -644,13 +639,13 @@ fn all_furnished_props_within_cell_bounds() {
             for p in &props {
                 assert!(
                     p.position[0] >= origin[0] && p.position[0] <= max_x,
-                    "seed {seed}, template {}: prop '{}' x={} outside [{}, {}]",
-                    template.id, p.scene, p.position[0], origin[0], max_x
+                    "seed {seed}, template {:?}: prop '{}' x={} outside [{}, {}]",
+                    template.extents, p.scene, p.position[0], origin[0], max_x
                 );
                 assert!(
                     p.position[2] >= origin[2] && p.position[2] <= max_z,
-                    "seed {seed}, template {}: prop '{}' z={} outside [{}, {}]",
-                    template.id, p.scene, p.position[2], origin[2], max_z
+                    "seed {seed}, template {:?}: prop '{}' z={} outside [{}, {}]",
+                    template.extents, p.scene, p.position[2], origin[2], max_z
                 );
             }
         }
