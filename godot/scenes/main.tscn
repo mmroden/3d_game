@@ -17,6 +17,10 @@ sky = SubResource("sky")
 ambient_light_source = 1
 ambient_light_color = Color(0.15, 0.15, 0.2, 1)
 ambient_light_energy = 0.6
+fog_enabled = true
+fog_light_color = Color(0.15, 0.15, 0.15, 1)
+fog_light_energy = 0.2
+fog_density = 0.06
 
 [sub_resource type="SphereShape3D" id="player_shape"]
 radius = 0.5

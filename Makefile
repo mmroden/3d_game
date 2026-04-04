@@ -1,4 +1,4 @@
-.PHONY: deps check demo clean run assets test-godot
+.PHONY: deps deps-gut check demo clean run assets test-godot
 
 # Project-local tool paths
 TOOLS_DIR := $(CURDIR)/tools
@@ -14,13 +14,18 @@ GODOT_RELEASE := stable
 GODOT_ZIP := Godot_v$(GODOT_VERSION)-$(GODOT_RELEASE)_macos.universal.zip
 GODOT_URL := https://github.com/godotengine/godot/releases/download/$(GODOT_VERSION)-$(GODOT_RELEASE)/$(GODOT_ZIP)
 
+# GUT (Godot Unit Test)
+GUT_VERSION := 9.6.0
+GUT_URL := https://github.com/bitwes/Gut/archive/refs/tags/v$(GUT_VERSION).tar.gz
+GUT_DIR := $(GODOT_DIR)/addons/gut
+
 # Rust
 CARGO := cargo
 RUST_LIB := $(RUST_DIR)/target/debug/libvoid_scavenger.dylib
 
 # --- Targets ---
 
-deps: deps-rust deps-godot
+deps: deps-rust deps-godot deps-gut
 	@echo "All dependencies ready."
 
 deps-rust:
@@ -75,6 +80,21 @@ assets: build
 	@rm -f $(GODOT_DIR)/.godot/uid_cache.bin
 	$(GODOT) --headless --import --path $(GODOT_DIR)
 	@echo "Import complete."
+
+deps-gut:
+	@if [ -d "$(GUT_DIR)" ]; then \
+		echo "GUT $(GUT_VERSION) already installed."; \
+	else \
+		echo "==> Downloading GUT $(GUT_VERSION)..."; \
+		curl -sL $(GUT_URL) -o /tmp/gut-$(GUT_VERSION).tar.gz; \
+		tar xzf /tmp/gut-$(GUT_VERSION).tar.gz -C /tmp; \
+		mkdir -p $(GUT_DIR); \
+		cp -r /tmp/Gut-$(GUT_VERSION)/addons/gut/* $(GUT_DIR)/; \
+		rm -rf /tmp/gut-$(GUT_VERSION).tar.gz /tmp/Gut-$(GUT_VERSION); \
+		echo "==> Importing GUT class_names..."; \
+		$(GODOT) --headless --import --path $(GODOT_DIR); \
+		echo "GUT $(GUT_VERSION) installed to $(GUT_DIR)"; \
+	fi
 
 test-godot: build
 	@echo "==> Running Godot tests (GUT)..."

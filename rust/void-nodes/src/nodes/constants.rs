@@ -24,6 +24,7 @@ pub mod signals {
     pub const RESUME_SELECTED: &str = "resume_selected";
     pub const QUIT_SELECTED: &str = "quit_selected";
     pub const BODY_ENTERED: &str = "body_entered";
+    pub const SIZE_CHANGED: &str = "size_changed";
 }
 
 // ── Callable method names ─────────────────────────────────────────────
@@ -43,6 +44,7 @@ pub mod methods {
     pub const RETURN_TO_MENU: &str = "return_to_menu";
     pub const RESUME_GAME: &str = "resume_game";
     pub const QUIT_TO_MENU: &str = "quit_to_menu";
+    pub const ON_WINDOW_SIZE_CHANGED: &str = "on_window_size_changed";
     pub const TAKE_DAMAGE: &str = "take_damage";
     pub const APPLY_UPGRADE: &str = "apply_upgrade";
     pub const SHOW_SUMMARY: &str = "show_summary";
@@ -125,6 +127,7 @@ pub mod nodes {
     pub const RIGHT_CONTAINER: &str = "StereoCanvas/RightContainer";
     pub const LEFT_UI_OVERLAY: &str = "StereoCanvas/LeftContainer/LeftUIOverlay";
     pub const RIGHT_UI_OVERLAY: &str = "StereoCanvas/RightContainer/RightUIOverlay";
+    pub const UI_PLANE: &str = "UIPlane";
 }
 
 // ── Scene paths ───────────────────────────────────────────────────────
@@ -161,6 +164,7 @@ mod tests {
             signals::RESUME_SELECTED,
             signals::QUIT_SELECTED,
             signals::BODY_ENTERED,
+            signals::SIZE_CHANGED,
         ];
         for sig in &all_signals {
             assert!(
@@ -203,6 +207,7 @@ mod tests {
             methods::GENERATE_LEVEL,
             methods::RESUME_GAME,
             methods::QUIT_TO_MENU,
+            methods::ON_WINDOW_SIZE_CHANGED,
         ];
         for method in &all_methods {
             assert!(
@@ -274,6 +279,7 @@ mod tests {
             signals::MSAA_TOGGLED, signals::EXIT_SELECTED,
             signals::RESUME_SELECTED, signals::QUIT_SELECTED,
             signals::BODY_ENTERED,
+            signals::SIZE_CHANGED,
         ];
         for (i, a) in all.iter().enumerate() {
             for (j, b) in all.iter().enumerate() {
@@ -295,6 +301,7 @@ mod tests {
             methods::ADVANCE_TO_SHOP, methods::ADVANCE_TO_NEXT_LEVEL,
             methods::BUY_LASER_UPGRADE, methods::RETURN_TO_MENU,
             methods::RESUME_GAME, methods::QUIT_TO_MENU,
+            methods::ON_WINDOW_SIZE_CHANGED,
             methods::TAKE_DAMAGE, methods::APPLY_UPGRADE,
             methods::SHOW_SUMMARY, methods::SHOW_DEATH,
             methods::SHOW_SHOP, methods::SHOW_SHOWCASE,
@@ -327,6 +334,7 @@ mod tests {
             nodes::RIGHT_CAMERA, nodes::LEFT_CONTAINER,
             nodes::RIGHT_CONTAINER, nodes::LEFT_UI_OVERLAY,
             nodes::RIGHT_UI_OVERLAY,
+            nodes::UI_PLANE,
         ];
         for path in &all_nodes {
             assert!(!path.is_empty(), "node path must not be empty");

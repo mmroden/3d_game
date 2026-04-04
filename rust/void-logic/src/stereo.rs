@@ -89,6 +89,25 @@ pub fn ui_viewport_size(config: &StereoConfig) -> [u32; 2] {
     [config.viewport_width, config.viewport_height]
 }
 
+/// Size of the world-space UI quad at a given distance from the camera.
+/// Returns [width, height] in world units (meters).
+/// The quad fills the camera's field of view at the given distance.
+pub fn ui_plane_size(distance: f32, fov_degrees: f32, aspect_ratio: f32) -> [f32; 2] {
+    let half_fov = (fov_degrees / 2.0).to_radians();
+    let h = 2.0 * distance * half_fov.tan();
+    [h * aspect_ratio, h]
+}
+
+/// Position the UI plane in front of the camera along its forward vector.
+/// Returns [x, y, z] in world coordinates.
+pub fn ui_plane_position(cam_origin: [f32; 3], cam_forward: [f32; 3], distance: f32) -> [f32; 3] {
+    [
+        cam_origin[0] + cam_forward[0] * distance,
+        cam_origin[1] + cam_forward[1] * distance,
+        cam_origin[2] + cam_forward[2] * distance,
+    ]
+}
+
 /// Rect `[x, y, w, h]` for the UI TextureRect overlay in the left eye container.
 /// Local coords inside the left SubViewportContainer — origin is (0,0).
 pub fn ui_overlay_rect_left(config: &StereoConfig) -> [f32; 4] {
@@ -105,6 +124,7 @@ pub fn ui_overlay_rect_right(config: &StereoConfig) -> [f32; 4] {
 pub const UI_NODE_NAMES: &[&str] = &[
     "MainMenuUI",
     "HUD",
+    "PauseMenuUI",
     "KillSummaryUI",
     "ShopUI",
     "DeathScreenUI",
@@ -260,5 +280,51 @@ mod tests {
     #[test]
     fn should_skip_reset_when_already_default() {
         assert!(!should_reset_custom_viewport(false));
+    }
+
+    // --- UI plane tests (world-space 3D quad for SBS) ---
+
+    #[test]
+    fn ui_plane_size_fills_viewport_at_distance() {
+        let distance = 2.0_f32;
+        let fov_degrees = 75.0_f32;
+        let aspect = 16.0 / 9.0;
+        let [w, h] = ui_plane_size(distance, fov_degrees, aspect);
+        let expected_h = 2.0 * distance * (fov_degrees.to_radians() / 2.0).tan();
+        assert!((h - expected_h).abs() < 0.01, "height: got {h}, expected {expected_h}");
+        assert!((w - expected_h * aspect).abs() < 0.01, "width: got {w}, expected {}", expected_h * aspect);
+    }
+
+    #[test]
+    fn ui_plane_size_scales_with_distance() {
+        let aspect = 16.0 / 9.0;
+        let fov = 75.0_f32;
+        let [w1, h1] = ui_plane_size(1.0, fov, aspect);
+        let [w2, h2] = ui_plane_size(2.0, fov, aspect);
+        assert!((w2 - w1 * 2.0).abs() < 0.01, "width should double with distance");
+        assert!((h2 - h1 * 2.0).abs() < 0.01, "height should double with distance");
+    }
+
+    #[test]
+    fn ui_plane_position_is_in_front_of_camera() {
+        let cam_origin = [0.0, 0.0, 0.0];
+        let cam_forward = [0.0, 0.0, -1.0]; // Godot: -Z is forward
+        let distance = 2.0;
+        let [x, y, z] = ui_plane_position(cam_origin, cam_forward, distance);
+        assert!((x - 0.0).abs() < 0.01);
+        assert!((y - 0.0).abs() < 0.01);
+        assert!((z - (-2.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn ui_plane_position_follows_arbitrary_camera() {
+        let cam_origin = [10.0, 5.0, -3.0];
+        // Forward along +X axis
+        let cam_forward = [1.0, 0.0, 0.0];
+        let distance = 3.0;
+        let [x, y, z] = ui_plane_position(cam_origin, cam_forward, distance);
+        assert!((x - 13.0).abs() < 0.01);
+        assert!((y - 5.0).abs() < 0.01);
+        assert!((z - (-3.0)).abs() < 0.01);
     }
 }

@@ -3,7 +3,7 @@ use godot::classes::{
     CharacterBody3D, ICharacterBody3D, PhysicsRayQueryParameters3D,
     MeshInstance3D,
     GpuParticles3D, SphereMesh, StandardMaterial3D,
-    Input, InputEvent, InputEventMouseMotion,
+    Input,
 };
 
 use super::constants::{actions, groups, meta_keys, methods};
@@ -49,12 +49,8 @@ pub struct ShipController {
     rotation_speed: f32,
     #[export]
     damping: f32,
-    #[export]
-    mouse_sensitivity: f32,
-
     linear_velocity: Vector3,
     angular_velocity: Vector3,
-    mouse_delta: Vector2,
     weapon: WeaponState,
     beam_nodes: Vec<Gd<MeshInstance3D>>,
     loadout: Loadout,
@@ -69,10 +65,8 @@ impl ICharacterBody3D for ShipController {
             thrust_power: 40.0,
             rotation_speed: 6.0,
             damping: 0.95,
-            mouse_sensitivity: 0.002,
             linear_velocity: Vector3::ZERO,
             angular_velocity: Vector3::ZERO,
-            mouse_delta: Vector2::ZERO,
             weapon: WeaponState::default(),
             beam_nodes: Vec::new(),
             loadout: Loadout::new(),
@@ -84,12 +78,6 @@ impl ICharacterBody3D for ShipController {
         self.base_mut().add_to_group(groups::PLAYER);
     }
 
-    fn input(&mut self, event: Gd<InputEvent>) {
-        if let Ok(mouse_event) = event.try_cast::<InputEventMouseMotion>() {
-            self.mouse_delta += mouse_event.get_relative();
-        }
-    }
-
     fn physics_process(&mut self, delta: f64) {
         let delta = delta as f32;
         let input = Input::singleton();
@@ -99,12 +87,9 @@ impl ICharacterBody3D for ShipController {
         let strafe = input.get_action_strength(actions::MOVE_RIGHT) - input.get_action_strength(actions::MOVE_LEFT);
         let vertical = input.get_action_strength(actions::MOVE_UP) - input.get_action_strength(actions::MOVE_DOWN);
 
-        let pitch = input.get_action_strength(actions::LOOK_UP) - input.get_action_strength(actions::LOOK_DOWN)
-            - self.mouse_delta.y * self.mouse_sensitivity;
-        let yaw = input.get_action_strength(actions::LOOK_LEFT) - input.get_action_strength(actions::LOOK_RIGHT)
-            + self.mouse_delta.x * self.mouse_sensitivity;
+        let pitch = input.get_action_strength(actions::LOOK_UP) - input.get_action_strength(actions::LOOK_DOWN);
+        let yaw = input.get_action_strength(actions::LOOK_LEFT) - input.get_action_strength(actions::LOOK_RIGHT);
         let roll = input.get_action_strength(actions::ROLL_RIGHT) - input.get_action_strength(actions::ROLL_LEFT);
-        self.mouse_delta = Vector2::ZERO;
 
         let basis = self.base().get_transform().basis;
         let thrust = basis.col_c() * (-forward)

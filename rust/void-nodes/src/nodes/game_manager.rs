@@ -381,13 +381,9 @@ impl GameManager {
     }
 
     fn show_phase(&self, phase: GamePhase) {
-        // Capture mouse during gameplay, release for menus
+        // Mouse always visible — controller handles all gameplay input
         let mut input = Input::singleton();
-        if phase == GamePhase::Playing {
-            input.set_mouse_mode(MouseMode::CAPTURED);
-        } else {
-            input.set_mouse_mode(MouseMode::VISIBLE);
-        }
+        input.set_mouse_mode(MouseMode::VISIBLE);
 
         // Show/hide UI layers by calling into the tree
         let Some(parent) = self.base().get_parent() else { return };

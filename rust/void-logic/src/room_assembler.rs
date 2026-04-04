@@ -127,7 +127,7 @@ pub fn assemble_from_grid(
                 if is_active_connector(template, active_connectors, *facing,
                     cell.grid_pos[0], cell.grid_pos[1], cell.grid_pos[2])
                 {
-                    let (door_pos, door_rot) = door_placement(pos, *facing);
+                    let (door_pos, door_rot) = door_placement(pos, *facing, wall_set.tile_width);
                     out.push(MeshPlacement { scene: door, position: door_pos, rotation_x: 0.0, rotation_y: door_rot, loose: false });
                 }
             }
@@ -268,12 +268,13 @@ pub(crate) fn wall_placement(cell_pos: [f32; 3], facing: ConnectorFacing) -> ([f
     }
 }
 
-pub(crate) fn door_placement(cell_pos: [f32; 3], facing: ConnectorFacing) -> ([f32; 3], f32) {
+pub(crate) fn door_placement(cell_pos: [f32; 3], facing: ConnectorFacing, cell_size: f32) -> ([f32; 3], f32) {
+    let half = cell_size / 2.0;
     match facing {
-        ConnectorFacing::NegX => (cell_pos, FRAC_PI_2),
-        ConnectorFacing::PosX => (cell_pos, -FRAC_PI_2),
-        ConnectorFacing::NegZ => (cell_pos, 0.0),
-        ConnectorFacing::PosZ => (cell_pos, PI),
+        ConnectorFacing::NegX => ([cell_pos[0] - half, cell_pos[1], cell_pos[2]], FRAC_PI_2),
+        ConnectorFacing::PosX => ([cell_pos[0] + half, cell_pos[1], cell_pos[2]], -FRAC_PI_2),
+        ConnectorFacing::NegZ => ([cell_pos[0], cell_pos[1], cell_pos[2] - half], 0.0),
+        ConnectorFacing::PosZ => ([cell_pos[0], cell_pos[1], cell_pos[2] + half], PI),
         ConnectorFacing::NegY | ConnectorFacing::PosY => {
             unreachable!("door_placement called with Y-axis facing {:?}", facing)
         }
