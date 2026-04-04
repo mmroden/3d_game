@@ -831,6 +831,66 @@ mod tests {
     }
 
     #[test]
+    fn no_column_near_connector_gap_in_generated_rooms() {
+        // Test with procedurally generated rooms — the actual production path.
+        use crate::generator::{generate_room, GeneratorConfig};
+        use crate::room_theme::THEME_WAREHOUSE;
+        use rand::SeedableRng;
+        use rand::rngs::SmallRng;
+
+        let config = GeneratorConfig {
+            seed: 42,
+            max_rooms: 10,
+            min_room_xz: 3,
+            max_room_xz: 6,
+            min_room_y: 1,
+            max_room_y: 3,
+        };
+
+        for room_seed in 0..50 {
+            let mut rng = SmallRng::seed_from_u64(room_seed);
+            let room = generate_room(&mut rng, &config);
+
+            // Activate a random subset of connectors (simulating connected rooms)
+            let active: Vec<_> = room.connectors.iter()
+                .enumerate()
+                .filter(|(i, _)| i % 2 == 0)
+                .map(|(_, c)| *c)
+                .collect();
+
+            for populate_seed in 0..20 {
+                let mut grid = CellGrid::new(&room, &active, [0.0, 0.0, 0.0], 4.0);
+                grid.populate(&THEME_WAREHOUSE, populate_seed);
+
+                let gap_positions: std::collections::HashSet<[i32; 3]> = grid.cells().iter()
+                    .filter(|c| c.kind == CellKind::ConnectorGap)
+                    .map(|c| c.grid_pos)
+                    .collect();
+
+                for cell in grid.cells() {
+                    if let CellOccupant::Props(ref props) = cell.occupant {
+                        for p in props {
+                            if p.scene.contains("/columns/") {
+                                let near = gap_positions.iter().any(|gap| {
+                                    let dx = (gap[0] - cell.grid_pos[0]).abs();
+                                    let dz = (gap[2] - cell.grid_pos[2]).abs();
+                                    gap[1] == cell.grid_pos[1] && dx <= 2 && dz <= 2
+                                });
+                                assert!(
+                                    !near,
+                                    "room_seed {room_seed}, pop_seed {populate_seed}: \
+                                     column at {:?} within 2 cells of ConnectorGap",
+                                    cell.grid_pos
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn no_column_adjacent_to_connector_gap() {
         // 3x1x3 room with active NegX connector at [0,0,1].
         // Cell [0,0,0] is a BoundaryCorner adjacent to the gap.

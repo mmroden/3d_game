@@ -359,6 +359,53 @@ mod tests {
     }
 
     #[test]
+    fn rooms_have_active_connectors_at_apertures() {
+        // Every room-corridor connection must produce active connectors
+        // so that CellGrid creates ConnectorGap cells (apertures).
+        let a = simple_room(3, 3);
+        let b = simple_room(3, 3);
+        let pair = posx_negx_pair(&a, &b);
+        let ag = build_abstract(vec![a, b], vec![(0, 1, pair)]);
+        let level = assign_positions(&ag);
+
+        // Each room should have at least 1 active connector (the one wired to the corridor).
+        for idx in level.room_indices() {
+            let active = level.active_connectors(idx);
+            let room = level.room(idx).unwrap();
+            if room.template.kind == TemplateKind::Room {
+                assert!(!active.is_empty(),
+                    "Room at {:?} should have active connectors, got none", room.grid_pos);
+            }
+        }
+    }
+
+    #[test]
+    fn generated_level_rooms_all_have_active_connectors() {
+        use crate::generator;
+
+        for seed in 0..10 {
+            let config = GeneratorConfig {
+                seed,
+                max_rooms: 10,
+                min_room_xz: 3,
+                max_room_xz: 6,
+                min_room_y: 1,
+                max_room_y: 6,
+            };
+            let level = generator::generate(&config).expect("generation should succeed");
+            for idx in level.room_indices() {
+                let room = level.room(idx).unwrap();
+                if room.template.kind == TemplateKind::Room {
+                    let active = level.active_connectors(idx);
+                    assert!(!active.is_empty(),
+                        "seed {seed}: room at {:?} (extents {:?}) has 0 active connectors",
+                        room.grid_pos, room.template.extents);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn result_is_fully_connected() {
         let mut rng = SmallRng::seed_from_u64(42);
         let config = GeneratorConfig {

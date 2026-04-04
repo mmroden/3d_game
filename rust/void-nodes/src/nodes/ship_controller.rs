@@ -14,6 +14,25 @@ use void_logic::loadout::Loadout;
 use void_logic::upgrade::{Upgrade, UpgradeKind};
 use void_logic::weapon::{WeaponState, FireResult};
 
+/// Clamp velocity to max magnitude, reset to zero if NaN.
+fn sanitize_velocity(v: Vector3, max_speed: f32) -> Vector3 {
+    if v.x.is_nan() || v.y.is_nan() || v.z.is_nan() {
+        return Vector3::ZERO;
+    }
+    let len = v.length();
+    if len > max_speed {
+        v * (max_speed / len)
+    } else {
+        v
+    }
+}
+
+/// Check if all quaternion components are finite.
+fn is_quat_finite(q: Quaternion) -> bool {
+    q.x.is_finite() && q.y.is_finite() && q.z.is_finite() && q.w.is_finite()
+}
+
+
 /// Wing offset from ship center (local X axis), in meters.
 const WING_OFFSET: f32 = 0.3;
 
@@ -102,6 +121,12 @@ impl ICharacterBody3D for ShipController {
         self.angular_velocity += Vector3::new(pitch, yaw, roll) * effective_rotation * delta;
         self.angular_velocity *= effective_damping;
 
+        // Sanitize: clamp velocities to sane maximums and reset NaN.
+        const MAX_LINEAR_SPEED: f32 = 50.0;
+        const MAX_ANGULAR_SPEED: f32 = 5.0;
+        self.linear_velocity = sanitize_velocity(self.linear_velocity, MAX_LINEAR_SPEED);
+        self.angular_velocity = sanitize_velocity(self.angular_velocity, MAX_ANGULAR_SPEED);
+
         let vel = self.linear_velocity;
         let rot = self.angular_velocity * delta;
 
@@ -115,7 +140,12 @@ impl ICharacterBody3D for ShipController {
             * Quaternion::from_axis_angle(Vector3::UP, rot.y)
             * Quaternion::from_axis_angle(Vector3::BACK, rot.z);
         let current_quat = self.base().get_quaternion();
-        self.base_mut().set_quaternion((current_quat * local_rotation).normalized());
+        let new_quat = (current_quat * local_rotation).normalized();
+
+        // Guard: if the quaternion became NaN, keep the previous one.
+        if is_quat_finite(new_quat) {
+            self.base_mut().set_quaternion(new_quat);
+        }
 
         // --- Weapon ---
         self.weapon.fire_rate = self.loadout.fire_rate();

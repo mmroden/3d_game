@@ -97,6 +97,13 @@ impl ICharacterBody3D for EnemyDrone {
     fn physics_process(&mut self, delta: f64) {
         let delta = delta as f32;
 
+        // Dead enemies must not execute any physics — they're queued for removal.
+        if self.ai.is_dead() {
+            self.base_mut().set_velocity(Vector3::ZERO);
+            self.on_death();
+            return;
+        }
+
         let Some(player) = &self.player else { return };
         if !player.is_instance_valid() {
             return;
@@ -108,20 +115,32 @@ impl ICharacterBody3D for EnemyDrone {
 
         let should_fire = self.ai.update(distance, delta);
 
+        // Guard: skip movement and look_at when too close to player.
+        // Prevents zero-vector normalization and degenerate look_at.
+        const MIN_DISTANCE: f32 = 0.1;
+
         match self.ai.state {
             void_logic::enemy_ai::DroneState::Chasing => {
-                let direction = (player_pos - my_pos).normalized();
-                let velocity = direction * self.speed;
-                self.base_mut().set_velocity(velocity);
-                self.base_mut().move_and_slide();
-                self.base_mut().look_at(player_pos);
+                if distance > MIN_DISTANCE {
+                    let direction = (player_pos - my_pos).normalized();
+                    let velocity = direction * self.speed;
+                    self.base_mut().set_velocity(velocity);
+                    self.base_mut().move_and_slide();
+                    self.base_mut().look_at(player_pos);
+                } else {
+                    self.base_mut().set_velocity(Vector3::ZERO);
+                }
             }
             void_logic::enemy_ai::DroneState::Attacking => {
-                self.base_mut().look_at(player_pos);
-                let direction = (player_pos - my_pos).normalized();
-                let velocity = direction * self.speed * 0.3;
-                self.base_mut().set_velocity(velocity);
-                self.base_mut().move_and_slide();
+                if distance > MIN_DISTANCE {
+                    self.base_mut().look_at(player_pos);
+                    let direction = (player_pos - my_pos).normalized();
+                    let velocity = direction * self.speed * 0.3;
+                    self.base_mut().set_velocity(velocity);
+                    self.base_mut().move_and_slide();
+                } else {
+                    self.base_mut().set_velocity(Vector3::ZERO);
+                }
             }
             _ => {
                 self.base_mut().set_velocity(Vector3::ZERO);
@@ -130,10 +149,6 @@ impl ICharacterBody3D for EnemyDrone {
 
         if should_fire {
             self.fire_at_player(player_pos);
-        }
-
-        if self.ai.is_dead() {
-            self.on_death();
         }
 
         // Billboard the health bar toward the player
@@ -287,13 +302,21 @@ impl EnemyDrone {
 
     fn update_health_bar(&mut self, player_pos: Vector3) {
         let my_pos = self.base().get_global_position();
-        let dir = (player_pos - my_pos).normalized();
+        let diff = player_pos - my_pos;
+        if diff.length() < 0.1 {
+            return; // Too close — skip billboard update to avoid zero-vector normalization
+        }
+        let dir = diff.normalized();
         let bar_pos = my_pos + Vector3::new(0.0, 1.0, 0.0);
 
         // Face the player using a manual basis
         let forward = -dir;
         let up = Vector3::UP;
-        let right = up.cross(forward).normalized();
+        let cross = up.cross(forward);
+        if cross.length() < 0.001 {
+            return; // Forward is parallel to up — can't compute billboard basis
+        }
+        let right = cross.normalized();
         let actual_up = forward.cross(right);
         let billboard_basis = Basis::from_cols(right, actual_up, forward);
 
