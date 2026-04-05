@@ -20,7 +20,7 @@ impl Default for BaseStats {
             rotation_speed: 6.0,
             damping: 0.95,
             max_health: Health::new(100.0),
-            fire_rate: 5.0,
+            fire_rate: 2.0,
             projectile_speed: 50.0,
             projectile_damage: Damage::new(1.0),
         }

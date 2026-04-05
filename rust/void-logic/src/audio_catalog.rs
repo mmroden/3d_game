@@ -170,6 +170,10 @@ pub const TRANSITION_MUSIC_VOL: f32 = 0.4;
 pub const DEATH_MUSIC_VOL: f32 = 0.1;
 /// Maximum simultaneous SFX nodes.
 pub const MAX_SFX_POLYPHONY: u32 = 8;
+/// Minimum interval between collision/impact SFX (seconds).
+pub const COLLISION_SFX_COOLDOWN: f32 = 0.3;
+/// Minimum speed (m/s) for a physical collision to trigger SFX.
+pub const COLLISION_SFX_MIN_SPEED: f32 = 3.0;
 
 // ── Validation helper ────────────────────────────────────────────────
 

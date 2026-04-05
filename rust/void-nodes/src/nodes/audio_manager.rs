@@ -9,7 +9,7 @@ use super::constants::{signals, methods, nodes};
 use void_logic::audio_catalog::{
     MusicContext, SfxEvent,
     CROSSFADE_SECS, GAMEPLAY_MUSIC_VOL, MENU_MUSIC_VOL, TRANSITION_MUSIC_VOL,
-    DEATH_MUSIC_VOL, MAX_SFX_POLYPHONY,
+    DEATH_MUSIC_VOL, MAX_SFX_POLYPHONY, COLLISION_SFX_COOLDOWN,
 };
 use void_logic::game_phase::GamePhase;
 
@@ -42,6 +42,7 @@ pub struct AudioManager {
     gameplay_track_index: usize,
     current_phase: GamePhase,
     active_sfx_count: u32,
+    collision_cooldown: f32,
 }
 
 #[godot_api]
@@ -62,6 +63,7 @@ impl INode for AudioManager {
             gameplay_track_index: 0,
             current_phase: GamePhase::MainMenu,
             active_sfx_count: 0,
+            collision_cooldown: 0.0,
         }
     }
 
@@ -98,6 +100,8 @@ impl INode for AudioManager {
     }
 
     fn process(&mut self, delta: f64) {
+        self.collision_cooldown = (self.collision_cooldown - delta as f32).max(0.0);
+
         if !self.is_crossfading {
             return;
         }
@@ -210,6 +214,9 @@ impl AudioManager {
         if self.active_sfx_count >= MAX_SFX_POLYPHONY {
             return;
         }
+        if Self::is_collision_event(event) && !self.try_collision_cooldown() {
+            return;
+        }
         let path = Self::pick_variant(event);
         self.spawn_sfx_player(path);
     }
@@ -217,6 +224,9 @@ impl AudioManager {
     /// Play a typed SFX event at a 3D position.
     pub fn play_event_at(&mut self, event: SfxEvent, position: Vector3) {
         if self.active_sfx_count >= MAX_SFX_POLYPHONY {
+            return;
+        }
+        if Self::is_collision_event(event) && !self.try_collision_cooldown() {
             return;
         }
         let path = Self::pick_variant(event);
@@ -227,6 +237,19 @@ impl AudioManager {
 // ── Private helpers ──────────────────────────────────────────────────
 
 impl AudioManager {
+    fn is_collision_event(event: SfxEvent) -> bool {
+        matches!(event, SfxEvent::ImpactMetal | SfxEvent::ImpactShield | SfxEvent::ImpactHeavy)
+    }
+
+    /// Returns true if the collision cooldown has expired, and resets it.
+    fn try_collision_cooldown(&mut self) -> bool {
+        if self.collision_cooldown > 0.0 {
+            return false;
+        }
+        self.collision_cooldown = COLLISION_SFX_COOLDOWN;
+        true
+    }
+
     fn pick_variant(event: SfxEvent) -> &'static str {
         let variants = event.variants();
         variants.choose(&mut rand::rng()).copied().unwrap_or(variants[0])

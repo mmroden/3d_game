@@ -14,7 +14,7 @@ use void_logic::loadout::Loadout;
 use void_logic::power_routing::PowerMode;
 use void_logic::ram_damage;
 use void_logic::upgrade::{Upgrade, UpgradeKind};
-use void_logic::audio_catalog::SfxEvent;
+use void_logic::audio_catalog::{SfxEvent, COLLISION_SFX_MIN_SPEED};
 use void_logic::weapon::{WeaponState, FireResult};
 
 /// Clamp velocity to max magnitude, reset to zero if NaN.
@@ -155,23 +155,36 @@ impl ICharacterBody3D for ShipController {
         // Without this, thrust accumulates into walls until the player clips through.
         self.linear_velocity = self.base().get_velocity();
 
-        // Check for ram collisions with enemies
+        // Check for physical collisions (walls, objects, enemies)
         let pre_collision_speed = vel.length();
-        for i in 0..self.base().get_slide_collision_count() {
-            if let Some(collision) = self.base().get_slide_collision(i) {
-                if let Some(collider) = collision.get_collider() {
-                    let obj: Gd<Node3D> = collider.cast();
-                    if obj.is_in_group(groups::ENEMIES) && obj.has_method(methods::TAKE_DAMAGE) {
-                        let dmg = ram_damage::ram_damage(pre_collision_speed);
-                        if dmg.as_f32() > 0.0 {
-                            let mut enemy = obj;
-                            enemy.call(methods::TAKE_DAMAGE, &[Variant::from(dmg.as_f32())]);
-                            let player_dmg = dmg.as_f32() * ram_damage::PLAYER_RAM_FRACTION;
-                            self.base_mut().emit_signal(
-                                signals::PLAYER_DAMAGED,
-                                &[Variant::from(player_dmg)],
-                            );
-                        }
+        let collision_count = self.base().get_slide_collision_count();
+        let mut played_collision_sfx = false;
+
+        for i in 0..collision_count {
+            let Some(collision) = self.base().get_slide_collision(i) else { continue };
+
+            // Play collision SFX once per frame if speed is high enough
+            if !played_collision_sfx && pre_collision_speed > COLLISION_SFX_MIN_SPEED {
+                let contact = collision.get_position();
+                if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+                    audio.bind_mut().play_event_at(SfxEvent::ImpactMetal, contact);
+                }
+                played_collision_sfx = true;
+            }
+
+            // Ram damage to enemies
+            if let Some(collider) = collision.get_collider() {
+                let obj: Gd<Node3D> = collider.cast();
+                if obj.is_in_group(groups::ENEMIES) && obj.has_method(methods::TAKE_DAMAGE) {
+                    let dmg = ram_damage::ram_damage(pre_collision_speed);
+                    if dmg.as_f32() > 0.0 {
+                        let mut enemy = obj;
+                        enemy.call(methods::TAKE_DAMAGE, &[Variant::from(dmg.as_f32())]);
+                        let player_dmg = dmg.as_f32() * ram_damage::PLAYER_RAM_FRACTION;
+                        self.base_mut().emit_signal(
+                            signals::PLAYER_DAMAGED,
+                            &[Variant::from(player_dmg)],
+                        );
                     }
                 }
             }
@@ -279,9 +292,9 @@ impl ShipController {
         self.fire_single_ray(left_origin, forward, damage);
         self.fire_single_ray(right_origin, forward, damage);
 
-        // Laser fire SFX
+        // Laser fire SFX (non-positional — it's the player's own gun)
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
-            audio.bind_mut().play_event_at(SfxEvent::LaserFire, center);
+            audio.bind_mut().play_event(SfxEvent::LaserFire);
         }
     }
 
@@ -306,11 +319,6 @@ impl ShipController {
                 if obj.has_method(methods::TAKE_DAMAGE) {
                     obj.call(methods::TAKE_DAMAGE, &[Variant::from(damage)]);
                 }
-            }
-
-            // Impact SFX at hit point
-            if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
-                audio.bind_mut().play_event_at(SfxEvent::ImpactMetal, hit_pos);
             }
 
             // Spawn hit sparks at impact point

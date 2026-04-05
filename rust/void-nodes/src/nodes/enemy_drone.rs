@@ -172,11 +172,6 @@ impl EnemyDrone {
         if died {
             self.on_death();
         } else {
-            // Non-lethal hit SFX
-            let pos = self.base().get_global_position();
-            if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
-                audio.bind_mut().play_event_at(SfxEvent::ImpactMetal, pos);
-            }
             self.spawn_hit_flash();
         }
     }
