@@ -1,0 +1,27 @@
+[gd_scene load_steps=4 format=3]
+
+[sub_resource type="SphereShape3D" id="proj_shape"]
+radius = 0.2
+
+[sub_resource type="SphereMesh" id="proj_mesh"]
+radius = 0.15
+height = 0.3
+
+[sub_resource type="StandardMaterial3D" id="proj_mat"]
+albedo_color = Color(1, 0.3, 0.1, 1)
+emission_enabled = true
+emission = Color(1, 0.4, 0.05, 1)
+emission_energy_multiplier = 6.0
+
+[node name="EnemyProjectile" type="Projectile"]
+speed = 15.0
+damage = 3.0
+lifetime = 3.0
+is_enemy = true
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+shape = SubResource("proj_shape")
+
+[node name="Mesh" type="MeshInstance3D" parent="."]
+mesh = SubResource("proj_mesh")
+surface_material_override/0 = SubResource("proj_mat")

@@ -3,6 +3,7 @@ use crate::laser::LaserLevel;
 use crate::loadout::Loadout;
 use crate::newtypes::Health;
 use crate::run_state::RunState;
+use crate::shield::ShieldState;
 
 /// A snapshot of game state, saved at end-of-level and on death.
 #[derive(Debug, Clone, PartialEq)]
@@ -14,6 +15,7 @@ pub struct SaveGame {
     pub run_seed: u64,
     pub credits: CreditAccount,
     pub health: Health,
+    pub shield: ShieldState,
 }
 
 impl SaveGame {
@@ -26,6 +28,7 @@ impl SaveGame {
             run_seed: run.run_seed,
             credits: run.credits,
             health: run.health,
+            shield: run.shield.clone(),
         }
     }
 
@@ -37,6 +40,7 @@ impl SaveGame {
         run.run_seed = self.run_seed;
         run.credits = self.credits;
         run.health = self.health;
+        run.shield = self.shield.clone();
         // Reset ephemeral state
         run.kills.reset();
         run.rooms_cleared.clear();
@@ -82,9 +86,10 @@ mod tests {
     #[test]
     fn snapshot_captures_health() {
         let mut run = RunState::new(42);
-        run.take_damage(crate::newtypes::Damage::new(25.0));
+        // 70 damage: 50 absorbed by shield, 20 to health
+        run.take_damage(crate::newtypes::Damage::new(70.0));
         let save = SaveGame::from_run_state(&run);
-        assert_eq!(save.health, Health::new(75.0));
+        assert_eq!(save.health, Health::new(80.0));
     }
 
     #[test]

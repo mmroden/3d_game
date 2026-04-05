@@ -25,6 +25,8 @@ pub mod signals {
     pub const QUIT_SELECTED: &str = "quit_selected";
     pub const BODY_ENTERED: &str = "body_entered";
     pub const SIZE_CHANGED: &str = "size_changed";
+    pub const PLAYER_DAMAGED: &str = "player_damaged";
+    pub const POWER_MODE_CHANGED: &str = "power_mode_changed";
 }
 
 // ── Callable method names ─────────────────────────────────────────────
@@ -57,7 +59,11 @@ pub mod methods {
     pub const UPDATE_CREDITS: &str = "update_credits";
     pub const UPDATE_LASER: &str = "update_laser";
     pub const UPDATE_LEVEL: &str = "update_level";
+    pub const UPDATE_SHIELD: &str = "update_shield";
+    pub const UPDATE_POWER_MODE: &str = "update_power_mode";
     pub const GENERATE_LEVEL: &str = "generate_level";
+    pub const ON_PLAYER_DAMAGED: &str = "on_player_damaged";
+    pub const ON_POWER_MODE_CHANGED: &str = "on_power_mode_changed";
 }
 
 // ── Input actions ─────────────────────────────────────────────────────
@@ -81,12 +87,16 @@ pub mod actions {
     pub const MENU_DOWN: &str = "menu_down";
     pub const MENU_SELECT: &str = "menu_select";
     pub const MENU_BACK: &str = "menu_back";
+    pub const ROUTE_SHIELDS: &str = "route_shields";
+    pub const ROUTE_WEAPONS: &str = "route_weapons";
+    pub const STABILIZE: &str = "stabilize";
 }
 
 // ── Group names ───────────────────────────────────────────────────────
 
 pub mod groups {
     pub const PLAYER: &str = "player";
+    pub const ENEMY_PROJECTILE: &str = "enemy_projectile";
 }
 
 // ── Meta keys ─────────────────────────────────────────────────────────
@@ -136,6 +146,7 @@ pub mod scenes {
     pub const LOOTBOX: &str = "res://scenes/items/lootbox.tscn";
     pub const PORTAL: &str = "res://scenes/items/portal.tscn";
     pub const ENEMY_DRONE_FALLBACK: &str = "res://scenes/enemies/enemy_drone.tscn";
+    pub const ENEMY_PROJECTILE: &str = "res://scenes/items/enemy_projectile.tscn";
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────
@@ -165,6 +176,8 @@ mod tests {
             signals::QUIT_SELECTED,
             signals::BODY_ENTERED,
             signals::SIZE_CHANGED,
+            signals::PLAYER_DAMAGED,
+            signals::POWER_MODE_CHANGED,
         ];
         for sig in &all_signals {
             assert!(
@@ -205,6 +218,10 @@ mod tests {
             methods::UPDATE_LASER,
             methods::UPDATE_LEVEL,
             methods::GENERATE_LEVEL,
+            methods::ON_PLAYER_DAMAGED,
+            methods::UPDATE_SHIELD,
+            methods::ON_POWER_MODE_CHANGED,
+            methods::UPDATE_POWER_MODE,
             methods::RESUME_GAME,
             methods::QUIT_TO_MENU,
             methods::ON_WINDOW_SIZE_CHANGED,
@@ -234,6 +251,9 @@ mod tests {
             actions::MENU_DOWN,
             actions::MENU_SELECT,
             actions::MENU_BACK,
+            actions::ROUTE_SHIELDS,
+            actions::ROUTE_WEAPONS,
+            actions::STABILIZE,
         ];
         for action in &all_actions {
             assert!(!action.is_empty());
@@ -252,6 +272,7 @@ mod tests {
             scenes::LOOTBOX,
             scenes::PORTAL,
             scenes::ENEMY_DRONE_FALLBACK,
+            scenes::ENEMY_PROJECTILE,
         ];
         for path in &all_scenes {
             assert!(
@@ -280,6 +301,8 @@ mod tests {
             signals::RESUME_SELECTED, signals::QUIT_SELECTED,
             signals::BODY_ENTERED,
             signals::SIZE_CHANGED,
+            signals::PLAYER_DAMAGED,
+            signals::POWER_MODE_CHANGED,
         ];
         for (i, a) in all.iter().enumerate() {
             for (j, b) in all.iter().enumerate() {
@@ -308,7 +331,9 @@ mod tests {
             methods::HIDE_SHOWCASE, methods::SET_LASER_LEVEL,
             methods::UPDATE_HEALTH, methods::UPDATE_CREDITS,
             methods::UPDATE_LASER, methods::UPDATE_LEVEL,
-            methods::GENERATE_LEVEL,
+            methods::GENERATE_LEVEL, methods::ON_PLAYER_DAMAGED,
+            methods::UPDATE_SHIELD, methods::ON_POWER_MODE_CHANGED,
+            methods::UPDATE_POWER_MODE,
         ];
         for (i, a) in all.iter().enumerate() {
             for (j, b) in all.iter().enumerate() {

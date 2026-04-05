@@ -33,6 +33,34 @@ impl Health {
     }
 }
 
+/// Shield energy on an entity. Absorbs damage before health.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct Shield(f32);
+
+impl Shield {
+    pub const fn new(value: f32) -> Self {
+        Self(value)
+    }
+
+    pub const fn as_f32(self) -> f32 {
+        self.0
+    }
+
+    /// Absorb damage. Returns (remaining shield, overflow damage that passes to health).
+    pub fn absorb(self, dmg: Damage) -> (Shield, Damage) {
+        if self.0 >= dmg.0 {
+            (Shield(self.0 - dmg.0), Damage(0.0))
+        } else {
+            (Shield(0.0), Damage(dmg.0 - self.0))
+        }
+    }
+
+    /// Fraction remaining: self / max, clamped to [0, 1].
+    pub fn fraction(self, max: Shield) -> f32 {
+        (self.0 / max.0).clamp(0.0, 1.0)
+    }
+}
+
 impl Damage {
     pub const fn new(value: f32) -> Self {
         Self(value)
@@ -105,6 +133,42 @@ mod tests {
     #[test]
     fn damage_roundtrips_through_f32() {
         assert_eq!(Damage::new(7.0).as_f32(), 7.0);
+    }
+
+    // --- Shield tests ---
+
+    #[test]
+    fn shield_absorbs_fully_when_sufficient() {
+        let (remaining, overflow) = Shield::new(50.0).absorb(Damage::new(30.0));
+        assert_eq!(remaining, Shield::new(20.0));
+        assert_eq!(overflow, Damage::new(0.0));
+    }
+
+    #[test]
+    fn shield_overflow_passes_to_health() {
+        let (remaining, overflow) = Shield::new(20.0).absorb(Damage::new(35.0));
+        assert_eq!(remaining, Shield::new(0.0));
+        assert_eq!(overflow, Damage::new(15.0));
+    }
+
+    #[test]
+    fn shield_exact_depletion_zero_overflow() {
+        let (remaining, overflow) = Shield::new(25.0).absorb(Damage::new(25.0));
+        assert_eq!(remaining, Shield::new(0.0));
+        assert_eq!(overflow, Damage::new(0.0));
+    }
+
+    #[test]
+    fn empty_shield_passes_all_through() {
+        let (remaining, overflow) = Shield::new(0.0).absorb(Damage::new(10.0));
+        assert_eq!(remaining, Shield::new(0.0));
+        assert_eq!(overflow, Damage::new(10.0));
+    }
+
+    #[test]
+    fn shield_fraction_half() {
+        let f = Shield::new(30.0).fraction(Shield::new(100.0));
+        assert!((f - 0.3).abs() < 0.001);
     }
 
     #[test]

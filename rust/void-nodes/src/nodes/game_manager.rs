@@ -10,6 +10,8 @@ use void_logic::enemy_type::EnemyType;
 use void_logic::game_options::GameOptions;
 use void_logic::game_phase::GamePhase;
 use void_logic::input_method::InputMethod;
+use void_logic::newtypes::Damage;
+use void_logic::power_routing::PowerMode;
 use void_logic::run_state::RunState;
 use void_logic::save_game::SaveGame;
 
@@ -24,6 +26,7 @@ pub struct GameManager {
     game_options: GameOptions,
     save_game: Option<SaveGame>,
     active_input: InputMethod,
+    current_power_mode: i32,
 }
 
 #[godot_api]
@@ -36,6 +39,7 @@ impl INode for GameManager {
             game_options: GameOptions::new(),
             save_game: None,
             active_input: InputMethod::Keyboard,
+            current_power_mode: 0,
         }
     }
 
@@ -70,7 +74,7 @@ impl INode for GameManager {
         }
     }
 
-    fn process(&mut self, _delta: f64) {
+    fn process(&mut self, delta: f64) {
         // Check for pause toggle
         let input = Input::singleton();
         if input.is_action_just_pressed(actions::OPEN_MENU)
@@ -84,6 +88,9 @@ impl INode for GameManager {
         if self.phase != GamePhase::Playing {
             return;
         }
+
+        // Tick shield regeneration
+        self.run_state.tick_shield(delta as f32);
 
         // Connect to any newly-spawned enemies and portal
         self.connect_spawned_entities();
@@ -204,6 +211,7 @@ impl GameManager {
             self.run_state.current_level += 1;
             self.run_state.kills.reset();
             self.run_state.health = self.run_state.loadout.max_health();
+            self.run_state.shield.reset();
             self.transition_to(GamePhase::Playing);
             self.regenerate_level();
         }
@@ -270,6 +278,32 @@ impl GameManager {
         }
     }
 
+    /// Called when the player takes damage (from projectile hit).
+    #[func]
+    pub fn on_player_damaged(&mut self, amount: f32) {
+        if self.phase != GamePhase::Playing {
+            return;
+        }
+        self.run_state.take_damage(Damage::new(amount));
+        if !self.run_state.is_alive() {
+            self.on_player_death();
+        }
+    }
+
+    /// Called when the player changes power routing mode.
+    #[func]
+    pub fn on_power_mode_changed(&mut self, mode: i32) {
+        self.current_power_mode = mode;
+        let power_mode = match mode {
+            0 => PowerMode::Balanced,
+            1 => PowerMode::ShieldBoost,
+            2 => PowerMode::WeaponBoost,
+            _ => PowerMode::Balanced,
+        };
+        let boosted = power_mode == PowerMode::ShieldBoost;
+        self.run_state.shield.set_boosted(boosted);
+    }
+
     /// Called from death screen: return to main menu.
     #[func]
     pub fn return_to_menu(&mut self) {
@@ -313,6 +347,16 @@ impl GameManager {
     #[func]
     pub fn get_max_health(&self) -> f32 {
         self.run_state.loadout.max_health().as_f32()
+    }
+
+    #[func]
+    pub fn get_shield(&self) -> f32 {
+        self.run_state.shield.current.as_f32()
+    }
+
+    #[func]
+    pub fn get_max_shield(&self) -> f32 {
+        self.run_state.shield.max_capacity.as_f32()
     }
 
     #[func]
@@ -536,6 +580,17 @@ impl GameManager {
             }
         }
 
+        // Connect Player signals
+        if let Some(player) = parent.try_get_node_as::<Node>(nodes::PLAYER) {
+            let damage_callable = self.base().callable(methods::ON_PLAYER_DAMAGED);
+            if !player.is_connected(signals::PLAYER_DAMAGED, &damage_callable) {
+                let mut player = player;
+                player.connect(signals::PLAYER_DAMAGED, &damage_callable);
+                let power_callable = self.base().callable(methods::ON_POWER_MODE_CHANGED);
+                player.connect(signals::POWER_MODE_CHANGED, &power_callable);
+            }
+        }
+
         // Connect DeathScreenUI
         if let Some(death) = Self::find_ui_node(&parent, nodes::DEATH_SCREEN_UI) {
             let callable = self.base().callable(methods::RETURN_TO_MENU);
@@ -575,6 +630,13 @@ impl GameManager {
             hud.call(methods::UPDATE_HEALTH, &[
                 Variant::from(self.run_state.health.as_f32()),
                 Variant::from(self.run_state.loadout.max_health().as_f32()),
+            ]);
+            hud.call(methods::UPDATE_SHIELD, &[
+                Variant::from(self.run_state.shield.current.as_f32()),
+                Variant::from(self.run_state.shield.max_capacity.as_f32()),
+            ]);
+            hud.call(methods::UPDATE_POWER_MODE, &[
+                Variant::from(self.current_power_mode),
             ]);
             hud.call(methods::UPDATE_CREDITS, &[
                 Variant::from(self.run_state.credits.balance as i64),

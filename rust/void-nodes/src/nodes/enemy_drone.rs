@@ -3,7 +3,7 @@ use godot::prelude::EulerOrder;
 use godot::classes::{
     CharacterBody3D, ICharacterBody3D, PackedScene, ResourceLoader,
     GpuParticles3D, ParticleProcessMaterial, SphereMesh, StandardMaterial3D,
-    MeshInstance3D, BoxMesh,
+    MeshInstance3D, BoxMesh, Node3D,
 };
 
 use super::constants::{groups, meta_keys, scenes, signals};
@@ -172,9 +172,32 @@ impl EnemyDrone {
         }
     }
 
-    fn fire_at_player(&self, _player_pos: Vector3) {
-        godot_print!("Drone fires at player!");
-        // TODO: enemy projectile or hitscan toward player
+    fn fire_at_player(&self, player_pos: Vector3) {
+        let my_pos = self.base().get_global_position();
+        let diff = player_pos - my_pos;
+        if diff.length() < 0.1 {
+            return; // Too close — can't compute direction
+        }
+        let direction = diff.normalized();
+
+        let Some(root) = godot_util::scene_root(self.base().get_tree()) else { return };
+        let Some(scene) = ResourceLoader::singleton().load(scenes::ENEMY_PROJECTILE) else {
+            godot_warn!("Failed to load enemy projectile scene");
+            return;
+        };
+        let packed = scene.cast::<PackedScene>();
+        let Some(instance) = packed.instantiate() else { return };
+        let mut node: Gd<Node3D> = instance.cast();
+        root.clone().add_child(&node);
+        node.set_global_position(my_pos + direction * 0.8); // offset from center
+        node.call(
+            "launch",
+            &[
+                Variant::from(direction),
+                Variant::from(15.0_f32),
+                Variant::from(self.damage),
+            ],
+        );
     }
 
     fn on_death(&mut self) {

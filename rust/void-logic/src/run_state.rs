@@ -3,7 +3,8 @@ use crate::enemy_type::EnemyType;
 use crate::kill_tracker::KillTracker;
 use crate::laser::LaserLevel;
 use crate::loadout::Loadout;
-use crate::newtypes::{Health, Damage};
+use crate::newtypes::{Health, Damage, Shield};
+use crate::shield::ShieldState;
 
 /// Tracks the state of a single roguelike run.
 #[derive(Debug)]
@@ -12,6 +13,7 @@ pub struct RunState {
     pub current_room: usize,
     pub rooms_cleared: Vec<usize>,
     pub health: Health,
+    pub shield: ShieldState,
     pub score: u32,
     pub run_seed: u64,
     pub credits: CreditAccount,
@@ -21,14 +23,25 @@ pub struct RunState {
 }
 
 impl RunState {
+    /// Default shield: 50 capacity, 2/sec regen, 3s delay after hit.
+    const DEFAULT_SHIELD_CAPACITY: f32 = 50.0;
+    const DEFAULT_SHIELD_REGEN: f32 = 2.0;
+    const DEFAULT_SHIELD_DELAY: f32 = 3.0;
+
     pub fn new(seed: u64) -> Self {
         let loadout = Loadout::new();
         let health = loadout.max_health();
+        let shield = ShieldState::new(
+            Shield::new(Self::DEFAULT_SHIELD_CAPACITY),
+            Self::DEFAULT_SHIELD_REGEN,
+            Self::DEFAULT_SHIELD_DELAY,
+        );
         Self {
             loadout,
             current_room: 0,
             rooms_cleared: Vec::new(),
             health,
+            shield,
             score: 0,
             run_seed: seed,
             credits: CreditAccount::new(),
@@ -43,7 +56,12 @@ impl RunState {
     }
 
     pub fn take_damage(&mut self, amount: Damage) {
-        self.health = self.health.take(amount);
+        let overflow = self.shield.take_hit(amount);
+        self.health = self.health.take(overflow);
+    }
+
+    pub fn tick_shield(&mut self, delta: f32) {
+        self.shield.tick(delta);
     }
 
     pub fn clear_room(&mut self, room_index: usize) {
@@ -74,6 +92,7 @@ impl RunState {
         self.rooms_cleared.clear();
         self.current_room = 0;
         self.health = self.loadout.max_health();
+        self.shield.reset();
     }
 }
 
@@ -90,17 +109,30 @@ mod tests {
     }
 
     #[test]
-    fn damage_reduces_health() {
+    fn damage_hits_shield_first() {
         let mut run = RunState::new(42);
         run.take_damage(Damage::new(30.0));
-        assert_eq!(run.health, Health::new(70.0));
+        // Shield absorbs 30 of 50, health untouched
+        assert_eq!(run.shield.current, Shield::new(20.0));
+        assert_eq!(run.health, Health::new(100.0));
+        assert!(run.is_alive());
+    }
+
+    #[test]
+    fn damage_overflows_shield_to_health() {
+        let mut run = RunState::new(42);
+        run.take_damage(Damage::new(70.0));
+        // Shield absorbs 50, health takes 20
+        assert_eq!(run.shield.current, Shield::new(0.0));
+        assert_eq!(run.health, Health::new(80.0));
         assert!(run.is_alive());
     }
 
     #[test]
     fn lethal_damage_kills() {
         let mut run = RunState::new(42);
-        run.take_damage(Damage::new(150.0));
+        // Must overwhelm shield (50) + health (100)
+        run.take_damage(Damage::new(200.0));
         assert_eq!(run.health, Health::new(0.0));
         assert!(!run.is_alive());
     }

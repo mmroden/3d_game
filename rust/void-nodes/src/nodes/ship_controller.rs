@@ -6,11 +6,12 @@ use godot::classes::{
     Input,
 };
 
-use super::constants::{actions, groups, meta_keys, methods};
+use super::constants::{actions, groups, meta_keys, methods, signals};
 use super::godot_util;
 
 use void_logic::laser::LaserLevel;
 use void_logic::loadout::Loadout;
+use void_logic::power_routing::PowerMode;
 use void_logic::upgrade::{Upgrade, UpgradeKind};
 use void_logic::weapon::{WeaponState, FireResult};
 
@@ -55,6 +56,7 @@ pub struct ShipController {
     beam_nodes: Vec<Gd<MeshInstance3D>>,
     loadout: Loadout,
     laser_level: LaserLevel,
+    power_mode: PowerMode,
 }
 
 #[godot_api]
@@ -71,6 +73,7 @@ impl ICharacterBody3D for ShipController {
             beam_nodes: Vec::new(),
             loadout: Loadout::new(),
             laser_level: LaserLevel::Red,
+            power_mode: PowerMode::default(),
         }
     }
 
@@ -91,12 +94,41 @@ impl ICharacterBody3D for ShipController {
         let yaw = input.get_action_strength(actions::LOOK_LEFT) - input.get_action_strength(actions::LOOK_RIGHT);
         let roll = input.get_action_strength(actions::ROLL_RIGHT) - input.get_action_strength(actions::ROLL_LEFT);
 
+        // Stabilizer: kill angular velocity on L1/Tab
+        if input.is_action_pressed(actions::STABILIZE) {
+            self.angular_velocity = Vector3::ZERO;
+        }
+
+        // Power routing: toggle on press
+        let old_mode = self.power_mode;
+        if input.is_action_just_pressed(actions::ROUTE_SHIELDS) {
+            self.power_mode = if self.power_mode == PowerMode::ShieldBoost {
+                PowerMode::Balanced
+            } else {
+                PowerMode::ShieldBoost
+            };
+        }
+        if input.is_action_just_pressed(actions::ROUTE_WEAPONS) {
+            self.power_mode = if self.power_mode == PowerMode::WeaponBoost {
+                PowerMode::Balanced
+            } else {
+                PowerMode::WeaponBoost
+            };
+        }
+        if self.power_mode != old_mode {
+            let mode_val = self.power_mode as i32;
+            self.base_mut().emit_signal(
+                "power_mode_changed",
+                &[Variant::from(mode_val)],
+            );
+        }
+
         let basis = self.base().get_transform().basis;
         let thrust = basis.col_c() * (-forward)
             + basis.col_a() * strafe
             + basis.col_b() * vertical;
 
-        let effective_thrust = self.loadout.thrust_power();
+        let effective_thrust = self.loadout.thrust_power() * self.power_mode.thrust_multiplier();
         let effective_rotation = self.loadout.rotation_speed();
         let effective_damping = self.loadout.damping();
 
@@ -133,7 +165,7 @@ impl ICharacterBody3D for ShipController {
         }
 
         // --- Weapon ---
-        self.weapon.fire_rate = self.loadout.fire_rate();
+        self.weapon.fire_rate = self.loadout.fire_rate() * self.power_mode.fire_rate_multiplier();
         self.weapon.damage = void_logic::newtypes::Damage::new(self.laser_level.damage());
         self.weapon.tick(delta);
         self.age_beams(delta);
@@ -148,6 +180,21 @@ impl ICharacterBody3D for ShipController {
 
 #[godot_api]
 impl ShipController {
+    #[signal]
+    fn player_damaged(amount: f32);
+
+    #[signal]
+    fn power_mode_changed(mode: i32);
+
+    /// Called when a projectile or enemy hits this ship.
+    #[func]
+    pub fn take_damage(&mut self, amount: f32) {
+        self.base_mut().emit_signal(
+            signals::PLAYER_DAMAGED,
+            &[Variant::from(amount)],
+        );
+    }
+
     #[func]
     pub fn set_laser_level(&mut self, level: i32) {
         if let Some(laser) = LaserLevel::from_level(level as u32) {
