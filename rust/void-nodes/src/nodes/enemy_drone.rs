@@ -6,7 +6,7 @@ use godot::classes::{
     MeshInstance3D, BoxMesh, Node3D,
 };
 
-use super::constants::{groups, meta_keys, scenes, signals};
+use super::constants::{groups, scenes, signals};
 use super::godot_util;
 use void_logic::enemy_ai::{DroneAi, DroneConfig};
 use void_logic::enemy_type::EnemyType;
@@ -83,6 +83,8 @@ impl ICharacterBody3D for EnemyDrone {
             });
         }
 
+        self.base_mut().add_to_group(groups::ENEMIES);
+
         // Find player via group
         let tree = self.base().get_tree();
         let players = tree.get_nodes_in_group(groups::PLAYER);
@@ -97,11 +99,9 @@ impl ICharacterBody3D for EnemyDrone {
     fn physics_process(&mut self, delta: f64) {
         let delta = delta as f32;
 
-        // Dead enemies must not execute any physics — they're queued for removal.
         if self.ai.is_dead() {
             self.base_mut().set_velocity(Vector3::ZERO);
-            self.on_death();
-            return;
+            return; // Awaiting queue_free from on_death (called in take_damage)
         }
 
         let Some(player) = &self.player else { return };
@@ -115,35 +115,37 @@ impl ICharacterBody3D for EnemyDrone {
 
         let should_fire = self.ai.update(distance, delta);
 
-        // Guard: skip movement and look_at when too close to player.
-        // Prevents zero-vector normalization and degenerate look_at.
         const MIN_DISTANCE: f32 = 0.1;
 
+        let speed = self.speed;
         match self.ai.state {
             void_logic::enemy_ai::DroneState::Chasing => {
                 if distance > MIN_DISTANCE {
                     let direction = (player_pos - my_pos).normalized();
-                    let velocity = direction * self.speed;
-                    self.base_mut().set_velocity(velocity);
+                    let vel = direction * speed;
+                    self.base_mut().set_velocity(vel);
                     self.base_mut().move_and_slide();
-                    self.base_mut().look_at(player_pos);
+                    self.safe_look_at(player_pos);
                 } else {
                     self.base_mut().set_velocity(Vector3::ZERO);
+                    self.base_mut().move_and_slide();
                 }
             }
             void_logic::enemy_ai::DroneState::Attacking => {
                 if distance > MIN_DISTANCE {
-                    self.base_mut().look_at(player_pos);
+                    self.safe_look_at(player_pos);
                     let direction = (player_pos - my_pos).normalized();
-                    let velocity = direction * self.speed * 0.3;
-                    self.base_mut().set_velocity(velocity);
+                    let vel = direction * speed * 0.3;
+                    self.base_mut().set_velocity(vel);
                     self.base_mut().move_and_slide();
                 } else {
                     self.base_mut().set_velocity(Vector3::ZERO);
+                    self.base_mut().move_and_slide();
                 }
             }
             _ => {
                 self.base_mut().set_velocity(Vector3::ZERO);
+                self.base_mut().move_and_slide();
             }
         }
 
@@ -166,8 +168,9 @@ impl EnemyDrone {
         let died = self.ai.take_damage(Damage::new(amount));
         self.update_health_bar_fill();
 
-        if !died {
-            // Flash the model briefly to indicate hit
+        if died {
+            self.on_death();
+        } else {
             self.spawn_hit_flash();
         }
     }
@@ -256,6 +259,7 @@ impl EnemyDrone {
         sphere.set_height(0.08);
         let mut fire_mat = StandardMaterial3D::new_gd();
         fire_mat.set_albedo(Color::from_rgba(1.0, 0.3, 0.0, 1.0));
+        fire_mat.set_feature(godot::classes::base_material_3d::Feature::EMISSION, true);
         fire_mat.set_emission(Color::from_rgba(1.0, 0.5, 0.0, 1.0));
         fire_mat.set_emission_energy_multiplier(10.0);
         sphere.set_material(&fire_mat);
@@ -264,6 +268,10 @@ impl EnemyDrone {
         particles.set_transform(Transform3D::new(Basis::IDENTITY, pos));
         root.clone().add_child(&particles);
         particles.set_emitting(true);
+        // Self-destruct after particles finish
+        let mut timer = particles.get_tree().create_timer(1.0);
+        let callable = particles.callable("queue_free");
+        timer.connect("timeout", &callable);
     }
 
     fn spawn_wreckage(root: &Gd<Node>, pos: Vector3) {
@@ -287,10 +295,27 @@ impl EnemyDrone {
                 pos + offset,
             ));
 
-            // Tag for cleanup after a few seconds
-            debris.set_meta(meta_keys::DEBRIS_TIMER, &Variant::from(3.0_f32));
             root.clone().add_child(&debris);
+            // Self-destruct after 3 seconds
+            let mut timer = debris.get_tree().create_timer(3.0);
+            let callable = debris.callable("queue_free");
+            timer.connect("timeout", &callable);
         }
+    }
+
+    /// look_at that skips when direction is colinear with UP (avoids Godot warning).
+    fn safe_look_at(&mut self, target: Vector3) {
+        let my_pos = self.base().get_global_position();
+        let diff = target - my_pos;
+        if diff.length() < 0.1 {
+            return;
+        }
+        let dir = diff.normalized();
+        // Colinear check: if direction is nearly parallel to UP, skip
+        if dir.cross(Vector3::UP).length() < 0.01 {
+            return;
+        }
+        self.base_mut().look_at(target);
     }
 
     fn create_health_bar(&mut self) {
@@ -314,6 +339,7 @@ impl EnemyDrone {
         fill.set_mesh(&fill_mesh);
         let mut fill_mat = StandardMaterial3D::new_gd();
         fill_mat.set_albedo(Color::from_rgba(0.1, 0.9, 0.1, 0.9));
+        fill_mat.set_feature(godot::classes::base_material_3d::Feature::EMISSION, true);
         fill_mat.set_emission(Color::from_rgba(0.0, 0.5, 0.0, 1.0));
         fill_mat.set_emission_energy_multiplier(2.0);
         fill_mat.set_transparency(godot::classes::base_material_3d::Transparency::ALPHA);
@@ -414,6 +440,7 @@ impl EnemyDrone {
         sphere.set_height(0.04);
         let mut spark_mat = StandardMaterial3D::new_gd();
         spark_mat.set_albedo(Color::from_rgba(1.0, 0.7, 0.2, 1.0));
+        spark_mat.set_feature(godot::classes::base_material_3d::Feature::EMISSION, true);
         spark_mat.set_emission(Color::from_rgba(1.0, 0.6, 0.1, 1.0));
         spark_mat.set_emission_energy_multiplier(6.0);
         sphere.set_material(&spark_mat);

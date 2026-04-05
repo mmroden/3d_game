@@ -1,4 +1,4 @@
-.PHONY: deps deps-gut check demo clean run assets test-godot
+.PHONY: deps deps-gut check demo clean run assets
 
 # Project-local tool paths
 TOOLS_DIR := $(CURDIR)/tools
@@ -96,19 +96,16 @@ deps-gut:
 		echo "GUT $(GUT_VERSION) installed to $(GUT_DIR)"; \
 	fi
 
-test-godot: build
-	@echo "==> Running Godot tests (GUT)..."
-	@GODOT_DISABLE_LEAK_CHECKS=1 $(GODOT) --headless --path $(GODOT_DIR) \
-		-s res://addons/gut/gut_cmdln.gd \
-		-gdir=res://tests -ginclude_subdirs -gexit
-	@echo "Godot tests complete."
-
-check: deps
-	@echo "==> Running checks..."
+check: build
+	@echo "==> Running Rust checks..."
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && \
 		$(CARGO) clippy -- -D warnings && \
 		$(CARGO) test
+	@echo "==> Running Godot tests (GUT)..."
+	@GODOT_DISABLE_LEAK_CHECKS=1 $(GODOT) --headless --path $(GODOT_DIR) \
+		-s res://addons/gut/gut_cmdln.gd \
+		-gdir=res://tests -ginclude_subdirs -gexit
 	@echo "All checks passed."
 
 build: deps

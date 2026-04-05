@@ -103,3 +103,32 @@ func test_enemy_in_range_spawns_projectile():
 
 	assert_gt(projectiles.size(), 0,
 		"Enemy should spawn at least one projectile when in attack range")
+
+# --- Node lifecycle: death spawns exactly one lootbox ---
+
+func test_enemy_death_spawns_one_lootbox():
+	var player = _spawn_player(Vector3(0, 0, 0))
+	var enemy_scene = load("res://scenes/enemies/enemy_slime.tscn")
+	if enemy_scene == null:
+		pass_test("skipped — scene not available")
+		return
+	var enemy = enemy_scene.instantiate()
+	add_child_autofree(enemy)
+	enemy.global_position = Vector3(5, 0, 0)
+
+	# Let enemy initialize
+	await get_tree().physics_frame
+
+	# Kill it (slime has 2 HP)
+	enemy.take_damage(100.0)
+
+	# Wait for death + queue_free
+	await wait_physics_frames(10, "Waiting for death cleanup")
+
+	# Count lootboxes — should be exactly 1
+	var count = 0
+	for child in get_tree().root.get_children():
+		if child is Lootbox:
+			count += 1
+	assert_eq(count, 1,
+		"Killing one enemy should spawn exactly 1 lootbox, got %d" % count)

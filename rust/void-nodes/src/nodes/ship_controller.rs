@@ -6,12 +6,13 @@ use godot::classes::{
     Input,
 };
 
-use super::constants::{actions, groups, meta_keys, methods, signals};
+use super::constants::{actions, groups, methods, signals};
 use super::godot_util;
 
 use void_logic::laser::LaserLevel;
 use void_logic::loadout::Loadout;
 use void_logic::power_routing::PowerMode;
+use void_logic::ram_damage;
 use void_logic::upgrade::{Upgrade, UpgradeKind};
 use void_logic::weapon::{WeaponState, FireResult};
 
@@ -149,6 +150,31 @@ impl ICharacterBody3D for ShipController {
 
         self.base_mut().set_velocity(vel);
         self.base_mut().move_and_slide();
+        // Accept the collision-resolved velocity as truth.
+        // Without this, thrust accumulates into walls until the player clips through.
+        self.linear_velocity = self.base().get_velocity();
+
+        // Check for ram collisions with enemies
+        let pre_collision_speed = vel.length();
+        for i in 0..self.base().get_slide_collision_count() {
+            if let Some(collision) = self.base().get_slide_collision(i) {
+                if let Some(collider) = collision.get_collider() {
+                    let obj: Gd<Node3D> = collider.cast();
+                    if obj.is_in_group(groups::ENEMIES) && obj.has_method(methods::TAKE_DAMAGE) {
+                        let dmg = ram_damage::ram_damage(pre_collision_speed);
+                        if dmg.as_f32() > 0.0 {
+                            let mut enemy = obj;
+                            enemy.call(methods::TAKE_DAMAGE, &[Variant::from(dmg.as_f32())]);
+                            let player_dmg = dmg.as_f32() * ram_damage::PLAYER_RAM_FRACTION;
+                            self.base_mut().emit_signal(
+                                signals::PLAYER_DAMAGED,
+                                &[Variant::from(player_dmg)],
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         // Quaternion-based rotation: compose pitch/yaw/roll independently
         // then apply to current orientation. Avoids gimbal lock and
@@ -193,6 +219,14 @@ impl ShipController {
             signals::PLAYER_DAMAGED,
             &[Variant::from(amount)],
         );
+    }
+
+    /// Reset local state to match a fresh RunState (called by GameManager on new/continue).
+    #[func]
+    pub fn reset_loadout(&mut self) {
+        self.loadout = Loadout::new();
+        self.laser_level = LaserLevel::Red;
+        self.power_mode = PowerMode::default();
     }
 
     #[func]
@@ -295,6 +329,7 @@ impl ShipController {
         sphere.set_height(0.03);
         let mut spark_mat = StandardMaterial3D::new_gd();
         spark_mat.set_albedo(Color::from_rgba(1.0, 0.5, 0.1, 1.0));
+        spark_mat.set_feature(godot::classes::base_material_3d::Feature::EMISSION, true);
         spark_mat.set_emission(Color::from_rgba(1.0, 0.4, 0.1, 1.0));
         spark_mat.set_emission_energy_multiplier(8.0);
         sphere.set_material(&spark_mat);
@@ -304,7 +339,10 @@ impl ShipController {
         if let Some(root) = godot_util::scene_root(self.base().get_tree()) {
             root.clone().add_child(&particles);
             particles.set_emitting(true);
-            particles.set_meta(meta_keys::SPARK_TIMER, &Variant::from(0.5_f32));
+            // Self-destruct after sparks finish
+            let mut timer = particles.get_tree().create_timer(0.5);
+            let callable = particles.callable("queue_free");
+            timer.connect("timeout", &callable);
         }
     }
 

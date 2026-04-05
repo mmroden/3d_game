@@ -266,3 +266,32 @@ func test_player_no_spin_after_killing_nearby_enemy():
 		"Player should not spin: angle changed by %f radians (max 0.5)" % angle_diff)
 
 	player.queue_free()
+
+func test_player_does_not_teleport_through_wall():
+	# Place a wall at x=5, player at x=3 moving toward it at high speed.
+	# After many frames, player must not have passed the wall.
+	var wall = StaticBody3D.new()
+	var wall_shape = CollisionShape3D.new()
+	var box = BoxShape3D.new()
+	box.size = Vector3(0.5, 4.0, 4.0)
+	wall_shape.shape = box
+	wall.add_child(wall_shape)
+	wall.position = Vector3(5, 2, 0)
+	add_child_autofree(wall)
+
+	var player = ShipController.new()
+	player.add_to_group("player")
+	var pshape = CollisionShape3D.new()
+	var psphere = SphereShape3D.new()
+	psphere.radius = 0.5
+	pshape.shape = psphere
+	player.add_child(pshape)
+	add_child_autofree(player)
+	player.global_position = Vector3(3, 2, 0)
+	player.velocity = Vector3(40, 0, 0)
+
+	for i in range(60):
+		await get_tree().physics_frame
+
+	assert_lt(player.global_position.x, 5.5,
+		"Player should not teleport through wall (got x=%f)" % player.global_position.x)

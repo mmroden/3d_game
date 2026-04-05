@@ -14,6 +14,7 @@ use void_logic::newtypes::Damage;
 use void_logic::power_routing::PowerMode;
 use void_logic::run_state::RunState;
 use void_logic::save_game::SaveGame;
+use void_logic::upgrade::{Upgrade, UpgradeKind};
 
 /// Central orchestrator: owns RunState, manages game phase transitions,
 /// shows/hides UI screens, and connects signals from enemies/portal.
@@ -118,6 +119,7 @@ impl GameManager {
         }
         self.run_state = RunState::new(42);
         self.save_game = None;
+        self.sync_player_state();
         self.transition_to(GamePhase::Playing);
     }
 
@@ -131,6 +133,7 @@ impl GameManager {
         } else {
             self.run_state = RunState::new(42);
         }
+        self.sync_player_state();
         self.transition_to(GamePhase::Playing);
     }
 
@@ -287,6 +290,38 @@ impl GameManager {
         self.run_state.take_damage(Damage::new(amount));
         if !self.run_state.is_alive() {
             self.on_player_death();
+        }
+    }
+
+    /// Called when a lootbox is collected — update RunState then push to ShipController.
+    #[func]
+    pub fn on_upgrade_collected(&mut self, name: GString, kind_id: i32, multiplier: f32) {
+        let kind = match kind_id {
+            0 => UpgradeKind::Thrust,
+            1 => UpgradeKind::RotationSpeed,
+            2 => UpgradeKind::Damping,
+            3 => UpgradeKind::MaxHealth,
+            4 => UpgradeKind::FireRate,
+            5 => UpgradeKind::ProjectileSpeed,
+            6 => UpgradeKind::ProjectileDamage,
+            _ => return,
+        };
+        let upgrade = Upgrade {
+            name: name.to_string(),
+            kind,
+            multiplier,
+        };
+        // Update authority
+        self.run_state.loadout.add_upgrade(upgrade);
+
+        // Push to ShipController cache
+        let Some(parent) = self.base().get_parent() else { return };
+        if let Some(mut player) = parent.try_get_node_as::<Node>(nodes::PLAYER) {
+            player.call(methods::APPLY_UPGRADE, &[
+                Variant::from(name),
+                Variant::from(kind_id),
+                Variant::from(multiplier),
+            ]);
         }
     }
 
@@ -500,6 +535,26 @@ impl GameManager {
         }
     }
 
+    /// Push RunState's loadout and laser to ShipController after a reset/restore.
+    fn sync_player_state(&self) {
+        let Some(parent) = self.base().get_parent() else { return };
+        if let Some(mut player) = parent.try_get_node_as::<Node>(nodes::PLAYER) {
+            // Reset ShipController's local cache
+            player.call(methods::RESET_LOADOUT, &[]);
+            // Push current laser level
+            let level = self.run_state.laser_level as i32;
+            player.call(methods::SET_LASER_LEVEL, &[Variant::from(level)]);
+            // Re-apply all upgrades from RunState's loadout
+            for upgrade in &self.run_state.loadout.upgrades {
+                player.call(methods::APPLY_UPGRADE, &[
+                    Variant::from(GString::from(&upgrade.name)),
+                    Variant::from(upgrade.kind as i32),
+                    Variant::from(upgrade.multiplier),
+                ]);
+            }
+        }
+    }
+
     fn update_player_laser(&self) {
         let Some(parent) = self.base().get_parent() else { return };
         if let Some(mut player) = parent.try_get_node_as::<Node>(nodes::PLAYER) {
@@ -605,19 +660,29 @@ impl GameManager {
         let Some(parent) = self.base().get_parent() else { return };
         let Some(level_mgr) = parent.try_get_node_as::<Node>(nodes::LEVEL_MANAGER) else { return };
 
-        let callable = self.base().callable(methods::ON_ENEMY_KILLED);
+        let kill_callable = self.base().callable(methods::ON_ENEMY_KILLED);
         let portal_callable = self.base().callable(methods::ON_PORTAL_ENTERED);
+        let upgrade_callable = self.base().callable(methods::ON_UPGRADE_COLLECTED);
 
+        // Scan LevelManager children (enemies, portals)
         for child in level_mgr.get_children().iter_shared() {
-            // Connect enemy signals
-            if child.has_signal(signals::ENEMY_KILLED) && !child.is_connected(signals::ENEMY_KILLED, &callable) {
+            if child.has_signal(signals::ENEMY_KILLED) && !child.is_connected(signals::ENEMY_KILLED, &kill_callable) {
                 let mut c = child.clone();
-                c.connect(signals::ENEMY_KILLED, &callable);
+                c.connect(signals::ENEMY_KILLED, &kill_callable);
             }
-            // Connect portal signal
             if child.has_signal(signals::PORTAL_ENTERED) && !child.is_connected(signals::PORTAL_ENTERED, &portal_callable) {
                 let mut c = child;
                 c.connect(signals::PORTAL_ENTERED, &portal_callable);
+            }
+        }
+
+        // Scan scene root children for lootboxes (spawned by enemy death, added to root)
+        if let Some(root) = self.base().get_tree().get_root() {
+            for child in root.get_children().iter_shared() {
+                if child.has_signal(signals::UPGRADE_COLLECTED) && !child.is_connected(signals::UPGRADE_COLLECTED, &upgrade_callable) {
+                    let mut c = child;
+                    c.connect(signals::UPGRADE_COLLECTED, &upgrade_callable);
+                }
             }
         }
     }

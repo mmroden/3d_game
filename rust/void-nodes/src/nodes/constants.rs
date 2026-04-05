@@ -27,6 +27,7 @@ pub mod signals {
     pub const SIZE_CHANGED: &str = "size_changed";
     pub const PLAYER_DAMAGED: &str = "player_damaged";
     pub const POWER_MODE_CHANGED: &str = "power_mode_changed";
+    pub const UPGRADE_COLLECTED: &str = "upgrade_collected";
 }
 
 // ── Callable method names ─────────────────────────────────────────────
@@ -54,6 +55,7 @@ pub mod methods {
     pub const SHOW_SHOP: &str = "show_shop";
     pub const SHOW_SHOWCASE: &str = "show_showcase";
     pub const HIDE_SHOWCASE: &str = "hide_showcase";
+    pub const RESET_LOADOUT: &str = "reset_loadout";
     pub const SET_LASER_LEVEL: &str = "set_laser_level";
     pub const UPDATE_HEALTH: &str = "update_health";
     pub const UPDATE_CREDITS: &str = "update_credits";
@@ -64,6 +66,7 @@ pub mod methods {
     pub const GENERATE_LEVEL: &str = "generate_level";
     pub const ON_PLAYER_DAMAGED: &str = "on_player_damaged";
     pub const ON_POWER_MODE_CHANGED: &str = "on_power_mode_changed";
+    pub const ON_UPGRADE_COLLECTED: &str = "on_upgrade_collected";
 }
 
 // ── Input actions ─────────────────────────────────────────────────────
@@ -96,6 +99,7 @@ pub mod actions {
 
 pub mod groups {
     pub const PLAYER: &str = "player";
+    pub const ENEMIES: &str = "enemies";
     pub const ENEMY_PROJECTILE: &str = "enemy_projectile";
 }
 
@@ -103,8 +107,6 @@ pub mod groups {
 
 pub mod meta_keys {
     pub const BEAM_AGE: &str = "beam_age";
-    pub const SPARK_TIMER: &str = "spark_timer";
-    pub const DEBRIS_TIMER: &str = "debris_timer";
 }
 
 // ── Theme override keys ───────────────────────────────────────────────
@@ -178,6 +180,7 @@ mod tests {
             signals::SIZE_CHANGED,
             signals::PLAYER_DAMAGED,
             signals::POWER_MODE_CHANGED,
+            signals::UPGRADE_COLLECTED,
         ];
         for sig in &all_signals {
             assert!(
@@ -221,6 +224,7 @@ mod tests {
             methods::ON_PLAYER_DAMAGED,
             methods::UPDATE_SHIELD,
             methods::ON_POWER_MODE_CHANGED,
+            methods::ON_UPGRADE_COLLECTED,
             methods::UPDATE_POWER_MODE,
             methods::RESUME_GAME,
             methods::QUIT_TO_MENU,
@@ -303,6 +307,7 @@ mod tests {
             signals::SIZE_CHANGED,
             signals::PLAYER_DAMAGED,
             signals::POWER_MODE_CHANGED,
+            signals::UPGRADE_COLLECTED,
         ];
         for (i, a) in all.iter().enumerate() {
             for (j, b) in all.iter().enumerate() {
@@ -333,7 +338,7 @@ mod tests {
             methods::UPDATE_LASER, methods::UPDATE_LEVEL,
             methods::GENERATE_LEVEL, methods::ON_PLAYER_DAMAGED,
             methods::UPDATE_SHIELD, methods::ON_POWER_MODE_CHANGED,
-            methods::UPDATE_POWER_MODE,
+            methods::ON_UPGRADE_COLLECTED, methods::UPDATE_POWER_MODE,
         ];
         for (i, a) in all.iter().enumerate() {
             for (j, b) in all.iter().enumerate() {

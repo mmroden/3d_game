@@ -110,9 +110,12 @@ fn auto_enemy_spawns(ex: u32, ey: u32, ez: u32, rng: &mut SmallRng) -> Vec<Spawn
     let cell_size = 4.0_f32;
     let story_height = 5.0_f32;
     let count = rng.random_range(1..=3u32);
+    // Y range: stay within the room's vertical extent, leaving headroom below ceiling.
+    // The +1.5 lift in level_assembly means max y should be (ey * story_height - 1.5 - buffer).
+    let max_y = ((ey as f32) * story_height - 3.0).max(0.5);
     (0..count).map(|_| {
         let x = rng.random_range(1.0..(ex as f32 - 1.0).max(1.5)) * cell_size;
-        let y = rng.random_range(0.0..ey as f32) * story_height;
+        let y = rng.random_range(0.5..max_y);
         let z = rng.random_range(1.0..(ez as f32 - 1.0).max(1.5)) * cell_size;
         SpawnPoint { position: [x, y, z] }
     }).collect()

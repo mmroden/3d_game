@@ -251,6 +251,17 @@ mod tests {
     }
 
     #[test]
+    fn dead_state_stable_across_repeated_updates() {
+        let mut ai = default_ai();
+        ai.take_damage(Damage::new(99.0));
+        assert!(ai.is_dead());
+        for _ in 0..100 {
+            assert!(ai.is_dead());
+            assert!(!ai.update(1.0, 0.016));
+        }
+    }
+
+    #[test]
     fn exact_boundary_attack_triggers_attack() {
         let mut ai = default_ai();
         ai.update(20.0, 0.016); // → Chasing

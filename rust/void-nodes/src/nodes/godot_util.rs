@@ -3,9 +3,10 @@
 
 use godot::prelude::*;
 use godot::classes::{
-    MeshInstance3D, BoxMesh, StandardMaterial3D,
+    MeshInstance3D, BoxMesh, StandardMaterial3D, OmniLight3D,
     ParticleProcessMaterial,
     particle_process_material::Parameter,
+    light_3d,
 };
 
 use super::constants::meta_keys;
@@ -49,9 +50,18 @@ pub fn create_beam_mesh(from: Vector3, to: Vector3, color: &[f32]) -> Option<Gd<
 
     let mut material = StandardMaterial3D::new_gd();
     material.set_albedo(Color::from_rgba(color[0], color[1], color[2], 1.0));
+    material.set_feature(godot::classes::base_material_3d::Feature::EMISSION, true);
     material.set_emission(Color::from_rgba(color[0], color[1], color[2], 1.0));
-    material.set_emission_energy_multiplier(5.0);
+    material.set_emission_energy_multiplier(8.0);
     mesh_instance.set_surface_override_material(0, &material);
+
+    // Attach an OmniLight3D so the beam illuminates surroundings
+    let mut light = OmniLight3D::new_alloc();
+    light.set_color(Color::from_rgb(color[0], color[1], color[2]));
+    light.set_param(light_3d::Param::ENERGY, 3.0);
+    light.set_param(light_3d::Param::RANGE, 4.0);
+    light.set_param(light_3d::Param::ATTENUATION, 2.0);
+    mesh_instance.add_child(&light);
 
     mesh_instance.set_meta(meta_keys::BEAM_AGE, &Variant::from(0.0_f32));
 
@@ -78,6 +88,12 @@ pub fn age_beams(beams: &mut Vec<Gd<MeshInstance3D>>, delta: f32, lifetime: f32,
             if let Some(mat) = beam.get_surface_override_material(0) {
                 let mut std_mat = mat.cast::<StandardMaterial3D>();
                 std_mat.set_albedo(Color::from_rgba(color[0], color[1], color[2], alpha));
+            }
+            // Fade the attached light
+            for child in beam.get_children().iter_shared() {
+                if let Ok(mut light) = child.try_cast::<OmniLight3D>() {
+                    light.set_param(light_3d::Param::ENERGY, 3.0 * alpha);
+                }
             }
             true
         }

@@ -63,12 +63,14 @@ impl IArea3D for Lootbox {
 
 #[godot_api]
 impl Lootbox {
+    #[signal]
+    fn upgrade_collected(name: GString, kind_id: i32, multiplier: f32);
+
     #[func]
     fn on_body_entered(&mut self, body: Gd<Node3D>) {
         if self.collected {
             return;
         }
-        // Check if it's the player
         if body.is_in_group(groups::PLAYER) {
             self.collect();
         }
@@ -81,12 +83,10 @@ impl Lootbox {
         }
         self.collected = true;
 
-        // Generate and apply a random upgrade to the player
         use void_logic::upgrade::random_upgrade;
         use rand::SeedableRng;
         use rand::rngs::SmallRng;
 
-        // Use current position as entropy for variety
         let pos = self.base().get_global_position();
         let seed = ((pos.x * 1000.0) as u64)
             .wrapping_add((pos.z * 7777.0) as u64)
@@ -96,20 +96,15 @@ impl Lootbox {
 
         godot_print!("Collected upgrade: {} (x{:.0}%)", upgrade.name, (upgrade.multiplier - 1.0) * 100.0);
 
-        // Apply to player's loadout via signal/method call
-        let tree = self.base().get_tree();
-        let players = tree.get_nodes_in_group(groups::PLAYER);
-        if let Some(player) = players.get(0) {
-            let mut player: Gd<Node> = player.clone();
-            player.call(
-                methods::APPLY_UPGRADE,
-                &[
-                    Variant::from(GString::from(&upgrade.name)),
-                    Variant::from(upgrade.kind as i32),
-                    Variant::from(upgrade.multiplier),
-                ],
-            );
-        }
+        // Emit signal — GameManager routes to RunState then pushes to ShipController
+        self.base_mut().emit_signal(
+            signals::UPGRADE_COLLECTED,
+            &[
+                Variant::from(GString::from(&upgrade.name)),
+                Variant::from(upgrade.kind as i32),
+                Variant::from(upgrade.multiplier),
+            ],
+        );
 
         self.base_mut().queue_free();
     }

@@ -29,6 +29,7 @@ pub mod ui_layout;
 pub mod ui_style;
 pub mod game_options;
 pub mod power_routing;
+pub mod ram_damage;
 pub mod save_game;
 pub mod shield;
 pub mod spatial_layout;
