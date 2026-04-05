@@ -30,6 +30,8 @@ script = ExtResource("1")
 
 [node name="GameManager" type="GameManager" parent="."]
 
+[node name="AudioManager" type="AudioManager" parent="."]
+
 [node name="Player" type="ShipController" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2, 0)
 thrust_power = 40.0

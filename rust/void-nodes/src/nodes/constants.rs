@@ -67,6 +67,9 @@ pub mod methods {
     pub const ON_PLAYER_DAMAGED: &str = "on_player_damaged";
     pub const ON_POWER_MODE_CHANGED: &str = "on_power_mode_changed";
     pub const ON_UPGRADE_COLLECTED: &str = "on_upgrade_collected";
+    pub const ON_PHASE_CHANGED_AUDIO: &str = "on_phase_changed_audio";
+    pub const ON_MUSIC_FINISHED: &str = "on_music_finished";
+    pub const ON_SFX_FINISHED: &str = "on_sfx_finished";
 }
 
 // ── Input actions ─────────────────────────────────────────────────────
@@ -140,6 +143,7 @@ pub mod nodes {
     pub const LEFT_UI_OVERLAY: &str = "StereoCanvas/LeftContainer/LeftUIOverlay";
     pub const RIGHT_UI_OVERLAY: &str = "StereoCanvas/RightContainer/RightUIOverlay";
     pub const UI_PLANE: &str = "UIPlane";
+    pub const AUDIO_MANAGER: &str = "AudioManager";
 }
 
 // ── Scene paths ───────────────────────────────────────────────────────
@@ -229,6 +233,11 @@ mod tests {
             methods::RESUME_GAME,
             methods::QUIT_TO_MENU,
             methods::ON_WINDOW_SIZE_CHANGED,
+            methods::RESET_LOADOUT,
+            methods::ON_PHASE_CHANGED_AUDIO,
+            methods::ON_MUSIC_FINISHED,
+            methods::ON_SFX_FINISHED,
+
         ];
         for method in &all_methods {
             assert!(
@@ -339,6 +348,9 @@ mod tests {
             methods::GENERATE_LEVEL, methods::ON_PLAYER_DAMAGED,
             methods::UPDATE_SHIELD, methods::ON_POWER_MODE_CHANGED,
             methods::ON_UPGRADE_COLLECTED, methods::UPDATE_POWER_MODE,
+            methods::ON_PHASE_CHANGED_AUDIO, methods::ON_MUSIC_FINISHED,
+
+            methods::RESET_LOADOUT,
         ];
         for (i, a) in all.iter().enumerate() {
             for (j, b) in all.iter().enumerate() {
@@ -365,6 +377,7 @@ mod tests {
             nodes::RIGHT_CONTAINER, nodes::LEFT_UI_OVERLAY,
             nodes::RIGHT_UI_OVERLAY,
             nodes::UI_PLANE,
+            nodes::AUDIO_MANAGER,
         ];
         for path in &all_nodes {
             assert!(!path.is_empty(), "node path must not be empty");

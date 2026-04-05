@@ -7,6 +7,7 @@ use godot::classes::{
 
 use super::constants::{groups, methods, signals};
 use super::godot_util;
+use void_logic::audio_catalog::SfxEvent;
 
 /// End-of-level portal. Player touches it to complete the level.
 #[derive(GodotClass)]
@@ -101,6 +102,11 @@ impl Portal {
     fn on_body_entered(&mut self, body: Gd<Node3D>) {
         // Check if it's the player (in "player" group)
         if body.is_in_group(groups::PLAYER) {
+            // Portal enter SFX
+            let pos = self.base().get_global_position();
+            if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+                audio.bind_mut().play_event_at(SfxEvent::PortalEnter, pos);
+            }
             self.base_mut().emit_signal(signals::PORTAL_ENTERED, &[]);
             // Disable further collisions
             self.base_mut().set_monitoring(false);

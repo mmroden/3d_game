@@ -191,3 +191,44 @@ fi
 
 echo "  Quaternius addon ready at: $ADDON_DIR"
 du -sh "$ADDON_DIR"
+
+# ========== Audio assets (music + SFX) ==========
+
+AUDIO_DIR="$GODOT_DIR/addons/audio"
+MUSIC_SRC="$ASSETS_DIR/music"
+SFX_SRC="$ASSETS_DIR/sfx"
+
+# ---------- Music ----------
+
+if [ -d "$MUSIC_SRC" ]; then
+    echo "  Installing music..."
+    mkdir -p "$AUDIO_DIR/music"
+    for wav in "$MUSIC_SRC"/*.wav; do
+        [ -f "$wav" ] || continue
+        # Sanitize filename: strip "juanjo_sound - " prefix, lowercase, spaces→underscores
+        base="$(basename "$wav" .wav)"
+        clean="$(echo "$base" | sed 's/^juanjo_sound - //' | tr '[:upper:]' '[:lower:]' | tr ' ' '_')"
+        cp "$wav" "$AUDIO_DIR/music/${clean}.wav"
+    done
+    chmod -R u+w "$AUDIO_DIR/music"
+    echo "  Music installed ($(ls "$AUDIO_DIR/music" | wc -l | tr -d ' ') tracks)."
+else
+    echo "  Music source not found at $MUSIC_SRC, skipping."
+fi
+
+# ---------- Sound effects ----------
+
+if [ -d "$SFX_SRC" ]; then
+    echo "  Installing SFX..."
+    mkdir -p "$AUDIO_DIR/sfx"
+    rsync -a --exclude='.DS_Store' --exclude='*.reapeaks' "$SFX_SRC/" "$AUDIO_DIR/sfx/"
+    chmod -R u+w "$AUDIO_DIR/sfx"
+    echo "  SFX installed."
+else
+    echo "  SFX source not found at $SFX_SRC, skipping."
+fi
+
+if [ -d "$AUDIO_DIR" ]; then
+    echo "  Audio addon ready at: $AUDIO_DIR"
+    du -sh "$AUDIO_DIR"
+fi

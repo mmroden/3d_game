@@ -9,13 +9,24 @@ use godot::classes::{
     light_3d,
 };
 
-use super::constants::meta_keys;
+use super::audio_manager::AudioManager;
+use super::constants::{meta_keys, nodes};
 
 /// Get the scene tree root node from a SceneTree (or Optional SceneTree).
 /// Returns `None` during early initialization or after the tree is torn down.
 /// Usage: `scene_root(self.base().get_tree())`
 pub fn scene_root(tree: impl Into<Option<Gd<godot::classes::SceneTree>>>) -> Option<Gd<godot::classes::Node>> {
     tree.into().and_then(|t| t.get_root()).map(|r| r.upcast())
+}
+
+/// Find the AudioManager node by navigating up to the scene root, then down to Main/AudioManager.
+/// Works from any depth in the tree (enemies under LevelManager, portal, lootbox, etc.).
+/// Accepts the result of `self.base().get_tree()` to avoid upcast ambiguity.
+pub fn find_audio_manager(tree: impl Into<Option<Gd<godot::classes::SceneTree>>>) -> Option<Gd<AudioManager>> {
+    let root = scene_root(tree)?;
+    // Main is the first child of root; AudioManager is a direct child of Main
+    let main = root.try_get_node_as::<godot::classes::Node>("Main")?;
+    main.try_get_node_as::<AudioManager>(nodes::AUDIO_MANAGER)
 }
 
 /// Compute an orientation basis pointing along `forward`.

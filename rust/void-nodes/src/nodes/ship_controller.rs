@@ -14,6 +14,7 @@ use void_logic::loadout::Loadout;
 use void_logic::power_routing::PowerMode;
 use void_logic::ram_damage;
 use void_logic::upgrade::{Upgrade, UpgradeKind};
+use void_logic::audio_catalog::SfxEvent;
 use void_logic::weapon::{WeaponState, FireResult};
 
 /// Clamp velocity to max magnitude, reset to zero if NaN.
@@ -215,6 +216,10 @@ impl ShipController {
     /// Called when a projectile or enemy hits this ship.
     #[func]
     pub fn take_damage(&mut self, amount: f32) {
+        // Player damage SFX (non-positional since it's the player)
+        if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+            audio.bind_mut().play_event(SfxEvent::ImpactHeavy);
+        }
         self.base_mut().emit_signal(
             signals::PLAYER_DAMAGED,
             &[Variant::from(amount)],
@@ -273,6 +278,11 @@ impl ShipController {
 
         self.fire_single_ray(left_origin, forward, damage);
         self.fire_single_ray(right_origin, forward, damage);
+
+        // Laser fire SFX
+        if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+            audio.bind_mut().play_event_at(SfxEvent::LaserFire, center);
+        }
     }
 
     fn fire_single_ray(&mut self, origin: Vector3, forward: Vector3, damage: f32) {
@@ -296,6 +306,11 @@ impl ShipController {
                 if obj.has_method(methods::TAKE_DAMAGE) {
                     obj.call(methods::TAKE_DAMAGE, &[Variant::from(damage)]);
                 }
+            }
+
+            // Impact SFX at hit point
+            if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+                audio.bind_mut().play_event_at(SfxEvent::ImpactMetal, hit_pos);
             }
 
             // Spawn hit sparks at impact point

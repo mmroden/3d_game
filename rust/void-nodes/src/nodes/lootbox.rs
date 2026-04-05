@@ -2,6 +2,8 @@ use godot::prelude::*;
 use godot::classes::{Area3D, IArea3D};
 
 use super::constants::{groups, methods, signals};
+use super::godot_util;
+use void_logic::audio_catalog::SfxEvent;
 
 /// A pickup that grants the player an upgrade.
 #[derive(GodotClass)]
@@ -93,6 +95,11 @@ impl Lootbox {
             .wrapping_add((self.time * 9999.0) as u64);
         let mut rng = SmallRng::seed_from_u64(seed);
         let upgrade = random_upgrade(&mut rng);
+
+        // Loot pickup SFX
+        if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+            audio.bind_mut().play_event_at(SfxEvent::LootPickup, pos);
+        }
 
         godot_print!("Collected upgrade: {} (x{:.0}%)", upgrade.name, (upgrade.multiplier - 1.0) * 100.0);
 

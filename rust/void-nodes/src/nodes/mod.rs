@@ -1,5 +1,6 @@
 pub mod constants;
 pub mod godot_util;
+pub mod audio_manager;
 mod ship_controller;
 mod enemy_drone;
 mod projectile;

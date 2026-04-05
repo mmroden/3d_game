@@ -9,6 +9,7 @@ use godot::classes::{
 use super::constants::{groups, scenes, signals};
 use super::godot_util;
 use void_logic::enemy_ai::{DroneAi, DroneConfig};
+use void_logic::audio_catalog::SfxEvent;
 use void_logic::enemy_type::EnemyType;
 use void_logic::newtypes::{Health, Damage};
 
@@ -171,6 +172,11 @@ impl EnemyDrone {
         if died {
             self.on_death();
         } else {
+            // Non-lethal hit SFX
+            let pos = self.base().get_global_position();
+            if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+                audio.bind_mut().play_event_at(SfxEvent::ImpactMetal, pos);
+            }
             self.spawn_hit_flash();
         }
     }
@@ -182,6 +188,11 @@ impl EnemyDrone {
             return; // Too close — can't compute direction
         }
         let direction = diff.normalized();
+
+        // Enemy fire SFX
+        if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+            audio.bind_mut().play_event_at(SfxEvent::EnemyFire, my_pos);
+        }
 
         let Some(root) = godot_util::scene_root(self.base().get_tree()) else { return };
         let Some(scene) = ResourceLoader::singleton().load(scenes::ENEMY_PROJECTILE) else {
@@ -212,6 +223,12 @@ impl EnemyDrone {
         );
 
         let pos = self.base().get_global_position();
+
+        // Death explosion SFX
+        if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+            audio.bind_mut().play_event_at(SfxEvent::ImpactHeavy, pos);
+        }
+
         let Some(root) = godot_util::scene_root(self.base().get_tree()) else {
             self.base_mut().queue_free();
             return;

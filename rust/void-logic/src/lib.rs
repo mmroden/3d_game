@@ -12,6 +12,7 @@ pub mod upgrade;
 pub mod run_state;
 pub mod stereo;
 pub mod asset_catalog;
+pub mod audio_catalog;
 pub mod room_assembler;
 pub mod room_furnisher;
 pub mod level_assembly;
