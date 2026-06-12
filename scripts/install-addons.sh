@@ -31,10 +31,13 @@ if [ "$TRES_ONLY" = "--tres-only" ]; then
         find "$ESSENTIALS_SRC/materials" -maxdepth 1 -name "*.tres" -exec cp {} "$ADDON_DIR/materials/" \;
     fi
     chmod -R u+w "$ADDON_DIR/materials"
-    # Strip Textures/ subdirectory prefix and stale UIDs
+    # Strip Textures/ subdirectory prefix, stale UIDs, and deprecated
+    # editor-only VisualShader state (graph_offset triggers a deprecation
+    # error on load, which GUT treats as a test failure)
     find "$ADDON_DIR/materials" -maxdepth 1 -name "*.tres" \
         -exec sed -i '' 's|materials/Textures/|materials/|g' {} + \
-        -exec sed -i '' 's| uid="uid://[^"]*"||g' {} +
+        -exec sed -i '' 's| uid="uid://[^"]*"||g' {} + \
+        -exec sed -i '' '/^graph_offset = /d' {} +
     # Convert embedded CompressedTexture2D (with S3TC load_paths) to ext_resource
     # references pointing to the actual .png files (works on any platform)
     python3 "$(dirname "$0")/fix-embedded-textures.py" "$ADDON_DIR/materials"
@@ -56,9 +59,12 @@ find "$MEGAKIT_SRC/materials" -maxdepth 1 \( -name "*.tres" -o -name "*.png" -o 
 # Remove any stale Textures symlink (causes infinite reimport loops)
 rm -f "$ADDON_DIR/materials/Textures"
 
-# Strip stale UIDs from .tres files (they reference the asset pack author's project)
+# Strip stale UIDs from .tres files (they reference the asset pack author's
+# project) and deprecated editor-only VisualShader state (graph_offset
+# triggers a deprecation error on load, which GUT treats as a test failure)
 find "$ADDON_DIR/materials" -maxdepth 1 -name "*.tres" \
-    -exec sed -i '' 's| uid="uid://[^"]*"||g' {} +
+    -exec sed -i '' 's| uid="uid://[^"]*"||g' {} + \
+    -exec sed -i '' '/^graph_offset = /d' {} +
 
 # Strip stale .s3tc.ctex load_path entries (macOS/Metal doesn't generate these;
 # they reference the asset pack author's S3TC-compiled textures)

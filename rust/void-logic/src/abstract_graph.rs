@@ -128,7 +128,7 @@ mod tests {
 
     fn test_config() -> GeneratorConfig {
         GeneratorConfig {
-            seed: 42,
+            seed: crate::seed::Seed::new(42),
             max_rooms: 0,
             min_room_xz: 3,
             max_room_xz: 6,

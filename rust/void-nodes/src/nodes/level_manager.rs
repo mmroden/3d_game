@@ -6,17 +6,20 @@ use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use rand::seq::IndexedRandom;
 
-use void_logic::generator::{generate, rooms_for_level, GeneratorConfig};
+use void_logic::generator::{generate, GeneratorConfig};
 use void_logic::level_assembly;
 use void_logic::portal as portal_sys;
 use void_logic::enemy_type;
+use void_logic::seed::Seed;
 
 fn vec3(a: [f32; 3]) -> Vector3 {
     Vector3::new(a[0], a[1], a[2])
 }
 
-/// Orchestrates level lifecycle: generates the graph, assembles
-/// room geometry from modular pieces, and spawns lights.
+/// Assembles a level on demand: generates the graph, assembles room
+/// geometry from modular pieces, and spawns lights. Generation is
+/// driven solely by GameManager (one pathway); LevelManager never
+/// self-generates.
 #[derive(GodotClass)]
 #[class(base=Node3D)]
 pub struct LevelManager {
@@ -24,12 +27,6 @@ pub struct LevelManager {
 
     #[export]
     grid_cell_size: f32,
-
-    #[export]
-    seed: i64,
-
-    #[export]
-    target_rooms: i32,
 
     #[export]
     current_level: i32,
@@ -41,16 +38,8 @@ impl INode3D for LevelManager {
         Self {
             base,
             grid_cell_size: 4.0,
-            seed: 42_i64,
-            target_rooms: 8_i32,
             current_level: 1_i32,
         }
-    }
-
-    fn ready(&mut self) {
-        let seed = self.seed;
-        let target = rooms_for_level(self.current_level as u32) as u32;
-        self.generate_level(seed, target);
     }
 }
 
@@ -58,8 +47,9 @@ impl INode3D for LevelManager {
 impl LevelManager {
     #[func]
     pub fn generate_level(&mut self, seed: i64, target_rooms: u32) {
+        let seed = Seed::from_i64(seed);
         let config = GeneratorConfig {
-            seed: seed as u64,
+            seed,
             max_rooms: if target_rooms == 0 { 0 } else { target_rooms as usize },
             min_room_xz: 3,
             max_room_xz: 6,
@@ -78,11 +68,11 @@ impl LevelManager {
         // Assemble all room geometry, furniture, light fixtures, enemy positions,
         // and collision boxes for physics.
         let (placements, light_sources, enemy_positions, collision_boxes) =
-            level_assembly::spawn_list_full(&graph, self.grid_cell_size, seed as u64);
+            level_assembly::spawn_list_full(&graph, self.grid_cell_size, seed);
         let mut loader = ResourceLoader::singleton();
         let mut mesh_count = 0;
 
-        let mut loose_rng = SmallRng::seed_from_u64(seed as u64);
+        let mut loose_rng = SmallRng::seed_from_u64(seed.value());
 
         for entry in &placements {
             let scene_res = loader.load(entry.scene);
@@ -159,7 +149,7 @@ impl LevelManager {
         // Spawn varied enemies based on current level
         let mut enemy_count = 0;
         let available_enemies = enemy_type::enemies_for_level(self.current_level as u32);
-        let mut enemy_rng = SmallRng::seed_from_u64(seed as u64);
+        let mut enemy_rng = SmallRng::seed_from_u64(seed.value());
         for pos in &enemy_positions {
             let etype = *available_enemies.choose(&mut enemy_rng)
                 .expect("available_enemies is non-empty for any valid level");

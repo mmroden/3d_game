@@ -51,8 +51,6 @@ convergence_distance = 0.0
 
 [node name="LevelManager" type="LevelManager" parent="."]
 grid_cell_size = 4.0
-seed = 42
-target_rooms = 5
 current_level = 1
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]

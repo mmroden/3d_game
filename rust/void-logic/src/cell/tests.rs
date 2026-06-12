@@ -516,7 +516,7 @@ fn no_column_near_connector_gap_in_generated_rooms() {
     use rand::rngs::SmallRng;
 
     let config = GeneratorConfig {
-        seed: 42,
+        seed: crate::seed::Seed::new(42),
         max_rooms: 10,
         min_room_xz: 3,
         max_room_xz: 6,

@@ -146,6 +146,12 @@ pub mod nodes {
     pub const AUDIO_MANAGER: &str = "AudioManager";
 }
 
+
+/// Property names set across node boundaries via `Node::set`.
+pub mod properties {
+    pub const CURRENT_LEVEL: &str = "current_level";
+}
+
 // ── Scene paths ───────────────────────────────────────────────────────
 
 pub mod scenes {

@@ -32,6 +32,7 @@ pub mod game_options;
 pub mod power_routing;
 pub mod ram_damage;
 pub mod save_game;
+pub mod seed;
 pub mod shield;
 pub mod spatial_layout;
 pub mod input_method;

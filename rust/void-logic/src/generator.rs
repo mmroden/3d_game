@@ -4,11 +4,12 @@ use rand::SeedableRng;
 use crate::abstract_graph;
 use crate::level_graph::LevelGraph;
 use crate::room_template::{Connector, ConnectorFacing, FrameStyle, RoomTemplate, SpawnPoint, TemplateKind};
+use crate::seed::Seed;
 use crate::spatial_layout;
 
 /// Configuration for level generation.
 pub struct GeneratorConfig {
-    pub seed: u64,
+    pub seed: Seed,
     /// Maximum number of rooms. If 0, defaults to 200.
     pub max_rooms: usize,
     /// Minimum XZ extent for generated rooms.
@@ -134,7 +135,7 @@ pub fn rooms_for_level(level: u32) -> usize {
 pub fn generate(config: &GeneratorConfig) -> Result<LevelGraph, GenerateError> {
     let room_count = if config.max_rooms > 0 { config.max_rooms } else { 200 };
 
-    let mut rng = SmallRng::seed_from_u64(config.seed);
+    let mut rng = SmallRng::seed_from_u64(config.seed.value());
 
     // Sweep 1: topology.
     let abstract_graph = abstract_graph::generate_topology(&mut rng, room_count, config);
@@ -156,7 +157,7 @@ mod tests {
 
     fn test_config(seed: u64) -> GeneratorConfig {
         GeneratorConfig {
-            seed,
+            seed: Seed::new(seed),
             max_rooms: 10,
             min_room_xz: 3,
             max_room_xz: 6,

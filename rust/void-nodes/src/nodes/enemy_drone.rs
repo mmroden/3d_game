@@ -120,29 +120,19 @@ impl ICharacterBody3D for EnemyDrone {
 
         let speed = self.speed;
         match self.ai.state {
-            void_logic::enemy_ai::DroneState::Chasing => {
-                if distance > MIN_DISTANCE {
-                    let direction = (player_pos - my_pos).normalized();
-                    let vel = direction * speed;
-                    self.base_mut().set_velocity(vel);
-                    self.base_mut().move_and_slide();
-                    self.safe_look_at(player_pos);
-                } else {
-                    self.base_mut().set_velocity(Vector3::ZERO);
-                    self.base_mut().move_and_slide();
-                }
+            void_logic::enemy_ai::DroneState::Chasing if distance > MIN_DISTANCE => {
+                let direction = (player_pos - my_pos).normalized();
+                let vel = direction * speed;
+                self.base_mut().set_velocity(vel);
+                self.base_mut().move_and_slide();
+                self.safe_look_at(player_pos);
             }
-            void_logic::enemy_ai::DroneState::Attacking => {
-                if distance > MIN_DISTANCE {
-                    self.safe_look_at(player_pos);
-                    let direction = (player_pos - my_pos).normalized();
-                    let vel = direction * speed * 0.3;
-                    self.base_mut().set_velocity(vel);
-                    self.base_mut().move_and_slide();
-                } else {
-                    self.base_mut().set_velocity(Vector3::ZERO);
-                    self.base_mut().move_and_slide();
-                }
+            void_logic::enemy_ai::DroneState::Attacking if distance > MIN_DISTANCE => {
+                self.safe_look_at(player_pos);
+                let direction = (player_pos - my_pos).normalized();
+                let vel = direction * speed * 0.3;
+                self.base_mut().set_velocity(vel);
+                self.base_mut().move_and_slide();
             }
             _ => {
                 self.base_mut().set_velocity(Vector3::ZERO);

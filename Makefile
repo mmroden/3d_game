@@ -1,4 +1,4 @@
-.PHONY: deps deps-gut check demo clean run assets
+.PHONY: deps deps-gut check test-godot demo clean run build build-release assets assets-materials
 
 # Project-local tool paths
 TOOLS_DIR := $(CURDIR)/tools
@@ -71,11 +71,7 @@ assets: build
 		-exec sed -i '' 's|compress/mode=0|compress/mode=2|' {} +
 	@echo "==> Reimporting assets (pass 2: with material script + mipmaps)..."
 	$(GODOT) --headless --import --path $(GODOT_DIR)
-	@echo "==> Restoring material definitions (undo Godot path rewrites)..."
-	@./scripts/install-addons.sh $(ASSETS_DIR) $(GODOT_DIR) --tres-only
-	@echo "==> Enabling anisotropic texture filtering on VisualShader materials..."
-	@python3 -c "import re,sys;p=sys.argv[1];t=open(p).read();t=re.sub(r'(\[sub_resource type=\"VisualShaderNodeTexture2DParameter\"[^\]]*\]\nparameter_name = [^\n]+)',r'\1\ntexture_filter = 6',t);open(p,'w').write(t)" \
-		$(GODOT_DIR)/addons/quaternius/materials/M_Trim_Base.tres
+	@$(MAKE) assets-materials
 	@echo "==> Reimporting assets (pass 3: with restored materials)..."
 	@rm -f $(GODOT_DIR)/.godot/uid_cache.bin
 	$(GODOT) --headless --import --path $(GODOT_DIR)
@@ -102,23 +98,45 @@ check: build
 		cd $(RUST_DIR) && \
 		$(CARGO) clippy -- -D warnings && \
 		$(CARGO) test
+	@$(MAKE) test-godot
+	@echo "All checks passed."
+
+# Re-copies sanitized .tres materials from asset packs and re-applies
+# local material patches (no reimport).
+assets-materials:
+	@echo "==> Restoring material definitions from asset packs..."
+	@./scripts/install-addons.sh $(ASSETS_DIR) $(GODOT_DIR) --tres-only
+	@echo "==> Enabling anisotropic texture filtering on VisualShader materials..."
+	@python3 -c "import re,sys;p=sys.argv[1];t=open(p).read();t=re.sub(r'(\[sub_resource type=\"VisualShaderNodeTexture2DParameter\"[^\]]*\]\nparameter_name = [^\n]+)',r'\1\ntexture_filter = 6',t);open(p,'w').write(t)" \
+		$(GODOT_DIR)/addons/quaternius/materials/M_Trim_Base.tres
+
+# Runs GUT against the currently installed dylib (no rebuild).
+test-godot:
 	@echo "==> Running Godot tests (GUT)..."
 	@GODOT_DISABLE_LEAK_CHECKS=1 $(GODOT) --headless --path $(GODOT_DIR) \
 		-s res://addons/gut/gut_cmdln.gd \
 		-gdir=res://tests -ginclude_subdirs -gexit
-	@echo "All checks passed."
 
 build: deps
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && $(CARGO) build
-	@echo "Build complete."
+	@rm -f $(GODOT_DIR)/libvoid_scavenger.debug.dylib $(GODOT_DIR)/libvoid_scavenger.dylib
+	@cp $(RUST_DIR)/target/debug/libvoid_scavenger.dylib $(GODOT_DIR)/libvoid_scavenger.dylib
+	@echo "Build complete (debug)."
 
-run: build
-	@echo "==> Launching game..."
+build-release: deps
+	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
+		cd $(RUST_DIR) && $(CARGO) build --release
+	@rm -f $(GODOT_DIR)/libvoid_scavenger.debug.dylib $(GODOT_DIR)/libvoid_scavenger.dylib
+	@cp $(RUST_DIR)/target/release/libvoid_scavenger.dylib $(GODOT_DIR)/libvoid_scavenger.dylib
+	@echo "Build complete (release)."
+
+run: build-release
+	@echo "==> Launching game (release)..."
 	@$(GODOT) --path $(GODOT_DIR)
 
 demo: build
-	@echo "==> Running demo..."
+	@echo "==> Launching game (debug)..."
 	@$(GODOT) --path $(GODOT_DIR)
 
 clean:

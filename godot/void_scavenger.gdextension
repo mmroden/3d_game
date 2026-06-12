@@ -4,7 +4,7 @@ compatibility_minimum = 4.6
 reloadable = true
 
 [libraries]
-macos.debug = "res://libvoid_scavenger.debug.dylib"
-macos.release = "res://../rust/target/release/libvoid_scavenger.dylib"
+macos.debug = "res://libvoid_scavenger.dylib"
+macos.release = "res://libvoid_scavenger.dylib"
 linux.debug.x86_64 = "res://../rust/target/debug/libvoid_scavenger.so"
 linux.release.x86_64 = "res://../rust/target/release/libvoid_scavenger.so"

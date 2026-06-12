@@ -5,15 +5,19 @@ use godot::classes::{
     viewport::Msaa,
 };
 
-use super::constants::{actions, signals, methods, nodes};
+use rand::RngExt;
+
+use super::constants::{actions, signals, methods, nodes, properties};
 use void_logic::enemy_type::EnemyType;
 use void_logic::game_options::GameOptions;
 use void_logic::game_phase::GamePhase;
+use void_logic::generator::rooms_for_level;
 use void_logic::input_method::InputMethod;
 use void_logic::newtypes::Damage;
 use void_logic::power_routing::PowerMode;
 use void_logic::run_state::RunState;
 use void_logic::save_game::SaveGame;
+use void_logic::seed::Seed;
 use void_logic::upgrade::{Upgrade, UpgradeKind};
 
 /// Central orchestrator: owns RunState, manages game phase transitions,
@@ -28,6 +32,12 @@ pub struct GameManager {
     save_game: Option<SaveGame>,
     active_input: InputMethod,
     current_power_mode: i32,
+
+    /// Pins the run seed for reproducible runs when nonzero (0 = random).
+    /// Configuration, not build flavor: set it in the editor or a test
+    /// scene to replay a run.
+    #[export]
+    fixed_seed: i64,
 }
 
 #[godot_api]
@@ -35,12 +45,16 @@ impl INode for GameManager {
     fn init(base: Base<Node>) -> Self {
         Self {
             base,
-            run_state: RunState::new(42),
+            // Placeholder until a run starts: the phase machine only
+            // enters Playing through start_new_game/continue_game,
+            // which assign the real seed via fresh_run_seed().
+            run_state: RunState::new(Seed::new(0)),
             phase: GamePhase::MainMenu,
             game_options: GameOptions::new(),
             save_game: None,
             active_input: InputMethod::Keyboard,
             current_power_mode: 0,
+            fixed_seed: 0,
         }
     }
 
@@ -117,7 +131,11 @@ impl GameManager {
             self.set_scene_paused(false);
             self.transition_to(GamePhase::MainMenu);
         }
-        self.run_state = RunState::new(42);
+        // Don't touch the run unless the phase machine can enter Playing.
+        if !self.phase.can_transition_to(GamePhase::Playing) {
+            return;
+        }
+        self.run_state = RunState::new(self.fresh_run_seed());
         self.save_game = None;
         self.sync_player_state();
         self.transition_to(GamePhase::Playing);
@@ -126,12 +144,16 @@ impl GameManager {
     /// Called from UI: continue from saved game.
     #[func]
     pub fn continue_game(&mut self) {
+        // Don't touch the run unless the phase machine can enter Playing.
+        if !self.phase.can_transition_to(GamePhase::Playing) {
+            return;
+        }
         if let Some(save) = &self.save_game {
             let mut run = RunState::new(save.run_seed);
             save.apply_to(&mut run);
             self.run_state = run;
         } else {
-            self.run_state = RunState::new(42);
+            self.run_state = RunState::new(self.fresh_run_seed());
         }
         self.sync_player_state();
         self.transition_to(GamePhase::Playing);
@@ -216,7 +238,6 @@ impl GameManager {
             self.run_state.health = self.run_state.loadout.max_health();
             self.run_state.shield.reset();
             self.transition_to(GamePhase::Playing);
-            self.regenerate_level();
         }
     }
 
@@ -436,6 +457,7 @@ impl GameManager {
         let c = self.run_state.laser_level.color();
         Color::from_rgba(c[0], c[1], c[2], c[3])
     }
+
 }
 
 impl GameManager {
@@ -452,11 +474,19 @@ impl GameManager {
             );
             return;
         }
+        let prev = self.phase;
         self.phase = next;
         self.show_phase(next);
 
         let phase_name: GString = GString::from(format!("{:?}", next).as_str());
         self.base_mut().emit_signal(signals::PHASE_CHANGED, &[phase_name.to_variant()]);
+
+        // The phase machine owns lifecycle effects: entering Playing
+        // means a fresh level for the current RunState — except when
+        // resuming from pause, which returns to the level in progress.
+        if next == GamePhase::Playing && prev != GamePhase::Paused {
+            self.regenerate_level();
+        }
     }
 
     fn show_phase(&self, phase: GamePhase) {
@@ -717,6 +747,17 @@ impl GameManager {
     }
 
 
+    /// Seed policy for a new run: pinned by `fixed_seed` for
+    /// reproducible runs, otherwise drawn from OS entropy. Policy
+    /// lives here in the shell; void-logic stays deterministic.
+    fn fresh_run_seed(&self) -> Seed {
+        if self.fixed_seed != 0 {
+            Seed::from_i64(self.fixed_seed)
+        } else {
+            Seed::new(rand::rng().random())
+        }
+    }
+
     fn regenerate_level(&self) {
         let Some(parent) = self.base().get_parent() else { return };
         if let Some(mut level_mgr) = parent.try_get_node_as::<Node>(nodes::LEVEL_MANAGER) {
@@ -725,12 +766,13 @@ impl GameManager {
                 child.queue_free();
             }
             // Set current level for enemy scaling
-            level_mgr.set("current_level", &Variant::from(self.run_state.current_level as i32));
-            // Generate with new seed based on level number
-            let seed = 42_u64.wrapping_add(self.run_state.current_level as u64 * 7919);
+            level_mgr.set(properties::CURRENT_LEVEL, &Variant::from(self.run_state.current_level as i32));
+            // Generate with the seed derived from the run seed and level.
+            let seed = self.run_state.level_seed();
+            let target_rooms = rooms_for_level(self.run_state.current_level) as u32;
             level_mgr.call(
                 methods::GENERATE_LEVEL,
-                &[Variant::from(seed as i64), Variant::from(5_i32)],
+                &[Variant::from(seed.as_i64()), Variant::from(target_rooms)],
             );
         }
     }

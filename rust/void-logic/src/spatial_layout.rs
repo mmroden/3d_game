@@ -450,7 +450,7 @@ mod tests {
 
         for seed in 0..10 {
             let config = GeneratorConfig {
-                seed,
+                seed: crate::seed::Seed::new(seed),
                 max_rooms: 10,
                 min_room_xz: 3,
                 max_room_xz: 6,
@@ -476,7 +476,7 @@ mod tests {
         // With 15 rooms requested, at least 12 should survive spatial placement.
         for seed in 0..20 {
             let config = GeneratorConfig {
-                seed,
+                seed: crate::seed::Seed::new(seed),
                 max_rooms: 15,
                 min_room_xz: 3,
                 max_room_xz: 6,
@@ -500,7 +500,7 @@ mod tests {
         let mut any_vertical = false;
         for seed in 0..20 {
             let config = GeneratorConfig {
-                seed,
+                seed: crate::seed::Seed::new(seed),
                 max_rooms: 10,
                 min_room_xz: 3,
                 max_room_xz: 6,
@@ -536,7 +536,7 @@ mod tests {
     fn result_is_fully_connected() {
         let mut rng = SmallRng::seed_from_u64(42);
         let config = GeneratorConfig {
-            seed: 42,
+            seed: crate::seed::Seed::new(42),
 
             max_rooms: 0,
             min_room_xz: 3,

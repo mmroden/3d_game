@@ -4,6 +4,7 @@ use crate::kill_tracker::KillTracker;
 use crate::laser::LaserLevel;
 use crate::loadout::Loadout;
 use crate::newtypes::{Health, Damage, Shield};
+use crate::seed::Seed;
 use crate::shield::ShieldState;
 
 /// Tracks the state of a single roguelike run.
@@ -15,7 +16,7 @@ pub struct RunState {
     pub health: Health,
     pub shield: ShieldState,
     pub score: u32,
-    pub run_seed: u64,
+    pub run_seed: Seed,
     pub credits: CreditAccount,
     pub kills: KillTracker,
     pub laser_level: LaserLevel,
@@ -28,7 +29,12 @@ impl RunState {
     const DEFAULT_SHIELD_REGEN: f32 = 2.0;
     const DEFAULT_SHIELD_DELAY: f32 = 3.0;
 
-    pub fn new(seed: u64) -> Self {
+    /// Derive the seed for the current level from the run seed.
+    pub fn level_seed(&self) -> Seed {
+        self.run_seed.for_level(self.current_level)
+    }
+
+    pub fn new(seed: Seed) -> Self {
         let loadout = Loadout::new();
         let health = loadout.max_health();
         let shield = ShieldState::new(
@@ -102,7 +108,7 @@ mod tests {
 
     #[test]
     fn new_run_starts_alive() {
-        let run = RunState::new(42);
+        let run = RunState::new(Seed::new(42));
         assert!(run.is_alive());
         assert_eq!(run.health, Health::new(100.0));
         assert_eq!(run.score, 0);
@@ -110,7 +116,7 @@ mod tests {
 
     #[test]
     fn damage_hits_shield_first() {
-        let mut run = RunState::new(42);
+        let mut run = RunState::new(Seed::new(42));
         run.take_damage(Damage::new(30.0));
         // Shield absorbs 30 of 50, health untouched
         assert_eq!(run.shield.current, Shield::new(20.0));
@@ -120,7 +126,7 @@ mod tests {
 
     #[test]
     fn damage_overflows_shield_to_health() {
-        let mut run = RunState::new(42);
+        let mut run = RunState::new(Seed::new(42));
         run.take_damage(Damage::new(70.0));
         // Shield absorbs 50, health takes 20
         assert_eq!(run.shield.current, Shield::new(0.0));
@@ -130,7 +136,7 @@ mod tests {
 
     #[test]
     fn lethal_damage_kills() {
-        let mut run = RunState::new(42);
+        let mut run = RunState::new(Seed::new(42));
         // Must overwhelm shield (50) + health (100)
         run.take_damage(Damage::new(200.0));
         assert_eq!(run.health, Health::new(0.0));
@@ -139,7 +145,7 @@ mod tests {
 
     #[test]
     fn clear_room_scores_once() {
-        let mut run = RunState::new(42);
+        let mut run = RunState::new(Seed::new(42));
         run.clear_room(0);
         run.clear_room(0); // duplicate
         assert_eq!(run.score, 100);
@@ -148,26 +154,26 @@ mod tests {
 
     #[test]
     fn starts_with_red_laser() {
-        let run = RunState::new(42);
+        let run = RunState::new(Seed::new(42));
         assert_eq!(run.laser_level, LaserLevel::Red);
         assert_eq!(run.laser_damage(), Damage::new(1.0));
     }
 
     #[test]
     fn starts_at_level_1() {
-        let run = RunState::new(42);
+        let run = RunState::new(Seed::new(42));
         assert_eq!(run.current_level, 1);
     }
 
     #[test]
     fn starts_with_zero_credits() {
-        let run = RunState::new(42);
+        let run = RunState::new(Seed::new(42));
         assert_eq!(run.credits.balance, 0);
     }
 
     #[test]
     fn record_kill_earns_credits() {
-        let mut run = RunState::new(42);
+        let mut run = RunState::new(Seed::new(42));
         run.record_kill(EnemyType::GunDrone);
         assert_eq!(run.credits.balance, 1_000);
         assert_eq!(run.kills.count(EnemyType::GunDrone), 1);
@@ -175,7 +181,7 @@ mod tests {
 
     #[test]
     fn record_multiple_kills() {
-        let mut run = RunState::new(42);
+        let mut run = RunState::new(Seed::new(42));
         run.record_kill(EnemyType::GunDrone);
         run.record_kill(EnemyType::GunDrone);
         run.record_kill(EnemyType::Dragon);
@@ -185,7 +191,7 @@ mod tests {
 
     #[test]
     fn death_penalty_halves_laser() {
-        let mut run = RunState::new(42);
+        let mut run = RunState::new(Seed::new(42));
         run.laser_level = LaserLevel::Green; // level 4
         run.credits.earn(50_000);
         run.record_kill(EnemyType::GunDrone);
@@ -201,9 +207,56 @@ mod tests {
 
     #[test]
     fn death_penalty_min_red() {
-        let mut run = RunState::new(42);
+        let mut run = RunState::new(Seed::new(42));
         run.laser_level = LaserLevel::Red;
         run.apply_death_penalty();
         assert_eq!(run.laser_level, LaserLevel::Red);
+    }
+
+    #[test]
+    fn level_seed_varies_with_run_seed() {
+        let a = RunState::new(Seed::new(42));
+        let b = RunState::new(Seed::new(999));
+        assert_ne!(a.level_seed(), b.level_seed(),
+            "different run seeds must produce different level seeds");
+    }
+
+    #[test]
+    fn level_seed_varies_with_level() {
+        let mut run = RunState::new(Seed::new(42));
+        let seed1 = run.level_seed();
+        run.current_level = 2;
+        let seed2 = run.level_seed();
+        assert_ne!(seed1, seed2,
+            "different levels must produce different seeds");
+    }
+
+    #[test]
+    fn different_seeds_produce_different_levels() {
+        use crate::generator::{generate, GeneratorConfig};
+
+        let config_a = GeneratorConfig {
+            seed: RunState::new(Seed::new(42)).level_seed(),
+            max_rooms: 10, min_room_xz: 3, max_room_xz: 6,
+            min_room_y: 1, max_room_y: 6,
+        };
+        let config_b = GeneratorConfig {
+            seed: RunState::new(Seed::new(999)).level_seed(),
+            max_rooms: 10, min_room_xz: 3, max_room_xz: 6,
+            min_room_y: 1, max_room_y: 6,
+        };
+
+        let graph_a = generate(&config_a).unwrap();
+        let graph_b = generate(&config_b).unwrap();
+
+        // Collect room grid positions for each graph.
+        let positions = |g: &crate::level_graph::LevelGraph| -> Vec<[i32; 3]> {
+            g.room_indices()
+                .filter_map(|idx| g.room(idx))
+                .map(|r| r.grid_pos)
+                .collect()
+        };
+        assert_ne!(positions(&graph_a), positions(&graph_b),
+            "different run seeds must produce different level layouts");
     }
 }

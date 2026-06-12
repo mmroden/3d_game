@@ -1,6 +1,7 @@
 //! Level assembly: builds meshes, lights, enemies, and collision boxes from a LevelGraph.
 
 use crate::level_graph::LevelGraph;
+use crate::seed::Seed;
 use crate::room_assembler::{CollisionBox, MeshPlacement};
 use crate::room_furnisher::LightSource;
 
@@ -9,7 +10,7 @@ use crate::room_furnisher::LightSource;
 pub fn spawn_list(
     graph: &LevelGraph,
     cell_size: f32,
-    seed: u64,
+    seed: Seed,
 ) -> (Vec<MeshPlacement>, Vec<LightSource>) {
     let (meshes, lights, _enemies, _colliders) = spawn_list_full(graph, cell_size, seed);
     (meshes, lights)
@@ -20,7 +21,7 @@ pub fn spawn_list(
 pub fn spawn_list_full(
     graph: &LevelGraph,
     cell_size: f32,
-    seed: u64,
+    seed: Seed,
 ) -> (Vec<MeshPlacement>, Vec<LightSource>, Vec<[f32; 3]>, Vec<CollisionBox>) {
     use crate::cell::CellGrid;
     use crate::room_furnisher;
@@ -34,7 +35,7 @@ pub fn spawn_list_full(
     for (room_idx, idx) in graph.room_indices().enumerate() {
         let Some(room) = graph.room(idx) else { continue };
         let active = graph.active_connectors(idx);
-        let theme = room_theme::theme_for_room(seed, room_idx);
+        let theme = room_theme::theme_for_room(seed.value(), room_idx);
         let story_height = theme.wall_set.story_height;
         let origin = room.world_position(cell_size, story_height);
 
@@ -53,7 +54,7 @@ pub fn spawn_list_full(
             theme.wall_set,
         ));
 
-        let room_seed = seed.wrapping_add(room_idx as u64).wrapping_mul(2654435761);
+        let room_seed = seed.value().wrapping_add(room_idx as u64).wrapping_mul(2654435761);
         grid.populate(theme, room_seed);
         meshes.extend(grid.prop_placements());
 
