@@ -24,6 +24,8 @@ pub mod enemy_category;
 pub mod enemy_projectile;
 pub mod enemy_type;
 pub mod kill_tracker;
+pub mod kinetic_world;
+pub mod kinetics;
 pub mod game_phase;
 pub mod portal;
 pub mod ui_layout;

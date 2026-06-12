@@ -33,6 +33,7 @@ pub mod signals {
 // ── Callable method names ─────────────────────────────────────────────
 
 pub mod methods {
+    pub const LAUNCH: &str = "launch";
     pub const START_NEW_GAME: &str = "start_new_game";
     pub const CONTINUE_GAME: &str = "continue_game";
     pub const ON_ENEMY_KILLED: &str = "on_enemy_killed";

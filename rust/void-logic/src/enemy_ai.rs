@@ -53,8 +53,9 @@ impl DroneAi {
         }
     }
 
-    /// Update state based on distance to player. Returns whether the drone should fire.
-    pub fn update(&mut self, distance_to_player: f32, delta: f32) -> bool {
+    /// Update state based on distance to player and whether the drone
+    /// can actually see them. Returns whether the drone should fire.
+    pub fn update(&mut self, distance_to_player: f32, has_line_of_sight: bool, delta: f32) -> bool {
         if self.state == DroneState::Dead {
             return false;
         }
@@ -84,8 +85,10 @@ impl DroneAi {
             DroneState::Dead => {}
         }
 
-        // Fire check (only in Attacking state)
-        if self.state == DroneState::Attacking && self.attack_timer <= 0.0 {
+        // Fire check: attacking, off cooldown, and actually able to
+        // see the player — no blind fire through walls. A blocked shot
+        // does not consume the cooldown; it fires when sight returns.
+        if self.state == DroneState::Attacking && self.attack_timer <= 0.0 && has_line_of_sight {
             self.attack_timer = self.config.attack_cooldown;
             return true;
         }
@@ -129,75 +132,75 @@ mod tests {
     #[test]
     fn stays_idle_when_player_far() {
         let mut ai = default_ai();
-        ai.update(50.0, 0.016);
+        ai.update(50.0, true, 0.016);
         assert_eq!(ai.state, DroneState::Idle);
     }
 
     #[test]
     fn transitions_to_chasing_when_player_in_range() {
         let mut ai = default_ai();
-        ai.update(20.0, 0.016);
+        ai.update(20.0, true, 0.016);
         assert_eq!(ai.state, DroneState::Chasing);
     }
 
     #[test]
     fn transitions_to_attacking_when_close() {
         let mut ai = default_ai();
-        ai.update(20.0, 0.016); // → Chasing
-        ai.update(4.0, 0.016);  // → Attacking
+        ai.update(20.0, true, 0.016); // → Chasing
+        ai.update(4.0, true, 0.016);  // → Attacking
         assert_eq!(ai.state, DroneState::Attacking);
     }
 
     #[test]
     fn fires_on_entering_attack_range() {
         let mut ai = default_ai();
-        ai.update(20.0, 0.016); // → Chasing
-        let should_fire = ai.update(4.0, 0.016); // → Attacking, fire immediately
+        ai.update(20.0, true, 0.016); // → Chasing
+        let should_fire = ai.update(4.0, true, 0.016); // → Attacking, fire immediately
         assert!(should_fire);
     }
 
     #[test]
     fn does_not_fire_during_cooldown() {
         let mut ai = default_ai();
-        ai.update(20.0, 0.016);
-        ai.update(4.0, 0.016); // Fires, cooldown starts
-        let should_fire = ai.update(4.0, 0.5); // 0.5s into 1.0s cooldown
+        ai.update(20.0, true, 0.016);
+        ai.update(4.0, true, 0.016); // Fires, cooldown starts
+        let should_fire = ai.update(4.0, true, 0.5); // 0.5s into 1.0s cooldown
         assert!(!should_fire);
     }
 
     #[test]
     fn fires_again_after_cooldown() {
         let mut ai = default_ai();
-        ai.update(20.0, 0.016);
-        ai.update(4.0, 0.016); // First fire
-        ai.update(4.0, 0.5);   // Still cooling
-        let should_fire = ai.update(4.0, 0.6); // Cooldown expired
+        ai.update(20.0, true, 0.016);
+        ai.update(4.0, true, 0.016); // First fire
+        ai.update(4.0, true, 0.5);   // Still cooling
+        let should_fire = ai.update(4.0, true, 0.6); // Cooldown expired
         assert!(should_fire);
     }
 
     #[test]
     fn returns_to_chasing_when_player_leaves_attack_range() {
         let mut ai = default_ai();
-        ai.update(20.0, 0.016); // → Chasing
-        ai.update(4.0, 0.016);  // → Attacking
-        ai.update(10.0, 0.016); // → Chasing (out of attack range)
+        ai.update(20.0, true, 0.016); // → Chasing
+        ai.update(4.0, true, 0.016);  // → Attacking
+        ai.update(10.0, true, 0.016); // → Chasing (out of attack range)
         assert_eq!(ai.state, DroneState::Chasing);
     }
 
     #[test]
     fn returns_to_idle_when_player_disengages() {
         let mut ai = default_ai();
-        ai.update(20.0, 0.016); // → Chasing
-        ai.update(35.0, 0.016); // Beyond disengage_range (30)
+        ai.update(20.0, true, 0.016); // → Chasing
+        ai.update(35.0, true, 0.016); // Beyond disengage_range (30)
         assert_eq!(ai.state, DroneState::Idle);
     }
 
     #[test]
     fn hysteresis_prevents_flicker_at_detection_boundary() {
         let mut ai = default_ai();
-        ai.update(20.0, 0.016); // → Chasing
+        ai.update(20.0, true, 0.016); // → Chasing
         // Just outside detection_range but inside disengage_range
-        ai.update(27.0, 0.016);
+        ai.update(27.0, true, 0.016);
         assert_eq!(ai.state, DroneState::Chasing); // Still chasing
     }
 
@@ -230,7 +233,7 @@ mod tests {
     fn dead_drone_does_not_update() {
         let mut ai = default_ai();
         ai.take_damage(Damage::new(30.0));
-        let should_fire = ai.update(1.0, 0.016);
+        let should_fire = ai.update(1.0, true, 0.016);
         assert!(!should_fire);
         assert_eq!(ai.state, DroneState::Dead);
     }
@@ -246,7 +249,7 @@ mod tests {
     #[test]
     fn exact_boundary_detection_triggers_chase() {
         let mut ai = default_ai();
-        ai.update(25.0, 0.016); // Exactly at detection_range
+        ai.update(25.0, true, 0.016); // Exactly at detection_range
         assert_eq!(ai.state, DroneState::Chasing);
     }
 
@@ -257,15 +260,44 @@ mod tests {
         assert!(ai.is_dead());
         for _ in 0..100 {
             assert!(ai.is_dead());
-            assert!(!ai.update(1.0, 0.016));
+            assert!(!ai.update(1.0, true, 0.016));
         }
+    }
+
+    #[test]
+    fn does_not_fire_without_line_of_sight() {
+        // A wall between drone and player: in range, but blind fire
+        // from embedded/occluded positions is forbidden.
+        let mut ai = default_ai();
+        ai.update(20.0, true, 0.016); // → Chasing
+        ai.update(4.0, true, 0.016); // → Attacking, fires, cooldown starts
+        // Cooldown expires on this tick, but sight is blocked:
+        let should_fire = ai.update(4.0, false, 1.1);
+        assert!(
+            !should_fire,
+            "a drone must not fire without line of sight to the player"
+        );
+    }
+
+    #[test]
+    fn fires_immediately_when_sight_is_restored() {
+        // A blocked shot must not consume the cooldown.
+        let mut ai = default_ai();
+        ai.update(20.0, true, 0.016); // → Chasing
+        ai.update(4.0, true, 0.016); // → Attacking, fires, cooldown starts
+        ai.update(4.0, false, 1.1); // cooldown expires, sight blocked: held
+        let should_fire = ai.update(4.0, true, 0.016);
+        assert!(
+            should_fire,
+            "the withheld shot fires as soon as sight is restored"
+        );
     }
 
     #[test]
     fn exact_boundary_attack_triggers_attack() {
         let mut ai = default_ai();
-        ai.update(20.0, 0.016); // → Chasing
-        ai.update(5.0, 0.016);  // Exactly at attack_range
+        ai.update(20.0, true, 0.016); // → Chasing
+        ai.update(5.0, true, 0.016);  // Exactly at attack_range
         assert_eq!(ai.state, DroneState::Attacking);
     }
 }

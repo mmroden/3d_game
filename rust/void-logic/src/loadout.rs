@@ -1,3 +1,4 @@
+use crate::kinetics::Retention;
 use crate::newtypes::{Health, Damage};
 use crate::upgrade::{Upgrade, UpgradeKind};
 
@@ -6,7 +7,7 @@ use crate::upgrade::{Upgrade, UpgradeKind};
 pub struct BaseStats {
     pub thrust_power: f32,
     pub rotation_speed: f32,
-    pub damping: f32,
+    pub damping: Retention,
     pub max_health: Health,
     pub fire_rate: f32,
     pub projectile_speed: f32,
@@ -18,7 +19,7 @@ impl Default for BaseStats {
         Self {
             thrust_power: 40.0,
             rotation_speed: 6.0,
-            damping: 0.95,
+            damping: Retention::decaying(0.95),
             max_health: Health::new(100.0),
             fire_rate: 2.0,
             projectile_speed: 50.0,
@@ -59,15 +60,15 @@ impl Loadout {
         self.effective(UpgradeKind::RotationSpeed, self.base.rotation_speed)
     }
 
-    pub fn damping(&self) -> f32 {
-        // Damping is the per-frame velocity *retention* factor; it must
-        // stay below 1.0 or motion never decays and the ship spins
-        // forever. Stability upgrades therefore scale the decay portion
-        // (1 - retention): a bigger multiplier settles the ship faster,
-        // and stacking can only push retention down toward 0, never up
-        // past the base.
-        let decay = self.effective(UpgradeKind::Damping, 1.0 - self.base.damping);
-        (1.0 - decay).clamp(0.0, self.base.damping)
+    pub fn damping(&self) -> Retention {
+        // Stability upgrades scale the decay portion (1 - retention):
+        // a bigger multiplier settles the ship faster, and stacking can
+        // only push retention down toward 0, never up past the base.
+        // Retention's own invariant (< 1.0 unless FULL) makes the
+        // infinite-spin bug unrepresentable.
+        let base = self.base.damping.factor();
+        let decay = self.effective(UpgradeKind::Damping, 1.0 - base);
+        Retention::decaying((1.0 - decay).min(base))
     }
 
     pub fn max_health(&self) -> Health {
@@ -124,10 +125,10 @@ mod tests {
         let mut loadout = Loadout::new();
         loadout.add_upgrade(stability(1.1));
         assert!(
-            loadout.damping() < 1.0,
+            loadout.damping().factor() < 1.0,
             "damping is per-frame velocity retention; at >= 1.0 motion never \
              decays and the ship spins forever, got {}",
-            loadout.damping()
+            loadout.damping().factor()
         );
     }
 
@@ -137,22 +138,22 @@ mod tests {
         let mut upgraded = Loadout::new();
         upgraded.add_upgrade(stability(1.2));
         assert!(
-            upgraded.damping() < base.damping(),
+            upgraded.damping().factor() < base.damping().factor(),
             "a stability upgrade must decay velocity faster than base \
              (smaller retention), got {} vs base {}",
-            upgraded.damping(),
-            base.damping()
+            upgraded.damping().factor(),
+            base.damping().factor()
         );
     }
 
     #[test]
     fn stacked_stability_upgrades_never_exceed_base_retention() {
-        let base = Loadout::new().damping();
+        let base = Loadout::new().damping().factor();
         let mut loadout = Loadout::new();
         for _ in 0..30 {
             loadout.add_upgrade(stability(1.3));
         }
-        let damping = loadout.damping();
+        let damping = loadout.damping().factor();
         assert!(
             (0.0..=base).contains(&damping),
             "stacked stability upgrades must keep retention in [0, base], got {damping}"

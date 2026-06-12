@@ -1,5 +1,5 @@
 use godot::prelude::*;
-use godot::classes::{Area3D, IArea3D};
+use godot::classes::{Area3D, IArea3D, StaticBody3D};
 
 use super::constants::{groups, methods, signals};
 
@@ -44,7 +44,7 @@ impl IArea3D for Projectile {
 
         // Match Portal/Lootbox pattern: enable monitoring, set layers, connect signal
         self.base_mut().set_monitoring(true);
-        self.base_mut().set_collision_mask(1);  // Detect layer 1 (player)
+        self.base_mut().set_collision_mask(1);  // Detect layer 1 (player + level geometry)
         self.base_mut().set_collision_layer(0); // Don't block anything
 
         let callable = self.base().callable(methods::ON_BODY_ENTERED);
@@ -77,6 +77,11 @@ impl Projectile {
 
     #[func]
     pub fn on_body_entered(&mut self, body: Gd<Node3D>) {
+        // Level geometry stops every projectile, friendly or hostile.
+        if body.clone().try_cast::<StaticBody3D>().is_ok() {
+            self.base_mut().queue_free();
+            return;
+        }
         if !self.is_enemy {
             return;
         }

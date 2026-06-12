@@ -9,6 +9,7 @@ use godot::classes::{
 use super::constants::{actions, groups, methods, signals};
 use super::godot_util;
 
+use void_logic::kinetics::{bounce, ControlInput, KineticState, Restitution, SpeedLimits};
 use void_logic::laser::LaserLevel;
 use void_logic::loadout::Loadout;
 use void_logic::power_routing::PowerMode;
@@ -17,17 +18,21 @@ use void_logic::upgrade::{Upgrade, UpgradeKind};
 use void_logic::audio_catalog::{SfxEvent, COLLISION_SFX_MIN_SPEED};
 use void_logic::weapon::{WeaponState, FireResult};
 
-/// Clamp velocity to max magnitude, reset to zero if NaN.
-fn sanitize_velocity(v: Vector3, max_speed: f32) -> Vector3 {
-    if v.x.is_nan() || v.y.is_nan() || v.z.is_nan() {
-        return Vector3::ZERO;
-    }
-    let len = v.length();
-    if len > max_speed {
-        v * (max_speed / len)
-    } else {
-        v
-    }
+/// Hard caps on ship velocity, enforced inside the kinetic core.
+const SHIP_SPEED_LIMITS: SpeedLimits = SpeedLimits {
+    linear: 50.0,
+    angular: 5.0,
+};
+
+/// How lively the hull bounces off level geometry.
+const SHIP_WALL_RESTITUTION: f32 = 0.35;
+
+fn to_array(v: Vector3) -> [f32; 3] {
+    [v.x, v.y, v.z]
+}
+
+fn to_vector(a: [f32; 3]) -> Vector3 {
+    Vector3::new(a[0], a[1], a[2])
 }
 
 /// Check if all quaternion components are finite.
@@ -46,8 +51,10 @@ const WING_OFFSET: f32 = 0.3;
 pub struct ShipController {
     base: Base<CharacterBody3D>,
 
-    linear_velocity: Vector3,
-    angular_velocity: Vector3,
+    kinetics: KineticState,
+    /// True while in contact with geometry: bounce fires on contact
+    /// onset only, never per-frame during a sustained scrape.
+    was_colliding: bool,
     weapon: WeaponState,
     beam_nodes: Vec<Gd<MeshInstance3D>>,
     loadout: Loadout,
@@ -60,8 +67,8 @@ impl ICharacterBody3D for ShipController {
     fn init(base: Base<CharacterBody3D>) -> Self {
         Self {
             base,
-            linear_velocity: Vector3::ZERO,
-            angular_velocity: Vector3::ZERO,
+            kinetics: KineticState::new(),
+            was_colliding: false,
             weapon: WeaponState::default(),
             beam_nodes: Vec::new(),
             loadout: Loadout::new(),
@@ -89,7 +96,7 @@ impl ICharacterBody3D for ShipController {
 
         // Stabilizer: kill angular velocity on L1/Tab
         if input.is_action_pressed(actions::STABILIZE) {
-            self.angular_velocity = Vector3::ZERO;
+            self.kinetics.halt_rotation();
         }
 
         // Power routing: toggle on press
@@ -123,33 +130,44 @@ impl ICharacterBody3D for ShipController {
 
         let effective_thrust = self.loadout.thrust_power() * self.power_mode.thrust_multiplier();
         let effective_rotation = self.loadout.rotation_speed();
-        let effective_damping = self.loadout.damping();
 
-        self.linear_velocity += thrust * effective_thrust * delta;
-        self.linear_velocity *= effective_damping;
+        // Integrate through the kinetic core: acceleration, decay,
+        // speed caps, and NaN recovery all live in void-logic.
+        let control = ControlInput {
+            thrust: to_array(thrust * effective_thrust),
+            torque: to_array(Vector3::new(pitch, yaw, roll) * effective_rotation),
+        };
+        self.kinetics.step(control, self.loadout.damping(), SHIP_SPEED_LIMITS, delta);
 
-        self.angular_velocity += Vector3::new(pitch, yaw, roll) * effective_rotation * delta;
-        self.angular_velocity *= effective_damping;
-
-        // Sanitize: clamp velocities to sane maximums and reset NaN.
-        const MAX_LINEAR_SPEED: f32 = 50.0;
-        const MAX_ANGULAR_SPEED: f32 = 5.0;
-        self.linear_velocity = sanitize_velocity(self.linear_velocity, MAX_LINEAR_SPEED);
-        self.angular_velocity = sanitize_velocity(self.angular_velocity, MAX_ANGULAR_SPEED);
-
-        let vel = self.linear_velocity;
-        let rot = self.angular_velocity * delta;
+        let vel = to_vector(self.kinetics.linear_velocity());
+        let rot = to_vector(self.kinetics.angular_velocity()) * delta;
 
         self.base_mut().set_velocity(vel);
         self.base_mut().move_and_slide();
         // Accept the collision-resolved velocity as truth.
         // Without this, thrust accumulates into walls until the player clips through.
-        self.linear_velocity = self.base().get_velocity();
+        let resolved = self.base().get_velocity();
+        self.kinetics.accept_resolved_linear(to_array(resolved));
 
         // Check for physical collisions (walls, objects, enemies)
         let pre_collision_speed = vel.length();
         let collision_count = self.base().get_slide_collision_count();
         let mut played_collision_sfx = false;
+
+        // Bounce off geometry on contact onset only — a sustained
+        // scrape must never re-inject energy frame after frame.
+        if collision_count > 0 && !self.was_colliding {
+            if let Some(collision) = self.base().get_slide_collision(0) {
+                let normal = to_array(collision.get_normal());
+                let bounced = bounce(
+                    to_array(vel),
+                    normal,
+                    Restitution::clamped(SHIP_WALL_RESTITUTION),
+                );
+                self.kinetics.accept_resolved_linear(bounced);
+            }
+        }
+        self.was_colliding = collision_count > 0;
 
         for i in 0..collision_count {
             let Some(collision) = self.base().get_slide_collision(i) else { continue };

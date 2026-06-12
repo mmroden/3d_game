@@ -1,20 +1,34 @@
 use godot::prelude::*;
-use godot::classes::{BoxShape3D, CollisionShape3D, Node3D, INode3D, OmniLight3D, PackedScene, ResourceLoader, StaticBody3D};
+use godot::classes::{BoxShape3D, CharacterBody3D, CollisionShape3D, Node3D, INode3D, OmniLight3D, PackedScene, ResourceLoader, SphereShape3D, StaticBody3D};
 
-use super::constants::{nodes, scenes};
+use super::constants::{groups, nodes, scenes};
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use rand::seq::IndexedRandom;
 
 use void_logic::generator::{generate, GeneratorConfig};
+use void_logic::kinetic_world::{BallisticBody, KineticWorld, Mover};
+use void_logic::kinetics::Restitution;
 use void_logic::level_assembly;
 use void_logic::portal as portal_sys;
 use void_logic::enemy_type;
 use void_logic::seed::Seed;
 
+/// Collision footprint for loose props (sphere, world-simulated).
+const PROP_RADIUS: f32 = 0.5;
+/// How lively loose props bounce; lossy, so disturbed rooms settle.
+const PROP_RESTITUTION: f32 = 0.6;
+
 fn vec3(a: [f32; 3]) -> Vector3 {
     Vector3::new(a[0], a[1], a[2])
 }
+
+fn arr(v: Vector3) -> [f32; 3] {
+    [v.x, v.y, v.z]
+}
+
+/// Fallback mover footprint when a body has no sphere collider.
+const DEFAULT_MOVER_RADIUS: f32 = 0.7;
 
 /// Assembles a level on demand: generates the graph, assembles room
 /// geometry from modular pieces, and spawns lights. Generation is
@@ -30,6 +44,12 @@ pub struct LevelManager {
 
     #[export]
     current_level: i32,
+
+    /// Representation of every ballistic mover (loose props): the
+    /// world simulates trajectories; the nodes below only render them.
+    world: KineticWorld,
+    /// View nodes for the world's bodies, indexed by BodyId.
+    prop_nodes: Vec<Gd<Node3D>>,
 }
 
 #[godot_api]
@@ -39,6 +59,32 @@ impl INode3D for LevelManager {
             base,
             grid_cell_size: 4.0,
             current_level: 1_i32,
+            world: KineticWorld::new(),
+            prop_nodes: Vec::new(),
+        }
+    }
+
+    fn physics_process(&mut self, delta: f64) {
+        let movers = self.gather_movers();
+        self.world.collide_movers(&movers);
+        self.world.step(delta as f32);
+        for (id, body) in self.world.bodies() {
+            if body.is_at_rest() {
+                continue;
+            }
+            let Some(node) = self.prop_nodes.get(id.index()) else {
+                continue;
+            };
+            if !node.is_instance_valid() {
+                continue;
+            }
+            let mut node = node.clone();
+            node.set_position(vec3(body.position()));
+            // Cosmetic tumble: colliders are spheres, so orientation
+            // is a rendering concern integrated here in the view.
+            let spin = vec3(body.angular_velocity()) * delta as f32;
+            let rotation = node.get_rotation() + spin;
+            node.set_rotation(rotation);
         }
     }
 }
@@ -69,6 +115,13 @@ impl LevelManager {
         // and collision boxes for physics.
         let (placements, light_sources, enemy_positions, collision_boxes) =
             level_assembly::spawn_list_full(&graph, self.grid_cell_size, seed);
+
+        // Fresh ballistic world for the new level, fed the same
+        // collision boxes that become the Godot StaticBody3D colliders
+        // below — one source of truth for where the walls are.
+        self.world = KineticWorld::new();
+        self.prop_nodes.clear();
+        self.world.add_statics(collision_boxes.iter().copied());
         let mut loader = ResourceLoader::singleton();
         let mut mesh_count = 0;
 
@@ -88,8 +141,10 @@ impl LevelManager {
             };
 
             if entry.loose {
-                // Zero-g floating prop: use AnimatableBody3D for gentle drift
-                // without physics simulation artifacts (NaN transforms).
+                // Loose prop: a ballistic body in the kinetic world.
+                // It spawns at rest (stillness is the abandoned-base
+                // equilibrium); enemies and the player set it moving
+                // by collision. The node is pure rendering.
                 let mut node: Gd<Node3D> = instance.cast();
                 node.set_position(vec3(entry.position));
 
@@ -101,6 +156,12 @@ impl LevelManager {
                 node.set_rotation(Vector3::new(rx, ry, rz));
 
                 self.base_mut().add_child(&node);
+                self.world.add_body(BallisticBody::at_rest(
+                    entry.position,
+                    PROP_RADIUS,
+                    Restitution::clamped(PROP_RESTITUTION),
+                ));
+                self.prop_nodes.push(node);
             } else {
                 let mut node: Gd<Node3D> = instance.cast();
                 let pos = vec3(entry.position);
@@ -219,3 +280,49 @@ impl LevelManager {
 }
 
 
+
+impl LevelManager {
+    /// Mirror the powered movers (player + enemies) into the kinetic
+    /// world for this tick so props can be shoved aside. The engine
+    /// stays authoritative for the movers themselves.
+    fn gather_movers(&self) -> Vec<Mover> {
+        let mut movers = Vec::new();
+        if let Some(parent) = self.base().get_parent() {
+            if let Some(player) = parent.try_get_node_as::<CharacterBody3D>(nodes::PLAYER) {
+                movers.push(Self::mover_from(&player));
+            }
+        }
+        let tree = self.base().get_tree();
+        for node in tree.get_nodes_in_group(groups::ENEMIES).iter_shared() {
+            if let Ok(body) = node.try_cast::<CharacterBody3D>() {
+                movers.push(Self::mover_from(&body));
+            }
+        }
+        movers
+    }
+
+    fn mover_from(body: &Gd<CharacterBody3D>) -> Mover {
+        Mover {
+            position: arr(body.get_global_position()),
+            velocity: arr(body.get_velocity()),
+            radius: Self::collider_radius(body),
+        }
+    }
+
+    /// Read the mover's sphere collider radius; fall back to a rough
+    /// footprint for non-sphere shapes.
+    fn collider_radius(body: &Gd<CharacterBody3D>) -> f32 {
+        for child in body.get_children().iter_shared() {
+            let Ok(shape_node) = child.try_cast::<CollisionShape3D>() else {
+                continue;
+            };
+            let Some(shape) = shape_node.get_shape() else {
+                continue;
+            };
+            if let Ok(sphere) = shape.try_cast::<SphereShape3D>() {
+                return sphere.get_radius();
+            }
+        }
+        DEFAULT_MOVER_RADIUS
+    }
+}

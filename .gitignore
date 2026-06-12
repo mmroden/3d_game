@@ -29,5 +29,11 @@ assets/quaternius-megakit/Engine Projects/Unreal Engine/
 # Claude Code worktrees
 .claude/worktrees/
 
+# Serena MCP language-server state
+.serena/
+
+# Stray Godot import artifact
+/.import
+
 # OS
 .DS_Store

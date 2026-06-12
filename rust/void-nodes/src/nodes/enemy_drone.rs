@@ -1,17 +1,19 @@
 use godot::prelude::*;
 use godot::prelude::EulerOrder;
 use godot::classes::{
-    CharacterBody3D, ICharacterBody3D, PackedScene, ResourceLoader,
+    CharacterBody3D, ICharacterBody3D, PackedScene, PhysicsRayQueryParameters3D,
+    ResourceLoader,
     GpuParticles3D, ParticleProcessMaterial, SphereMesh, StandardMaterial3D,
     MeshInstance3D, BoxMesh, Node3D,
 };
 
-use super::constants::{groups, scenes, signals};
+use super::constants::{groups, methods, scenes, signals};
 use super::godot_util;
 use void_logic::enemy_ai::{DroneAi, DroneConfig};
 use void_logic::audio_catalog::SfxEvent;
 use void_logic::enemy_type::EnemyType;
 use void_logic::newtypes::{Health, Damage};
+use void_logic::ram_damage;
 
 /// A hostile drone that chases and attacks the player.
 #[derive(GodotClass)]
@@ -114,15 +116,18 @@ impl ICharacterBody3D for EnemyDrone {
         let player_pos = player.get_global_position();
         let distance = my_pos.distance_to(player_pos);
 
-        let should_fire = self.ai.update(distance, delta);
+        let has_sight = self.has_line_of_sight(player, player_pos);
+        let should_fire = self.ai.update(distance, has_sight, delta);
 
         const MIN_DISTANCE: f32 = 0.1;
 
         let speed = self.speed;
+        let mut ram_speed = 0.0_f32;
         match self.ai.state {
             void_logic::enemy_ai::DroneState::Chasing if distance > MIN_DISTANCE => {
                 let direction = (player_pos - my_pos).normalized();
                 let vel = direction * speed;
+                ram_speed = vel.length();
                 self.base_mut().set_velocity(vel);
                 self.base_mut().move_and_slide();
                 self.safe_look_at(player_pos);
@@ -131,6 +136,7 @@ impl ICharacterBody3D for EnemyDrone {
                 self.safe_look_at(player_pos);
                 let direction = (player_pos - my_pos).normalized();
                 let vel = direction * speed * 0.3;
+                ram_speed = vel.length();
                 self.base_mut().set_velocity(vel);
                 self.base_mut().move_and_slide();
             }
@@ -139,6 +145,8 @@ impl ICharacterBody3D for EnemyDrone {
                 self.base_mut().move_and_slide();
             }
         }
+
+        self.ram_player(ram_speed);
 
         if should_fire {
             self.fire_at_player(player_pos);
@@ -166,6 +174,56 @@ impl EnemyDrone {
         }
     }
 
+    /// Contact damage when this enemy slams into the player — the
+    /// mirror of the player's own ram check, so ramming hurts whoever
+    /// is hit regardless of who initiated the contact.
+    fn ram_player(&mut self, impact_speed: f32) {
+        let dmg = ram_damage::ram_damage(impact_speed);
+        if dmg.as_f32() <= 0.0 {
+            return;
+        }
+        let collision_count = self.base().get_slide_collision_count();
+        for i in 0..collision_count {
+            let Some(collision) = self.base().get_slide_collision(i) else {
+                continue;
+            };
+            let Some(collider) = collision.get_collider() else {
+                continue;
+            };
+            let Ok(player) = collider.try_cast::<Node3D>() else {
+                continue;
+            };
+            if player.is_in_group(groups::PLAYER) && player.has_method(methods::TAKE_DAMAGE) {
+                let mut player = player;
+                player.call(methods::TAKE_DAMAGE, &[Variant::from(dmg.as_f32())]);
+                // The rammer takes the lesser share, same split as the
+                // player-initiated ram.
+                self.take_damage(dmg.as_f32() * ram_damage::PLAYER_RAM_FRACTION);
+                return;
+            }
+        }
+    }
+
+    /// Raycast from this drone to the player: anything in between
+    /// (walls, other enemies) blocks the shot. Supplies the model's
+    /// `has_line_of_sight` input; the AI itself stays geometry-blind.
+    fn has_line_of_sight(&self, player: &Gd<CharacterBody3D>, player_pos: Vector3) -> bool {
+        let my_pos = self.base().get_global_position();
+        let Some(world) = self.base().get_world_3d() else {
+            return true;
+        };
+        let Some(mut space) = world.get_direct_space_state() else {
+            return true;
+        };
+        let Some(mut query) = PhysicsRayQueryParameters3D::create(my_pos, player_pos) else {
+            return true;
+        };
+        let exclude = godot::builtin::Array::from(&[self.base().get_rid(), player.get_rid()]);
+        query.set_exclude(&exclude);
+        let result = space.intersect_ray(&query);
+        result.is_empty()
+    }
+
     fn fire_at_player(&self, player_pos: Vector3) {
         let my_pos = self.base().get_global_position();
         let diff = player_pos - my_pos;
@@ -190,7 +248,7 @@ impl EnemyDrone {
         root.clone().add_child(&node);
         node.set_global_position(my_pos + direction * 0.8); // offset from center
         node.call(
-            "launch",
+            methods::LAUNCH,
             &[
                 Variant::from(direction),
                 Variant::from(15.0_f32),
