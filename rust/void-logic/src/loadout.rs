@@ -60,7 +60,14 @@ impl Loadout {
     }
 
     pub fn damping(&self) -> f32 {
-        self.effective(UpgradeKind::Damping, self.base.damping)
+        // Damping is the per-frame velocity *retention* factor; it must
+        // stay below 1.0 or motion never decays and the ship spins
+        // forever. Stability upgrades therefore scale the decay portion
+        // (1 - retention): a bigger multiplier settles the ship faster,
+        // and stacking can only push retention down toward 0, never up
+        // past the base.
+        let decay = self.effective(UpgradeKind::Damping, 1.0 - self.base.damping);
+        (1.0 - decay).clamp(0.0, self.base.damping)
     }
 
     pub fn max_health(&self) -> Health {
@@ -102,6 +109,54 @@ mod tests {
         assert_eq!(loadout.thrust_power(), 60.0);
         // Other stats unaffected
         assert_eq!(loadout.rotation_speed(), 6.0);
+    }
+
+    fn stability(multiplier: f32) -> Upgrade {
+        Upgrade {
+            name: format!("Stability +{}%", ((multiplier - 1.0) * 100.0).round()),
+            kind: UpgradeKind::Damping,
+            multiplier,
+        }
+    }
+
+    #[test]
+    fn stability_upgrade_keeps_damping_below_one() {
+        let mut loadout = Loadout::new();
+        loadout.add_upgrade(stability(1.1));
+        assert!(
+            loadout.damping() < 1.0,
+            "damping is per-frame velocity retention; at >= 1.0 motion never \
+             decays and the ship spins forever, got {}",
+            loadout.damping()
+        );
+    }
+
+    #[test]
+    fn stability_upgrade_settles_the_ship_faster() {
+        let base = Loadout::new();
+        let mut upgraded = Loadout::new();
+        upgraded.add_upgrade(stability(1.2));
+        assert!(
+            upgraded.damping() < base.damping(),
+            "a stability upgrade must decay velocity faster than base \
+             (smaller retention), got {} vs base {}",
+            upgraded.damping(),
+            base.damping()
+        );
+    }
+
+    #[test]
+    fn stacked_stability_upgrades_never_exceed_base_retention() {
+        let base = Loadout::new().damping();
+        let mut loadout = Loadout::new();
+        for _ in 0..30 {
+            loadout.add_upgrade(stability(1.3));
+        }
+        let damping = loadout.damping();
+        assert!(
+            (0.0..=base).contains(&damping),
+            "stacked stability upgrades must keep retention in [0, base], got {damping}"
+        );
     }
 
     #[test]

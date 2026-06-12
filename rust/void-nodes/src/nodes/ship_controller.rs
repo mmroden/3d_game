@@ -46,12 +46,6 @@ const WING_OFFSET: f32 = 0.3;
 pub struct ShipController {
     base: Base<CharacterBody3D>,
 
-    #[export]
-    thrust_power: f32,
-    #[export]
-    rotation_speed: f32,
-    #[export]
-    damping: f32,
     linear_velocity: Vector3,
     angular_velocity: Vector3,
     weapon: WeaponState,
@@ -66,9 +60,6 @@ impl ICharacterBody3D for ShipController {
     fn init(base: Base<CharacterBody3D>) -> Self {
         Self {
             base,
-            thrust_power: 40.0,
-            rotation_speed: 6.0,
-            damping: 0.95,
             linear_velocity: Vector3::ZERO,
             angular_velocity: Vector3::ZERO,
             weapon: WeaponState::default(),
