@@ -28,15 +28,21 @@ into the scene tree, and it is a view sync.
 - `BallisticBody` — `BodyCore` only. No thrust API exists on it;
   retention is `FULL`. (Unchanged from today.)
 - `Material { restitution: Restitution }` — slide is not a mode;
-  it is restitution 0 with the tangential component preserved (the
-  existing `bounce` already does this). Ship hull ≈ 0.35, props ≈ 0.6,
-  walls neutral. Pair rule: `min(a, b)`.
+  it is restitution 0 with the tangential component preserved. Ship
+  hull ≈ 0.35, props ≈ 0.6, walls neutral. Pair rule (revised in M1):
+  `max(a, b)` — "the livelier surface governs" — so neutral walls let
+  each body's own coefficient rule, exactly matching the bespoke
+  solver's behavior the property tests pinned. (`min` with neutral
+  walls would zero every wall bounce.) The Material *struct* lands in
+  M3 with mover hull materials; until a second field exists it would
+  be a one-field wrapper around `Restitution`.
 - `Payload` — optional tag on a ballistic body (e.g. projectile damage)
   carried opaquely by the world and surfaced in contact events. The
   world never interprets payloads.
-- `RoomId` newtype. Statics and bodies are tagged at construction
-  (`spawn_list_full` iterates rooms already); the world holds room
-  volumes and re-tags movers by containment as they travel.
+- `RoomId` newtype — deferred (decided during M1): its performance
+  motivation (per-room partitioning) died with the bespoke solver,
+  since rapier's broad-phase BVH *is* the spatial index; its remaining
+  consumer is disturbance seeding, and it lands with that feature.
 
 ## Tick pipeline (fixed order, one place)
 
@@ -177,8 +183,9 @@ All current kinetics/world property tests remain. New ones:
 - **Third law**: in any body–body exchange, momentum is conserved
   (mass-weighted); a prop striking the ship moves the ship.
 - **Onset-exactly-once**: a continuous contact emits one event.
-- **Partition transparency**: room-pruned collision produces identical
-  trajectories to a flat scan (equivalence property test).
+- **Partition transparency**: obsolete as of M1 — spatial pruning is
+  rapier's broad phase, not facade code; there is no second pathway to
+  prove equivalent.
 - **Determinism**: identical inputs ⇒ identical world state.
 
 ## Shell contract (void-nodes)
@@ -256,6 +263,17 @@ green, design-reviewed; no step introduces a design decision:
   tests stay green as the acceptance gate); Mass, Material, contact
   events, ray query, RoomId tagging; `WorldSnapshot` publication +
   interpolating view sync; per-second Retention conversion.
+  **Status: complete 2026-06-12**, including the always-on
+  instrumentation (TimingWindow percentiles over the physics stage,
+  surfaced as `kinetics/step_ms_p50|p99|jitter` custom monitors in the
+  editor debugger; the Tracy deep-dive path attaches on first
+  profiling need, per the contract). Notes from
+  contact with rapier 0.32: math backend is glam (`Vec3`); the
+  QueryPipeline is a borrowed view built from the broad phase, so ray
+  queries reflect the world as of the latest `step`; contact slop
+  tightened to 1e-4 (default parks bodies ~1 mm inside surfaces);
+  never call `sleep()` by hand — assert exact-zero velocities and let
+  the island manager sleep bodies itself.
 - **M2** — enemies migrate (AI → ControlInput; ram loops deleted; LOS
   from world ray).
 - **M3** — ship migrates (readback + latch deleted; wall feel = hull

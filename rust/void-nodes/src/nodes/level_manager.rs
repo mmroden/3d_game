@@ -1,5 +1,5 @@
 use godot::prelude::*;
-use godot::classes::{BoxShape3D, CharacterBody3D, CollisionShape3D, Node3D, INode3D, OmniLight3D, PackedScene, ResourceLoader, SphereShape3D, StaticBody3D};
+use godot::classes::{BoxShape3D, CharacterBody3D, CollisionShape3D, Node3D, INode3D, OmniLight3D, PackedScene, Performance, ResourceLoader, SphereShape3D, StaticBody3D};
 
 use super::constants::{groups, nodes, scenes};
 use rand::SeedableRng;
@@ -7,12 +7,20 @@ use rand::rngs::SmallRng;
 use rand::seq::IndexedRandom;
 
 use void_logic::generator::{generate, GeneratorConfig};
-use void_logic::kinetic_world::{BallisticBody, KineticWorld, Mover};
+use void_logic::kinetic_world::{BallisticBody, KineticWorld, Mover, WorldSnapshot};
 use void_logic::kinetics::Restitution;
 use void_logic::level_assembly;
 use void_logic::portal as portal_sys;
 use void_logic::enemy_type;
 use void_logic::seed::Seed;
+use void_logic::timing::TimingWindow;
+
+/// Custom monitor ids (graphed in the editor debugger's Monitors tab).
+const MONITOR_P50: &str = "kinetics/step_ms_p50";
+const MONITOR_P99: &str = "kinetics/step_ms_p99";
+const MONITOR_JITTER: &str = "kinetics/step_ms_jitter";
+/// Two seconds of samples at the 120 Hz tick.
+const TIMING_WINDOW: usize = 240;
 
 /// Collision footprint for loose props (sphere, world-simulated).
 const PROP_RADIUS: f32 = 0.5;
@@ -50,6 +58,15 @@ pub struct LevelManager {
     world: KineticWorld,
     /// View nodes for the world's bodies, indexed by BodyId.
     prop_nodes: Vec<Gd<Node3D>>,
+    /// Landing zone: the last two published snapshots. The view
+    /// interpolates between them at frame rate and never reads the
+    /// world directly.
+    previous: WorldSnapshot,
+    current: WorldSnapshot,
+    /// Per-tick physics-stage duration window; jitter (not the mean)
+    /// is the SLO metric.
+    step_timing: TimingWindow,
+    monitors_registered: bool,
 }
 
 #[godot_api]
@@ -61,36 +78,85 @@ impl INode3D for LevelManager {
             current_level: 1_i32,
             world: KineticWorld::new(),
             prop_nodes: Vec::new(),
+            previous: WorldSnapshot::default(),
+            current: WorldSnapshot::default(),
+            step_timing: TimingWindow::new(TIMING_WINDOW),
+            monitors_registered: false,
+        }
+    }
+
+    fn ready(&mut self) {
+        let mut perf = Performance::singleton();
+        if !perf.has_custom_monitor(MONITOR_P50) {
+            let target = self.to_gd();
+            perf.add_custom_monitor(
+                MONITOR_P50,
+                &Callable::from_object_method(&target, "step_ms_p50"),
+            );
+            perf.add_custom_monitor(
+                MONITOR_P99,
+                &Callable::from_object_method(&target, "step_ms_p99"),
+            );
+            perf.add_custom_monitor(
+                MONITOR_JITTER,
+                &Callable::from_object_method(&target, "step_ms_jitter"),
+            );
+            self.monitors_registered = true;
+        }
+    }
+
+    fn exit_tree(&mut self) {
+        if self.monitors_registered {
+            let mut perf = Performance::singleton();
+            perf.remove_custom_monitor(MONITOR_P50);
+            perf.remove_custom_monitor(MONITOR_P99);
+            perf.remove_custom_monitor(MONITOR_JITTER);
+            self.monitors_registered = false;
         }
     }
 
     fn physics_process(&mut self, delta: f64) {
+        let started = std::time::Instant::now();
         let movers = self.gather_movers();
         self.world.collide_movers(&movers);
-        self.world.step(delta as f32);
-        for (id, body) in self.world.bodies() {
-            if body.is_at_rest() {
-                continue;
-            }
-            let Some(node) = self.prop_nodes.get(id.index()) else {
-                continue;
-            };
-            if !node.is_instance_valid() {
-                continue;
-            }
-            let mut node = node.clone();
-            node.set_position(vec3(body.position()));
-            // Cosmetic tumble: colliders are spheres, so orientation
-            // is a rendering concern integrated here in the view.
-            let spin = vec3(body.angular_velocity()) * delta as f32;
-            let rotation = node.get_rotation() + spin;
-            node.set_rotation(rotation);
-        }
+        // Contact events become consequences (ram damage, SFX) in M2;
+        // drained every tick so onset semantics hold regardless.
+        let _contacts = self.world.step(delta as f32);
+        self.previous = std::mem::replace(&mut self.current, self.world.snapshot());
+        self.step_timing
+            .record(started.elapsed().as_secs_f32() * 1000.0);
+    }
+
+    fn process(&mut self, delta: f64) {
+        let fraction =
+            godot::classes::Engine::singleton().get_physics_interpolation_fraction() as f32;
+        Self::sync_view(
+            &self.previous,
+            &self.current,
+            fraction,
+            delta as f32,
+            &mut self.prop_nodes,
+        );
     }
 }
 
 #[godot_api]
 impl LevelManager {
+    #[func]
+    pub fn step_ms_p50(&self) -> f64 {
+        self.step_timing.percentile(50.0) as f64
+    }
+
+    #[func]
+    pub fn step_ms_p99(&self) -> f64 {
+        self.step_timing.percentile(99.0) as f64
+    }
+
+    #[func]
+    pub fn step_ms_jitter(&self) -> f64 {
+        self.step_timing.jitter() as f64
+    }
+
     #[func]
     pub fn generate_level(&mut self, seed: i64, target_rooms: u32) {
         let seed = Seed::from_i64(seed);
@@ -121,6 +187,8 @@ impl LevelManager {
         // below — one source of truth for where the walls are.
         self.world = KineticWorld::new();
         self.prop_nodes.clear();
+        self.previous = WorldSnapshot::default();
+        self.current = WorldSnapshot::default();
         self.world.add_statics(collision_boxes.iter().copied());
         let mut loader = ResourceLoader::singleton();
         let mut mesh_count = 0;
@@ -282,6 +350,40 @@ impl LevelManager {
 
 
 impl LevelManager {
+    /// View sync: consumes snapshots only — rendering never reaches
+    /// the world itself. Positions interpolate between the last two
+    /// ticks (smooth at any display rate, ~one tick behind the sim);
+    /// tumble integrates at frame rate, purely cosmetic.
+    fn sync_view(
+        previous: &WorldSnapshot,
+        current: &WorldSnapshot,
+        fraction: f32,
+        frame_delta: f32,
+        nodes: &mut [Gd<Node3D>],
+    ) {
+        for body in &current.bodies {
+            let index = body.id.index();
+            let Some(node) = nodes.get_mut(index) else {
+                continue;
+            };
+            if !node.is_instance_valid() {
+                continue;
+            }
+            let prev = previous.bodies.get(index).copied().unwrap_or(*body);
+            if body.at_rest && prev.position == body.position {
+                continue;
+            }
+            let from = vec3(prev.position);
+            let to = vec3(body.position);
+            node.set_position(from.lerp(to, fraction));
+            let spin = vec3(body.angular_velocity) * frame_delta;
+            if spin != Vector3::ZERO {
+                let rotation = node.get_rotation() + spin;
+                node.set_rotation(rotation);
+            }
+        }
+    }
+
     /// Mirror the powered movers (player + enemies) into the kinetic
     /// world for this tick so props can be shoved aside. The engine
     /// stays authoritative for the movers themselves.

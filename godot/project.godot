@@ -24,6 +24,11 @@ config/features=PackedStringArray("4.6")
 window/size/viewport_width=1920
 window/size/viewport_height=1080
 
+[physics]
+
+common/physics_ticks_per_second=120
+common/physics_interpolation=true
+
 [input]
 
 move_forward={

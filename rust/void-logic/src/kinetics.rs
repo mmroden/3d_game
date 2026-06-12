@@ -35,6 +35,16 @@ impl Retention {
     pub fn factor(self) -> f32 {
         self.0
     }
+
+    /// The retention factor for one tick of length `dt` seconds.
+    /// Retention is defined per second so handling is identical at any
+    /// tick rate. `FULL` stays exactly 1.0 (drift exactness theorem).
+    pub fn factor_for(self, dt: f32) -> f32 {
+        if self.0 == 1.0 {
+            return 1.0;
+        }
+        self.0.powf(dt.max(0.0))
+    }
 }
 
 /// Coefficient of restitution for a bounce, guaranteed < 1.0 so no
@@ -85,6 +95,20 @@ pub struct SpeedLimits {
     pub angular: f32,
 }
 
+/// Inertial mass in kilograms, strictly positive by construction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Mass(f32);
+
+impl Mass {
+    pub fn kilograms(value: f32) -> Self {
+        Self(value.max(0.001))
+    }
+
+    pub fn as_f32(self) -> f32 {
+        self.0
+    }
+}
+
 /// Linear and angular velocity of a mover. Mutation only through
 /// `step`, `apply_impulse`, `halt_rotation`, and the engine-readback
 /// hook — there is no raw setter.
@@ -116,7 +140,7 @@ impl KineticState {
         limits: SpeedLimits,
         delta: f32,
     ) {
-        let r = retention.factor();
+        let r = retention.factor_for(delta);
         self.linear_velocity = sanitize(
             scale(add(self.linear_velocity, scale(control.thrust, delta)), r),
             limits.linear,
@@ -182,7 +206,7 @@ pub(crate) fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 }
 
 /// Reset NaN to rest; clamp magnitude to `max_speed`.
-fn sanitize(v: [f32; 3], max_speed: f32) -> [f32; 3] {
+pub(crate) fn sanitize(v: [f32; 3], max_speed: f32) -> [f32; 3] {
     if v[0].is_nan() || v[1].is_nan() || v[2].is_nan() {
         return [0.0; 3];
     }
@@ -224,6 +248,36 @@ mod tests {
     #[test]
     fn full_retention_is_exactly_one() {
         assert_eq!(Retention::FULL.factor(), 1.0);
+        assert_eq!(Retention::FULL.factor_for(1.0 / 120.0), 1.0);
+    }
+
+    #[test]
+    fn retention_is_tick_rate_invariant() {
+        // One simulated second must decay identically whether it is
+        // 60 ticks or 120: changing physics_ticks_per_second can never
+        // change handling feel.
+        let retention = Retention::decaying(0.05);
+        let mut at_60 = KineticState::new();
+        let mut at_120 = KineticState::new();
+        at_60.apply_impulse(impulse([30.0, 0.0, 0.0], [0.0; 3]));
+        at_120.apply_impulse(impulse([30.0, 0.0, 0.0], [0.0; 3]));
+        for _ in 0..60 {
+            at_60.step(ControlInput::NONE, retention, LIMITS, 1.0 / 60.0);
+        }
+        for _ in 0..120 {
+            at_120.step(ControlInput::NONE, retention, LIMITS, 1.0 / 120.0);
+        }
+        let v60 = at_60.linear_velocity()[0];
+        let v120 = at_120.linear_velocity()[0];
+        assert!(
+            (v60 - v120).abs() < 0.05,
+            "decay must be tick-rate invariant: 60 Hz gave {v60}, 120 Hz gave {v120}"
+        );
+        // And one second at 5% per-second retention leaves ~5% of 30.
+        assert!(
+            (v60 - 1.5).abs() < 0.2,
+            "per-second semantics: expected ~1.5 after one second, got {v60}"
+        );
     }
 
     #[test]
@@ -252,8 +306,9 @@ mod tests {
         // for any finite input history, no input means motion dies.
         let mut state = KineticState::new();
         state.apply_impulse(impulse([30.0, -20.0, 10.0], [3.0, -2.0, 1.0]));
+        // 5% retained per second over 10 simulated seconds.
         for _ in 0..600 {
-            state.step(ControlInput::NONE, Retention::decaying(0.95), LIMITS, DT);
+            state.step(ControlInput::NONE, Retention::decaying(0.05), LIMITS, DT);
         }
         assert!(
             speed(state.linear_velocity()) < 1e-3,

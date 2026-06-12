@@ -11,6 +11,7 @@ pub mod loadout;
 pub mod upgrade;
 pub mod run_state;
 pub mod stereo;
+pub mod timing;
 pub mod asset_catalog;
 pub mod audio_catalog;
 pub mod room_assembler;

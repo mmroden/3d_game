@@ -19,7 +19,9 @@ impl Default for BaseStats {
         Self {
             thrust_power: 40.0,
             rotation_speed: 6.0,
-            damping: Retention::decaying(0.95),
+            // Per-second retention; 0.046 ≡ the original 0.95-per-tick
+            // feel at the historical 60 Hz tick (0.95^60).
+            damping: Retention::decaying(0.046),
             max_health: Health::new(100.0),
             fire_rate: 2.0,
             projectile_speed: 50.0,
@@ -61,14 +63,15 @@ impl Loadout {
     }
 
     pub fn damping(&self) -> Retention {
-        // Stability upgrades scale the decay portion (1 - retention):
-        // a bigger multiplier settles the ship faster, and stacking can
-        // only push retention down toward 0, never up past the base.
-        // Retention's own invariant (< 1.0 unless FULL) makes the
+        // Stability upgrades scale the decay *rate* — the exponent of
+        // the per-second retention: retention' = base^multiplier.
+        // Multipliers > 1 settle the ship faster, stacking approaches
+        // but never reaches zero, and the result can never exceed the
+        // base — the invariants hold structurally, no clamps needed.
+        // Retention's own invariant (< 1.0 unless FULL) keeps the
         // infinite-spin bug unrepresentable.
-        let base = self.base.damping.factor();
-        let decay = self.effective(UpgradeKind::Damping, 1.0 - base);
-        Retention::decaying((1.0 - decay).min(base))
+        let exponent = self.effective(UpgradeKind::Damping, 1.0);
+        Retention::decaying(self.base.damping.factor().powf(exponent))
     }
 
     pub fn max_health(&self) -> Health {

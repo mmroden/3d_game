@@ -12,26 +12,26 @@
 //! the regime, not a tuned heuristic), and rest capture snaps slow
 //! bodies back to zero after bounces so disturbed rooms settle again.
 
-use crate::kinetics::{
-    add, bounce, cross, dot, scale, sub, ControlInput, Impulse, KineticState, Restitution,
-    Retention, SpeedLimits,
-};
+use crate::kinetics::{add, cross, sanitize, scale, sub, dot, bounce, Impulse, Mass, Restitution};
 use crate::room_assembler::CollisionBox;
+use rapier3d::prelude::*;
 
-/// Speed caps for ballistic bodies. The modest linear cap also keeps a
-/// body from crossing a wall collider in a single tick.
-const BALLISTIC_LIMITS: SpeedLimits = SpeedLimits {
-    linear: 20.0,
-    angular: 5.0,
-};
+/// Speed caps for ballistic bodies, asserted at the facade after every
+/// step (defense in depth alongside rapier's CCD).
+const BALLISTIC_MAX_SPEED: f32 = 20.0;
+const BALLISTIC_MAX_SPIN: f32 = 5.0;
 
 /// Below this speed, a moving body is captured at exact rest —
-/// micro-settling, so disturbed rooms return to equilibrium and the
-/// at-rest fast path re-arms.
+/// micro-settling, so disturbed rooms return to equilibrium. Rapier's
+/// own sleeping is threshold-based; the facade reasserts exact zeros
+/// so `is_at_rest` stays a theorem, not an approximation.
 const REST_SPEED: f32 = 0.075;
 
 /// How much of a glancing strike's tangential motion becomes tumble.
 const TUMBLE_FACTOR: f32 = 0.4;
+
+/// Collider user-data tag for static level geometry.
+const STATIC_TAG: u128 = u128::MAX;
 
 /// A powered mover mirrored into the world for one tick: the world
 /// reads its motion to shove ballistic bodies aside; the mover itself
@@ -56,13 +56,59 @@ impl BodyId {
 
 /// A mover with no propulsion: a drifting bookshelf, a chunk of
 /// wreckage, a physical projectile. There is deliberately no way to
-/// thrust one.
+/// thrust one. This struct is the read-mirror of the simulated body:
+/// reads come from here; every mutation flows through the facade into
+/// the physics engine and is synced back.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BallisticBody {
     position: [f32; 3],
     radius: f32,
     restitution: Restitution,
-    kinetics: KineticState,
+    mass: Option<Mass>,
+    linear_velocity: [f32; 3],
+    angular_velocity: [f32; 3],
+}
+
+/// The landing zone: the only artifact that crosses from physics to
+/// rendering. Immutable once published; the view keeps the previous
+/// snapshot it consumed, interpolates toward the newest, and can never
+/// name `KineticWorld`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct WorldSnapshot {
+    /// Monotonic tick counter; one publication per `step`.
+    pub tick: u64,
+    pub bodies: Vec<BodySnapshot>,
+}
+
+/// One body's render-relevant state at a tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BodySnapshot {
+    pub id: BodyId,
+    pub position: [f32; 3],
+    /// Cosmetic tumble rate for the view to integrate.
+    pub angular_velocity: [f32; 3],
+    pub at_rest: bool,
+}
+
+/// What a ballistic body collided with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ContactWith {
+    Body(BodyId),
+    Static,
+}
+
+/// A contact that began this tick (onset only — a continuous contact
+/// emits exactly one). The shell maps these to consequences (ram
+/// damage, SFX); the world never interprets them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContactEvent {
+    pub body: BodyId,
+    pub with: ContactWith,
+    /// World-space contact normal, pointing away from `body`.
+    pub normal: [f32; 3],
+    /// Closing speed along the normal at impact.
+    pub impact_speed: f32,
+    pub position: [f32; 3],
 }
 
 impl BallisticBody {
@@ -74,8 +120,17 @@ impl BallisticBody {
             position,
             radius,
             restitution,
-            kinetics: KineticState::new(),
+            mass: None,
+            linear_velocity: [0.0; 3],
+            angular_velocity: [0.0; 3],
         }
+    }
+
+    /// Explicit inertial mass. Bodies without one get a density-1
+    /// sphere mass, so equal-size props exchange momentum evenly.
+    pub fn with_mass(mut self, mass: Mass) -> Self {
+        self.mass = Some(mass);
+        self
     }
 
     pub fn position(&self) -> [f32; 3] {
@@ -87,98 +142,234 @@ impl BallisticBody {
     }
 
     pub fn linear_velocity(&self) -> [f32; 3] {
-        self.kinetics.linear_velocity()
+        self.linear_velocity
     }
 
     /// Cosmetic tumble for the view; ballistic colliders are spheres,
     /// so orientation never affects physics.
     pub fn angular_velocity(&self) -> [f32; 3] {
-        self.kinetics.angular_velocity()
+        self.angular_velocity
     }
 
     pub fn is_at_rest(&self) -> bool {
-        self.kinetics.linear_velocity() == [0.0; 3] && self.kinetics.angular_velocity() == [0.0; 3]
+        self.linear_velocity == [0.0; 3] && self.angular_velocity == [0.0; 3]
     }
 }
 
 /// Owns all ballistic bodies and the static collision geometry they
-/// bounce around in. Statics come from the same
+/// bounce around in, simulated by rapier3d behind this facade — rapier
+/// types never escape this module. Statics come from the same
 /// `level_assembly::collision_boxes` output that builds the Godot
 /// colliders — one source of truth for where the walls are.
-#[derive(Debug, Default)]
 pub struct KineticWorld {
-    bodies: Vec<BallisticBody>,
-    statics: Vec<CollisionBox>,
+    mirror: Vec<BallisticBody>,
+    handles: Vec<RigidBodyHandle>,
+    gravity: Vector,
+    params: IntegrationParameters,
+    pipeline: PhysicsPipeline,
+    islands: IslandManager,
+    broad_phase: DefaultBroadPhase,
+    narrow_phase: NarrowPhase,
+    rigid_bodies: RigidBodySet,
+    colliders: ColliderSet,
+    impulse_joints: ImpulseJointSet,
+    multibody_joints: MultibodyJointSet,
+    ccd: CCDSolver,
+    tick: u64,
+}
+
+impl Default for KineticWorld {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl KineticWorld {
     pub fn new() -> Self {
-        Self::default()
+        // Tighter contact slop than rapier's default: bodies settle
+        // within a tenth of a millimeter of surfaces instead of a full
+        // millimeter inside them.
+        let params = IntegrationParameters {
+            normalized_allowed_linear_error: 1.0e-4,
+            ..IntegrationParameters::default()
+        };
+        Self {
+            mirror: Vec::new(),
+            handles: Vec::new(),
+            gravity: Vector::new(0.0, 0.0, 0.0),
+            params,
+            pipeline: PhysicsPipeline::new(),
+            islands: IslandManager::new(),
+            broad_phase: DefaultBroadPhase::new(),
+            narrow_phase: NarrowPhase::new(),
+            rigid_bodies: RigidBodySet::new(),
+            colliders: ColliderSet::new(),
+            impulse_joints: ImpulseJointSet::new(),
+            multibody_joints: MultibodyJointSet::new(),
+            ccd: CCDSolver::new(),
+            tick: 0,
+        }
     }
 
     pub fn add_statics(&mut self, boxes: impl IntoIterator<Item = CollisionBox>) {
-        self.statics.extend(boxes);
+        for slab in boxes {
+            let collider = ColliderBuilder::cuboid(
+                slab.half_extents[0],
+                slab.half_extents[1],
+                slab.half_extents[2],
+            )
+            .translation(Vector::new(slab.position[0], slab.position[1], slab.position[2]))
+            .rotation(Vector::new(0.0, slab.rotation_y, 0.0))
+            // Neutral surface: with combine-rule Max on bodies, the
+            // body's own restitution governs the bounce, exactly as
+            // the bespoke solver behaved.
+            .restitution(0.0)
+            .friction(0.0)
+            .user_data(STATIC_TAG)
+            .build();
+            self.colliders.insert(collider);
+        }
     }
 
     pub fn add_body(&mut self, body: BallisticBody) -> BodyId {
-        self.bodies.push(body);
-        BodyId(self.bodies.len() - 1)
+        let index = self.mirror.len();
+        let mut rigid_builder = RigidBodyBuilder::dynamic()
+            .translation(Vector::new(
+                body.position[0],
+                body.position[1],
+                body.position[2],
+            ))
+            .can_sleep(true)
+            .ccd_enabled(true);
+        if let Some(mass) = body.mass {
+            rigid_builder = rigid_builder.additional_mass(mass.as_f32());
+        }
+        let handle = self.rigid_bodies.insert(rigid_builder.build());
+        let collider = ColliderBuilder::ball(body.radius)
+            .restitution(body.restitution.coefficient())
+            .restitution_combine_rule(CoefficientCombineRule::Max)
+            .friction(0.0)
+            // Explicit mass wins; otherwise a density-1 sphere.
+            .density(if body.mass.is_some() { 0.0 } else { 1.0 })
+            .active_events(ActiveEvents::COLLISION_EVENTS)
+            .user_data(index as u128)
+            .build();
+        self.colliders
+            .insert_with_parent(collider, handle, &mut self.rigid_bodies);
+        self.handles.push(handle);
+        self.mirror.push(body);
+        BodyId(index)
     }
 
     pub fn body(&self, id: BodyId) -> Option<&BallisticBody> {
-        self.bodies.get(id.0)
+        self.mirror.get(id.0)
     }
 
     pub fn bodies(&self) -> impl Iterator<Item = (BodyId, &BallisticBody)> {
-        self.bodies.iter().enumerate().map(|(i, b)| (BodyId(i), b))
+        self.mirror.iter().enumerate().map(|(i, b)| (BodyId(i), b))
     }
 
     /// One-shot impulse: level-setup disturbance ("the occupants
     /// knocked it loose") or collision response from a powered mover.
+    /// Velocity-delta semantics (mass-independent), matching the
+    /// kinetic core's `Impulse` contract.
     pub fn disturb(&mut self, id: BodyId, impulse: Impulse) {
-        if let Some(body) = self.bodies.get_mut(id.0) {
-            body.kinetics.apply_impulse(impulse);
+        let Some(&handle) = self.handles.get(id.0) else {
+            return;
+        };
+        if let Some(rigid) = self.rigid_bodies.get_mut(handle) {
+            let lv = rigid.linvel()
+                + Vector::new(impulse.linear[0], impulse.linear[1], impulse.linear[2]);
+            let av = rigid.angvel()
+                + Vector::new(impulse.angular[0], impulse.angular[1], impulse.angular[2]);
+            rigid.set_linvel(lv, true);
+            rigid.set_angvel(av, true);
+        }
+        self.sync_mirror(id.0);
+    }
+
+    /// Publish the landing-zone snapshot of the current tick.
+    pub fn snapshot(&self) -> WorldSnapshot {
+        WorldSnapshot {
+            tick: self.tick,
+            bodies: self
+                .mirror
+                .iter()
+                .enumerate()
+                .map(|(i, b)| BodySnapshot {
+                    id: BodyId(i),
+                    position: b.position,
+                    angular_velocity: b.angular_velocity,
+                    at_rest: b.is_at_rest(),
+                })
+                .collect(),
         }
     }
 
-    /// Advance every body one tick: integrate, collide against the
-    /// statics, bounce, exchange momentum between touching bodies,
-    /// capture near-rest bodies at exact rest.
-    pub fn step(&mut self, delta: f32) {
-        for body in self.bodies.iter_mut() {
-            if body.is_at_rest() {
-                continue;
-            }
-            body.kinetics
-                .step(ControlInput::NONE, Retention::FULL, BALLISTIC_LIMITS, delta);
-            body.position = add(body.position, scale(body.kinetics.linear_velocity(), delta));
-
-            for slab in self.statics.iter() {
-                if let Some(contact) = sphere_box_penetration(body.position, body.radius, slab) {
-                    body.position = add(body.position, contact.push);
-                    let reflected =
-                        bounce(body.kinetics.linear_velocity(), contact.normal, body.restitution);
-                    body.kinetics.accept_resolved_linear(reflected);
-                }
-            }
-
-            let v = body.kinetics.linear_velocity();
-            if dot(v, v).sqrt() < REST_SPEED {
-                body.kinetics.accept_resolved_linear([0.0; 3]);
-                body.kinetics.halt_rotation();
-            }
+    /// True when the segment from `from` to `to` hits any collider —
+    /// the world's own line-of-sight answer (walls and drifting props
+    /// both block sight). The spatial index builds during `step`, so
+    /// queries reflect the world as of the most recent tick.
+    pub fn ray_blocked(&self, from: [f32; 3], to: [f32; 3]) -> bool {
+        let dir = sub(to, from);
+        let length = dot(dir, dir).sqrt();
+        if length <= f32::EPSILON {
+            return false;
         }
+        let ray = Ray::new(
+            Vector::new(from[0], from[1], from[2]),
+            Vector::new(dir[0] / length, dir[1] / length, dir[2] / length),
+        );
+        self.broad_phase
+            .as_query_pipeline(
+                self.narrow_phase.query_dispatcher(),
+                &self.rigid_bodies,
+                &self.colliders,
+                QueryFilter::default(),
+            )
+            .cast_ray(&ray, length, true)
+            .is_some()
+    }
 
-        self.exchange_momentum();
+    /// Advance every body one tick through the physics engine, then
+    /// reassert the facade's invariants: speed caps, NaN recovery, and
+    /// exact-rest capture. Returns the contacts that began this tick.
+    pub fn step(&mut self, delta: f32) -> Vec<ContactEvent> {
+        self.params.dt = delta;
+        let collector = ContactCollector::default();
+        self.pipeline.step(
+            self.gravity,
+            &self.params,
+            &mut self.islands,
+            &mut self.broad_phase,
+            &mut self.narrow_phase,
+            &mut self.rigid_bodies,
+            &mut self.colliders,
+            &mut self.impulse_joints,
+            &mut self.multibody_joints,
+            &mut self.ccd,
+            &(),
+            &collector,
+        );
+
+        for index in 0..self.handles.len() {
+            self.assert_invariants(index);
+            self.sync_mirror(index);
+        }
+        self.tick += 1;
+
+        collector.events.into_inner().unwrap_or_default()
     }
 
     /// Shove ballistic bodies out of the way of powered movers
     /// (player, enemies), exchanging momentum in the mover's frame.
     /// Movers are treated as infinite mass: props never push back here
-    /// — the engine resolves the mover's side of the contact.
+    /// — the engine resolves the mover's side of the contact. (M2/M3
+    /// make movers real bodies and retire this mirror path.)
     pub fn collide_movers(&mut self, movers: &[Mover]) {
         for mover in movers {
-            for body in self.bodies.iter_mut() {
+            for index in 0..self.handles.len() {
+                let body = self.mirror[index];
                 let between = sub(body.position, mover.position);
                 let dist_sq = dot(between, between);
                 let reach = body.radius + mover.radius;
@@ -187,125 +378,176 @@ impl KineticWorld {
                 }
                 let dist = dist_sq.sqrt();
                 let normal = scale(between, 1.0 / dist);
-                body.position = add(body.position, scale(normal, reach - dist));
+                let new_position = add(body.position, scale(normal, reach - dist));
 
                 // Momentum exchange in the mover's frame: a separating
                 // contact (bounce returns its input) injects nothing.
-                let relative = sub(body.linear_velocity(), mover.velocity);
+                let relative = sub(body.linear_velocity, mover.velocity);
                 let reflected = bounce(relative, normal, body.restitution);
-                if reflected != relative {
-                    body.kinetics
-                        .accept_resolved_linear(add(reflected, mover.velocity));
-                    body.kinetics.apply_impulse(Impulse {
-                        linear: [0.0; 3],
-                        angular: scale(cross(normal, relative), TUMBLE_FACTOR),
-                    });
+                let launches = reflected != relative;
+
+                let handle = self.handles[index];
+                if let Some(rigid) = self.rigid_bodies.get_mut(handle) {
+                    rigid.set_translation(
+                        Vector::new(new_position[0], new_position[1], new_position[2]),
+                        launches,
+                    );
+                    if launches {
+                        let new_v = add(reflected, mover.velocity);
+                        let tumble = add(
+                            body.angular_velocity,
+                            scale(cross(normal, relative), TUMBLE_FACTOR),
+                        );
+                        rigid.set_linvel(Vector::new(new_v[0], new_v[1], new_v[2]), true);
+                        rigid.set_angvel(Vector::new(tumble[0], tumble[1], tumble[2]), true);
+                    }
                 }
+                self.sync_mirror(index);
             }
         }
     }
 
-    /// Equal-mass impulse exchange between overlapping bodies, plus
-    /// positional separation. Uses the lesser restitution of the pair.
-    fn exchange_momentum(&mut self) {
-        let n = self.bodies.len();
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let (left, right) = self.bodies.split_at_mut(j);
-                let a = &mut left[i];
-                let b = &mut right[0];
-                if a.is_at_rest() && b.is_at_rest() {
-                    continue;
+    /// Facade invariants applied after the engine step: NaN recovery,
+    /// speed caps, and exact-rest capture. Bodies already at exact rest
+    /// are left untouched (rapier's own sleeping owns them); forcing
+    /// `sleep()` by hand would bypass the island manager.
+    fn assert_invariants(&mut self, index: usize) {
+        let handle = self.handles[index];
+        let Some(rigid) = self.rigid_bodies.get_mut(handle) else {
+            return;
+        };
+        let lv = rigid.linvel();
+        let av = rigid.angvel();
+        if lv == Vector::ZERO && av == Vector::ZERO {
+            return;
+        }
+        let linear = sanitize([lv.x, lv.y, lv.z], BALLISTIC_MAX_SPEED);
+        let angular = sanitize([av.x, av.y, av.z], BALLISTIC_MAX_SPIN);
+        if dot(linear, linear).sqrt() < REST_SPEED {
+            rigid.set_linvel(Vector::ZERO, false);
+            rigid.set_angvel(Vector::ZERO, false);
+        } else {
+            rigid.set_linvel(Vector::new(linear[0], linear[1], linear[2]), false);
+            rigid.set_angvel(Vector::new(angular[0], angular[1], angular[2]), false);
+        }
+    }
+
+    /// Copy engine state into the read-mirror so callers can keep
+    /// borrowing `&BallisticBody`.
+    fn sync_mirror(&mut self, index: usize) {
+        let handle = self.handles[index];
+        let Some(rigid) = self.rigid_bodies.get(handle) else {
+            return;
+        };
+        let t = rigid.translation();
+        let lv = rigid.linvel();
+        let av = rigid.angvel();
+        let entry = &mut self.mirror[index];
+        entry.position = [t.x, t.y, t.z];
+        entry.linear_velocity = [lv.x, lv.y, lv.z];
+        entry.angular_velocity = [av.x, av.y, av.z];
+    }
+}
+
+/// EventHandler that translates rapier collision-start events into
+/// facade `ContactEvent`s. Identity flows through collider user-data
+/// (body index, or `STATIC_TAG` for level geometry).
+#[derive(Default)]
+struct ContactCollector {
+    events: std::sync::Mutex<Vec<ContactEvent>>,
+}
+
+impl EventHandler for ContactCollector {
+    fn handle_collision_event(
+        &self,
+        bodies: &RigidBodySet,
+        colliders: &ColliderSet,
+        event: CollisionEvent,
+        contact_pair: Option<&ContactPair>,
+    ) {
+        let CollisionEvent::Started(h1, h2, _) = event else {
+            return;
+        };
+        let (Some(c1), Some(c2)) = (colliders.get(h1), colliders.get(h2)) else {
+            return;
+        };
+        let u1 = c1.user_data;
+        let u2 = c2.user_data;
+        // The reported `body` is always ballistic; when both are, the
+        // lower index reports (one event per pair).
+        let (body_index, with, body_is_first) = match (u1 != STATIC_TAG, u2 != STATIC_TAG) {
+            (true, true) => {
+                if u1 <= u2 {
+                    (u1 as usize, ContactWith::Body(BodyId(u2 as usize)), true)
+                } else {
+                    (u2 as usize, ContactWith::Body(BodyId(u1 as usize)), false)
                 }
-                let between = sub(b.position, a.position);
-                let dist_sq = dot(between, between);
-                let reach = a.radius + b.radius;
-                if dist_sq >= reach * reach || dist_sq == 0.0 {
-                    continue;
+            }
+            (true, false) => (u1 as usize, ContactWith::Static, true),
+            (false, true) => (u2 as usize, ContactWith::Static, false),
+            (false, false) => return,
+        };
+
+        let velocity_of = |collider: &Collider| -> [f32; 3] {
+            collider
+                .parent()
+                .and_then(|h| bodies.get(h))
+                .map(|rb| {
+                    let v = rb.linvel();
+                    [v.x, v.y, v.z]
+                })
+                .unwrap_or([0.0; 3])
+        };
+
+        // Normal and contact point from the manifold; rapier's manifold
+        // normal points from the first collider toward the second.
+        let mut normal = [0.0_f32; 3];
+        let mut position = {
+            let t = if body_is_first {
+                c1.translation()
+            } else {
+                c2.translation()
+            };
+            [t.x, t.y, t.z]
+        };
+        if let Some(pair) = contact_pair {
+            if let Some(manifold) = pair.manifolds.first() {
+                let n = manifold.data.normal;
+                normal = if body_is_first {
+                    [n.x, n.y, n.z]
+                } else {
+                    [-n.x, -n.y, -n.z]
+                };
+                if let Some(point) = manifold.points.first() {
+                    let world = c1.position().transform_point(point.local_p1);
+                    position = [world.x, world.y, world.z];
                 }
-                let dist = dist_sq.sqrt();
-                let normal = scale(between, 1.0 / dist);
-                let relative = sub(b.linear_velocity(), a.linear_velocity());
-                let approach = dot(relative, normal);
-                // Separate overlap regardless; exchange only if closing.
-                let push = scale(normal, (reach - dist) * 0.5);
-                a.position = sub(a.position, push);
-                b.position = add(b.position, push);
-                if approach >= 0.0 {
-                    continue;
-                }
-                let e = a
-                    .restitution
-                    .coefficient()
-                    .min(b.restitution.coefficient());
-                let magnitude = -(1.0 + e) * approach / 2.0;
-                let impulse = scale(normal, magnitude);
-                a.kinetics.apply_impulse(Impulse {
-                    linear: scale(impulse, -1.0),
-                    angular: [0.0; 3],
-                });
-                b.kinetics.apply_impulse(Impulse {
-                    linear: impulse,
-                    angular: [0.0; 3],
-                });
             }
         }
-    }
-}
 
-struct Contact {
-    /// Displacement that expels the sphere from the box.
-    push: [f32; 3],
-    /// World-space surface normal at the contact.
-    normal: [f32; 3],
-}
+        let relative = sub(velocity_of(c1), velocity_of(c2));
+        let impact_speed = dot(relative, normal).abs();
 
-/// Rotate `v` about the Y axis by `angle` (right-handed, Y up).
-fn rotate_y(v: [f32; 3], angle: f32) -> [f32; 3] {
-    let (s, c) = angle.sin_cos();
-    [c * v[0] + s * v[2], v[1], -s * v[0] + c * v[2]]
-}
-
-/// Sphere vs. Y-rotated box: `Some(contact)` when penetrating.
-fn sphere_box_penetration(center: [f32; 3], radius: f32, slab: &CollisionBox) -> Option<Contact> {
-    let local = rotate_y(sub(center, slab.position), -slab.rotation_y);
-    let closest = [
-        local[0].clamp(-slab.half_extents[0], slab.half_extents[0]),
-        local[1].clamp(-slab.half_extents[1], slab.half_extents[1]),
-        local[2].clamp(-slab.half_extents[2], slab.half_extents[2]),
-    ];
-    let offset = sub(local, closest);
-    let dist_sq = dot(offset, offset);
-    if dist_sq > 0.0 {
-        // Center outside the box: surface contact when within radius.
-        if dist_sq >= radius * radius {
-            return None;
-        }
-        let dist = dist_sq.sqrt();
-        let normal_local = scale(offset, 1.0 / dist);
-        let push_local = scale(normal_local, radius - dist);
-        return Some(Contact {
-            push: rotate_y(push_local, slab.rotation_y),
-            normal: rotate_y(normal_local, slab.rotation_y),
-        });
-    }
-    // Center inside the box: expel along the shallowest axis.
-    let mut axis = 0;
-    let mut depth = f32::MAX;
-    for (candidate, (half, coord)) in slab.half_extents.iter().zip(local.iter()).enumerate() {
-        let pen = half - coord.abs();
-        if pen < depth {
-            depth = pen;
-            axis = candidate;
+        if let Ok(mut events) = self.events.lock() {
+            events.push(ContactEvent {
+                body: BodyId(body_index),
+                with,
+                normal,
+                impact_speed,
+                position,
+            });
         }
     }
-    let mut normal_local = [0.0; 3];
-    normal_local[axis] = if local[axis] >= 0.0 { 1.0 } else { -1.0 };
-    let push_local = scale(normal_local, depth + radius);
-    Some(Contact {
-        push: rotate_y(push_local, slab.rotation_y),
-        normal: rotate_y(normal_local, slab.rotation_y),
-    })
+
+    fn handle_contact_force_event(
+        &self,
+        _dt: Real,
+        _bodies: &RigidBodySet,
+        _colliders: &ColliderSet,
+        _contact_pair: &ContactPair,
+        _total_force_magnitude: Real,
+    ) {
+    }
 }
 
 #[cfg(test)]
@@ -606,6 +848,172 @@ mod tests {
         assert!(
             world.body(id).unwrap().is_at_rest(),
             "a separating mover displaces but never injects momentum"
+        );
+    }
+
+    #[test]
+    fn a_heavy_body_shrugs_off_a_light_striker() {
+        use crate::kinetics::Mass;
+        let mut world = KineticWorld::new();
+        let light = world.add_body(BallisticBody::at_rest(
+            [-1.5, 0.0, 0.0],
+            0.5,
+            Restitution::clamped(0.9),
+        ));
+        // ~20x the striker's density-1 sphere mass (~0.52 kg). Much
+        // heavier and the post-impact drift falls below REST_SPEED and
+        // is (correctly) captured at rest by micro-settling.
+        let heavy = world.add_body(
+            BallisticBody::at_rest([0.5, 0.0, 0.0], 0.5, Restitution::clamped(0.9))
+                .with_mass(Mass::kilograms(10.0)),
+        );
+        world.disturb(light, linear([3.0, 0.0, 0.0]));
+        for _ in 0..120 {
+            world.step(DT);
+        }
+        let heavy_v = world.body(heavy).unwrap().linear_velocity()[0];
+        let light_v = world.body(light).unwrap().linear_velocity()[0];
+        assert!(
+            heavy_v > 0.01,
+            "the heavy body must still be moved a little, got {heavy_v}"
+        );
+        assert!(
+            heavy_v < 0.6,
+            "momentum-weighted exchange: a much heavier body must barely \
+             deflect, got {heavy_v}"
+        );
+        assert!(
+            light_v < 0.0,
+            "the light striker must rebound off the heavy body, got {light_v}"
+        );
+    }
+
+    #[test]
+    fn collisions_emit_one_onset_event_per_contact() {
+        let mut world = KineticWorld::new();
+        let a = world.add_body(BallisticBody::at_rest(
+            [-1.5, 0.0, 0.0],
+            0.5,
+            Restitution::clamped(0.9),
+        ));
+        let _b = world.add_body(BallisticBody::at_rest(
+            [0.5, 0.0, 0.0],
+            0.5,
+            Restitution::clamped(0.9),
+        ));
+        world.disturb(a, linear([3.0, 0.0, 0.0]));
+        let mut contacts: Vec<ContactEvent> = Vec::new();
+        for _ in 0..120 {
+            contacts.extend(world.step(DT));
+        }
+        let body_contacts: Vec<_> = contacts
+            .iter()
+            .filter(|c| matches!(c.with, ContactWith::Body(_)))
+            .collect();
+        assert_eq!(
+            body_contacts.len(),
+            1,
+            "one continuous contact must emit exactly one onset event, got {body_contacts:?}"
+        );
+        let hit = body_contacts[0];
+        assert!(
+            hit.impact_speed > 1.0,
+            "closing speed ~3 m/s must be reported, got {}",
+            hit.impact_speed
+        );
+        assert!(
+            hit.normal[0].abs() > 0.9,
+            "head-on x impact must have an x-dominant normal, got {:?}",
+            hit.normal
+        );
+    }
+
+    #[test]
+    fn wall_impacts_emit_static_contact_events() {
+        let mut world = KineticWorld::new();
+        world.add_statics([wall([0.0, 0.0, -2.0], [5.0, 5.0, 0.5])]);
+        let id = world.add_body(BallisticBody::at_rest(
+            [0.0; 3],
+            0.5,
+            Restitution::clamped(0.8),
+        ));
+        world.disturb(id, linear([0.0, 0.0, -4.0]));
+        let mut static_hits = 0;
+        for _ in 0..60 {
+            for contact in world.step(DT) {
+                if contact.with == ContactWith::Static {
+                    static_hits += 1;
+                    assert_eq!(contact.body, id);
+                }
+            }
+        }
+        assert_eq!(
+            static_hits, 1,
+            "one wall bounce must emit exactly one static onset event"
+        );
+    }
+
+    #[test]
+    fn resting_bodies_emit_no_events() {
+        let mut world = KineticWorld::new();
+        world.add_statics(sealed_room(4.0));
+        world.add_body(BallisticBody::at_rest(
+            [0.0; 3],
+            0.5,
+            Restitution::clamped(0.5),
+        ));
+        let mut total = 0;
+        for _ in 0..120 {
+            total += world.step(DT).len();
+        }
+        assert_eq!(total, 0, "an undisturbed room is silent");
+    }
+
+    #[test]
+    fn snapshots_publish_the_world_each_tick() {
+        let mut world = KineticWorld::new();
+        let id = world.add_body(BallisticBody::at_rest(
+            [1.0, 2.0, 3.0],
+            0.5,
+            Restitution::clamped(0.5),
+        ));
+        world.disturb(id, linear([3.0, 0.0, 0.0]));
+
+        let before = world.snapshot();
+        world.step(DT);
+        let after = world.snapshot();
+
+        assert_eq!(
+            after.tick,
+            before.tick + 1,
+            "each step publishes the next tick"
+        );
+        assert_eq!(after.bodies.len(), 1);
+        let body = after.bodies[0];
+        assert_eq!(body.id, id);
+        assert!(
+            body.position[0] > before.bodies[0].position[0],
+            "the snapshot must reflect the moved body: {:?} -> {:?}",
+            before.bodies[0].position,
+            body.position
+        );
+        assert!(!body.at_rest);
+    }
+
+    #[test]
+    fn rays_are_blocked_by_walls_and_clear_in_space() {
+        let mut world = KineticWorld::new();
+        world.add_statics([wall([0.0, 0.0, -2.0], [5.0, 5.0, 0.5])]);
+        // The spatial index builds during step; the game always ticks
+        // before querying.
+        world.step(DT);
+        assert!(
+            world.ray_blocked([0.0, 0.0, 0.0], [0.0, 0.0, -6.0]),
+            "a ray through a wall must be blocked"
+        );
+        assert!(
+            !world.ray_blocked([0.0, 0.0, 0.0], [0.0, 6.0, 0.0]),
+            "a ray through empty space must be clear"
         );
     }
 
