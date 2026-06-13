@@ -2,11 +2,12 @@ use godot::prelude::*;
 use godot::classes::{BoxShape3D, CharacterBody3D, CollisionShape3D, Node3D, INode3D, OmniLight3D, PackedScene, ResourceLoader, SphereShape3D, StaticBody3D};
 
 use super::body_registry::BodyRegistry;
-use super::constants::{nodes, scenes};
+use super::constants::{methods, nodes, scenes, signals};
 use super::enemy_drone::EnemyDrone;
 use super::godot_util;
 use super::ship_controller::ShipController;
 use super::telemetry::Telemetry;
+use super::views::ViewManager;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use rand::seq::IndexedRandom;
@@ -88,10 +89,7 @@ impl INode3D for LevelManager {
     }
 
     fn ready(&mut self) {
-        if let Some(viewport) = self.base().get_viewport() {
-            let rid = viewport.get_viewport_rid();
-            self.telemetry.measure_viewport(rid);
-        }
+        self.connect_render_viewports();
         let target = self.to_gd();
         self.telemetry.register_monitors(
             Callable::from_object_method(&target, "step_ms_p50"),
@@ -143,6 +141,21 @@ impl LevelManager {
     #[func]
     pub fn step_ms_jitter(&self) -> f64 {
         self.telemetry.step_ms_jitter() as f64
+    }
+
+    /// The viewport RIDs whose render time telemetry is measuring.
+    /// Exposed for tests: in SBS this must be the two eye sub-viewports,
+    /// not the root compositor.
+    #[func]
+    pub fn measured_viewport_rids(&self) -> Array<Rid> {
+        self.telemetry.measured_viewports().into_iter().collect()
+    }
+
+    /// ViewManager republishes its active 3D viewports on every mode
+    /// change; retarget render measurement onto them.
+    #[func]
+    fn on_render_viewports_changed(&mut self, viewports: Array<Rid>) {
+        self.apply_measured_viewports(viewports);
     }
 
     #[func]
@@ -352,6 +365,37 @@ impl LevelManager {
 
 
 impl LevelManager {
+    /// Subscribe to ViewManager's active-viewport publication (so
+    /// render measurement follows mode changes) and seed the current
+    /// set immediately — ViewManager is the sole authority on which
+    /// viewports draw the 3D world, so we never recompute that here.
+    fn connect_render_viewports(&mut self) {
+        let Some(main) = self.base().get_parent() else {
+            // Isolated instance (e.g. logic unit tests): no view pipeline
+            // to measure. Telemetry stays idle; not an error condition.
+            godot_print!("LevelManager: no parent; render telemetry idle");
+            return;
+        };
+        let Some(mut view_mgr) = main.try_get_node_as::<ViewManager>(nodes::VIEW_MANAGER) else {
+            godot_print!("LevelManager: no ViewManager sibling; render telemetry idle");
+            return;
+        };
+        let callable = self.base().callable(methods::ON_RENDER_VIEWPORTS_CHANGED);
+        if !view_mgr.is_connected(signals::RENDER_VIEWPORTS_CHANGED, &callable) {
+            view_mgr.connect(signals::RENDER_VIEWPORTS_CHANGED, &callable);
+        }
+        // Pull the current set (mono → root) so the first frames measure
+        // correctly without waiting for a mode toggle. Typed call against
+        // ViewManager — no stringly-typed method name or Variant cast.
+        let rids = view_mgr.bind().active_viewport_rids();
+        self.apply_measured_viewports(rids);
+    }
+
+    fn apply_measured_viewports(&mut self, viewports: Array<Rid>) {
+        let rids: Vec<Rid> = viewports.iter_shared().collect();
+        self.telemetry.measure_viewports(&rids);
+    }
+
     /// Drive every live enemy: ask the world for line of sight, pull
     /// the AI's desired velocity, and write its control. The world
     /// owns all enemy motion.

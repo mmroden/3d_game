@@ -82,6 +82,12 @@ impl INode3D for ViewManager {
 
 #[godot_api]
 impl ViewManager {
+    /// Emitted whenever the set of viewports rendering the 3D world
+    /// changes (mode toggle). Telemetry listens so it always measures
+    /// the eyes that actually draw, never the root compositor.
+    #[signal]
+    fn render_viewports_changed(viewports: Array<Rid>);
+
     /// Called when the window resizes (fullscreen transition, manual resize, etc.)
     /// Recomputes all viewport and container sizes from the actual window dims.
     #[func]
@@ -112,11 +118,49 @@ impl ViewManager {
         self.apply_visibility(sbs);
         self.toggle_mono_camera(sbs);
 
+        // Publish the now-active 3D viewports so telemetry re-targets
+        // measurement onto the eyes (SBS) or the root (mono).
+        let rids = self.active_viewport_rids();
+        self.base_mut()
+            .emit_signal(signals::RENDER_VIEWPORTS_CHANGED, &[rids.to_variant()]);
+
         godot_print!("SBS stereo {}", if sbs { "enabled" } else { "disabled" });
     }
 }
 
 impl ViewManager {
+    /// The viewport RIDs currently rendering the 3D world: the root
+    /// viewport in mono, the two eye sub-viewports in SBS. The single
+    /// source of truth for "what is being drawn", since ViewManager
+    /// owns the display pipeline. Called by typed Rust collaborators
+    /// (LevelManager) — never over a Godot string boundary.
+    pub(crate) fn active_viewport_rids(&self) -> Array<Rid> {
+        let mut rids = Array::new();
+        match self.current_mode {
+            DisplayMode::SideBySide => {
+                for path in [nodes::LEFT_VIEWPORT, nodes::RIGHT_VIEWPORT] {
+                    match self.base().try_get_node_as::<SubViewport>(path) {
+                        Some(vp) => rids.push(vp.get_viewport_rid()),
+                        // The eyes always exist after setup_viewports; a
+                        // miss is a structural invariant break, not a
+                        // soft skip — make it loud so telemetry can't
+                        // silently under-measure.
+                        None => godot_warn!(
+                            "ViewManager: SBS eye viewport '{}' missing; render telemetry under-measures",
+                            path
+                        ),
+                    }
+                }
+            }
+            DisplayMode::Mono => {
+                if let Some(vp) = self.base().get_viewport() {
+                    rids.push(vp.get_viewport_rid());
+                }
+            }
+        }
+        rids
+    }
+
     /// ViewManager is a direct child of Main; GameManager is a sibling.
     fn connect_to_game_manager(&mut self) {
         let Some(main_scene) = self.base().get_parent() else {

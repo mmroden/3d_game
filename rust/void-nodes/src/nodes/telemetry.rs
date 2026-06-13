@@ -24,10 +24,15 @@ pub struct Telemetry {
     /// detector, measured identically to the physics stage.
     frame: TimingWindow,
     /// Measured viewport render times: CPU submission and GPU
-    /// completion ("when did drawing actually finish").
+    /// completion ("when did drawing actually finish"), summed across
+    /// every active 3D viewport.
     render_cpu: TimingWindow,
     render_gpu: TimingWindow,
-    viewport_rid: Rid,
+    /// The viewports whose render time is summed each frame. In mono
+    /// this is the root viewport; in SBS it is the two eye
+    /// sub-viewports — never the root compositor, which only blits the
+    /// two eyes and does almost no 3D work.
+    viewport_rids: Vec<Rid>,
     monitors_registered: bool,
 }
 
@@ -38,17 +43,39 @@ impl Telemetry {
             frame: TimingWindow::new(TIMING_WINDOW),
             render_cpu: TimingWindow::new(TIMING_WINDOW),
             render_gpu: TimingWindow::new(TIMING_WINDOW),
-            viewport_rid: Rid::Invalid,
+            viewport_rids: Vec::new(),
             monitors_registered: false,
         }
     }
 
-    /// Ask the renderer to measure this viewport's CPU and GPU render
-    /// times (mono path; SBS sub-viewports get their own measurement
-    /// when stereo profiling is needed).
-    pub fn measure_viewport(&mut self, rid: Rid) {
-        self.viewport_rid = rid;
-        RenderingServer::singleton().viewport_set_measure_render_time(rid, true);
+    /// Measure the render time of exactly these viewports — the ones
+    /// actually rendering the 3D world for the current display mode.
+    /// In SBS that is the two eye sub-viewports; measuring the root
+    /// compositor instead would report ~0 and hide the real cost.
+    pub fn measure_viewports(&mut self, rids: &[Rid]) {
+        let mut rs = RenderingServer::singleton();
+        let next: Vec<Rid> = rids
+            .iter()
+            .copied()
+            .filter(|rid| *rid != Rid::Invalid)
+            .collect();
+        // Retire measurement on viewports leaving the set (e.g. the eyes
+        // after an SBS→mono toggle), so no orphaned GPU timer keeps
+        // running on a viewport we no longer sum.
+        for &rid in &self.viewport_rids {
+            if !next.contains(&rid) {
+                rs.viewport_set_measure_render_time(rid, false);
+            }
+        }
+        for &rid in &next {
+            rs.viewport_set_measure_render_time(rid, true);
+        }
+        self.viewport_rids = next;
+    }
+
+    /// The viewports whose render time is currently being summed.
+    pub fn measured_viewports(&self) -> Vec<Rid> {
+        self.viewport_rids.clone()
     }
 
     pub fn register_monitors(&mut self, p50: Callable, p99: Callable, jitter: Callable) {
@@ -76,16 +103,21 @@ impl Telemetry {
         self.step.record(ms);
     }
 
-    /// Record one rendered frame: its delta plus the viewport's
-    /// measured render times.
+    /// Record one rendered frame: its delta plus the render times of
+    /// every measured viewport, summed — the honest per-frame 3D cost
+    /// (both eyes in SBS).
     pub fn record_frame(&mut self, delta_ms: f32) {
         self.frame.record(delta_ms);
-        if self.viewport_rid != Rid::Invalid {
+        if !self.viewport_rids.is_empty() {
             let rs = RenderingServer::singleton();
-            self.render_cpu
-                .record(rs.viewport_get_measured_render_time_cpu(self.viewport_rid) as f32);
-            self.render_gpu
-                .record(rs.viewport_get_measured_render_time_gpu(self.viewport_rid) as f32);
+            let mut cpu = 0.0_f32;
+            let mut gpu = 0.0_f32;
+            for &rid in &self.viewport_rids {
+                cpu += rs.viewport_get_measured_render_time_cpu(rid) as f32;
+                gpu += rs.viewport_get_measured_render_time_gpu(rid) as f32;
+            }
+            self.render_cpu.record(cpu);
+            self.render_gpu.record(gpu);
         }
     }
 
