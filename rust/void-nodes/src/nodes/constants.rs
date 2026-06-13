@@ -41,6 +41,7 @@ pub mod methods {
     pub const ON_SBS_TOGGLED: &str = "on_sbs_toggled";
     pub const ON_MSAA_TOGGLED: &str = "on_msaa_toggled";
     pub const ON_OPTIONS_CHANGED: &str = "on_options_changed";
+    pub const BROADCAST_OPTIONS: &str = "broadcast_options";
     pub const ON_RENDER_VIEWPORTS_CHANGED: &str = "on_render_viewports_changed";
     pub const ON_BODY_ENTERED: &str = "on_body_entered";
     pub const ADVANCE_TO_SHOP: &str = "advance_to_shop";
@@ -217,6 +218,7 @@ mod tests {
             methods::ON_SBS_TOGGLED,
             methods::ON_MSAA_TOGGLED,
             methods::ON_OPTIONS_CHANGED,
+            methods::BROADCAST_OPTIONS,
             methods::ON_RENDER_VIEWPORTS_CHANGED,
             methods::ON_BODY_ENTERED,
             methods::ADVANCE_TO_SHOP,
@@ -346,6 +348,7 @@ mod tests {
             methods::ON_ENEMY_KILLED, methods::ON_PORTAL_ENTERED,
             methods::ON_SBS_TOGGLED, methods::ON_MSAA_TOGGLED,
             methods::ON_OPTIONS_CHANGED, methods::ON_BODY_ENTERED,
+            methods::BROADCAST_OPTIONS,
             methods::ON_RENDER_VIEWPORTS_CHANGED,
             methods::ADVANCE_TO_SHOP, methods::ADVANCE_TO_NEXT_LEVEL,
             methods::BUY_LASER_UPGRADE, methods::RETURN_TO_MENU,

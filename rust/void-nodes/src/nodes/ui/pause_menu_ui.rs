@@ -5,6 +5,7 @@ use godot::classes::{
 
 use super::menu_panel;
 use crate::nodes::constants::{actions, methods, nodes, signals, theme};
+use void_logic::game_options::GameOptions;
 use void_logic::menu_cursor::MenuCursor;
 use void_logic::ui_style;
 
@@ -20,8 +21,8 @@ pub struct PauseMenuUI {
     in_options: bool,
     option_cursor: MenuCursor,
     option_labels: Vec<Gd<Label>>,
-    sbs_enabled: bool,
-    msaa_enabled: bool,
+    /// Cached copy of the authoritative `GameOptions` (see MainMenuUI).
+    options: GameOptions,
 }
 
 #[godot_api]
@@ -40,8 +41,7 @@ impl ICanvasLayer for PauseMenuUI {
             in_options: false,
             option_cursor: MenuCursor::new(3),
             option_labels: Vec::new(),
-            sbs_enabled: false,
-            msaa_enabled: true,
+            options: GameOptions::default(),
         }
     }
 
@@ -89,8 +89,8 @@ impl PauseMenuUI {
 
     #[func]
     pub fn on_options_changed(&mut self, sbs_enabled: bool, msaa_enabled: bool) {
-        self.sbs_enabled = sbs_enabled;
-        self.msaa_enabled = msaa_enabled;
+        self.options.sbs_enabled = sbs_enabled;
+        self.options.msaa_enabled = msaa_enabled;
         if self.in_options {
             self.refresh_options();
         }
@@ -220,8 +220,8 @@ impl PauseMenuUI {
         let mut parent: Gd<godot::classes::Node> = parent;
 
         let options = [
-            format!("  SBS Stereo: {}", if self.sbs_enabled { "ON" } else { "OFF" }),
-            format!("  MSAA: {}", if self.msaa_enabled { "ON" } else { "OFF" }),
+            format!("  SBS Stereo: {}", if self.options.sbs_enabled { "ON" } else { "OFF" }),
+            format!("  MSAA: {}", if self.options.msaa_enabled { "ON" } else { "OFF" }),
             "  Back".to_string(),
         ];
 
@@ -272,8 +272,8 @@ impl PauseMenuUI {
 
     fn refresh_options(&mut self) {
         let texts = [
-            format!("SBS Stereo: {}", if self.sbs_enabled { "ON" } else { "OFF" }),
-            format!("MSAA: {}", if self.msaa_enabled { "ON" } else { "OFF" }),
+            format!("SBS Stereo: {}", if self.options.sbs_enabled { "ON" } else { "OFF" }),
+            format!("MSAA: {}", if self.options.msaa_enabled { "ON" } else { "OFF" }),
             "Back".to_string(),
         ];
 

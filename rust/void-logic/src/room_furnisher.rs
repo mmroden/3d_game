@@ -321,12 +321,60 @@ fn is_blocking_prop(scene: &str) -> bool {
 
 // ── Light fixtures ──────────────────────────────────────────────────────
 
+/// How alive a light fixture is. A 65-My-abandoned base is mostly dark;
+/// see [`LightState::from_roll`] for the distribution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightState {
+    /// Dead — emits nothing (the fixture mesh remains, unlit).
+    Off,
+    /// Flickering intermittently.
+    Blinking,
+    /// Weak steady glow.
+    Dim,
+    /// Full steady output.
+    On,
+}
+
+impl LightState {
+    /// Classify a uniform sample `r` in `[0, 1)`. The base is mostly
+    /// dead: Off 50%, Blinking 25%, Dim 10%, On 15%.
+    pub fn from_roll(r: f32) -> Self {
+        if r < 0.50 {
+            LightState::Off
+        } else if r < 0.75 {
+            LightState::Blinking
+        } else if r < 0.85 {
+            LightState::Dim
+        } else {
+            LightState::On
+        }
+    }
+}
+
+/// Emission colors for fixtures — a spread across the spectrum so the
+/// base reads as a jumble of surviving fixtures, not a uniform white
+/// wash. Indexed by a per-light RNG roll.
+pub const LIGHT_COLORS: [[f32; 3]; 8] = [
+    [1.0, 0.95, 0.9], // warm white
+    [0.9, 0.95, 1.0], // cool white
+    [1.0, 0.7, 0.3],  // amber
+    [1.0, 0.3, 0.3],  // red
+    [0.4, 1.0, 0.5],  // green
+    [0.3, 0.85, 1.0], // cyan
+    [0.45, 0.5, 1.0], // blue
+    [0.8, 0.45, 1.0], // violet
+];
+
 /// A light source co-located with a fixture mesh.
 #[derive(Debug, Clone)]
 pub struct LightSource {
     pub position: [f32; 3],
     pub range: f32,
     pub energy: f32,
+    /// How alive this fixture is — set from the level RNG.
+    pub state: LightState,
+    /// Emission color, picked from [`LIGHT_COLORS`] by the level RNG.
+    pub color: [f32; 3],
 }
 
 /// Place light fixtures on ceilings and return both the fixture mesh placement
@@ -339,10 +387,14 @@ pub fn light_fixtures(
     active_connectors: &[Connector],
     world_origin: [f32; 3],
     cell_size: f32,
+    ambiance_seed: u64,
 ) -> Vec<(MeshPlacement, LightSource)> {
     use crate::asset_catalog::CEILING_LIGHTS;
 
     let story_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+    // Per-light state + color come from this stream, kept separate from
+    // geometry so a fixture's position never depends on its liveness.
+    let mut ambiance = SmallRng::seed_from_u64(ambiance_seed);
     let mut out = Vec::new();
     let ex = template.extents[0] as i32;
     let ey = template.extents[1] as i32;
@@ -379,6 +431,8 @@ pub fn light_fixtures(
                 loose: false,
             };
 
+            let state = LightState::from_roll(ambiance.random_range(0.0..1.0));
+            let color = LIGHT_COLORS[ambiance.random_range(0..LIGHT_COLORS.len())];
             let light = LightSource {
                 position: [
                     mesh.position[0] + fixture.light_offset[0],
@@ -387,6 +441,8 @@ pub fn light_fixtures(
                 ],
                 range: fixture.range,
                 energy: fixture.energy,
+                state,
+                color,
             };
 
             out.push((mesh, light));

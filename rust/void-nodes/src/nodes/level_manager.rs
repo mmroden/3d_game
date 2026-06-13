@@ -17,7 +17,8 @@ use void_logic::audio_catalog::SfxEvent;
 use void_logic::consequence::{consequence_of, Consequence};
 use void_logic::kinetic_world::{BallisticBody, ContactEvent, PoweredBodySpec, WorldSnapshot};
 use void_logic::kinetics::{ControlInput, Mass, Restitution, Retention, SpeedLimits};
-use void_logic::level_assembly;
+use void_logic::level_assembly::{self, RoomBounds};
+use void_logic::room_furnisher::LightState;
 use void_logic::portal as portal_sys;
 use void_logic::enemy_type;
 use void_logic::seed::Seed;
@@ -72,7 +73,27 @@ pub struct LevelManager {
     previous: WorldSnapshot,
     current: WorldSnapshot,
     telemetry: Telemetry,
+    /// One container node per room (index = room-list order). Toggling
+    /// a container's visibility culls that whole room — geometry and
+    /// its lights — in one move.
+    room_nodes: Vec<Gd<Node3D>>,
+    /// Per-room world bounds + adjacency, parallel to `room_nodes`,
+    /// for deciding which rooms to draw.
+    room_bounds: Vec<RoomBounds>,
+    /// The room the player currently occupies; culling only recomputes
+    /// when this changes.
+    current_room: Option<usize>,
+    /// Cached player node, for reading position each tick.
+    player: Option<Gd<Node3D>>,
+    /// Blinking light fixtures and their full ("on") energy, modulated
+    /// each frame so a flickering abandoned base reads as alive.
+    blinking_lights: Vec<(Gd<OmniLight3D>, f32)>,
+    /// Accumulated time driving the blink phase.
+    blink_time: f32,
 }
+
+/// Dim fixtures emit a fraction of their rated energy — a weak glow.
+const DIM_ENERGY_FACTOR: f32 = 0.3;
 
 #[godot_api]
 impl INode3D for LevelManager {
@@ -85,6 +106,12 @@ impl INode3D for LevelManager {
             previous: WorldSnapshot::default(),
             current: WorldSnapshot::default(),
             telemetry: Telemetry::new(),
+            room_nodes: Vec::new(),
+            room_bounds: Vec::new(),
+            current_room: None,
+            player: None,
+            blinking_lights: Vec::new(),
+            blink_time: 0.0,
         }
     }
 
@@ -112,6 +139,12 @@ impl INode3D for LevelManager {
             self.resolve_contact(contact);
         }
         self.previous = std::mem::replace(&mut self.current, self.registry.snapshot());
+        // Cull rooms by the player's current location (cheap point-in-AABB;
+        // only re-toggles visibility when the player changes rooms).
+        let player_pos = self.player.as_ref().map(|p| arr(p.get_global_position()));
+        if let Some(pos) = player_pos {
+            self.update_room_culling(pos);
+        }
         self.telemetry
             .record_step_ms(started.elapsed().as_secs_f32() * 1000.0);
         self.telemetry.report(self.current.tick);
@@ -123,6 +156,7 @@ impl INode3D for LevelManager {
             godot::classes::Engine::singleton().get_physics_interpolation_fraction() as f32;
         self.registry
             .sync_view(&self.previous, &self.current, fraction, delta as f32);
+        self.update_blinking_lights(delta as f32);
     }
 }
 
@@ -158,6 +192,26 @@ impl LevelManager {
         self.apply_measured_viewports(viewports);
     }
 
+    /// Test seam: world-space center of room `i` (midpoint of its
+    /// bounds), for driving culling from a known interior point.
+    #[func]
+    pub fn room_center(&self, room: i64) -> Vector3 {
+        match self.room_bounds.get(room as usize) {
+            Some(b) => Vector3::new(
+                (b.min[0] + b.max[0]) * 0.5,
+                (b.min[1] + b.max[1]) * 0.5,
+                (b.min[2] + b.max[2]) * 0.5,
+            ),
+            None => Vector3::ZERO,
+        }
+    }
+
+    /// Test seam: run room culling as if the player were at `point`.
+    #[func]
+    pub fn cull_for_position(&mut self, point: Vector3) {
+        self.update_room_culling(arr(point));
+    }
+
     #[func]
     pub fn generate_level(&mut self, seed: i64, target_rooms: u32) {
         let seed = Seed::from_i64(seed);
@@ -178,110 +232,152 @@ impl LevelManager {
             }
         };
 
-        // Assemble all room geometry, furniture, light fixtures, enemy positions,
-        // and collision boxes for physics.
-        let (placements, light_sources, enemy_positions, collision_boxes) =
-            level_assembly::spawn_list_full(&graph, self.grid_cell_size, seed);
+        // Assemble all room geometry, furniture, light fixtures, enemy
+        // positions, and collision boxes for physics, grouped per room.
+        let rooms = level_assembly::spawn_list_full(&graph, self.grid_cell_size, seed);
 
-        // Fresh registry (world + bindings) for the new level, fed the
-        // same collision boxes that become the Godot StaticBody3D
-        // colliders below — one source of truth for where the walls are.
+        // Fresh registry (world + bindings) for the new level. The
+        // kinetic world holds every wall, always — physics is never
+        // culled, only rendering is. One source of truth for the walls:
+        // these same collision boxes become the Godot StaticBody3D query
+        // colliders below.
         self.registry = BodyRegistry::new();
         self.previous = WorldSnapshot::default();
         self.current = WorldSnapshot::default();
-        self.registry.add_statics(collision_boxes.iter().copied());
+        self.registry
+            .add_statics(rooms.iter().flat_map(|r| r.colliders.iter().copied()));
+
+        // Drop any room nodes from a previous level before rebuilding.
+        for mut node in std::mem::take(&mut self.room_nodes) {
+            node.queue_free();
+        }
+        self.room_bounds.clear();
+        self.current_room = None;
+        // Blinking lights are children of the freed room nodes.
+        self.blinking_lights.clear();
+
         let mut loader = ResourceLoader::singleton();
-        let mut mesh_count = 0;
-
         let mut loose_rng = SmallRng::seed_from_u64(seed.value());
+        let mut mesh_count = 0;
+        let mut collider_count = 0;
+        let mut light_count = 0;
 
-        for entry in &placements {
-            let scene_res = loader.load(entry.scene);
-            let Some(resource) = scene_res else {
-                godot_warn!("Could not load: {}", entry.scene);
-                continue;
-            };
+        // One container Node3D per room (identity transform; children
+        // keep world positions). Hiding a container culls that room's
+        // geometry AND its lights in a single visibility toggle.
+        for room in &rooms {
+            let mut room_node = Node3D::new_alloc();
+            room_node.set_name(&format!("Room{}", self.room_nodes.len()));
+            self.base_mut().add_child(&room_node);
 
-            let packed: Gd<PackedScene> = resource.cast();
-            let Some(instance) = packed.instantiate() else {
-                godot_warn!("Could not instantiate: {}", entry.scene);
-                continue;
-            };
+            for entry in &room.meshes {
+                let Some(resource) = loader.load(entry.scene) else {
+                    godot_warn!("Could not load: {}", entry.scene);
+                    continue;
+                };
+                let packed: Gd<PackedScene> = resource.cast();
+                let Some(instance) = packed.instantiate() else {
+                    godot_warn!("Could not instantiate: {}", entry.scene);
+                    continue;
+                };
 
-            if entry.loose {
-                // Loose prop: a ballistic body in the kinetic world.
-                // It spawns at rest (stillness is the abandoned-base
-                // equilibrium); enemies and the player set it moving
-                // by collision. The node is pure rendering.
-                let mut node: Gd<Node3D> = instance.cast();
-                node.set_position(vec3(entry.position));
+                if entry.loose {
+                    // Loose prop: a ballistic body in the kinetic world.
+                    // It spawns at rest (stillness is the abandoned-base
+                    // equilibrium); enemies and the player set it moving
+                    // by collision. The node is pure rendering.
+                    let mut node: Gd<Node3D> = instance.cast();
+                    node.set_position(vec3(entry.position));
 
-                // Apply a random initial rotation for visual variety.
-                use rand::RngExt;
-                let rx: f32 = loose_rng.random_range(0.0..std::f32::consts::TAU);
-                let ry: f32 = loose_rng.random_range(0.0..std::f32::consts::TAU);
-                let rz: f32 = loose_rng.random_range(0.0..std::f32::consts::TAU);
-                node.set_rotation(Vector3::new(rx, ry, rz));
+                    // Random initial rotation for visual variety.
+                    use rand::RngExt;
+                    let rx: f32 = loose_rng.random_range(0.0..std::f32::consts::TAU);
+                    let ry: f32 = loose_rng.random_range(0.0..std::f32::consts::TAU);
+                    let rz: f32 = loose_rng.random_range(0.0..std::f32::consts::TAU);
+                    node.set_rotation(Vector3::new(rx, ry, rz));
 
-                self.base_mut().add_child(&node);
-                // One interpolation authority per node: the landing
-                // zone lerps these at frame rate, so the engine's
-                // physics interpolation must not smooth them again.
-                node.set_physics_interpolation_mode(
-                    godot::classes::node::PhysicsInterpolationMode::OFF,
-                );
-                self.registry.register_prop(
-                    BallisticBody::at_rest(
-                        entry.position,
-                        PROP_RADIUS,
-                        Restitution::clamped(PROP_RESTITUTION),
-                    ),
-                    node,
-                );
-            } else {
-                let mut node: Gd<Node3D> = instance.cast();
-                let pos = vec3(entry.position);
-                node.set_position(pos);
-
-                if entry.rotation_x.abs() > 0.001 || entry.rotation_y.abs() > 0.001 {
-                    node.set_rotation(Vector3::new(entry.rotation_x, entry.rotation_y, 0.0));
+                    room_node.add_child(&node);
+                    // One interpolation authority per node: the landing
+                    // zone lerps these at frame rate, so the engine's
+                    // physics interpolation must not smooth them again.
+                    node.set_physics_interpolation_mode(
+                        godot::classes::node::PhysicsInterpolationMode::OFF,
+                    );
+                    self.registry.register_prop(
+                        BallisticBody::at_rest(
+                            entry.position,
+                            PROP_RADIUS,
+                            Restitution::clamped(PROP_RESTITUTION),
+                        ),
+                        node,
+                    );
+                } else {
+                    let mut node: Gd<Node3D> = instance.cast();
+                    node.set_position(vec3(entry.position));
+                    if entry.rotation_x.abs() > 0.001 || entry.rotation_y.abs() > 0.001 {
+                        node.set_rotation(Vector3::new(entry.rotation_x, entry.rotation_y, 0.0));
+                    }
+                    room_node.add_child(&node);
                 }
-
-                self.base_mut().add_child(&node);
-            }
-            mesh_count += 1;
-        }
-
-        // Spawn collision boxes (StaticBody3D + BoxShape3D) for walls/floors/ceilings.
-        for cb in &collision_boxes {
-            let mut body = StaticBody3D::new_alloc();
-            body.set_position(vec3(cb.position));
-            if cb.rotation_y.abs() > 0.001 {
-                body.set_rotation(Vector3::new(0.0, cb.rotation_y, 0.0));
+                mesh_count += 1;
             }
 
-            let mut box_shape = BoxShape3D::new_gd();
-            box_shape.set_size(Vector3::new(
-                cb.half_extents[0] * 2.0,
-                cb.half_extents[1] * 2.0,
-                cb.half_extents[2] * 2.0,
-            ));
+            // Collision boxes (StaticBody3D + BoxShape3D). Parented under
+            // the room node for organisation only — visibility never
+            // disables collision, and wall collision is rapier-side.
+            for cb in &room.colliders {
+                let mut body = StaticBody3D::new_alloc();
+                body.set_position(vec3(cb.position));
+                if cb.rotation_y.abs() > 0.001 {
+                    body.set_rotation(Vector3::new(0.0, cb.rotation_y, 0.0));
+                }
+                let mut box_shape = BoxShape3D::new_gd();
+                box_shape.set_size(Vector3::new(
+                    cb.half_extents[0] * 2.0,
+                    cb.half_extents[1] * 2.0,
+                    cb.half_extents[2] * 2.0,
+                ));
+                let mut col_shape = CollisionShape3D::new_alloc();
+                col_shape.set_shape(&box_shape);
+                body.add_child(&col_shape);
+                room_node.add_child(&body);
+                collider_count += 1;
+            }
 
-            let mut col_shape = CollisionShape3D::new_alloc();
-            col_shape.set_shape(&box_shape);
-            body.add_child(&col_shape);
-            self.base_mut().add_child(&body);
+            // Light fixtures. Most are dead in an abandoned base, so an
+            // Off fixture gets no light node at all (the mesh stays, dark)
+            // — that absence is the real GPU saving. Hidden with their
+            // room when culled.
+            for ls in &room.lights {
+                if ls.state == LightState::Off {
+                    continue;
+                }
+                let energy = match ls.state {
+                    LightState::Dim => ls.energy * DIM_ENERGY_FACTOR,
+                    // On full; Blinking carries full energy and is
+                    // modulated each frame.
+                    _ => ls.energy,
+                };
+                let mut light = OmniLight3D::new_alloc();
+                light.set_position(vec3(ls.position));
+                light.set_param(godot::classes::light_3d::Param::RANGE, ls.range);
+                light.set_param(godot::classes::light_3d::Param::ENERGY, energy);
+                light.set_color(Color::from_rgb(ls.color[0], ls.color[1], ls.color[2]));
+                room_node.add_child(&light);
+                if ls.state == LightState::Blinking {
+                    self.blinking_lights.push((light.clone(), energy));
+                }
+                light_count += 1;
+            }
+
+            self.room_bounds.push(room.bounds.clone());
+            self.room_nodes.push(room_node);
         }
 
-        // Spawn OmniLight3D for each light fixture
-        for ls in &light_sources {
-            let mut light = OmniLight3D::new_alloc();
-            light.set_position(vec3(ls.position));
-            light.set_param(godot::classes::light_3d::Param::RANGE, ls.range);
-            light.set_param(godot::classes::light_3d::Param::ENERGY, ls.energy);
-            light.set_color(Color::from_rgb(0.9, 0.95, 1.0));
-            self.base_mut().add_child(&light);
-        }
+        let enemy_positions: Vec<[f32; 3]> = rooms
+            .iter()
+            .flat_map(|r| r.enemy_positions.iter().copied())
+            .collect();
 
         // Spawn varied enemies based on current level; each becomes a
         // powered body in the kinetic world.
@@ -341,6 +437,8 @@ impl LevelManager {
                             limits,
                         },
                     );
+                    // Cache for per-tick room culling (position source).
+                    self.player = Some(player_node.upcast::<Node3D>());
                     godot_print!(
                         "Player spawned at ({}, {}, {})",
                         spawn[0],
@@ -355,8 +453,8 @@ impl LevelManager {
             "Level generated: {} rooms, {} meshes, {} colliders, {} lights, {} enemies",
             target_rooms,
             mesh_count,
-            collision_boxes.len(),
-            light_sources.len(),
+            collider_count,
+            light_count,
             enemy_count,
         );
     }
@@ -394,6 +492,41 @@ impl LevelManager {
     fn apply_measured_viewports(&mut self, viewports: Array<Rid>) {
         let rids: Vec<Rid> = viewports.iter_shared().collect();
         self.telemetry.measure_viewports(&rids);
+    }
+
+    /// Show only the player's current room and its portal-neighbors;
+    /// hide the rest. Recomputes only when the player changes rooms.
+    fn update_room_culling(&mut self, player_pos: [f32; 3]) {
+        let Some(current) = level_assembly::room_at(player_pos, &self.room_bounds) else {
+            // Between rooms (a doorway/gap): keep the last visible set
+            // rather than flickering the whole level off.
+            return;
+        };
+        if self.current_room == Some(current) {
+            return;
+        }
+        self.current_room = Some(current);
+        let visible = level_assembly::visible_rooms(current, &self.room_bounds);
+        for (i, node) in self.room_nodes.iter().enumerate() {
+            node.clone().set_visible(visible.contains(&i));
+        }
+    }
+
+    /// Flicker blinking fixtures: each toggles between its full energy
+    /// and dark on an out-of-phase cycle, so the base reads as alive
+    /// rather than uniformly lit. Culled rooms hide their lights anyway,
+    /// so this only shows where it is seen.
+    fn update_blinking_lights(&mut self, delta: f32) {
+        self.blink_time += delta;
+        let t = self.blink_time;
+        for (i, (light, base)) in self.blinking_lights.iter().enumerate() {
+            // Per-light phase offset spreads the flicker out.
+            let phase = i as f32 * 0.7;
+            let lit = (t * 6.0 + phase).sin() > 0.5;
+            light
+                .clone()
+                .set_param(godot::classes::light_3d::Param::ENERGY, if lit { *base } else { 0.0 });
+        }
     }
 
     /// Drive every live enemy: ask the world for line of sight, pull

@@ -2,7 +2,6 @@ use godot::prelude::*;
 use godot::classes::{
     Node, INode, Engine, CanvasLayer, Input, InputEvent,
     input::MouseMode,
-    viewport::Msaa,
 };
 
 use rand::RngExt;
@@ -74,6 +73,10 @@ impl INode for GameManager {
 
         // Connect UI signals
         self.connect_ui_signals();
+        // Seed every options consumer (menus, ViewManager) from the one
+        // authoritative GameOptions. Deferred so it fires after all
+        // sibling nodes have run ready() and connected their listeners.
+        self.base_mut().call_deferred(methods::BROADCAST_OPTIONS, &[]);
         self.show_phase(GamePhase::MainMenu);
     }
 
@@ -264,6 +267,23 @@ impl GameManager {
         }
     }
 
+    /// Broadcast the authoritative options to every consumer (menus,
+    /// ViewManager). The single source of truth is `self.game_options`;
+    /// listeners cache a copy but never invent their own default.
+    #[func]
+    fn broadcast_options(&mut self) {
+        let sbs = self.game_options.sbs_enabled;
+        let msaa = self.game_options.msaa_enabled;
+        self.base_mut()
+            .emit_signal(signals::OPTIONS_CHANGED, &[sbs.to_variant(), msaa.to_variant()]);
+    }
+
+    /// The authoritative MSAA option (for tests / inspection).
+    #[func]
+    fn msaa_enabled(&self) -> bool {
+        self.game_options.msaa_enabled
+    }
+
     /// Called from main menu: toggle SBS stereo.
     #[func]
     pub fn on_sbs_toggled(&mut self) {
@@ -272,14 +292,12 @@ impl GameManager {
         self.base_mut().emit_signal(signals::OPTIONS_CHANGED, &[sbs.to_variant(), msaa.to_variant()]);
     }
 
-    /// Called from main menu: toggle MSAA.
+    /// Called from main menu: toggle MSAA. Controller-only — flip the
+    /// option and announce it; ViewManager (the view) applies it to the
+    /// actual viewports.
     #[func]
     pub fn on_msaa_toggled(&mut self) {
         let msaa = self.game_options.toggle_msaa();
-        // Apply MSAA to viewport
-        if let Some(mut viewport) = self.base().get_viewport() {
-            viewport.set_msaa_3d(if msaa { Msaa::MSAA_4X } else { Msaa::DISABLED });
-        }
         let sbs = self.game_options.sbs_enabled;
         self.base_mut().emit_signal(signals::OPTIONS_CHANGED, &[sbs.to_variant(), msaa.to_variant()]);
     }

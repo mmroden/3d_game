@@ -1,25 +1,16 @@
 /// System-wide rendering/display options that persist across game sessions.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Both default off: SBS is opt-in, and 4× MSAA costs ~5–10ms/frame in
+/// SBS, so players turn it on only on beefier machines.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GameOptions {
     pub sbs_enabled: bool,
     pub msaa_enabled: bool,
 }
 
-impl Default for GameOptions {
-    fn default() -> Self {
-        Self {
-            sbs_enabled: false,
-            msaa_enabled: true,
-        }
-    }
-}
-
 impl GameOptions {
     pub fn new() -> Self {
-        Self {
-            sbs_enabled: false,
-            msaa_enabled: true,
-        }
+        Self::default()
     }
 
     pub fn toggle_sbs(&mut self) -> bool {
@@ -44,9 +35,10 @@ mod tests {
     }
 
     #[test]
-    fn defaults_msaa_on() {
+    fn defaults_msaa_off() {
+        // MSAA is opt-in: too costly in SBS to enable by default.
         let opts = GameOptions::new();
-        assert!(opts.msaa_enabled);
+        assert!(!opts.msaa_enabled);
     }
 
     #[test]
@@ -70,8 +62,8 @@ mod tests {
     fn toggle_msaa_returns_new_state() {
         let mut opts = GameOptions::new();
         let result = opts.toggle_msaa();
-        assert!(!result);
-        assert!(!opts.msaa_enabled);
+        assert!(result);
+        assert!(opts.msaa_enabled);
     }
 
     #[test]
@@ -79,7 +71,7 @@ mod tests {
         let mut opts = GameOptions::new();
         opts.toggle_msaa();
         let result = opts.toggle_msaa();
-        assert!(result);
-        assert!(opts.msaa_enabled);
+        assert!(!result);
+        assert!(!opts.msaa_enabled);
     }
 }
