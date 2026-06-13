@@ -5,13 +5,20 @@ use godot::classes::{
     viewport::Msaa,
 };
 
-use super::constants::{actions, signals, methods, nodes};
+use rand::RngExt;
+
+use super::constants::{actions, signals, methods, nodes, properties};
 use void_logic::enemy_type::EnemyType;
 use void_logic::game_options::GameOptions;
 use void_logic::game_phase::GamePhase;
+use void_logic::generator::rooms_for_level;
 use void_logic::input_method::InputMethod;
+use void_logic::newtypes::Damage;
+use void_logic::power_routing::PowerMode;
 use void_logic::run_state::RunState;
 use void_logic::save_game::SaveGame;
+use void_logic::seed::Seed;
+use void_logic::upgrade::{Upgrade, UpgradeKind};
 
 /// Central orchestrator: owns RunState, manages game phase transitions,
 /// shows/hides UI screens, and connects signals from enemies/portal.
@@ -24,6 +31,13 @@ pub struct GameManager {
     game_options: GameOptions,
     save_game: Option<SaveGame>,
     active_input: InputMethod,
+    current_power_mode: i32,
+
+    /// Pins the run seed for reproducible runs when nonzero (0 = random).
+    /// Configuration, not build flavor: set it in the editor or a test
+    /// scene to replay a run.
+    #[export]
+    fixed_seed: i64,
 }
 
 #[godot_api]
@@ -31,11 +45,16 @@ impl INode for GameManager {
     fn init(base: Base<Node>) -> Self {
         Self {
             base,
-            run_state: RunState::new(42),
+            // Placeholder until a run starts: the phase machine only
+            // enters Playing through start_new_game/continue_game,
+            // which assign the real seed via fresh_run_seed().
+            run_state: RunState::new(Seed::new(0)),
             phase: GamePhase::MainMenu,
             game_options: GameOptions::new(),
             save_game: None,
             active_input: InputMethod::Keyboard,
+            current_power_mode: 0,
+            fixed_seed: 0,
         }
     }
 
@@ -70,7 +89,7 @@ impl INode for GameManager {
         }
     }
 
-    fn process(&mut self, _delta: f64) {
+    fn process(&mut self, delta: f64) {
         // Check for pause toggle
         let input = Input::singleton();
         if input.is_action_just_pressed(actions::OPEN_MENU)
@@ -84,6 +103,9 @@ impl INode for GameManager {
         if self.phase != GamePhase::Playing {
             return;
         }
+
+        // Tick shield regeneration
+        self.run_state.tick_shield(delta as f32);
 
         // Connect to any newly-spawned enemies and portal
         self.connect_spawned_entities();
@@ -109,21 +131,31 @@ impl GameManager {
             self.set_scene_paused(false);
             self.transition_to(GamePhase::MainMenu);
         }
-        self.run_state = RunState::new(42);
+        // Don't touch the run unless the phase machine can enter Playing.
+        if !self.phase.can_transition_to(GamePhase::Playing) {
+            return;
+        }
+        self.run_state = RunState::new(self.fresh_run_seed());
         self.save_game = None;
+        self.sync_player_state();
         self.transition_to(GamePhase::Playing);
     }
 
     /// Called from UI: continue from saved game.
     #[func]
     pub fn continue_game(&mut self) {
+        // Don't touch the run unless the phase machine can enter Playing.
+        if !self.phase.can_transition_to(GamePhase::Playing) {
+            return;
+        }
         if let Some(save) = &self.save_game {
             let mut run = RunState::new(save.run_seed);
             save.apply_to(&mut run);
             self.run_state = run;
         } else {
-            self.run_state = RunState::new(42);
+            self.run_state = RunState::new(self.fresh_run_seed());
         }
+        self.sync_player_state();
         self.transition_to(GamePhase::Playing);
     }
 
@@ -204,8 +236,8 @@ impl GameManager {
             self.run_state.current_level += 1;
             self.run_state.kills.reset();
             self.run_state.health = self.run_state.loadout.max_health();
+            self.run_state.shield.reset();
             self.transition_to(GamePhase::Playing);
-            self.regenerate_level();
         }
     }
 
@@ -270,6 +302,64 @@ impl GameManager {
         }
     }
 
+    /// Called when the player takes damage (from projectile hit).
+    #[func]
+    pub fn on_player_damaged(&mut self, amount: f32) {
+        if self.phase != GamePhase::Playing {
+            return;
+        }
+        self.run_state.take_damage(Damage::new(amount));
+        if !self.run_state.is_alive() {
+            self.on_player_death();
+        }
+    }
+
+    /// Called when a lootbox is collected — update RunState then push to ShipController.
+    #[func]
+    pub fn on_upgrade_collected(&mut self, name: GString, kind_id: i32, multiplier: f32) {
+        let kind = match kind_id {
+            0 => UpgradeKind::Thrust,
+            1 => UpgradeKind::RotationSpeed,
+            2 => UpgradeKind::Damping,
+            3 => UpgradeKind::MaxHealth,
+            4 => UpgradeKind::FireRate,
+            5 => UpgradeKind::ProjectileSpeed,
+            6 => UpgradeKind::ProjectileDamage,
+            _ => return,
+        };
+        let upgrade = Upgrade {
+            name: name.to_string(),
+            kind,
+            multiplier,
+        };
+        // Update authority
+        self.run_state.loadout.add_upgrade(upgrade);
+
+        // Push to ShipController cache
+        let Some(parent) = self.base().get_parent() else { return };
+        if let Some(mut player) = parent.try_get_node_as::<Node>(nodes::PLAYER) {
+            player.call(methods::APPLY_UPGRADE, &[
+                Variant::from(name),
+                Variant::from(kind_id),
+                Variant::from(multiplier),
+            ]);
+        }
+    }
+
+    /// Called when the player changes power routing mode.
+    #[func]
+    pub fn on_power_mode_changed(&mut self, mode: i32) {
+        self.current_power_mode = mode;
+        let power_mode = match mode {
+            0 => PowerMode::Balanced,
+            1 => PowerMode::ShieldBoost,
+            2 => PowerMode::WeaponBoost,
+            _ => PowerMode::Balanced,
+        };
+        let boosted = power_mode == PowerMode::ShieldBoost;
+        self.run_state.shield.set_boosted(boosted);
+    }
+
     /// Called from death screen: return to main menu.
     #[func]
     pub fn return_to_menu(&mut self) {
@@ -316,6 +406,16 @@ impl GameManager {
     }
 
     #[func]
+    pub fn get_shield(&self) -> f32 {
+        self.run_state.shield.current.as_f32()
+    }
+
+    #[func]
+    pub fn get_max_shield(&self) -> f32 {
+        self.run_state.shield.max_capacity.as_f32()
+    }
+
+    #[func]
     pub fn get_phase_name(&self) -> GString {
         GString::from(format!("{:?}", self.phase).as_str())
     }
@@ -357,6 +457,7 @@ impl GameManager {
         let c = self.run_state.laser_level.color();
         Color::from_rgba(c[0], c[1], c[2], c[3])
     }
+
 }
 
 impl GameManager {
@@ -373,21 +474,25 @@ impl GameManager {
             );
             return;
         }
+        let prev = self.phase;
         self.phase = next;
         self.show_phase(next);
 
         let phase_name: GString = GString::from(format!("{:?}", next).as_str());
         self.base_mut().emit_signal(signals::PHASE_CHANGED, &[phase_name.to_variant()]);
+
+        // The phase machine owns lifecycle effects: entering Playing
+        // means a fresh level for the current RunState — except when
+        // resuming from pause, which returns to the level in progress.
+        if next == GamePhase::Playing && prev != GamePhase::Paused {
+            self.regenerate_level();
+        }
     }
 
     fn show_phase(&self, phase: GamePhase) {
-        // Capture mouse during gameplay, release for menus
+        // Mouse always visible — controller handles all gameplay input
         let mut input = Input::singleton();
-        if phase == GamePhase::Playing {
-            input.set_mouse_mode(MouseMode::CAPTURED);
-        } else {
-            input.set_mouse_mode(MouseMode::VISIBLE);
-        }
+        input.set_mouse_mode(MouseMode::VISIBLE);
 
         // Show/hide UI layers by calling into the tree
         let Some(parent) = self.base().get_parent() else { return };
@@ -456,6 +561,26 @@ impl GameManager {
                 canvas.set_process_input(visible);
             } else {
                 godot_warn!("set_ui_visible: '{}' failed to cast to CanvasLayer", name);
+            }
+        }
+    }
+
+    /// Push RunState's loadout and laser to ShipController after a reset/restore.
+    fn sync_player_state(&self) {
+        let Some(parent) = self.base().get_parent() else { return };
+        if let Some(mut player) = parent.try_get_node_as::<Node>(nodes::PLAYER) {
+            // Reset ShipController's local cache
+            player.call(methods::RESET_LOADOUT, &[]);
+            // Push current laser level
+            let level = self.run_state.laser_level as i32;
+            player.call(methods::SET_LASER_LEVEL, &[Variant::from(level)]);
+            // Re-apply all upgrades from RunState's loadout
+            for upgrade in &self.run_state.loadout.upgrades {
+                player.call(methods::APPLY_UPGRADE, &[
+                    Variant::from(GString::from(&upgrade.name)),
+                    Variant::from(upgrade.kind as i32),
+                    Variant::from(upgrade.multiplier),
+                ]);
             }
         }
     }
@@ -540,6 +665,17 @@ impl GameManager {
             }
         }
 
+        // Connect Player signals
+        if let Some(player) = parent.try_get_node_as::<Node>(nodes::PLAYER) {
+            let damage_callable = self.base().callable(methods::ON_PLAYER_DAMAGED);
+            if !player.is_connected(signals::PLAYER_DAMAGED, &damage_callable) {
+                let mut player = player;
+                player.connect(signals::PLAYER_DAMAGED, &damage_callable);
+                let power_callable = self.base().callable(methods::ON_POWER_MODE_CHANGED);
+                player.connect(signals::POWER_MODE_CHANGED, &power_callable);
+            }
+        }
+
         // Connect DeathScreenUI
         if let Some(death) = Self::find_ui_node(&parent, nodes::DEATH_SCREEN_UI) {
             let callable = self.base().callable(methods::RETURN_TO_MENU);
@@ -554,19 +690,29 @@ impl GameManager {
         let Some(parent) = self.base().get_parent() else { return };
         let Some(level_mgr) = parent.try_get_node_as::<Node>(nodes::LEVEL_MANAGER) else { return };
 
-        let callable = self.base().callable(methods::ON_ENEMY_KILLED);
+        let kill_callable = self.base().callable(methods::ON_ENEMY_KILLED);
         let portal_callable = self.base().callable(methods::ON_PORTAL_ENTERED);
+        let upgrade_callable = self.base().callable(methods::ON_UPGRADE_COLLECTED);
 
+        // Scan LevelManager children (enemies, portals)
         for child in level_mgr.get_children().iter_shared() {
-            // Connect enemy signals
-            if child.has_signal(signals::ENEMY_KILLED) && !child.is_connected(signals::ENEMY_KILLED, &callable) {
+            if child.has_signal(signals::ENEMY_KILLED) && !child.is_connected(signals::ENEMY_KILLED, &kill_callable) {
                 let mut c = child.clone();
-                c.connect(signals::ENEMY_KILLED, &callable);
+                c.connect(signals::ENEMY_KILLED, &kill_callable);
             }
-            // Connect portal signal
             if child.has_signal(signals::PORTAL_ENTERED) && !child.is_connected(signals::PORTAL_ENTERED, &portal_callable) {
                 let mut c = child;
                 c.connect(signals::PORTAL_ENTERED, &portal_callable);
+            }
+        }
+
+        // Scan scene root children for lootboxes (spawned by enemy death, added to root)
+        if let Some(root) = self.base().get_tree().get_root() {
+            for child in root.get_children().iter_shared() {
+                if child.has_signal(signals::UPGRADE_COLLECTED) && !child.is_connected(signals::UPGRADE_COLLECTED, &upgrade_callable) {
+                    let mut c = child;
+                    c.connect(signals::UPGRADE_COLLECTED, &upgrade_callable);
+                }
             }
         }
     }
@@ -579,6 +725,13 @@ impl GameManager {
             hud.call(methods::UPDATE_HEALTH, &[
                 Variant::from(self.run_state.health.as_f32()),
                 Variant::from(self.run_state.loadout.max_health().as_f32()),
+            ]);
+            hud.call(methods::UPDATE_SHIELD, &[
+                Variant::from(self.run_state.shield.current.as_f32()),
+                Variant::from(self.run_state.shield.max_capacity.as_f32()),
+            ]);
+            hud.call(methods::UPDATE_POWER_MODE, &[
+                Variant::from(self.current_power_mode),
             ]);
             hud.call(methods::UPDATE_CREDITS, &[
                 Variant::from(self.run_state.credits.balance as i64),
@@ -594,6 +747,17 @@ impl GameManager {
     }
 
 
+    /// Seed policy for a new run: pinned by `fixed_seed` for
+    /// reproducible runs, otherwise drawn from OS entropy. Policy
+    /// lives here in the shell; void-logic stays deterministic.
+    fn fresh_run_seed(&self) -> Seed {
+        if self.fixed_seed != 0 {
+            Seed::from_i64(self.fixed_seed)
+        } else {
+            Seed::new(rand::rng().random())
+        }
+    }
+
     fn regenerate_level(&self) {
         let Some(parent) = self.base().get_parent() else { return };
         if let Some(mut level_mgr) = parent.try_get_node_as::<Node>(nodes::LEVEL_MANAGER) {
@@ -602,12 +766,13 @@ impl GameManager {
                 child.queue_free();
             }
             // Set current level for enemy scaling
-            level_mgr.set("current_level", &Variant::from(self.run_state.current_level as i32));
-            // Generate with new seed based on level number
-            let seed = 42_u64.wrapping_add(self.run_state.current_level as u64 * 7919);
+            level_mgr.set(properties::CURRENT_LEVEL, &Variant::from(self.run_state.current_level as i32));
+            // Generate with the seed derived from the run seed and level.
+            let seed = self.run_state.level_seed();
+            let target_rooms = rooms_for_level(self.run_state.current_level) as u32;
             level_mgr.call(
                 methods::GENERATE_LEVEL,
-                &[Variant::from(seed as i64), Variant::from(5_i32)],
+                &[Variant::from(seed.as_i64()), Variant::from(target_rooms)],
             );
         }
     }

@@ -24,6 +24,10 @@ pub mod signals {
     pub const RESUME_SELECTED: &str = "resume_selected";
     pub const QUIT_SELECTED: &str = "quit_selected";
     pub const BODY_ENTERED: &str = "body_entered";
+    pub const SIZE_CHANGED: &str = "size_changed";
+    pub const PLAYER_DAMAGED: &str = "player_damaged";
+    pub const POWER_MODE_CHANGED: &str = "power_mode_changed";
+    pub const UPGRADE_COLLECTED: &str = "upgrade_collected";
 }
 
 // ── Callable method names ─────────────────────────────────────────────
@@ -43,6 +47,7 @@ pub mod methods {
     pub const RETURN_TO_MENU: &str = "return_to_menu";
     pub const RESUME_GAME: &str = "resume_game";
     pub const QUIT_TO_MENU: &str = "quit_to_menu";
+    pub const ON_WINDOW_SIZE_CHANGED: &str = "on_window_size_changed";
     pub const TAKE_DAMAGE: &str = "take_damage";
     pub const APPLY_UPGRADE: &str = "apply_upgrade";
     pub const SHOW_SUMMARY: &str = "show_summary";
@@ -50,12 +55,21 @@ pub mod methods {
     pub const SHOW_SHOP: &str = "show_shop";
     pub const SHOW_SHOWCASE: &str = "show_showcase";
     pub const HIDE_SHOWCASE: &str = "hide_showcase";
+    pub const RESET_LOADOUT: &str = "reset_loadout";
     pub const SET_LASER_LEVEL: &str = "set_laser_level";
     pub const UPDATE_HEALTH: &str = "update_health";
     pub const UPDATE_CREDITS: &str = "update_credits";
     pub const UPDATE_LASER: &str = "update_laser";
     pub const UPDATE_LEVEL: &str = "update_level";
+    pub const UPDATE_SHIELD: &str = "update_shield";
+    pub const UPDATE_POWER_MODE: &str = "update_power_mode";
     pub const GENERATE_LEVEL: &str = "generate_level";
+    pub const ON_PLAYER_DAMAGED: &str = "on_player_damaged";
+    pub const ON_POWER_MODE_CHANGED: &str = "on_power_mode_changed";
+    pub const ON_UPGRADE_COLLECTED: &str = "on_upgrade_collected";
+    pub const ON_PHASE_CHANGED_AUDIO: &str = "on_phase_changed_audio";
+    pub const ON_MUSIC_FINISHED: &str = "on_music_finished";
+    pub const ON_SFX_FINISHED: &str = "on_sfx_finished";
 }
 
 // ── Input actions ─────────────────────────────────────────────────────
@@ -79,20 +93,22 @@ pub mod actions {
     pub const MENU_DOWN: &str = "menu_down";
     pub const MENU_SELECT: &str = "menu_select";
     pub const MENU_BACK: &str = "menu_back";
+    pub const ROUTE_SHIELDS: &str = "route_shields";
+    pub const ROUTE_WEAPONS: &str = "route_weapons";
+    pub const STABILIZE: &str = "stabilize";
 }
 
 // ── Group names ───────────────────────────────────────────────────────
 
 pub mod groups {
     pub const PLAYER: &str = "player";
+    pub const ENEMIES: &str = "enemies";
 }
 
 // ── Meta keys ─────────────────────────────────────────────────────────
 
 pub mod meta_keys {
     pub const BEAM_AGE: &str = "beam_age";
-    pub const SPARK_TIMER: &str = "spark_timer";
-    pub const DEBRIS_TIMER: &str = "debris_timer";
 }
 
 // ── Theme override keys ───────────────────────────────────────────────
@@ -125,6 +141,14 @@ pub mod nodes {
     pub const RIGHT_CONTAINER: &str = "StereoCanvas/RightContainer";
     pub const LEFT_UI_OVERLAY: &str = "StereoCanvas/LeftContainer/LeftUIOverlay";
     pub const RIGHT_UI_OVERLAY: &str = "StereoCanvas/RightContainer/RightUIOverlay";
+    pub const UI_PLANE: &str = "UIPlane";
+    pub const AUDIO_MANAGER: &str = "AudioManager";
+}
+
+
+/// Property names set across node boundaries via `Node::set`.
+pub mod properties {
+    pub const CURRENT_LEVEL: &str = "current_level";
 }
 
 // ── Scene paths ───────────────────────────────────────────────────────
@@ -161,6 +185,10 @@ mod tests {
             signals::RESUME_SELECTED,
             signals::QUIT_SELECTED,
             signals::BODY_ENTERED,
+            signals::SIZE_CHANGED,
+            signals::PLAYER_DAMAGED,
+            signals::POWER_MODE_CHANGED,
+            signals::UPGRADE_COLLECTED,
         ];
         for sig in &all_signals {
             assert!(
@@ -201,8 +229,19 @@ mod tests {
             methods::UPDATE_LASER,
             methods::UPDATE_LEVEL,
             methods::GENERATE_LEVEL,
+            methods::ON_PLAYER_DAMAGED,
+            methods::UPDATE_SHIELD,
+            methods::ON_POWER_MODE_CHANGED,
+            methods::ON_UPGRADE_COLLECTED,
+            methods::UPDATE_POWER_MODE,
             methods::RESUME_GAME,
             methods::QUIT_TO_MENU,
+            methods::ON_WINDOW_SIZE_CHANGED,
+            methods::RESET_LOADOUT,
+            methods::ON_PHASE_CHANGED_AUDIO,
+            methods::ON_MUSIC_FINISHED,
+            methods::ON_SFX_FINISHED,
+
         ];
         for method in &all_methods {
             assert!(
@@ -229,6 +268,9 @@ mod tests {
             actions::MENU_DOWN,
             actions::MENU_SELECT,
             actions::MENU_BACK,
+            actions::ROUTE_SHIELDS,
+            actions::ROUTE_WEAPONS,
+            actions::STABILIZE,
         ];
         for action in &all_actions {
             assert!(!action.is_empty());
@@ -274,6 +316,10 @@ mod tests {
             signals::MSAA_TOGGLED, signals::EXIT_SELECTED,
             signals::RESUME_SELECTED, signals::QUIT_SELECTED,
             signals::BODY_ENTERED,
+            signals::SIZE_CHANGED,
+            signals::PLAYER_DAMAGED,
+            signals::POWER_MODE_CHANGED,
+            signals::UPGRADE_COLLECTED,
         ];
         for (i, a) in all.iter().enumerate() {
             for (j, b) in all.iter().enumerate() {
@@ -295,13 +341,19 @@ mod tests {
             methods::ADVANCE_TO_SHOP, methods::ADVANCE_TO_NEXT_LEVEL,
             methods::BUY_LASER_UPGRADE, methods::RETURN_TO_MENU,
             methods::RESUME_GAME, methods::QUIT_TO_MENU,
+            methods::ON_WINDOW_SIZE_CHANGED,
             methods::TAKE_DAMAGE, methods::APPLY_UPGRADE,
             methods::SHOW_SUMMARY, methods::SHOW_DEATH,
             methods::SHOW_SHOP, methods::SHOW_SHOWCASE,
             methods::HIDE_SHOWCASE, methods::SET_LASER_LEVEL,
             methods::UPDATE_HEALTH, methods::UPDATE_CREDITS,
             methods::UPDATE_LASER, methods::UPDATE_LEVEL,
-            methods::GENERATE_LEVEL,
+            methods::GENERATE_LEVEL, methods::ON_PLAYER_DAMAGED,
+            methods::UPDATE_SHIELD, methods::ON_POWER_MODE_CHANGED,
+            methods::ON_UPGRADE_COLLECTED, methods::UPDATE_POWER_MODE,
+            methods::ON_PHASE_CHANGED_AUDIO, methods::ON_MUSIC_FINISHED,
+
+            methods::RESET_LOADOUT,
         ];
         for (i, a) in all.iter().enumerate() {
             for (j, b) in all.iter().enumerate() {
@@ -327,6 +379,8 @@ mod tests {
             nodes::RIGHT_CAMERA, nodes::LEFT_CONTAINER,
             nodes::RIGHT_CONTAINER, nodes::LEFT_UI_OVERLAY,
             nodes::RIGHT_UI_OVERLAY,
+            nodes::UI_PLANE,
+            nodes::AUDIO_MANAGER,
         ];
         for path in &all_nodes {
             assert!(!path.is_empty(), "node path must not be empty");

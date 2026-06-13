@@ -1,8 +1,10 @@
 pub mod constants;
 pub mod godot_util;
+pub mod audio_manager;
+mod body_registry;
 mod ship_controller;
+mod telemetry;
 mod enemy_drone;
-mod projectile;
 mod lootbox;
 mod level_manager;
 mod views;

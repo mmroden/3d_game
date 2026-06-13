@@ -53,8 +53,8 @@ fn door_asset_is_always_the_same_regardless_of_style() {
     let placements = assemble(
         &corridor_ew(),
         &[
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX, frame: FrameStyle::Door },
         ],
         [0.0, 0.0, 0.0],
         &asset_catalog::WALL_SET_WINDOW,

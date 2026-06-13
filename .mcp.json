@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "serena": {
+      "command": "/opt/homebrew/bin/uvx",
+      "args": [
+        "-p", "3.13",
+        "--from", "git+https://github.com/oraios/serena",
+        "serena", "start-mcp-server",
+        "--context", "claude-code",
+        "--project", "/Users/mroden/src/3d_game"
+      ]
+    }
+  }
+}

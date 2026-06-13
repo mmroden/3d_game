@@ -16,6 +16,9 @@ pub struct HUD {
     base: Base<CanvasLayer>,
     health_fill: Option<Gd<ColorRect>>,
     health_label: Option<Gd<Label>>,
+    shield_fill: Option<Gd<ColorRect>>,
+    shield_label: Option<Gd<Label>>,
+    power_mode_label: Option<Gd<Label>>,
     credits_label: Option<Gd<Label>>,
     laser_label: Option<Gd<Label>>,
     level_label: Option<Gd<Label>>,
@@ -29,6 +32,9 @@ impl ICanvasLayer for HUD {
             base,
             health_fill: None,
             health_label: None,
+            shield_fill: None,
+            shield_label: None,
+            power_mode_label: None,
             credits_label: None,
             laser_label: None,
             level_label: None,
@@ -68,6 +74,42 @@ impl HUD {
         if let Some(label) = &mut self.health_label {
             if label.is_instance_valid() {
                 label.set_text(&format!("{}/{}", current as i32, max as i32));
+            }
+        }
+    }
+
+    #[func]
+    pub fn update_shield(&mut self, current: f32, max: f32) {
+        let fraction = if max > 0.0 { (current / max).clamp(0.0, 1.0) } else { 0.0 };
+
+        if let Some(fill) = &mut self.shield_fill {
+            if fill.is_instance_valid() {
+                fill.set_size(Vector2::new(200.0 * fraction, 14.0));
+                // Blue to dark blue as shield depletes
+                let brightness = 0.3 + fraction * 0.7;
+                fill.set_color(Color::from_rgb(0.2 * brightness, 0.4 * brightness, brightness));
+            }
+        }
+
+        if let Some(label) = &mut self.shield_label {
+            if label.is_instance_valid() {
+                label.set_text(&format!("{}/{}", current as i32, max as i32));
+            }
+        }
+    }
+
+    /// Update power routing mode display. 0=Balanced, 1=ShieldBoost, 2=WeaponBoost.
+    #[func]
+    pub fn update_power_mode(&mut self, mode: i32) {
+        if let Some(label) = &mut self.power_mode_label {
+            if label.is_instance_valid() {
+                let (text, color) = match mode {
+                    1 => ("SHIELDS", Color::from_rgb(0.3, 0.6, 1.0)),
+                    2 => ("WEAPONS", Color::from_rgb(1.0, 0.4, 0.2)),
+                    _ => ("", Color::from_rgba(0.5, 0.5, 0.5, 0.5)),
+                };
+                label.set_text(text);
+                label.add_theme_color_override(theme::FONT_COLOR, color);
             }
         }
     }
@@ -143,6 +185,38 @@ impl HUD {
         self.health_fill = Some(health_fill.clone());
         self.health_label = Some(health_label);
 
+        // Shield bar row (below health)
+        let mut shield_row = HBoxContainer::new_alloc();
+
+        let mut shield_bg = ColorRect::new_alloc();
+        shield_bg.set_custom_minimum_size(Vector2::new(200.0, 14.0));
+        shield_bg.set_color(Color::from_rgba(0.1, 0.1, 0.3, 0.7));
+        shield_row.add_child(&shield_bg);
+
+        let mut shield_fill = ColorRect::new_alloc();
+        shield_fill.set_custom_minimum_size(Vector2::new(200.0, 14.0));
+        shield_fill.set_color(Color::from_rgb(0.2, 0.4, 1.0));
+        shield_fill.set_position(Vector2::new(0.0, 0.0));
+
+        let mut shield_label = Label::new_alloc();
+        shield_label.set_text("50/50");
+        shield_label.add_theme_font_size_override(theme::FONT_SIZE, 14);
+        shield_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.5, 0.7, 1.0));
+        shield_row.add_child(&shield_label);
+
+        top_left.add_child(&shield_row);
+
+        self.shield_fill = Some(shield_fill.clone());
+        self.shield_label = Some(shield_label);
+
+        // Power mode indicator (below shield bar)
+        let mut power_mode_label = Label::new_alloc();
+        power_mode_label.set_text("");
+        power_mode_label.add_theme_font_size_override(theme::FONT_SIZE, 16);
+        power_mode_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgba(0.5, 0.5, 0.5, 0.5));
+        top_left.add_child(&power_mode_label);
+        self.power_mode_label = Some(power_mode_label);
+
         // Credits
         let mut credits_label = Label::new_alloc();
         credits_label.set_text("Credits: 0");
@@ -155,6 +229,9 @@ impl HUD {
         // Add health fill as overlay on CanvasLayer, positioned at top-left
         health_fill.set_position(Vector2::new(20.0, 20.0));
         self.base_mut().add_child(&health_fill);
+        // Shield fill overlay below health
+        shield_fill.set_position(Vector2::new(20.0, 44.0));
+        self.base_mut().add_child(&shield_fill);
 
         // === Top-right: Laser info + Level ===
         let mut top_right = VBoxContainer::new_alloc();

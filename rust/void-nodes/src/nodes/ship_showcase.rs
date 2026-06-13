@@ -126,6 +126,7 @@ impl ShipShowcase {
 
         let mut engine_mat = StandardMaterial3D::new_gd();
         engine_mat.set_albedo(Color::from_rgb(0.2, 0.5, 1.0));
+        engine_mat.set_feature(godot::classes::base_material_3d::Feature::EMISSION, true);
         engine_mat.set_emission(Color::from_rgb(0.3, 0.6, 1.0));
         engine_mat.set_emission_energy_multiplier(5.0);
         engine.set_surface_override_material(0, &engine_mat);

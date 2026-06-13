@@ -3,12 +3,13 @@ use rand::SeedableRng;
 
 use crate::abstract_graph;
 use crate::level_graph::LevelGraph;
-use crate::room_template::{Connector, ConnectorFacing, RoomTemplate, SpawnPoint, TemplateKind};
+use crate::room_template::{Connector, ConnectorFacing, FrameStyle, RoomTemplate, SpawnPoint, TemplateKind};
+use crate::seed::Seed;
 use crate::spatial_layout;
 
 /// Configuration for level generation.
 pub struct GeneratorConfig {
-    pub seed: u64,
+    pub seed: Seed,
     /// Maximum number of rooms. If 0, defaults to 200.
     pub max_rooms: usize,
     /// Minimum XZ extent for generated rooms.
@@ -53,21 +54,24 @@ fn auto_connectors(ex: u32, ey: u32, ez: u32, rng: &mut SmallRng) -> Vec<Connect
     let mid_x = (ex as i32) / 2;
     let mid_z = (ez as i32) / 2;
     let mut connectors = vec![
-        Connector { offset: [0, 0, mid_z], facing: NegX },
-        Connector { offset: [ex as i32 - 1, 0, mid_z], facing: PosX },
-        Connector { offset: [mid_x, 0, 0], facing: NegZ },
-        Connector { offset: [mid_x, 0, ez as i32 - 1], facing: PosZ },
+        Connector { offset: [0, 0, mid_z], facing: NegX, frame: FrameStyle::Door },
+        Connector { offset: [ex as i32 - 1, 0, mid_z], facing: PosX, frame: FrameStyle::Door },
+        Connector { offset: [mid_x, 0, 0], facing: NegZ, frame: FrameStyle::Door },
+        Connector { offset: [mid_x, 0, ez as i32 - 1], facing: PosZ, frame: FrameStyle::Door },
     ];
 
-    // All rooms get vertical connectors.
-    connectors.push(Connector { offset: [mid_x, (ey as i32) - 1, mid_z], facing: PosY });
-    connectors.push(Connector { offset: [mid_x, 0, mid_z], facing: NegY });
+    // All rooms get vertical connectors (frameless — no hatch mesh).
+    connectors.push(Connector { offset: [mid_x, (ey as i32) - 1, mid_z], facing: PosY, frame: FrameStyle::None });
+    connectors.push(Connector { offset: [mid_x, 0, mid_z], facing: NegY, frame: FrameStyle::None });
 
-    // Multi-story rooms also get upper-story horizontal connectors.
+    // Multi-story rooms get horizontal connectors at every story level.
     if ey > 1 {
-        let top_y = (ey as i32) - 1;
-        connectors.push(Connector { offset: [0, top_y, mid_z], facing: NegX });
-        connectors.push(Connector { offset: [ex as i32 - 1, top_y, mid_z], facing: PosX });
+        for y in 1..(ey as i32) {
+            connectors.push(Connector { offset: [0, y, mid_z], facing: NegX, frame: FrameStyle::Door });
+            connectors.push(Connector { offset: [ex as i32 - 1, y, mid_z], facing: PosX, frame: FrameStyle::Door });
+            connectors.push(Connector { offset: [mid_x, y, 0], facing: NegZ, frame: FrameStyle::Door });
+            connectors.push(Connector { offset: [mid_x, y, ez as i32 - 1], facing: PosZ, frame: FrameStyle::Door });
+        }
     }
 
     // Extra connectors on larger faces.
@@ -76,24 +80,24 @@ fn auto_connectors(ex: u32, ey: u32, ez: u32, rng: &mut SmallRng) -> Vec<Connect
         let q1 = (ez as i32) / 4;
         let q3 = (ez as i32) * 3 / 4;
         if q1 != mid_z {
-            connectors.push(Connector { offset: [0, 0, q1], facing: NegX });
-            connectors.push(Connector { offset: [ex as i32 - 1, 0, q1], facing: PosX });
+            connectors.push(Connector { offset: [0, 0, q1], facing: NegX, frame: FrameStyle::Door });
+            connectors.push(Connector { offset: [ex as i32 - 1, 0, q1], facing: PosX, frame: FrameStyle::Door });
         }
         if q3 != mid_z {
-            connectors.push(Connector { offset: [0, 0, q3], facing: NegX });
-            connectors.push(Connector { offset: [ex as i32 - 1, 0, q3], facing: PosX });
+            connectors.push(Connector { offset: [0, 0, q3], facing: NegX, frame: FrameStyle::Door });
+            connectors.push(Connector { offset: [ex as i32 - 1, 0, q3], facing: PosX, frame: FrameStyle::Door });
         }
     }
     if ez >= 5 {
         let q1 = (ex as i32) / 4;
         let q3 = (ex as i32) * 3 / 4;
         if q1 != mid_x {
-            connectors.push(Connector { offset: [q1, 0, 0], facing: NegZ });
-            connectors.push(Connector { offset: [q1, 0, ez as i32 - 1], facing: PosZ });
+            connectors.push(Connector { offset: [q1, 0, 0], facing: NegZ, frame: FrameStyle::Door });
+            connectors.push(Connector { offset: [q1, 0, ez as i32 - 1], facing: PosZ, frame: FrameStyle::Door });
         }
         if q3 != mid_x {
-            connectors.push(Connector { offset: [q3, 0, 0], facing: NegZ });
-            connectors.push(Connector { offset: [q3, 0, ez as i32 - 1], facing: PosZ });
+            connectors.push(Connector { offset: [q3, 0, 0], facing: NegZ, frame: FrameStyle::Door });
+            connectors.push(Connector { offset: [q3, 0, ez as i32 - 1], facing: PosZ, frame: FrameStyle::Door });
         }
     }
 
@@ -107,9 +111,12 @@ fn auto_enemy_spawns(ex: u32, ey: u32, ez: u32, rng: &mut SmallRng) -> Vec<Spawn
     let cell_size = 4.0_f32;
     let story_height = 5.0_f32;
     let count = rng.random_range(1..=3u32);
+    // Y range: stay within the room's vertical extent, leaving headroom below ceiling.
+    // The +1.5 lift in level_assembly means max y should be (ey * story_height - 1.5 - buffer).
+    let max_y = ((ey as f32) * story_height - 3.0).max(0.5);
     (0..count).map(|_| {
         let x = rng.random_range(1.0..(ex as f32 - 1.0).max(1.5)) * cell_size;
-        let y = rng.random_range(0.0..ey as f32) * story_height;
+        let y = rng.random_range(0.5..max_y);
         let z = rng.random_range(1.0..(ez as f32 - 1.0).max(1.5)) * cell_size;
         SpawnPoint { position: [x, y, z] }
     }).collect()
@@ -128,7 +135,7 @@ pub fn rooms_for_level(level: u32) -> usize {
 pub fn generate(config: &GeneratorConfig) -> Result<LevelGraph, GenerateError> {
     let room_count = if config.max_rooms > 0 { config.max_rooms } else { 200 };
 
-    let mut rng = SmallRng::seed_from_u64(config.seed);
+    let mut rng = SmallRng::seed_from_u64(config.seed.value());
 
     // Sweep 1: topology.
     let abstract_graph = abstract_graph::generate_topology(&mut rng, room_count, config);
@@ -150,7 +157,7 @@ mod tests {
 
     fn test_config(seed: u64) -> GeneratorConfig {
         GeneratorConfig {
-            seed,
+            seed: Seed::new(seed),
             max_rooms: 10,
             min_room_xz: 3,
             max_room_xz: 6,
@@ -319,6 +326,36 @@ mod tests {
         for seed in 0..20 {
             let config = test_config(seed);
             assert!(generate(&config).is_ok(), "seed {seed} should succeed");
+        }
+    }
+
+    #[test]
+    fn auto_connectors_intermediate_stories() {
+        let mut rng = SmallRng::seed_from_u64(42);
+        // 3-story room should have horizontal connectors at y=0, y=1, and y=2.
+        let connectors = auto_connectors(3, 3, 3, &mut rng);
+        let horizontal_y_levels: std::collections::HashSet<i32> = connectors.iter()
+            .filter(|c| matches!(c.facing,
+                ConnectorFacing::NegX | ConnectorFacing::PosX |
+                ConnectorFacing::NegZ | ConnectorFacing::PosZ))
+            .map(|c| c.offset[1])
+            .collect();
+        assert!(horizontal_y_levels.contains(&0), "should have connectors at y=0");
+        assert!(horizontal_y_levels.contains(&1), "should have connectors at y=1");
+        assert!(horizontal_y_levels.contains(&2), "should have connectors at y=2");
+    }
+
+    #[test]
+    fn vertical_connectors_are_frameless() {
+        let mut rng = SmallRng::seed_from_u64(42);
+        for _ in 0..50 {
+            let room = generate_room(&mut rng, &test_config(42));
+            for c in &room.connectors {
+                if matches!(c.facing, ConnectorFacing::PosY | ConnectorFacing::NegY) {
+                    assert_eq!(c.frame, FrameStyle::None,
+                        "vertical connector should be frameless, got {:?}", c.frame);
+                }
+            }
         }
     }
 }

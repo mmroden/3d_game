@@ -3,18 +3,30 @@
 
 use godot::prelude::*;
 use godot::classes::{
-    MeshInstance3D, BoxMesh, StandardMaterial3D,
+    MeshInstance3D, BoxMesh, StandardMaterial3D, OmniLight3D,
     ParticleProcessMaterial,
     particle_process_material::Parameter,
+    light_3d,
 };
 
-use super::constants::meta_keys;
+use super::audio_manager::AudioManager;
+use super::constants::{meta_keys, nodes};
 
 /// Get the scene tree root node from a SceneTree (or Optional SceneTree).
 /// Returns `None` during early initialization or after the tree is torn down.
 /// Usage: `scene_root(self.base().get_tree())`
 pub fn scene_root(tree: impl Into<Option<Gd<godot::classes::SceneTree>>>) -> Option<Gd<godot::classes::Node>> {
     tree.into().and_then(|t| t.get_root()).map(|r| r.upcast())
+}
+
+/// Find the AudioManager node by navigating up to the scene root, then down to Main/AudioManager.
+/// Works from any depth in the tree (enemies under LevelManager, portal, lootbox, etc.).
+/// Accepts the result of `self.base().get_tree()` to avoid upcast ambiguity.
+pub fn find_audio_manager(tree: impl Into<Option<Gd<godot::classes::SceneTree>>>) -> Option<Gd<AudioManager>> {
+    let root = scene_root(tree)?;
+    // Main is the first child of root; AudioManager is a direct child of Main
+    let main = root.try_get_node_as::<godot::classes::Node>("Main")?;
+    main.try_get_node_as::<AudioManager>(nodes::AUDIO_MANAGER)
 }
 
 /// Compute an orientation basis pointing along `forward`.
@@ -49,9 +61,18 @@ pub fn create_beam_mesh(from: Vector3, to: Vector3, color: &[f32]) -> Option<Gd<
 
     let mut material = StandardMaterial3D::new_gd();
     material.set_albedo(Color::from_rgba(color[0], color[1], color[2], 1.0));
+    material.set_feature(godot::classes::base_material_3d::Feature::EMISSION, true);
     material.set_emission(Color::from_rgba(color[0], color[1], color[2], 1.0));
-    material.set_emission_energy_multiplier(5.0);
+    material.set_emission_energy_multiplier(8.0);
     mesh_instance.set_surface_override_material(0, &material);
+
+    // Attach an OmniLight3D so the beam illuminates surroundings
+    let mut light = OmniLight3D::new_alloc();
+    light.set_color(Color::from_rgb(color[0], color[1], color[2]));
+    light.set_param(light_3d::Param::ENERGY, 3.0);
+    light.set_param(light_3d::Param::RANGE, 4.0);
+    light.set_param(light_3d::Param::ATTENUATION, 2.0);
+    mesh_instance.add_child(&light);
 
     mesh_instance.set_meta(meta_keys::BEAM_AGE, &Variant::from(0.0_f32));
 
@@ -78,6 +99,12 @@ pub fn age_beams(beams: &mut Vec<Gd<MeshInstance3D>>, delta: f32, lifetime: f32,
             if let Some(mat) = beam.get_surface_override_material(0) {
                 let mut std_mat = mat.cast::<StandardMaterial3D>();
                 std_mat.set_albedo(Color::from_rgba(color[0], color[1], color[2], alpha));
+            }
+            // Fade the attached light
+            for child in beam.get_children().iter_shared() {
+                if let Ok(mut light) = child.try_cast::<OmniLight3D>() {
+                    light.set_param(light_3d::Param::ENERGY, 3.0 * alpha);
+                }
             }
             true
         }

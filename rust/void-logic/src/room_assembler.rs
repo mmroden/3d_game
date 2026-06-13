@@ -2,7 +2,7 @@ use std::f32::consts::{FRAC_PI_2, PI};
 
 use crate::asset_catalog::{self, WallSet};
 use crate::cell::{CellGrid, CellKind};
-use crate::room_template::{Connector, ConnectorFacing, RoomTemplate};
+use crate::room_template::{Connector, ConnectorFacing, FrameStyle, RoomTemplate};
 
 // Default Astra asset paths — used by tests via `super::WALL` etc.
 #[cfg(test)]
@@ -120,15 +120,17 @@ pub fn assemble_from_grid(
             (has_face(ConnectorFacing::PosX) && has_face(ConnectorFacing::PosZ), PI),
         ];
 
-        // Place door frames at active XZ connectors.
+        // Place door frames at active XZ connectors (only if FrameStyle::Door).
         if cell.kind == CellKind::ConnectorGap {
             for facing in &[ConnectorFacing::NegX, ConnectorFacing::PosX,
                            ConnectorFacing::NegZ, ConnectorFacing::PosZ] {
-                if is_active_connector(template, active_connectors, *facing,
+                if let Some(frame) = active_connector_frame(template, active_connectors, *facing,
                     cell.grid_pos[0], cell.grid_pos[1], cell.grid_pos[2])
                 {
-                    let (door_pos, door_rot) = door_placement(pos, *facing);
-                    out.push(MeshPlacement { scene: door, position: door_pos, rotation_x: 0.0, rotation_y: door_rot, loose: false });
+                    if frame == FrameStyle::Door {
+                        let (door_pos, door_rot) = door_placement(pos, *facing, wall_set.tile_width);
+                        out.push(MeshPlacement { scene: door, position: door_pos, rotation_x: 0.0, rotation_y: door_rot, loose: false });
+                    }
                 }
             }
         }
@@ -251,9 +253,26 @@ fn is_active_connector(
     cy: i32,
     cz: i32,
 ) -> bool {
-    let candidate = Connector { offset: [cx, cy, cz], facing };
-    active.contains(&candidate)
-        && template.connectors.contains(&candidate)
+    let matches = |c: &Connector| c.offset == [cx, cy, cz] && c.facing == facing;
+    active.iter().any(matches)
+        && template.connectors.iter().any(matches)
+}
+
+/// Like `is_active_connector`, but returns the connector's `FrameStyle` if active.
+fn active_connector_frame(
+    template: &RoomTemplate,
+    active: &[Connector],
+    facing: ConnectorFacing,
+    cx: i32,
+    cy: i32,
+    cz: i32,
+) -> Option<FrameStyle> {
+    let matches = |c: &Connector| c.offset == [cx, cy, cz] && c.facing == facing;
+    let in_active = active.iter().any(matches);
+    if !in_active { return None; }
+    template.connectors.iter()
+        .find(|c| matches(c))
+        .map(|c| c.frame)
 }
 
 pub(crate) fn wall_placement(cell_pos: [f32; 3], facing: ConnectorFacing) -> ([f32; 3], f32) {
@@ -268,12 +287,13 @@ pub(crate) fn wall_placement(cell_pos: [f32; 3], facing: ConnectorFacing) -> ([f
     }
 }
 
-pub(crate) fn door_placement(cell_pos: [f32; 3], facing: ConnectorFacing) -> ([f32; 3], f32) {
+pub(crate) fn door_placement(cell_pos: [f32; 3], facing: ConnectorFacing, cell_size: f32) -> ([f32; 3], f32) {
+    let half = cell_size / 2.0;
     match facing {
-        ConnectorFacing::NegX => (cell_pos, FRAC_PI_2),
-        ConnectorFacing::PosX => (cell_pos, -FRAC_PI_2),
-        ConnectorFacing::NegZ => (cell_pos, 0.0),
-        ConnectorFacing::PosZ => (cell_pos, PI),
+        ConnectorFacing::NegX => ([cell_pos[0] - half, cell_pos[1], cell_pos[2]], FRAC_PI_2),
+        ConnectorFacing::PosX => ([cell_pos[0] + half, cell_pos[1], cell_pos[2]], -FRAC_PI_2),
+        ConnectorFacing::NegZ => ([cell_pos[0], cell_pos[1], cell_pos[2] - half], 0.0),
+        ConnectorFacing::PosZ => ([cell_pos[0], cell_pos[1], cell_pos[2] + half], PI),
         ConnectorFacing::NegY | ConnectorFacing::PosY => {
             unreachable!("door_placement called with Y-axis facing {:?}", facing)
         }

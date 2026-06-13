@@ -12,6 +12,21 @@ pub enum GamePhase {
 }
 
 impl GamePhase {
+    /// Parse from the `Debug` format name (e.g. `"MainMenu"`, `"Playing"`).
+    /// This is the format emitted by `GameManager::phase_changed`.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "MainMenu" => Some(Self::MainMenu),
+            "Playing" => Some(Self::Playing),
+            "Paused" => Some(Self::Paused),
+            "LevelComplete" => Some(Self::LevelComplete),
+            "KillSummary" => Some(Self::KillSummary),
+            "Shop" => Some(Self::Shop),
+            "Death" => Some(Self::Death),
+            _ => None,
+        }
+    }
+
     /// Returns whether transitioning from self to `next` is valid.
     pub fn can_transition_to(&self, next: GamePhase) -> bool {
         matches!(
@@ -95,6 +110,29 @@ mod tests {
         assert!(!GamePhase::Playing.can_transition_to(GamePhase::Shop));
         assert!(!GamePhase::KillSummary.can_transition_to(GamePhase::Playing));
         assert!(!GamePhase::Death.can_transition_to(GamePhase::Playing));
+    }
+
+    #[test]
+    fn from_name_round_trips_all_variants() {
+        let all = [
+            GamePhase::MainMenu, GamePhase::Playing, GamePhase::Paused,
+            GamePhase::LevelComplete, GamePhase::KillSummary,
+            GamePhase::Shop, GamePhase::Death,
+        ];
+        for phase in all {
+            let name = format!("{phase:?}");
+            assert_eq!(
+                GamePhase::from_name(&name),
+                Some(phase),
+                "{name} should round-trip through from_name"
+            );
+        }
+    }
+
+    #[test]
+    fn from_name_returns_none_for_garbage() {
+        assert_eq!(GamePhase::from_name("Bogus"), None);
+        assert_eq!(GamePhase::from_name(""), None);
     }
 
     #[test]

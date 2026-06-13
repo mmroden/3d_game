@@ -7,6 +7,7 @@ use godot::classes::{
 
 use super::constants::{groups, methods, signals};
 use super::godot_util;
+use void_logic::audio_catalog::SfxEvent;
 
 /// End-of-level portal. Player touches it to complete the level.
 #[derive(GodotClass)]
@@ -39,6 +40,7 @@ impl IArea3D for Portal {
 
         let mut mat = StandardMaterial3D::new_gd();
         mat.set_albedo(Color::from_rgba(0.2, 0.8, 1.0, 0.8));
+        mat.set_feature(godot::classes::base_material_3d::Feature::EMISSION, true);
         mat.set_emission(Color::from_rgba(0.3, 0.7, 1.0, 1.0));
         mat.set_emission_energy_multiplier(8.0);
         mat.set_transparency(godot::classes::base_material_3d::Transparency::ALPHA);
@@ -64,6 +66,7 @@ impl IArea3D for Portal {
         sphere_mesh.set_height(0.06);
         let mut spark_mat = StandardMaterial3D::new_gd();
         spark_mat.set_albedo(Color::from_rgba(0.6, 0.9, 1.0, 1.0));
+        spark_mat.set_feature(godot::classes::base_material_3d::Feature::EMISSION, true);
         spark_mat.set_emission(Color::from_rgba(0.4, 0.8, 1.0, 1.0));
         spark_mat.set_emission_energy_multiplier(6.0);
         sphere_mesh.set_material(&spark_mat);
@@ -99,6 +102,11 @@ impl Portal {
     fn on_body_entered(&mut self, body: Gd<Node3D>) {
         // Check if it's the player (in "player" group)
         if body.is_in_group(groups::PLAYER) {
+            // Portal enter SFX
+            let pos = self.base().get_global_position();
+            if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+                audio.bind_mut().play_event_at(SfxEvent::PortalEnter, pos);
+            }
             self.base_mut().emit_signal(signals::PORTAL_ENTERED, &[]);
             // Disable further collisions
             self.base_mut().set_monitoring(false);

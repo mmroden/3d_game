@@ -25,17 +25,29 @@ fn wall_placement_returns_cell_pos_unchanged() {
 }
 
 #[test]
-fn door_placement_returns_cell_pos_unchanged() {
-    // Ground truth: corridor_ew.tscn places ALL doors at (0,0,0) — the cell center.
-    // door_placement must return the input position unchanged for all facings.
-    let pos = [7.0, 3.0, 11.0];
-    for facing in [ConnectorFacing::NegX, ConnectorFacing::PosX,
-                   ConnectorFacing::NegZ, ConnectorFacing::PosZ] {
-        let (result_pos, _rot) = door_placement(pos, facing);
-        assert_eq!(
-            result_pos, pos,
-            "door_placement({pos:?}, {facing:?}) returned {result_pos:?}, expected {pos:?}. \
-             Ground truth: corridor_ew.tscn places all doors at cell center, no offset."
+fn door_placement_offsets_position_to_wall_boundary() {
+    // The door mesh (Door_Frame_Square.gltf) is centered on its origin,
+    // unlike the wall mesh which sits at the NegX edge.  door_placement
+    // must shift the position by half a cell toward the wall boundary so
+    // the door frame sits flush in the wall opening.
+    let pos = [10.0, 3.0, 10.0];
+    let cell_size = 4.0;
+    let half = cell_size / 2.0;
+
+    let cases = [
+        (ConnectorFacing::NegX, [pos[0] - half, pos[1], pos[2]]),
+        (ConnectorFacing::PosX, [pos[0] + half, pos[1], pos[2]]),
+        (ConnectorFacing::NegZ, [pos[0], pos[1], pos[2] - half]),
+        (ConnectorFacing::PosZ, [pos[0], pos[1], pos[2] + half]),
+    ];
+    for (facing, expected_pos) in cases {
+        let (result_pos, _rot) = door_placement(pos, facing, cell_size);
+        assert!(
+            (result_pos[0] - expected_pos[0]).abs() < 0.001
+                && (result_pos[1] - expected_pos[1]).abs() < 0.001
+                && (result_pos[2] - expected_pos[2]).abs() < 0.001,
+            "door_placement({pos:?}, {facing:?}, {cell_size}) = {result_pos:?}, \
+             expected {expected_pos:?}. Door must sit at the wall boundary, not cell center."
         );
     }
 }
@@ -69,7 +81,7 @@ fn door_rotations_match_reference_scenes() {
         (ConnectorFacing::PosZ, PI),
     ];
     for (facing, expected_rot) in cases {
-        let (_pos, rot) = door_placement(pos, facing);
+        let (_pos, rot) = door_placement(pos, facing, 4.0);
         assert!(
             (rot - expected_rot).abs() < 0.001,
             "door_placement {facing:?}: rotation {rot}, expected {expected_rot}. \
@@ -137,8 +149,8 @@ fn posx_negz_corner_lands_in_correct_quadrant() {
     let placements = assemble_default(
         &small_room(),
         &[
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ, frame: FrameStyle::Door },
         ],
         [0.0, 0.0, 0.0],
     );
@@ -159,8 +171,8 @@ fn negx_posz_corner_lands_in_correct_quadrant() {
     let placements = assemble_default(
         &small_room(),
         &[
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ, frame: FrameStyle::Door },
         ],
         [0.0, 0.0, 0.0],
     );

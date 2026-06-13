@@ -3,28 +3,32 @@ use godot::classes::{
     CharacterBody3D, ICharacterBody3D, PhysicsRayQueryParameters3D,
     MeshInstance3D,
     GpuParticles3D, SphereMesh, StandardMaterial3D,
-    Input, InputEvent, InputEventMouseMotion,
+    Input,
 };
 
-use super::constants::{actions, groups, meta_keys, methods};
+use super::constants::{actions, groups, methods, signals};
 use super::godot_util;
 
+use void_logic::kinetics::{AngularState, ControlInput, Retention, SpeedLimits};
 use void_logic::laser::LaserLevel;
 use void_logic::loadout::Loadout;
+use void_logic::power_routing::PowerMode;
 use void_logic::upgrade::{Upgrade, UpgradeKind};
+use void_logic::audio_catalog::SfxEvent;
 use void_logic::weapon::{WeaponState, FireResult};
 
-/// Clamp velocity to max magnitude, reset to zero if NaN.
-fn sanitize_velocity(v: Vector3, max_speed: f32) -> Vector3 {
-    if v.x.is_nan() || v.y.is_nan() || v.z.is_nan() {
-        return Vector3::ZERO;
-    }
-    let len = v.length();
-    if len > max_speed {
-        v * (max_speed / len)
-    } else {
-        v
-    }
+/// Hard caps on ship velocity, enforced inside the kinetic core.
+const SHIP_SPEED_LIMITS: SpeedLimits = SpeedLimits {
+    linear: 50.0,
+    angular: 5.0,
+};
+
+fn to_array(v: Vector3) -> [f32; 3] {
+    [v.x, v.y, v.z]
+}
+
+fn to_vector(a: [f32; 3]) -> Vector3 {
+    Vector3::new(a[0], a[1], a[2])
 }
 
 /// Check if all quaternion components are finite.
@@ -43,22 +47,14 @@ const WING_OFFSET: f32 = 0.3;
 pub struct ShipController {
     base: Base<CharacterBody3D>,
 
-    #[export]
-    thrust_power: f32,
-    #[export]
-    rotation_speed: f32,
-    #[export]
-    damping: f32,
-    #[export]
-    mouse_sensitivity: f32,
-
-    linear_velocity: Vector3,
-    angular_velocity: Vector3,
-    mouse_delta: Vector2,
+    /// Angular motion only: orientation is view/control-side (the
+    /// camera is the ship). Linear motion lives in the kinetic world.
+    angular: AngularState,
     weapon: WeaponState,
     beam_nodes: Vec<Gd<MeshInstance3D>>,
     loadout: Loadout,
     laser_level: LaserLevel,
+    power_mode: PowerMode,
 }
 
 #[godot_api]
@@ -66,17 +62,12 @@ impl ICharacterBody3D for ShipController {
     fn init(base: Base<CharacterBody3D>) -> Self {
         Self {
             base,
-            thrust_power: 40.0,
-            rotation_speed: 6.0,
-            damping: 0.95,
-            mouse_sensitivity: 0.002,
-            linear_velocity: Vector3::ZERO,
-            angular_velocity: Vector3::ZERO,
-            mouse_delta: Vector2::ZERO,
+            angular: AngularState::new(),
             weapon: WeaponState::default(),
             beam_nodes: Vec::new(),
             loadout: Loadout::new(),
             laser_level: LaserLevel::Red,
+            power_mode: PowerMode::default(),
         }
     }
 
@@ -84,54 +75,80 @@ impl ICharacterBody3D for ShipController {
         self.base_mut().add_to_group(groups::PLAYER);
     }
 
-    fn input(&mut self, event: Gd<InputEvent>) {
-        if let Ok(mouse_event) = event.try_cast::<InputEventMouseMotion>() {
-            self.mouse_delta += mouse_event.get_relative();
-        }
-    }
+}
 
-    fn physics_process(&mut self, delta: f64) {
-        let delta = delta as f32;
+#[godot_api]
+impl ShipController {
+    #[signal]
+    fn player_damaged(amount: f32);
+
+    #[signal]
+    fn power_mode_changed(mode: i32);
+
+    /// Per-tick control, pulled by the level host: reads input,
+    /// integrates orientation locally (the camera is the ship — its
+    /// rotation feel keeps the exact per-second math), fires weapons,
+    /// and returns world-space thrust for the kinetic world, which
+    /// owns all linear motion, wall response, and ram contacts.
+    pub fn control_input(&mut self, delta: f32) -> ControlInput {
         let input = Input::singleton();
 
-        // --- Movement ---
-        let forward = input.get_action_strength(actions::MOVE_FORWARD) - input.get_action_strength(actions::MOVE_BACK);
-        let strafe = input.get_action_strength(actions::MOVE_RIGHT) - input.get_action_strength(actions::MOVE_LEFT);
-        let vertical = input.get_action_strength(actions::MOVE_UP) - input.get_action_strength(actions::MOVE_DOWN);
+        let forward = input.get_action_strength(actions::MOVE_FORWARD)
+            - input.get_action_strength(actions::MOVE_BACK);
+        let strafe = input.get_action_strength(actions::MOVE_RIGHT)
+            - input.get_action_strength(actions::MOVE_LEFT);
+        let vertical = input.get_action_strength(actions::MOVE_UP)
+            - input.get_action_strength(actions::MOVE_DOWN);
 
-        let pitch = input.get_action_strength(actions::LOOK_UP) - input.get_action_strength(actions::LOOK_DOWN)
-            - self.mouse_delta.y * self.mouse_sensitivity;
-        let yaw = input.get_action_strength(actions::LOOK_LEFT) - input.get_action_strength(actions::LOOK_RIGHT)
-            + self.mouse_delta.x * self.mouse_sensitivity;
-        let roll = input.get_action_strength(actions::ROLL_RIGHT) - input.get_action_strength(actions::ROLL_LEFT);
-        self.mouse_delta = Vector2::ZERO;
+        let pitch = input.get_action_strength(actions::LOOK_UP)
+            - input.get_action_strength(actions::LOOK_DOWN);
+        let yaw = input.get_action_strength(actions::LOOK_LEFT)
+            - input.get_action_strength(actions::LOOK_RIGHT);
+        let roll = input.get_action_strength(actions::ROLL_RIGHT)
+            - input.get_action_strength(actions::ROLL_LEFT);
+
+        // Stabilizer: kill angular velocity on L1/Tab
+        if input.is_action_pressed(actions::STABILIZE) {
+            self.angular.halt();
+        }
+
+        // Power routing: toggle on press
+        let old_mode = self.power_mode;
+        if input.is_action_just_pressed(actions::ROUTE_SHIELDS) {
+            self.power_mode = if self.power_mode == PowerMode::ShieldBoost {
+                PowerMode::Balanced
+            } else {
+                PowerMode::ShieldBoost
+            };
+        }
+        if input.is_action_just_pressed(actions::ROUTE_WEAPONS) {
+            self.power_mode = if self.power_mode == PowerMode::WeaponBoost {
+                PowerMode::Balanced
+            } else {
+                PowerMode::WeaponBoost
+            };
+        }
+        if self.power_mode != old_mode {
+            let mode_val = self.power_mode as i32;
+            self.base_mut()
+                .emit_signal(signals::POWER_MODE_CHANGED, &[Variant::from(mode_val)]);
+        }
 
         let basis = self.base().get_transform().basis;
-        let thrust = basis.col_c() * (-forward)
-            + basis.col_a() * strafe
-            + basis.col_b() * vertical;
+        let thrust = basis.col_c() * (-forward) + basis.col_a() * strafe + basis.col_b() * vertical;
 
-        let effective_thrust = self.loadout.thrust_power();
+        let effective_thrust = self.loadout.thrust_power() * self.power_mode.thrust_multiplier();
         let effective_rotation = self.loadout.rotation_speed();
-        let effective_damping = self.loadout.damping();
 
-        self.linear_velocity += thrust * effective_thrust * delta;
-        self.linear_velocity *= effective_damping;
+        // Angular integration stays local and exact.
+        self.angular.step(
+            to_array(Vector3::new(pitch, yaw, roll) * effective_rotation),
+            self.loadout.damping(),
+            SHIP_SPEED_LIMITS.angular,
+            delta,
+        );
 
-        self.angular_velocity += Vector3::new(pitch, yaw, roll) * effective_rotation * delta;
-        self.angular_velocity *= effective_damping;
-
-        // Sanitize: clamp velocities to sane maximums and reset NaN.
-        const MAX_LINEAR_SPEED: f32 = 50.0;
-        const MAX_ANGULAR_SPEED: f32 = 5.0;
-        self.linear_velocity = sanitize_velocity(self.linear_velocity, MAX_LINEAR_SPEED);
-        self.angular_velocity = sanitize_velocity(self.angular_velocity, MAX_ANGULAR_SPEED);
-
-        let vel = self.linear_velocity;
-        let rot = self.angular_velocity * delta;
-
-        self.base_mut().set_velocity(vel);
-        self.base_mut().move_and_slide();
+        let rot = to_vector(self.angular.velocity()) * delta;
 
         // Quaternion-based rotation: compose pitch/yaw/roll independently
         // then apply to current orientation. Avoids gimbal lock and
@@ -141,14 +158,12 @@ impl ICharacterBody3D for ShipController {
             * Quaternion::from_axis_angle(Vector3::BACK, rot.z);
         let current_quat = self.base().get_quaternion();
         let new_quat = (current_quat * local_rotation).normalized();
-
-        // Guard: if the quaternion became NaN, keep the previous one.
         if is_quat_finite(new_quat) {
             self.base_mut().set_quaternion(new_quat);
         }
 
         // --- Weapon ---
-        self.weapon.fire_rate = self.loadout.fire_rate();
+        self.weapon.fire_rate = self.loadout.fire_rate() * self.power_mode.fire_rate_multiplier();
         self.weapon.damage = void_logic::newtypes::Damage::new(self.laser_level.damage());
         self.weapon.tick(delta);
         self.age_beams(delta);
@@ -158,11 +173,48 @@ impl ICharacterBody3D for ShipController {
                 self.fire_dual_lasers(damage.as_f32());
             }
         }
-    }
-}
 
-#[godot_api]
-impl ShipController {
+        ControlInput {
+            thrust: to_array(thrust * effective_thrust),
+            torque: [0.0; 3],
+        }
+    }
+
+    /// The ship's motion envelope for the kinetic world (retention
+    /// changes with Stability upgrades mid-run).
+    pub fn envelope(&self) -> (Retention, SpeedLimits) {
+        (self.loadout.damping(), SHIP_SPEED_LIMITS)
+    }
+
+    /// Variant-boundary wrapper: the one f32→Damage conversion for
+    /// GDScript and `Object::call` dispatch. Rust callers use
+    /// `apply_damage`.
+    #[func]
+    pub fn take_damage(&mut self, amount: f32) {
+        self.apply_damage(void_logic::newtypes::Damage::new(amount));
+    }
+
+    /// Called when a projectile or enemy hits this ship.
+    pub fn apply_damage(&mut self, damage: void_logic::newtypes::Damage) {
+        // Player damage SFX (non-positional since it's the player)
+        if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+            audio.bind_mut().play_event(SfxEvent::ImpactHeavy);
+        }
+        // Signals are Variant territory: convert at the boundary.
+        self.base_mut().emit_signal(
+            signals::PLAYER_DAMAGED,
+            &[Variant::from(damage.as_f32())],
+        );
+    }
+
+    /// Reset local state to match a fresh RunState (called by GameManager on new/continue).
+    #[func]
+    pub fn reset_loadout(&mut self) {
+        self.loadout = Loadout::new();
+        self.laser_level = LaserLevel::Red;
+        self.power_mode = PowerMode::default();
+    }
+
     #[func]
     pub fn set_laser_level(&mut self, level: i32) {
         if let Some(laser) = LaserLevel::from_level(level as u32) {
@@ -207,6 +259,11 @@ impl ShipController {
 
         self.fire_single_ray(left_origin, forward, damage);
         self.fire_single_ray(right_origin, forward, damage);
+
+        // Laser fire SFX (non-positional — it's the player's own gun)
+        if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+            audio.bind_mut().play_event(SfxEvent::LaserFire);
+        }
     }
 
     fn fire_single_ray(&mut self, origin: Vector3, forward: Vector3, damage: f32) {
@@ -263,6 +320,7 @@ impl ShipController {
         sphere.set_height(0.03);
         let mut spark_mat = StandardMaterial3D::new_gd();
         spark_mat.set_albedo(Color::from_rgba(1.0, 0.5, 0.1, 1.0));
+        spark_mat.set_feature(godot::classes::base_material_3d::Feature::EMISSION, true);
         spark_mat.set_emission(Color::from_rgba(1.0, 0.4, 0.1, 1.0));
         spark_mat.set_emission_energy_multiplier(8.0);
         sphere.set_material(&spark_mat);
@@ -272,7 +330,10 @@ impl ShipController {
         if let Some(root) = godot_util::scene_root(self.base().get_tree()) {
             root.clone().add_child(&particles);
             particles.set_emitting(true);
-            particles.set_meta(meta_keys::SPARK_TIMER, &Variant::from(0.5_f32));
+            // Self-destruct after sparks finish
+            let mut timer = particles.get_tree().create_timer(0.5);
+            let callable = particles.callable("queue_free");
+            timer.connect("timeout", &callable);
         }
     }
 

@@ -3,7 +3,7 @@
 [ext_resource type="PackedScene" path="res://addons/quaternius/essentials/enemies/Enemy_GunDrone.gltf" id="1"]
 
 [sub_resource type="SphereShape3D" id="drone_shape"]
-radius = 0.5
+radius = 0.65
 
 [node name="EnemyDrone" type="EnemyDrone"]
 enemy_type_id = 1

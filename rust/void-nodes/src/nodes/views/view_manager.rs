@@ -1,7 +1,10 @@
 use godot::prelude::*;
+use godot::builtin::Signal;
 use godot::classes::{
-    Camera3D, CanvasLayer, DisplayServer, INode3D, Node, Node3D,
-    SubViewport, SubViewportContainer, TextureRect,
+    Camera3D, CanvasLayer, DisplayServer, INode3D, MeshInstance3D, Node, Node3D,
+    QuadMesh, StandardMaterial3D, SubViewport, SubViewportContainer, TextureRect,
+    base_material_3d::{ShadingMode, Transparency, CullMode},
+    display_server::WindowMode,
     texture_rect::StretchMode,
     sub_viewport::UpdateMode,
     viewport::Msaa,
@@ -10,9 +13,12 @@ use godot::classes::{
 use crate::nodes::constants::{methods, nodes, signals};
 use void_logic::stereo::{
     frustum_offsets, left_eye_offset, right_eye_offset,
-    single_viewport_size, ui_viewport_size,
+    single_viewport_size, ui_plane_size, ui_viewport_size,
     DisplayMode, StereoConfig, UI_NODE_NAMES,
 };
+
+/// Default distance (meters) from camera to the floating UI plane in SBS mode.
+const DEFAULT_UI_PLANE_DISTANCE: f32 = 2.0;
 
 /// First-class view manager: owns the display pipeline (mono or SBS stereo).
 ///
@@ -22,8 +28,8 @@ use void_logic::stereo::{
 ///
 /// UI CanvasLayers always render into a fixed-size UIViewport (set once at
 /// startup, never changed). In mono mode a MonoUILayer composites that texture
-/// fullscreen; in SBS mode per-eye TextureRects composite it into each eye.
-/// Toggling only changes visibility — no runtime viewport redirect.
+/// fullscreen; in SBS mode a 3D quad (UIPlane) in the shared World3D displays
+/// the UIViewport texture, giving the UI real stereo depth.
 #[derive(GodotClass)]
 #[class(base=Node3D)]
 pub struct ViewManager {
@@ -35,8 +41,12 @@ pub struct ViewManager {
     depth_strength: f32,
     #[export]
     convergence_distance: f32,
+    #[export]
+    ui_plane_distance: f32,
 
     current_mode: DisplayMode,
+    /// Window size before entering SBS/fullscreen, so we can restore it.
+    pre_sbs_window_size: Vector2i,
 }
 
 #[godot_api]
@@ -47,7 +57,9 @@ impl INode3D for ViewManager {
             eye_separation: 0.065,
             depth_strength: 1.0,
             convergence_distance: 0.0,
+            ui_plane_distance: DEFAULT_UI_PLANE_DISTANCE,
             current_mode: DisplayMode::Mono,
+            pre_sbs_window_size: Vector2i::new(0, 0),
         }
     }
 
@@ -55,6 +67,7 @@ impl INode3D for ViewManager {
         self.setup_viewports();
         self.set_ui_viewport_once();
         self.connect_to_game_manager();
+        self.connect_to_window_resize();
         godot_print!("ViewManager ready — {}", self.current_mode.label());
     }
 
@@ -63,11 +76,22 @@ impl INode3D for ViewManager {
             return;
         }
         self.sync_eye_cameras();
+        self.sync_ui_plane();
     }
 }
 
 #[godot_api]
 impl ViewManager {
+    /// Called when the window resizes (fullscreen transition, manual resize, etc.)
+    /// Recomputes all viewport and container sizes from the actual window dims.
+    #[func]
+    pub fn on_window_size_changed(&mut self) {
+        if self.current_mode == DisplayMode::SideBySide {
+            self.resize_viewports();
+            self.resize_ui_plane();
+        }
+    }
+
     /// Called when GameManager emits options_changed.
     #[func]
     pub fn on_options_changed(&mut self, sbs_enabled: bool, _msaa_enabled: bool) {
@@ -110,6 +134,25 @@ impl ViewManager {
         }
     }
 
+    /// Connect to the root viewport's size_changed signal so we reactively
+    /// resize viewports whenever the window changes (fullscreen, drag, etc.)
+    /// Uses CONNECT_DEFERRED to avoid re-entrant borrow panics — the callback
+    /// runs next frame, not during the signal emission that triggered the resize.
+    fn connect_to_window_resize(&mut self) {
+        let Some(viewport) = self.base().get_viewport() else {
+            godot_warn!("ViewManager: no viewport for size_changed signal");
+            return;
+        };
+        let callable = self.base().callable(methods::ON_WINDOW_SIZE_CHANGED);
+        let signal = Signal::from_object_signal(&viewport, signals::SIZE_CHANGED);
+        if !signal.is_connected(&callable) {
+            signal.connect_flags(
+                &callable,
+                godot::classes::object::ConnectFlags::DEFERRED,
+            );
+        }
+    }
+
     /// Set custom_viewport on all UI CanvasLayers to point at UIViewport.
     /// Called once at startup — never changed again at runtime.
     fn set_ui_viewport_once(&self) {
@@ -128,7 +171,14 @@ impl ViewManager {
     }
 
     fn stereo_config(&self) -> StereoConfig {
-        let win = DisplayServer::singleton().window_get_size();
+        let ds = DisplayServer::singleton();
+        // In fullscreen, window_get_size() may not reflect the new dims yet
+        // (macOS animates the transition). Use screen_get_size() which is
+        // available immediately.
+        let win = match ds.window_get_mode() {
+            WindowMode::FULLSCREEN | WindowMode::EXCLUSIVE_FULLSCREEN => ds.screen_get_size(),
+            _ => ds.window_get_size(),
+        };
         // In SBS mode the window is 2x wide; per-eye width is half that.
         let w = if self.current_mode == DisplayMode::SideBySide {
             (win.x / 2) as u32
@@ -210,7 +260,7 @@ impl ViewManager {
         ui_viewport.set_transparent_background(true);
         ui_viewport.set_update_mode(UpdateMode::ALWAYS);
 
-        // UI TextureRect in left eye
+        // UI TextureRect in left eye (kept for fallback but hidden in SBS)
         let mut left_ui_rect = TextureRect::new_alloc();
         left_ui_rect.set_name("LeftUIOverlay");
         left_ui_rect.set_size(Vector2::new(eye_w as f32, eye_h as f32));
@@ -218,7 +268,7 @@ impl ViewManager {
         left_ui_rect.set_mouse_filter(godot::classes::control::MouseFilter::IGNORE);
         left_container.add_child(&left_ui_rect);
 
-        // UI TextureRect in right eye
+        // UI TextureRect in right eye (kept for fallback but hidden in SBS)
         let mut right_ui_rect = TextureRect::new_alloc();
         right_ui_rect.set_name("RightUIOverlay");
         right_ui_rect.set_size(Vector2::new(eye_w as f32, eye_h as f32));
@@ -244,15 +294,105 @@ impl ViewManager {
         mono_ui_layer.add_child(&mono_ui_rect);
         self.base_mut().add_child(&mono_ui_layer);
 
-        // Set UIViewport texture on all three overlay rects
+        // Set UIViewport texture on overlay rects
         let ui_texture = ui_viewport.get_texture()
             .expect("UIViewport must have a texture after creation");
         left_ui_rect.set_texture(&ui_texture);
         right_ui_rect.set_texture(&ui_texture);
         mono_ui_rect.set_texture(&ui_texture);
 
-        // Mono mode by default: MonoUILayer visible, StereoCanvas hidden
+        // --- 3D UI plane: world-space quad for SBS stereo depth ---
+        self.setup_ui_plane(ui_texture);
+
+        // Mono mode by default: MonoUILayer visible, StereoCanvas hidden, UIPlane hidden
         self.apply_visibility(false);
+    }
+
+    /// Create a MeshInstance3D with a QuadMesh textured with the UIViewport.
+    /// In SBS mode this floats in front of the camera so both stereo cameras
+    /// render it with natural parallax, giving the UI real depth.
+    fn setup_ui_plane(&mut self, ui_texture: Gd<godot::classes::ViewportTexture>) {
+        // Read FOV and aspect from the actual camera rather than hardcoding
+        let (fov, aspect) = self.camera_fov_and_aspect();
+        let [quad_w, quad_h] = ui_plane_size(self.ui_plane_distance, fov, aspect);
+
+        let mut quad_mesh = QuadMesh::new_gd();
+        quad_mesh.set_size(Vector2::new(quad_w, quad_h));
+
+        let mut material = StandardMaterial3D::new_gd();
+        material.set_shading_mode(ShadingMode::UNSHADED);
+        material.set_transparency(Transparency::ALPHA);
+        material.set_cull_mode(CullMode::DISABLED);
+        // Upcast ViewportTexture → Texture2D for set_texture
+        let texture_2d: Gd<godot::classes::Texture2D> = ui_texture.upcast();
+        material.set_texture(
+            godot::classes::base_material_3d::TextureParam::ALBEDO,
+            &texture_2d,
+        );
+
+        quad_mesh.set_material(&material);
+
+        let mut ui_plane = MeshInstance3D::new_alloc();
+        ui_plane.set_name("UIPlane");
+        ui_plane.set_mesh(&quad_mesh);
+        ui_plane.set_visible(false);
+
+        self.base_mut().add_child(&ui_plane);
+    }
+
+    /// Read FOV and aspect ratio from the actual player camera.
+    /// In SBS mode, aspect is per-eye (half the screen width).
+    fn camera_fov_and_aspect(&self) -> (f32, f32) {
+        let Some(main_scene) = self.base().get_parent() else {
+            return (75.0, 16.0 / 9.0);
+        };
+        let Some(camera) = main_scene.try_get_node_as::<Camera3D>(nodes::PLAYER_CAMERA) else {
+            return (75.0, 16.0 / 9.0);
+        };
+        let fov = camera.get_fov();
+        let config = self.stereo_config();
+        let aspect = if config.viewport_height > 0 {
+            config.viewport_width as f32 / config.viewport_height as f32
+        } else {
+            16.0 / 9.0
+        };
+        (fov, aspect)
+    }
+
+    /// Resize the UI plane quad to match current camera FOV and aspect ratio.
+    fn resize_ui_plane(&self) {
+        let Some(ui_plane) = self.base().try_get_node_as::<MeshInstance3D>(nodes::UI_PLANE) else {
+            return;
+        };
+        let (fov, aspect) = self.camera_fov_and_aspect();
+        let [quad_w, quad_h] = ui_plane_size(self.ui_plane_distance, fov, aspect);
+
+        let plane = ui_plane.clone();
+        if let Some(mesh) = plane.get_mesh() {
+            if let Ok(mut quad) = mesh.try_cast::<QuadMesh>() {
+                quad.set_size(Vector2::new(quad_w, quad_h));
+            }
+        }
+    }
+
+    /// Position the UIPlane in front of the mono camera each frame.
+    fn sync_ui_plane(&self) {
+        let Some(main_scene) = self.base().get_parent() else {
+            return;
+        };
+        let Some(camera) = main_scene.try_get_node_as::<Camera3D>(nodes::PLAYER_CAMERA) else {
+            return;
+        };
+        let Some(ui_plane) = self.base().try_get_node_as::<MeshInstance3D>(nodes::UI_PLANE) else {
+            return;
+        };
+
+        let cam_transform = camera.get_global_transform();
+        let forward = -cam_transform.basis.col_c();
+        let plane_origin = cam_transform.origin + forward * self.ui_plane_distance;
+
+        let mut plane = ui_plane.clone();
+        plane.set_global_transform(Transform3D::new(cam_transform.basis, plane_origin));
     }
 
     /// Sync stereo cameras to the mono camera's transform.
@@ -309,15 +449,20 @@ impl ViewManager {
             let mut layer = mono.clone();
             layer.set_visible(!sbs);
         }
-        // UI overlays in stereo eyes
+        // 2D UI overlays: hidden in SBS (replaced by 3D UIPlane)
         for path in [
             nodes::LEFT_UI_OVERLAY,
             nodes::RIGHT_UI_OVERLAY,
         ] {
             if let Some(overlay) = self.base().try_get_node_as::<TextureRect>(path) {
                 let mut o = overlay.clone();
-                o.set_visible(sbs);
+                o.set_visible(false);
             }
+        }
+        // 3D UI plane: visible in SBS, hidden in mono
+        if let Some(plane) = self.base().try_get_node_as::<MeshInstance3D>(nodes::UI_PLANE) {
+            let mut p = plane.clone();
+            p.set_visible(sbs);
         }
     }
 
@@ -358,15 +503,18 @@ impl ViewManager {
         viewport.set_use_taa(true);
     }
 
-    fn resize_window(&self, sbs: bool) {
+    fn resize_window(&mut self, sbs: bool) {
         let mut ds = DisplayServer::singleton();
-        let current = ds.window_get_size();
         if sbs {
-            // Mono → SBS: double width
-            ds.window_set_size(Vector2i::new(current.x * 2, current.y));
+            // Remember current window size before going fullscreen
+            self.pre_sbs_window_size = ds.window_get_size();
+            ds.window_set_mode(WindowMode::FULLSCREEN);
         } else {
-            // SBS → Mono: halve width
-            ds.window_set_size(Vector2i::new(current.x / 2, current.y));
+            ds.window_set_mode(WindowMode::WINDOWED);
+            // Restore the window size from before SBS was enabled
+            if self.pre_sbs_window_size.x > 0 && self.pre_sbs_window_size.y > 0 {
+                ds.window_set_size(self.pre_sbs_window_size);
+            }
         }
     }
 
@@ -381,4 +529,3 @@ impl ViewManager {
         }
     }
 }
-

@@ -23,8 +23,17 @@ assets/quaternius-megakit/Engine Projects/Unreal Engine/
 # Godot addon build output (rebuilt via make assets)
 /godot/addons/
 
+# GDExtension dylib (copied in by make build / build-release)
+/godot/libvoid_scavenger*.dylib
+
 # Claude Code worktrees
 .claude/worktrees/
+
+# Serena MCP language-server state
+.serena/
+
+# Stray Godot import artifact
+/.import
 
 # OS
 .DS_Store

@@ -3,6 +3,8 @@ use crate::laser::LaserLevel;
 use crate::loadout::Loadout;
 use crate::newtypes::Health;
 use crate::run_state::RunState;
+use crate::seed::Seed;
+use crate::shield::ShieldState;
 
 /// A snapshot of game state, saved at end-of-level and on death.
 #[derive(Debug, Clone, PartialEq)]
@@ -11,9 +13,10 @@ pub struct SaveGame {
     pub loadout: Loadout,
     pub score: u32,
     pub current_level: u32,
-    pub run_seed: u64,
+    pub run_seed: Seed,
     pub credits: CreditAccount,
     pub health: Health,
+    pub shield: ShieldState,
 }
 
 impl SaveGame {
@@ -26,6 +29,7 @@ impl SaveGame {
             run_seed: run.run_seed,
             credits: run.credits,
             health: run.health,
+            shield: run.shield.clone(),
         }
     }
 
@@ -37,6 +41,7 @@ impl SaveGame {
         run.run_seed = self.run_seed;
         run.credits = self.credits;
         run.health = self.health;
+        run.shield = self.shield.clone();
         // Reset ephemeral state
         run.kills.reset();
         run.rooms_cleared.clear();
@@ -49,7 +54,7 @@ mod tests {
     use super::*;
     #[test]
     fn snapshot_captures_laser_level() {
-        let mut run = RunState::new(42);
+        let mut run = RunState::new(Seed::new(42));
         run.laser_level = LaserLevel::Green;
         let save = SaveGame::from_run_state(&run);
         assert_eq!(save.laser_level, LaserLevel::Green);
@@ -57,7 +62,7 @@ mod tests {
 
     #[test]
     fn snapshot_captures_current_level() {
-        let mut run = RunState::new(42);
+        let mut run = RunState::new(Seed::new(42));
         run.current_level = 4;
         let save = SaveGame::from_run_state(&run);
         assert_eq!(save.current_level, 4);
@@ -65,7 +70,7 @@ mod tests {
 
     #[test]
     fn snapshot_captures_credits() {
-        let mut run = RunState::new(42);
+        let mut run = RunState::new(Seed::new(42));
         run.credits.earn(5_000);
         let save = SaveGame::from_run_state(&run);
         assert_eq!(save.credits.balance, 5_000);
@@ -73,7 +78,7 @@ mod tests {
 
     #[test]
     fn snapshot_captures_score() {
-        let mut run = RunState::new(42);
+        let mut run = RunState::new(Seed::new(42));
         run.score = 300;
         let save = SaveGame::from_run_state(&run);
         assert_eq!(save.score, 300);
@@ -81,54 +86,55 @@ mod tests {
 
     #[test]
     fn snapshot_captures_health() {
-        let mut run = RunState::new(42);
-        run.take_damage(crate::newtypes::Damage::new(25.0));
+        let mut run = RunState::new(Seed::new(42));
+        // 70 damage: 50 absorbed by shield, 20 to health
+        run.take_damage(crate::newtypes::Damage::new(70.0));
         let save = SaveGame::from_run_state(&run);
-        assert_eq!(save.health, Health::new(75.0));
+        assert_eq!(save.health, Health::new(80.0));
     }
 
     #[test]
     fn apply_restores_laser_level() {
-        let mut run = RunState::new(42);
+        let mut run = RunState::new(Seed::new(42));
         run.laser_level = LaserLevel::Green;
         let save = SaveGame::from_run_state(&run);
 
-        let mut fresh = RunState::new(99);
+        let mut fresh = RunState::new(Seed::new(99));
         save.apply_to(&mut fresh);
         assert_eq!(fresh.laser_level, LaserLevel::Green);
     }
 
     #[test]
     fn apply_restores_current_level() {
-        let mut run = RunState::new(42);
+        let mut run = RunState::new(Seed::new(42));
         run.current_level = 4;
         let save = SaveGame::from_run_state(&run);
 
-        let mut fresh = RunState::new(99);
+        let mut fresh = RunState::new(Seed::new(99));
         save.apply_to(&mut fresh);
         assert_eq!(fresh.current_level, 4);
     }
 
     #[test]
     fn apply_restores_credits() {
-        let mut run = RunState::new(42);
+        let mut run = RunState::new(Seed::new(42));
         run.credits.earn(5_000);
         let save = SaveGame::from_run_state(&run);
 
-        let mut fresh = RunState::new(99);
+        let mut fresh = RunState::new(Seed::new(99));
         save.apply_to(&mut fresh);
         assert_eq!(fresh.credits.balance, 5_000);
     }
 
     #[test]
     fn apply_resets_ephemeral_state() {
-        let mut run = RunState::new(42);
+        let mut run = RunState::new(Seed::new(42));
         run.current_level = 3;
         run.record_kill(crate::enemy_type::EnemyType::GunDrone);
         run.clear_room(0);
         let save = SaveGame::from_run_state(&run);
 
-        let mut fresh = RunState::new(99);
+        let mut fresh = RunState::new(Seed::new(99));
         fresh.record_kill(crate::enemy_type::EnemyType::Bat);
         fresh.clear_room(1);
         save.apply_to(&mut fresh);
@@ -140,13 +146,13 @@ mod tests {
 
     #[test]
     fn continue_from_level_4_save() {
-        let mut run = RunState::new(42);
+        let mut run = RunState::new(Seed::new(42));
         run.laser_level = LaserLevel::Green;
         run.current_level = 4;
         run.credits.earn(5_000);
         let save = SaveGame::from_run_state(&run);
 
-        let mut fresh = RunState::new(99);
+        let mut fresh = RunState::new(Seed::new(99));
         save.apply_to(&mut fresh);
 
         assert_eq!(fresh.current_level, 4);
@@ -156,14 +162,14 @@ mod tests {
 
     #[test]
     fn continue_from_death_save() {
-        let mut run = RunState::new(42);
+        let mut run = RunState::new(Seed::new(42));
         run.laser_level = LaserLevel::Green; // level 4
         run.current_level = 4;
         run.credits.earn(10_000);
         run.apply_death_penalty();
         let save = SaveGame::from_run_state(&run);
 
-        let mut fresh = RunState::new(99);
+        let mut fresh = RunState::new(Seed::new(99));
         save.apply_to(&mut fresh);
 
         assert_eq!(fresh.current_level, 1);

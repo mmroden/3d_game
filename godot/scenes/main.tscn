@@ -17,6 +17,10 @@ sky = SubResource("sky")
 ambient_light_source = 1
 ambient_light_color = Color(0.15, 0.15, 0.2, 1)
 ambient_light_energy = 0.6
+fog_enabled = true
+fog_light_color = Color(0.15, 0.15, 0.15, 1)
+fog_light_energy = 0.2
+fog_density = 0.06
 
 [sub_resource type="SphereShape3D" id="player_shape"]
 radius = 0.5
@@ -26,11 +30,10 @@ script = ExtResource("1")
 
 [node name="GameManager" type="GameManager" parent="."]
 
+[node name="AudioManager" type="AudioManager" parent="."]
+
 [node name="Player" type="ShipController" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2, 0)
-thrust_power = 40.0
-rotation_speed = 6.0
-damping = 0.95
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="Player"]
 shape = SubResource("player_shape")
@@ -45,8 +48,6 @@ convergence_distance = 0.0
 
 [node name="LevelManager" type="LevelManager" parent="."]
 grid_cell_size = 4.0
-seed = 42
-target_rooms = 5
 current_level = 1
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]

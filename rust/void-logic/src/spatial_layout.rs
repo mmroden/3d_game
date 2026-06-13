@@ -6,40 +6,40 @@
 
 use crate::abstract_graph::AbstractGraph;
 use crate::level_graph::LevelGraph;
-use crate::room_template::{Connector, ConnectorFacing, RoomTemplate, TemplateKind};
+use crate::room_template::{Connector, ConnectorFacing, FrameStyle, RoomTemplate, TemplateKind};
 
 /// Generate a corridor template of the given length along a facing direction.
 pub fn make_corridor(facing: ConnectorFacing, length: u32) -> RoomTemplate {
     let (extents, c_in, c_out) = match facing {
         ConnectorFacing::PosX => (
             [length, 1, 1],
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
-            Connector { offset: [length as i32 - 1, 0, 0], facing: ConnectorFacing::PosX },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX, frame: FrameStyle::Door },
+            Connector { offset: [length as i32 - 1, 0, 0], facing: ConnectorFacing::PosX, frame: FrameStyle::Door },
         ),
         ConnectorFacing::NegX => (
             [length, 1, 1],
-            Connector { offset: [length as i32 - 1, 0, 0], facing: ConnectorFacing::PosX },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX },
+            Connector { offset: [length as i32 - 1, 0, 0], facing: ConnectorFacing::PosX, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX, frame: FrameStyle::Door },
         ),
         ConnectorFacing::PosZ => (
             [1, 1, length],
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ },
-            Connector { offset: [0, 0, length as i32 - 1], facing: ConnectorFacing::PosZ },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, length as i32 - 1], facing: ConnectorFacing::PosZ, frame: FrameStyle::Door },
         ),
         ConnectorFacing::NegZ => (
             [1, 1, length],
-            Connector { offset: [0, 0, length as i32 - 1], facing: ConnectorFacing::PosZ },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ },
+            Connector { offset: [0, 0, length as i32 - 1], facing: ConnectorFacing::PosZ, frame: FrameStyle::Door },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ, frame: FrameStyle::Door },
         ),
         ConnectorFacing::PosY => (
             [1, length, 1],
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegY },
-            Connector { offset: [0, length as i32 - 1, 0], facing: ConnectorFacing::PosY },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegY, frame: FrameStyle::None },
+            Connector { offset: [0, length as i32 - 1, 0], facing: ConnectorFacing::PosY, frame: FrameStyle::None },
         ),
         ConnectorFacing::NegY => (
             [1, length, 1],
-            Connector { offset: [0, length as i32 - 1, 0], facing: ConnectorFacing::PosY },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegY },
+            Connector { offset: [0, length as i32 - 1, 0], facing: ConnectorFacing::PosY, frame: FrameStyle::None },
+            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegY, frame: FrameStyle::None },
         ),
     };
 
@@ -290,12 +290,12 @@ mod tests {
         RoomTemplate {
             kind: TemplateKind::Room,
             connectors: vec![
-                Connector { offset: [0, 0, mid_z], facing: ConnectorFacing::NegX },
-                Connector { offset: [ex as i32 - 1, 0, mid_z], facing: ConnectorFacing::PosX },
-                Connector { offset: [mid_x, 0, 0], facing: ConnectorFacing::NegZ },
-                Connector { offset: [mid_x, 0, ez as i32 - 1], facing: ConnectorFacing::PosZ },
-                Connector { offset: [mid_x, 0, mid_z], facing: ConnectorFacing::PosY },
-                Connector { offset: [mid_x, 0, mid_z], facing: ConnectorFacing::NegY },
+                Connector { offset: [0, 0, mid_z], facing: ConnectorFacing::NegX, frame: FrameStyle::Door },
+                Connector { offset: [ex as i32 - 1, 0, mid_z], facing: ConnectorFacing::PosX, frame: FrameStyle::Door },
+                Connector { offset: [mid_x, 0, 0], facing: ConnectorFacing::NegZ, frame: FrameStyle::Door },
+                Connector { offset: [mid_x, 0, ez as i32 - 1], facing: ConnectorFacing::PosZ, frame: FrameStyle::Door },
+                Connector { offset: [mid_x, 0, mid_z], facing: ConnectorFacing::PosY, frame: FrameStyle::Door },
+                Connector { offset: [mid_x, 0, mid_z], facing: ConnectorFacing::NegY, frame: FrameStyle::Door },
             ],
             enemy_spawns: vec![],
             loot_spawns: vec![],
@@ -450,7 +450,7 @@ mod tests {
 
         for seed in 0..10 {
             let config = GeneratorConfig {
-                seed,
+                seed: crate::seed::Seed::new(seed),
                 max_rooms: 10,
                 min_room_xz: 3,
                 max_room_xz: 6,
@@ -476,7 +476,7 @@ mod tests {
         // With 15 rooms requested, at least 12 should survive spatial placement.
         for seed in 0..20 {
             let config = GeneratorConfig {
-                seed,
+                seed: crate::seed::Seed::new(seed),
                 max_rooms: 15,
                 min_room_xz: 3,
                 max_room_xz: 6,
@@ -492,10 +492,51 @@ mod tests {
     }
 
     #[test]
+    fn generated_levels_have_vertical_connections() {
+        use crate::generator;
+
+        // Over 20 seeds, at least some should have rooms at different Y levels,
+        // connected via vertical corridors with active PosY/NegY connectors.
+        let mut any_vertical = false;
+        for seed in 0..20 {
+            let config = GeneratorConfig {
+                seed: crate::seed::Seed::new(seed),
+                max_rooms: 10,
+                min_room_xz: 3,
+                max_room_xz: 6,
+                min_room_y: 1,
+                max_room_y: 6,
+            };
+            let level = generator::generate(&config).expect("generation should succeed");
+
+            // Check for vertical corridors (extent in Y > 1, extent in X and Z == 1).
+            for idx in level.room_indices() {
+                let room = level.room(idx).unwrap();
+                if room.template.kind == TemplateKind::Corridor
+                    && room.template.extents[0] == 1
+                    && room.template.extents[2] == 1
+                    && room.template.extents[1] >= 1
+                {
+                    // Check if it has PosY/NegY connectors
+                    let has_vert_connector = room.template.connectors.iter()
+                        .any(|c| matches!(c.facing, ConnectorFacing::PosY | ConnectorFacing::NegY));
+                    if has_vert_connector {
+                        any_vertical = true;
+                        break;
+                    }
+                }
+            }
+            if any_vertical { break; }
+        }
+        assert!(any_vertical,
+            "across 20 seeds, at least one level should have a vertical corridor");
+    }
+
+    #[test]
     fn result_is_fully_connected() {
         let mut rng = SmallRng::seed_from_u64(42);
         let config = GeneratorConfig {
-            seed: 42,
+            seed: crate::seed::Seed::new(42),
 
             max_rooms: 0,
             min_room_xz: 3,

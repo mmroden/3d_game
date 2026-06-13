@@ -3,7 +3,7 @@
 [ext_resource type="PackedScene" path="res://addons/quaternius/monsters/Slime.fbx" id="1"]
 
 [sub_resource type="SphereShape3D" id="shape"]
-radius = 0.4
+radius = 0.8
 
 [node name="EnemyDrone" type="EnemyDrone"]
 enemy_type_id = 0

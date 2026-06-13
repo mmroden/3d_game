@@ -1,4 +1,4 @@
-.PHONY: deps check demo clean run assets test-godot
+.PHONY: deps deps-gut check test-rust test-godot demo edit clean run build build-release assets assets-materials
 
 # Project-local tool paths
 TOOLS_DIR := $(CURDIR)/tools
@@ -14,13 +14,18 @@ GODOT_RELEASE := stable
 GODOT_ZIP := Godot_v$(GODOT_VERSION)-$(GODOT_RELEASE)_macos.universal.zip
 GODOT_URL := https://github.com/godotengine/godot/releases/download/$(GODOT_VERSION)-$(GODOT_RELEASE)/$(GODOT_ZIP)
 
+# GUT (Godot Unit Test)
+GUT_VERSION := 9.6.0
+GUT_URL := https://github.com/bitwes/Gut/archive/refs/tags/v$(GUT_VERSION).tar.gz
+GUT_DIR := $(GODOT_DIR)/addons/gut
+
 # Rust
 CARGO := cargo
 RUST_LIB := $(RUST_DIR)/target/debug/libvoid_scavenger.dylib
 
 # --- Targets ---
 
-deps: deps-rust deps-godot
+deps: deps-rust deps-godot deps-gut
 	@echo "All dependencies ready."
 
 deps-rust:
@@ -66,43 +71,83 @@ assets: build
 		-exec sed -i '' 's|compress/mode=0|compress/mode=2|' {} +
 	@echo "==> Reimporting assets (pass 2: with material script + mipmaps)..."
 	$(GODOT) --headless --import --path $(GODOT_DIR)
-	@echo "==> Restoring material definitions (undo Godot path rewrites)..."
-	@./scripts/install-addons.sh $(ASSETS_DIR) $(GODOT_DIR) --tres-only
-	@echo "==> Enabling anisotropic texture filtering on VisualShader materials..."
-	@python3 -c "import re,sys;p=sys.argv[1];t=open(p).read();t=re.sub(r'(\[sub_resource type=\"VisualShaderNodeTexture2DParameter\"[^\]]*\]\nparameter_name = [^\n]+)',r'\1\ntexture_filter = 6',t);open(p,'w').write(t)" \
-		$(GODOT_DIR)/addons/quaternius/materials/M_Trim_Base.tres
+	@$(MAKE) assets-materials
 	@echo "==> Reimporting assets (pass 3: with restored materials)..."
 	@rm -f $(GODOT_DIR)/.godot/uid_cache.bin
 	$(GODOT) --headless --import --path $(GODOT_DIR)
 	@echo "Import complete."
 
-test-godot: build
-	@echo "==> Running Godot tests (GUT)..."
-	@GODOT_DISABLE_LEAK_CHECKS=1 $(GODOT) --headless --path $(GODOT_DIR) \
-		-s res://addons/gut/gut_cmdln.gd \
-		-gdir=res://tests -ginclude_subdirs -gexit
-	@echo "Godot tests complete."
+deps-gut:
+	@if [ -d "$(GUT_DIR)" ]; then \
+		echo "GUT $(GUT_VERSION) already installed."; \
+	else \
+		echo "==> Downloading GUT $(GUT_VERSION)..."; \
+		curl -sL $(GUT_URL) -o /tmp/gut-$(GUT_VERSION).tar.gz; \
+		tar xzf /tmp/gut-$(GUT_VERSION).tar.gz -C /tmp; \
+		mkdir -p $(GUT_DIR); \
+		cp -r /tmp/Gut-$(GUT_VERSION)/addons/gut/* $(GUT_DIR)/; \
+		rm -rf /tmp/gut-$(GUT_VERSION).tar.gz /tmp/Gut-$(GUT_VERSION); \
+		echo "==> Importing GUT class_names..."; \
+		$(GODOT) --headless --import --path $(GODOT_DIR); \
+		echo "GUT $(GUT_VERSION) installed to $(GUT_DIR)"; \
+	fi
 
-check: deps
-	@echo "==> Running checks..."
+check: build
+	@echo "==> Running Rust checks..."
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && \
 		$(CARGO) clippy -- -D warnings && \
 		$(CARGO) test
+	@$(MAKE) test-godot
 	@echo "All checks passed."
+
+# Re-copies sanitized .tres materials from asset packs and re-applies
+# local material patches (no reimport).
+assets-materials:
+	@echo "==> Restoring material definitions from asset packs..."
+	@./scripts/install-addons.sh $(ASSETS_DIR) $(GODOT_DIR) --tres-only
+	@echo "==> Enabling anisotropic texture filtering on VisualShader materials..."
+	@python3 -c "import re,sys;p=sys.argv[1];t=open(p).read();t=re.sub(r'(\[sub_resource type=\"VisualShaderNodeTexture2DParameter\"[^\]]*\]\nparameter_name = [^\n]+)',r'\1\ntexture_filter = 6',t);open(p,'w').write(t)" \
+		$(GODOT_DIR)/addons/quaternius/materials/M_Trim_Base.tres
+
+# Filtered Rust tests with output: make test-rust FILTER=test_name
+test-rust:
+	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
+		cd $(RUST_DIR) && $(CARGO) test $(FILTER) -- --nocapture
+
+# Runs GUT against the currently installed dylib (no rebuild).
+test-godot:
+	@echo "==> Running Godot tests (GUT)..."
+	@GODOT_DISABLE_LEAK_CHECKS=1 $(GODOT) --headless --path $(GODOT_DIR) \
+		-s res://addons/gut/gut_cmdln.gd \
+		-gdir=res://tests -ginclude_subdirs -gexit
 
 build: deps
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && $(CARGO) build
-	@echo "Build complete."
+	@rm -f $(GODOT_DIR)/libvoid_scavenger.debug.dylib $(GODOT_DIR)/libvoid_scavenger.dylib
+	@cp $(RUST_DIR)/target/debug/libvoid_scavenger.dylib $(GODOT_DIR)/libvoid_scavenger.dylib
+	@echo "Build complete (debug)."
 
-run: build
-	@echo "==> Launching game..."
+build-release: deps
+	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
+		cd $(RUST_DIR) && $(CARGO) build --release
+	@rm -f $(GODOT_DIR)/libvoid_scavenger.debug.dylib $(GODOT_DIR)/libvoid_scavenger.dylib
+	@cp $(RUST_DIR)/target/release/libvoid_scavenger.dylib $(GODOT_DIR)/libvoid_scavenger.dylib
+	@echo "Build complete (release)."
+
+run: build-release
+	@echo "==> Launching game (release)..."
 	@$(GODOT) --path $(GODOT_DIR)
 
 demo: build
-	@echo "==> Running demo..."
+	@echo "==> Launching game (debug)..."
 	@$(GODOT) --path $(GODOT_DIR)
+
+# Godot editor: Debugger -> Monitors graphs the kinetics/* counters live.
+edit: build
+	@echo "==> Opening Godot editor..."
+	@$(GODOT) --editor --path $(GODOT_DIR)
 
 clean:
 	@echo "==> Cleaning..."

@@ -36,12 +36,31 @@ impl ConnectorFacing {
     }
 }
 
+/// Visual treatment at a connector opening.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum FrameStyle {
+    /// Standard door frame mesh (XZ connectors).
+    #[default]
+    Door,
+    /// Clean opening — no frame mesh placed.
+    None,
+}
+
 /// A connection point on a room where corridors attach.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Connector {
     /// Position relative to room origin, in grid units.
     pub offset: [i32; 3],
     pub facing: ConnectorFacing,
+    /// Visual treatment at this opening. Defaults to `Door`.
+    pub frame: FrameStyle,
+}
+
+impl Connector {
+    /// Shorthand constructor with default frame style (Door).
+    pub fn new(offset: [i32; 3], facing: ConnectorFacing) -> Self {
+        Self { offset, facing, frame: FrameStyle::Door }
+    }
 }
 
 impl Connector {
@@ -119,37 +138,52 @@ mod tests {
 
     #[test]
     fn matching_connectors_mate() {
-        let a = Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX };
-        let b = Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX };
+        let a = Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX, frame: FrameStyle::Door };
+        let b = Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX, frame: FrameStyle::Door };
         assert!(a.mates_with(&b));
         assert!(b.mates_with(&a));
     }
 
     #[test]
     fn same_facing_connectors_do_not_mate() {
-        let a = Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX };
-        let b = Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX };
+        let a = Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX, frame: FrameStyle::Door };
+        let b = Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX, frame: FrameStyle::Door };
         assert!(!a.mates_with(&b));
     }
 
     #[test]
     fn perpendicular_connectors_do_not_mate() {
-        let a = Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX };
-        let c = Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ };
+        let a = Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX, frame: FrameStyle::Door };
+        let c = Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosZ, frame: FrameStyle::Door };
         assert!(!a.mates_with(&c));
     }
 
     #[test]
     fn target_cell_at_origin() {
-        let c = Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX };
+        let c = Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX, frame: FrameStyle::Door };
         assert_eq!(c.target_cell([0, 0, 0]), [1, 0, 0]);
     }
 
     #[test]
     fn target_cell_with_offset_and_room_origin() {
         // Connector on the far side of a 2x1x1 room
-        let c = Connector { offset: [1, 0, 0], facing: ConnectorFacing::PosX };
+        let c = Connector { offset: [1, 0, 0], facing: ConnectorFacing::PosX, frame: FrameStyle::Door };
         // Room placed at grid [3, 0, 0]
         assert_eq!(c.target_cell([3, 0, 0]), [5, 0, 0]);
+    }
+
+    #[test]
+    fn connector_default_frame_is_door() {
+        let c = Connector::new([0, 0, 0], ConnectorFacing::NegX);
+        assert_eq!(c.frame, FrameStyle::Door);
+    }
+
+    #[test]
+    fn connector_frameless() {
+        let c = Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX, frame: FrameStyle::None };
+        assert_eq!(c.frame, FrameStyle::None);
+        // Frameless connectors still mate normally.
+        let other = Connector::new([0, 0, 0], ConnectorFacing::PosX);
+        assert!(c.mates_with(&other));
     }
 }

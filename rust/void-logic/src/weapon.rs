@@ -52,7 +52,7 @@ impl WeaponState {
 
 impl Default for WeaponState {
     fn default() -> Self {
-        Self::new(5.0, Damage::new(1.0), 100.0)
+        Self::new(2.0, Damage::new(1.0), 100.0)
     }
 }
 
@@ -84,10 +84,10 @@ mod tests {
 
     #[test]
     fn cooldown_expires_after_sufficient_ticks() {
-        let mut weapon = WeaponState::new(5.0, Damage::new(1.0), 100.0);
+        let mut weapon = WeaponState::default();
         weapon.try_fire();
-        // Cooldown = 1/5 = 0.2s
-        weapon.tick(0.1);
+        // Cooldown = 1/2 = 0.5s
+        weapon.tick(0.4);
         assert!(!weapon.is_ready());
         weapon.tick(0.1);
         assert!(weapon.is_ready());
@@ -95,11 +95,17 @@ mod tests {
 
     #[test]
     fn can_fire_again_after_cooldown() {
-        let mut weapon = WeaponState::new(5.0, Damage::new(1.0), 100.0);
+        let mut weapon = WeaponState::default();
         weapon.try_fire();
-        weapon.tick(0.2);
+        weapon.tick(0.5);
         let result = weapon.try_fire();
         assert_eq!(result, FireResult::Fired { damage: Damage::new(1.0) });
+    }
+
+    #[test]
+    fn default_fire_rate_is_two() {
+        let weapon = WeaponState::default();
+        assert_eq!(weapon.fire_rate, 2.0);
     }
 
     #[test]

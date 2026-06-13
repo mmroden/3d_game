@@ -1,5 +1,6 @@
 //! Enemy type taxonomy with stats, display names, and scene paths.
 
+use crate::enemy_category::EnemyCategory;
 use crate::newtypes::{Health, Damage};
 
 /// All enemy types in the game, ordered by difficulty tier.
@@ -96,6 +97,19 @@ impl EnemyType {
         }
     }
 
+    /// Whether this enemy is a mechanical defense system or a biological creature.
+    pub fn category(&self) -> EnemyCategory {
+        match self {
+            Self::GunDrone | Self::EyeDrone | Self::QuadOrb | Self::QuadShell => {
+                EnemyCategory::Mechanical
+            }
+            Self::Slime | Self::Bat | Self::Shark | Self::Raptor
+            | Self::Skeleton | Self::Trilobite | Self::Dragon => {
+                EnemyCategory::Biological
+            }
+        }
+    }
+
     pub fn from_id(id: i32) -> Option<EnemyType> {
         Self::ALL.get(id as usize).copied()
     }
@@ -143,6 +157,7 @@ pub struct EnemyStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::enemy_category::EnemyCategory;
     use crate::newtypes::Health;
 
     #[test]
@@ -242,6 +257,50 @@ mod tests {
         let l8 = enemies_for_level(8).len();
         assert!(l3 > l1);
         assert!(l8 > l3);
+    }
+
+    #[test]
+    fn mechanical_enemies_are_drones_and_orbs() {
+        let mechanical = [
+            EnemyType::GunDrone,
+            EnemyType::EyeDrone,
+            EnemyType::QuadOrb,
+            EnemyType::QuadShell,
+        ];
+        for enemy in mechanical {
+            assert_eq!(enemy.category(), EnemyCategory::Mechanical,
+                "{:?} should be Mechanical", enemy);
+        }
+    }
+
+    #[test]
+    fn biological_enemies_are_creatures() {
+        let biological = [
+            EnemyType::Slime,
+            EnemyType::Bat,
+            EnemyType::Shark,
+            EnemyType::Raptor,
+            EnemyType::Skeleton,
+            EnemyType::Trilobite,
+            EnemyType::Dragon,
+        ];
+        for enemy in biological {
+            assert_eq!(enemy.category(), EnemyCategory::Biological,
+                "{:?} should be Biological", enemy);
+        }
+    }
+
+    #[test]
+    fn category_counts_are_correct() {
+        let mech_count = EnemyType::ALL.iter()
+            .filter(|e| e.category() == EnemyCategory::Mechanical)
+            .count();
+        let bio_count = EnemyType::ALL.iter()
+            .filter(|e| e.category() == EnemyCategory::Biological)
+            .count();
+        assert_eq!(mech_count, 4, "Should have 4 mechanical enemies");
+        assert_eq!(bio_count, 7, "Should have 7 biological enemies");
+        assert_eq!(mech_count + bio_count, EnemyType::ALL.len());
     }
 
     #[test]

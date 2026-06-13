@@ -3,12 +3,13 @@ use godot::prelude::EulerOrder;
 use godot::classes::{
     CharacterBody3D, ICharacterBody3D, PackedScene, ResourceLoader,
     GpuParticles3D, ParticleProcessMaterial, SphereMesh, StandardMaterial3D,
-    MeshInstance3D, BoxMesh,
+    MeshInstance3D, BoxMesh, Node3D,
 };
 
-use super::constants::{groups, meta_keys, scenes, signals};
+use super::constants::{groups, scenes, signals};
 use super::godot_util;
-use void_logic::enemy_ai::{DroneAi, DroneConfig};
+use void_logic::enemy_ai::{DroneAi, DroneConfig, DroneState};
+use void_logic::audio_catalog::SfxEvent;
 use void_logic::enemy_type::EnemyType;
 use void_logic::newtypes::{Health, Damage};
 
@@ -83,6 +84,8 @@ impl ICharacterBody3D for EnemyDrone {
             });
         }
 
+        self.base_mut().add_to_group(groups::ENEMIES);
+
         // Find player via group
         let tree = self.base().get_tree();
         let players = tree.get_nodes_in_group(groups::PLAYER);
@@ -94,64 +97,21 @@ impl ICharacterBody3D for EnemyDrone {
         self.create_health_bar();
     }
 
-    fn physics_process(&mut self, delta: f64) {
-        let delta = delta as f32;
-
-        // Dead enemies must not execute any physics — they're queued for removal.
+    fn process(&mut self, _delta: f64) {
+        // Cosmetics only: motion belongs to the kinetic world (the
+        // level host pulls decide() each tick and syncs our position
+        // from snapshots).
         if self.ai.is_dead() {
-            self.base_mut().set_velocity(Vector3::ZERO);
-            self.on_death();
             return;
         }
-
         let Some(player) = &self.player else { return };
         if !player.is_instance_valid() {
             return;
         }
-
-        let my_pos = self.base().get_global_position();
         let player_pos = player.get_global_position();
-        let distance = my_pos.distance_to(player_pos);
-
-        let should_fire = self.ai.update(distance, delta);
-
-        // Guard: skip movement and look_at when too close to player.
-        // Prevents zero-vector normalization and degenerate look_at.
-        const MIN_DISTANCE: f32 = 0.1;
-
-        match self.ai.state {
-            void_logic::enemy_ai::DroneState::Chasing => {
-                if distance > MIN_DISTANCE {
-                    let direction = (player_pos - my_pos).normalized();
-                    let velocity = direction * self.speed;
-                    self.base_mut().set_velocity(velocity);
-                    self.base_mut().move_and_slide();
-                    self.base_mut().look_at(player_pos);
-                } else {
-                    self.base_mut().set_velocity(Vector3::ZERO);
-                }
-            }
-            void_logic::enemy_ai::DroneState::Attacking => {
-                if distance > MIN_DISTANCE {
-                    self.base_mut().look_at(player_pos);
-                    let direction = (player_pos - my_pos).normalized();
-                    let velocity = direction * self.speed * 0.3;
-                    self.base_mut().set_velocity(velocity);
-                    self.base_mut().move_and_slide();
-                } else {
-                    self.base_mut().set_velocity(Vector3::ZERO);
-                }
-            }
-            _ => {
-                self.base_mut().set_velocity(Vector3::ZERO);
-            }
+        if self.base().get_global_position().distance_to(player_pos) > 0.1 {
+            self.safe_look_at(player_pos);
         }
-
-        if should_fire {
-            self.fire_at_player(player_pos);
-        }
-
-        // Billboard the health bar toward the player
         self.update_health_bar(player_pos);
     }
 }
@@ -161,20 +121,64 @@ impl EnemyDrone {
     #[signal]
     fn enemy_killed(type_id: i32);
 
+    /// Variant-boundary wrapper: the one f32→Damage conversion for
+    /// GDScript and `Object::call` dispatch. Rust callers use
+    /// `apply_damage`.
     #[func]
     pub fn take_damage(&mut self, amount: f32) {
-        let died = self.ai.take_damage(Damage::new(amount));
+        self.apply_damage(Damage::new(amount));
+    }
+
+    pub fn apply_damage(&mut self, damage: Damage) {
+        let died = self.ai.take_damage(damage);
         self.update_health_bar_fill();
 
-        if !died {
-            // Flash the model briefly to indicate hit
+        if died {
+            self.on_death();
+        } else {
             self.spawn_hit_flash();
         }
     }
 
-    fn fire_at_player(&self, _player_pos: Vector3) {
-        godot_print!("Drone fires at player!");
-        // TODO: enemy projectile or hitscan toward player
+    /// Per-tick decision, pulled by the level host: the desired cruise
+    /// velocity and whether to fire (the host spawns the bolt as a
+    /// ballistic world body). All positions are world-body positions
+    /// supplied by the host — render-interpolated node transforms are
+    /// never physics inputs.
+    pub fn decide(
+        &mut self,
+        has_sight: bool,
+        my_pos: Vector3,
+        player_pos: Vector3,
+        delta: f32,
+    ) -> (Vector3, bool) {
+        if self.ai.is_dead() {
+            return (Vector3::ZERO, false);
+        }
+        let distance = my_pos.distance_to(player_pos);
+        let should_fire = self.ai.update(distance, has_sight, delta);
+        if should_fire {
+            if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+                audio.bind_mut().play_event_at(SfxEvent::EnemyFire, my_pos);
+            }
+        }
+
+        const MIN_DISTANCE: f32 = 0.1;
+        if distance <= MIN_DISTANCE {
+            return (Vector3::ZERO, should_fire);
+        }
+        let direction = (player_pos - my_pos).normalized();
+        let desired = match self.ai.state {
+            DroneState::Chasing => direction * self.speed,
+            DroneState::Attacking => direction * self.speed * 0.3,
+            _ => Vector3::ZERO,
+        };
+        (desired, should_fire)
+    }
+
+    /// Damage carried by this enemy's bolts.
+    pub fn bolt_damage(&self) -> Damage {
+        Damage::new(self.damage)
     }
 
     fn on_death(&mut self) {
@@ -186,6 +190,12 @@ impl EnemyDrone {
         );
 
         let pos = self.base().get_global_position();
+
+        // Death explosion SFX
+        if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+            audio.bind_mut().play_event_at(SfxEvent::ImpactHeavy, pos);
+        }
+
         let Some(root) = godot_util::scene_root(self.base().get_tree()) else {
             self.base_mut().queue_free();
             return;
@@ -233,6 +243,7 @@ impl EnemyDrone {
         sphere.set_height(0.08);
         let mut fire_mat = StandardMaterial3D::new_gd();
         fire_mat.set_albedo(Color::from_rgba(1.0, 0.3, 0.0, 1.0));
+        fire_mat.set_feature(godot::classes::base_material_3d::Feature::EMISSION, true);
         fire_mat.set_emission(Color::from_rgba(1.0, 0.5, 0.0, 1.0));
         fire_mat.set_emission_energy_multiplier(10.0);
         sphere.set_material(&fire_mat);
@@ -241,6 +252,10 @@ impl EnemyDrone {
         particles.set_transform(Transform3D::new(Basis::IDENTITY, pos));
         root.clone().add_child(&particles);
         particles.set_emitting(true);
+        // Self-destruct after particles finish
+        let mut timer = particles.get_tree().create_timer(1.0);
+        let callable = particles.callable("queue_free");
+        timer.connect("timeout", &callable);
     }
 
     fn spawn_wreckage(root: &Gd<Node>, pos: Vector3) {
@@ -264,10 +279,27 @@ impl EnemyDrone {
                 pos + offset,
             ));
 
-            // Tag for cleanup after a few seconds
-            debris.set_meta(meta_keys::DEBRIS_TIMER, &Variant::from(3.0_f32));
             root.clone().add_child(&debris);
+            // Self-destruct after 3 seconds
+            let mut timer = debris.get_tree().create_timer(3.0);
+            let callable = debris.callable("queue_free");
+            timer.connect("timeout", &callable);
         }
+    }
+
+    /// look_at that skips when direction is colinear with UP (avoids Godot warning).
+    fn safe_look_at(&mut self, target: Vector3) {
+        let my_pos = self.base().get_global_position();
+        let diff = target - my_pos;
+        if diff.length() < 0.1 {
+            return;
+        }
+        let dir = diff.normalized();
+        // Colinear check: if direction is nearly parallel to UP, skip
+        if dir.cross(Vector3::UP).length() < 0.01 {
+            return;
+        }
+        self.base_mut().look_at(target);
     }
 
     fn create_health_bar(&mut self) {
@@ -291,6 +323,7 @@ impl EnemyDrone {
         fill.set_mesh(&fill_mesh);
         let mut fill_mat = StandardMaterial3D::new_gd();
         fill_mat.set_albedo(Color::from_rgba(0.1, 0.9, 0.1, 0.9));
+        fill_mat.set_feature(godot::classes::base_material_3d::Feature::EMISSION, true);
         fill_mat.set_emission(Color::from_rgba(0.0, 0.5, 0.0, 1.0));
         fill_mat.set_emission_energy_multiplier(2.0);
         fill_mat.set_transparency(godot::classes::base_material_3d::Transparency::ALPHA);
@@ -391,6 +424,7 @@ impl EnemyDrone {
         sphere.set_height(0.04);
         let mut spark_mat = StandardMaterial3D::new_gd();
         spark_mat.set_albedo(Color::from_rgba(1.0, 0.7, 0.2, 1.0));
+        spark_mat.set_feature(godot::classes::base_material_3d::Feature::EMISSION, true);
         spark_mat.set_emission(Color::from_rgba(1.0, 0.6, 0.1, 1.0));
         spark_mat.set_emission_energy_multiplier(6.0);
         sphere.set_material(&spark_mat);
