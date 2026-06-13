@@ -33,7 +33,6 @@ pub mod signals {
 // ── Callable method names ─────────────────────────────────────────────
 
 pub mod methods {
-    pub const LAUNCH: &str = "launch";
     pub const START_NEW_GAME: &str = "start_new_game";
     pub const CONTINUE_GAME: &str = "continue_game";
     pub const ON_ENEMY_KILLED: &str = "on_enemy_killed";
@@ -104,7 +103,6 @@ pub mod actions {
 pub mod groups {
     pub const PLAYER: &str = "player";
     pub const ENEMIES: &str = "enemies";
-    pub const ENEMY_PROJECTILE: &str = "enemy_projectile";
 }
 
 // ── Meta keys ─────────────────────────────────────────────────────────
@@ -159,7 +157,6 @@ pub mod scenes {
     pub const LOOTBOX: &str = "res://scenes/items/lootbox.tscn";
     pub const PORTAL: &str = "res://scenes/items/portal.tscn";
     pub const ENEMY_DRONE_FALLBACK: &str = "res://scenes/enemies/enemy_drone.tscn";
-    pub const ENEMY_PROJECTILE: &str = "res://scenes/items/enemy_projectile.tscn";
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────
@@ -292,7 +289,6 @@ mod tests {
             scenes::LOOTBOX,
             scenes::PORTAL,
             scenes::ENEMY_DRONE_FALLBACK,
-            scenes::ENEMY_PROJECTILE,
         ];
         for path in &all_scenes {
             assert!(

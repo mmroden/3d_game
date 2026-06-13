@@ -1,14 +1,11 @@
-//! Kinetic core: the one integrator and bounce shared by every mover.
+//! Kinetic core: the shared motion vocabulary and its invariants.
 //!
-//! Powered movers (ship, enemies) and ballistic movers (drifting props,
-//! physical projectiles) all step their velocities through this module,
-//! so the dissipation invariants live — and are tested — exactly once:
-//!
-//! - decaying retention is provably < 1.0 (motion always dies out);
-//! - full retention preserves velocity exactly (drift never amplifies);
-//! - a bounce never gains energy;
-//! - speed limits and NaN recovery are applied inside `step`, not by
-//!   each caller remembering to.
+//! The engine (rapier, behind `KineticWorld`) integrates all linear
+//! motion; this module owns the types that constrain it — `Retention`
+//! (dissipation violations are unrepresentable), `Restitution`,
+//! `SpeedLimits`, `Mass`, `ControlInput`, `Impulse` — plus
+//! `KineticState`, the exact per-second integrator that survives as
+//! the ship's local angular (rotation-feel) state.
 
 /// Per-frame velocity retention factor.
 ///
@@ -34,6 +31,13 @@ impl Retention {
 
     pub fn factor(self) -> f32 {
         self.0
+    }
+
+    /// The thrust (acceleration) that sustains `target_speed` against
+    /// this retention's decay: a = v · (−ln r). Zero for `FULL`
+    /// (drifting bodies need no thrust to hold speed).
+    pub fn cruise_thrust(self, target_speed: f32) -> f32 {
+        target_speed * -self.0.ln()
     }
 
     /// The retention factor for one tick of length `dt` seconds.
@@ -162,23 +166,6 @@ impl KineticState {
         self.angular_velocity = [0.0; 3];
     }
 
-    /// Accept the engine's collision-resolved linear velocity as truth
-    /// (CharacterBody3D `move_and_slide` readback). Without this,
-    /// thrust accumulates into walls until the mover clips through.
-    pub fn accept_resolved_linear(&mut self, velocity: [f32; 3]) {
-        self.linear_velocity = velocity;
-    }
-}
-
-/// Reflect `velocity` off a surface with unit `normal`. Only the
-/// approaching component is reflected (scaled by restitution); a
-/// velocity already separating from the surface is returned unchanged.
-pub fn bounce(velocity: [f32; 3], normal: [f32; 3], restitution: Restitution) -> [f32; 3] {
-    let vn = dot(velocity, normal);
-    if vn >= 0.0 {
-        return velocity;
-    }
-    sub(velocity, scale(normal, (1.0 + restitution.coefficient()) * vn))
 }
 
 pub(crate) fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -195,14 +182,6 @@ pub(crate) fn scale(v: [f32; 3], s: f32) -> [f32; 3] {
 
 pub(crate) fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-pub(crate) fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 /// Reset NaN to rest; clamp magnitude to `max_speed`.
@@ -374,50 +353,4 @@ mod tests {
         assert_eq!(state.linear_velocity(), [1.0, 0.0, 0.0]);
     }
 
-    #[test]
-    fn engine_readback_replaces_linear_velocity() {
-        let mut state = KineticState::new();
-        state.apply_impulse(impulse([9.0, 9.0, 9.0], [0.0; 3]));
-        state.accept_resolved_linear([1.0, 0.0, 0.0]);
-        assert_eq!(state.linear_velocity(), [1.0, 0.0, 0.0]);
-    }
-
-    #[test]
-    fn bounce_reflects_the_approaching_component() {
-        let out = bounce([0.0, -10.0, 0.0], [0.0, 1.0, 0.0], Restitution::clamped(0.5));
-        assert_eq!(out, [0.0, 5.0, 0.0]);
-    }
-
-    #[test]
-    fn bounce_preserves_the_tangential_component() {
-        let out = bounce([3.0, -10.0, 4.0], [0.0, 1.0, 0.0], Restitution::clamped(0.5));
-        assert_eq!(out, [3.0, 5.0, 4.0]);
-    }
-
-    #[test]
-    fn bounce_never_gains_energy() {
-        let cases = [
-            ([5.0, -3.0, 2.0], [0.0, 1.0, 0.0]),
-            ([-4.0, 0.0, -4.0], [0.70710678, 0.0, 0.70710678]),
-            ([0.0, -1.0, 0.0], [0.0, 1.0, 0.0]),
-        ];
-        for (v, n) in cases {
-            for e in [0.0, 0.5, 0.99] {
-                let out = bounce(v, n, Restitution::clamped(e));
-                assert!(
-                    speed(out) <= speed(v) + 1e-4,
-                    "bounce gained energy: {v:?} -> {out:?} (e={e})"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn bounce_leaves_separating_velocity_unchanged() {
-        // Already moving away from the surface: no reflection, or a
-        // resting contact would jitter forever.
-        let v = [0.0, 10.0, 0.0];
-        let out = bounce(v, [0.0, 1.0, 0.0], Restitution::clamped(0.5));
-        assert_eq!(out, v);
-    }
 }

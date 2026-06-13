@@ -1,4 +1,4 @@
-.PHONY: deps deps-gut check test-godot demo clean run build build-release assets assets-materials
+.PHONY: deps deps-gut check test-rust test-godot demo edit clean run build build-release assets assets-materials
 
 # Project-local tool paths
 TOOLS_DIR := $(CURDIR)/tools
@@ -110,6 +110,11 @@ assets-materials:
 	@python3 -c "import re,sys;p=sys.argv[1];t=open(p).read();t=re.sub(r'(\[sub_resource type=\"VisualShaderNodeTexture2DParameter\"[^\]]*\]\nparameter_name = [^\n]+)',r'\1\ntexture_filter = 6',t);open(p,'w').write(t)" \
 		$(GODOT_DIR)/addons/quaternius/materials/M_Trim_Base.tres
 
+# Filtered Rust tests with output: make test-rust FILTER=test_name
+test-rust:
+	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
+		cd $(RUST_DIR) && $(CARGO) test $(FILTER) -- --nocapture
+
 # Runs GUT against the currently installed dylib (no rebuild).
 test-godot:
 	@echo "==> Running Godot tests (GUT)..."
@@ -138,6 +143,11 @@ run: build-release
 demo: build
 	@echo "==> Launching game (debug)..."
 	@$(GODOT) --path $(GODOT_DIR)
+
+# Godot editor: Debugger -> Monitors graphs the kinetics/* counters live.
+edit: build
+	@echo "==> Opening Godot editor..."
+	@$(GODOT) --editor --path $(GODOT_DIR)
 
 clean:
 	@echo "==> Cleaning..."

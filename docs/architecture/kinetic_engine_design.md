@@ -275,10 +275,23 @@ green, design-reviewed; no step introduces a design decision:
   never call `sleep()` by hand — assert exact-zero velocities and let
   the island manager sleep bodies itself.
 - **M2** — enemies migrate (AI → ControlInput; ram loops deleted; LOS
-  from world ray).
+  from world ray). **Complete 2026-06-12.**
 - **M3** — ship migrates (readback + latch deleted; wall feel = hull
-  material; `make run` feel check is the gate).
+  material; `make run` feel check is the gate). **Complete 2026-06-12**
+  — feel check pending. Notes: thrust applies as solver impulses and
+  retention as engine damping (velocity overwrites erase contact
+  corrections — learned by test); ship rotation stays facade-exact;
+  bodies have friction (0.4/0.3) so glancing strikes tumble props and
+  wall-scraping bleeds speed — a deliberate feel change to evaluate.
 - **M4** — projectiles migrate (Area3D mover deleted); pickups remain
-  Area3D.
+  Area3D. **Complete 2026-06-12** — enemy bolts are ballistic bodies
+  with payload (they shove props); host owns spawn/expiry/detonation
+  via contact events.
+
+Post-migration verification (2026-06-12): zero `move_and_slide` call
+sites remain (mover trait impls are init/ready/cosmetics only);
+LevelManager is the only module that names `KineticWorld`; the Mover
+mirror, both ram loops, the engine LOS raycast, the velocity readback,
+the bounce latch, and the Area3D projectile are all deleted.
 - The five acceptance criteria are verified as they become expressible,
   not as standalone work items.

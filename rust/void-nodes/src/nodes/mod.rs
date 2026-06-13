@@ -3,7 +3,6 @@ pub mod godot_util;
 pub mod audio_manager;
 mod ship_controller;
 mod enemy_drone;
-mod projectile;
 mod lootbox;
 mod level_manager;
 mod views;

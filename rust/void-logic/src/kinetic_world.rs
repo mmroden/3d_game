@@ -12,7 +12,10 @@
 //! the regime, not a tuned heuristic), and rest capture snaps slow
 //! bodies back to zero after bounces so disturbed rooms settle again.
 
-use crate::kinetics::{add, cross, sanitize, scale, sub, dot, bounce, Impulse, Mass, Restitution};
+use crate::kinetics::{
+    add, sanitize, scale, sub, dot, ControlInput, Impulse, Mass, Restitution, Retention,
+    SpeedLimits,
+};
 use crate::room_assembler::CollisionBox;
 use rapier3d::prelude::*;
 
@@ -27,24 +30,13 @@ const BALLISTIC_MAX_SPIN: f32 = 5.0;
 /// so `is_at_rest` stays a theorem, not an approximation.
 const REST_SPEED: f32 = 0.075;
 
-/// How much of a glancing strike's tangential motion becomes tumble.
-const TUMBLE_FACTOR: f32 = 0.4;
-
 /// Collider user-data tag for static level geometry.
 const STATIC_TAG: u128 = u128::MAX;
 
-/// A powered mover mirrored into the world for one tick: the world
-/// reads its motion to shove ballistic bodies aside; the mover itself
-/// is never simulated here (the engine owns its collision).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Mover {
-    pub position: [f32; 3],
-    pub velocity: [f32; 3],
-    pub radius: f32,
-}
-
-/// Handle to a body in the world. The index is stable for the lifetime
-/// of the world (bodies are never removed mid-level).
+/// Handle to a body in the world. Ids are stable for the level's
+/// lifetime: removed bodies tombstone their slot and the id is never
+/// reused, so consumers may hold ids across ticks (and must correlate
+/// snapshots by id, never by index — snapshots compact).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BodyId(usize);
 
@@ -156,6 +148,18 @@ impl BallisticBody {
     }
 }
 
+/// Facade-side state of a powered body: its control slot and motion
+/// envelope. Rapier owns linear motion; angular velocity is facade-
+/// owned (rotations are locked in the engine — orientation is the
+/// view's concern for spheres).
+#[derive(Debug, Clone, Copy)]
+struct PoweredState {
+    control: ControlInput,
+    retention: Retention,
+    limits: SpeedLimits,
+    angular: [f32; 3],
+}
+
 /// Owns all ballistic bodies and the static collision geometry they
 /// bounce around in, simulated by rapier3d behind this facade — rapier
 /// types never escape this module. Statics come from the same
@@ -164,6 +168,12 @@ impl BallisticBody {
 pub struct KineticWorld {
     mirror: Vec<BallisticBody>,
     handles: Vec<RigidBodyHandle>,
+    /// `Some` for powered bodies, `None` for ballistic; parallel to
+    /// `handles`/`mirror`.
+    powered: Vec<Option<PoweredState>>,
+    /// Tombstones: removed bodies keep their slot so BodyIds stay
+    /// stable, but vanish from queries, snapshots, and events.
+    alive: Vec<bool>,
     gravity: Vector,
     params: IntegrationParameters,
     pipeline: PhysicsPipeline,
@@ -196,6 +206,8 @@ impl KineticWorld {
         Self {
             mirror: Vec::new(),
             handles: Vec::new(),
+            powered: Vec::new(),
+            alive: Vec::new(),
             gravity: Vector::new(0.0, 0.0, 0.0),
             params,
             pipeline: PhysicsPipeline::new(),
@@ -224,7 +236,9 @@ impl KineticWorld {
             // body's own restitution governs the bounce, exactly as
             // the bespoke solver behaved.
             .restitution(0.0)
-            .friction(0.0)
+            // Modest surface grip: tangential coupling is what makes
+            // struck props tumble naturally off walls and hulls.
+            .friction(0.3)
             .user_data(STATIC_TAG)
             .build();
             self.colliders.insert(collider);
@@ -248,7 +262,10 @@ impl KineticWorld {
         let collider = ColliderBuilder::ball(body.radius)
             .restitution(body.restitution.coefficient())
             .restitution_combine_rule(CoefficientCombineRule::Max)
-            .friction(0.0)
+            // Bodies grip surfaces: glancing contacts spin props, and
+            // hulls scraping along walls bleed speed (wall-grinding
+            // isn't free).
+            .friction(0.4)
             // Explicit mass wins; otherwise a density-1 sphere.
             .density(if body.mass.is_some() { 0.0 } else { 1.0 })
             .active_events(ActiveEvents::COLLISION_EVENTS)
@@ -258,15 +275,99 @@ impl KineticWorld {
             .insert_with_parent(collider, handle, &mut self.rigid_bodies);
         self.handles.push(handle);
         self.mirror.push(body);
+        self.powered.push(None);
+        self.alive.push(true);
         BodyId(index)
     }
 
+    /// Add a powered body: a mover with a control slot the shell
+    /// writes each tick. Its hull slides on geometry (restitution 0
+    /// unless given); its motion envelope (retention, speed caps) is
+    /// enforced by the same kinetic core as every other mover.
+    pub fn add_powered(
+        &mut self,
+        position: [f32; 3],
+        radius: f32,
+        mass: Mass,
+        restitution: Restitution,
+        retention: Retention,
+        limits: SpeedLimits,
+    ) -> BodyId {
+        let id = self.add_body(
+            BallisticBody::at_rest(position, radius, restitution).with_mass(mass),
+        );
+        self.powered[id.index()] = Some(PoweredState {
+            control: ControlInput::NONE,
+            retention,
+            limits,
+            angular: [0.0; 3],
+        });
+        // Rotations are facade-owned for powered bodies; the engine
+        // simulates linear motion only. Retention maps to the engine's
+        // exponential damping (d = -ln r), so the solver owns velocity
+        // end to end — overwriting it per tick would erase contact
+        // corrections and grind hulls into walls.
+        if let Some(rigid) = self.rigid_bodies.get_mut(self.handles[id.index()]) {
+            rigid.lock_rotations(true, false);
+            rigid.set_linear_damping(-retention.factor().ln());
+        }
+        id
+    }
+
+    /// Write a powered body's control for the coming tick. Writing to
+    /// a ballistic or removed body is a no-op by construction.
+    pub fn set_control(&mut self, id: BodyId, control: ControlInput) {
+        if let Some(Some(state)) = self.powered.get_mut(id.index()) {
+            state.control = control;
+        }
+    }
+
+    /// Update a powered body's motion envelope (the ship's retention
+    /// changes with Stability upgrades mid-run).
+    pub fn set_envelope(&mut self, id: BodyId, retention: Retention, limits: SpeedLimits) {
+        let index = id.index();
+        if let Some(Some(state)) = self.powered.get_mut(index) {
+            state.retention = retention;
+            state.limits = limits;
+            if let Some(rigid) = self.rigid_bodies.get_mut(self.handles[index]) {
+                rigid.set_linear_damping(-retention.factor().ln());
+            }
+        }
+    }
+
+    /// Remove a body (death, despawn). The slot is tombstoned so other
+    /// BodyIds stay stable; the body vanishes from queries, snapshots,
+    /// and events.
+    pub fn remove_body(&mut self, id: BodyId) {
+        let index = id.index();
+        if !self.alive.get(index).copied().unwrap_or(false) {
+            return;
+        }
+        self.alive[index] = false;
+        self.powered[index] = None;
+        self.rigid_bodies.remove(
+            self.handles[index],
+            &mut self.islands,
+            &mut self.colliders,
+            &mut self.impulse_joints,
+            &mut self.multibody_joints,
+            true,
+        );
+    }
+
     pub fn body(&self, id: BodyId) -> Option<&BallisticBody> {
+        if !self.alive.get(id.0).copied().unwrap_or(false) {
+            return None;
+        }
         self.mirror.get(id.0)
     }
 
     pub fn bodies(&self) -> impl Iterator<Item = (BodyId, &BallisticBody)> {
-        self.mirror.iter().enumerate().map(|(i, b)| (BodyId(i), b))
+        self.mirror
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.alive[*i])
+            .map(|(i, b)| (BodyId(i), b))
     }
 
     /// One-shot impulse: level-setup disturbance ("the occupants
@@ -274,6 +375,9 @@ impl KineticWorld {
     /// Velocity-delta semantics (mass-independent), matching the
     /// kinetic core's `Impulse` contract.
     pub fn disturb(&mut self, id: BodyId, impulse: Impulse) {
+        if !self.alive.get(id.0).copied().unwrap_or(false) {
+            return;
+        }
         let Some(&handle) = self.handles.get(id.0) else {
             return;
         };
@@ -296,6 +400,7 @@ impl KineticWorld {
                 .mirror
                 .iter()
                 .enumerate()
+                .filter(|(i, _)| self.alive[*i])
                 .map(|(i, b)| BodySnapshot {
                     id: BodyId(i),
                     position: b.position,
@@ -308,9 +413,11 @@ impl KineticWorld {
 
     /// True when the segment from `from` to `to` hits any collider —
     /// the world's own line-of-sight answer (walls and drifting props
-    /// both block sight). The spatial index builds during `step`, so
-    /// queries reflect the world as of the most recent tick.
-    pub fn ray_blocked(&self, from: [f32; 3], to: [f32; 3]) -> bool {
+    /// both block sight). `exclude` removes bodies from consideration
+    /// (a looker's ray starts inside its own collider). The spatial
+    /// index builds during `step`, so queries reflect the world as of
+    /// the most recent tick.
+    pub fn ray_blocked(&self, from: [f32; 3], to: [f32; 3], exclude: &[BodyId]) -> bool {
         let dir = sub(to, from);
         let length = dot(dir, dir).sqrt();
         if length <= f32::EPSILON {
@@ -320,12 +427,24 @@ impl KineticWorld {
             Vector::new(from[0], from[1], from[2]),
             Vector::new(dir[0] / length, dir[1] / length, dir[2] / length),
         );
+        // QueryFilter::exclude_rigid_body holds a single handle, so
+        // multi-exclusion (looker AND target) needs the predicate.
+        let excluded: Vec<RigidBodyHandle> = exclude
+            .iter()
+            .filter_map(|id| self.handles.get(id.index()).copied())
+            .collect();
+        let keep = |_collider: ColliderHandle, collider: &Collider| -> bool {
+            collider
+                .parent()
+                .is_none_or(|parent| !excluded.contains(&parent))
+        };
+        let filter = QueryFilter::default().predicate(&keep);
         self.broad_phase
             .as_query_pipeline(
                 self.narrow_phase.query_dispatcher(),
                 &self.rigid_bodies,
                 &self.colliders,
-                QueryFilter::default(),
+                filter,
             )
             .cast_ray(&ray, length, true)
             .is_some()
@@ -336,6 +455,34 @@ impl KineticWorld {
     /// exact-rest capture. Returns the contacts that began this tick.
     pub fn step(&mut self, delta: f32) -> Vec<ContactEvent> {
         self.params.dt = delta;
+
+        // Apply each powered body's control: thrust as a solver-
+        // friendly impulse (the engine owns linear velocity end to
+        // end; damping carries retention), torque integrated facade-
+        // side with the exact per-second math (rotation feel).
+        for index in 0..self.handles.len() {
+            if !self.alive[index] {
+                continue;
+            }
+            let Some(state) = self.powered[index].as_mut() else {
+                continue;
+            };
+            let Some(rigid) = self.rigid_bodies.get_mut(self.handles[index]) else {
+                continue;
+            };
+            if state.control.thrust != [0.0; 3] {
+                let momentum = scale(state.control.thrust, delta * rigid.mass());
+                rigid.apply_impulse(Vector::new(momentum[0], momentum[1], momentum[2]), true);
+            }
+            state.angular = sanitize(
+                scale(
+                    add(state.angular, scale(state.control.torque, delta)),
+                    state.retention.factor_for(delta),
+                ),
+                state.limits.angular,
+            );
+        }
+
         let collector = ContactCollector::default();
         self.pipeline.step(
             self.gravity,
@@ -353,6 +500,9 @@ impl KineticWorld {
         );
 
         for index in 0..self.handles.len() {
+            if !self.alive[index] {
+                continue;
+            }
             self.assert_invariants(index);
             self.sync_mirror(index);
         }
@@ -361,57 +511,18 @@ impl KineticWorld {
         collector.events.into_inner().unwrap_or_default()
     }
 
-    /// Shove ballistic bodies out of the way of powered movers
-    /// (player, enemies), exchanging momentum in the mover's frame.
-    /// Movers are treated as infinite mass: props never push back here
-    /// — the engine resolves the mover's side of the contact. (M2/M3
-    /// make movers real bodies and retire this mirror path.)
-    pub fn collide_movers(&mut self, movers: &[Mover]) {
-        for mover in movers {
-            for index in 0..self.handles.len() {
-                let body = self.mirror[index];
-                let between = sub(body.position, mover.position);
-                let dist_sq = dot(between, between);
-                let reach = body.radius + mover.radius;
-                if dist_sq >= reach * reach || dist_sq == 0.0 {
-                    continue;
-                }
-                let dist = dist_sq.sqrt();
-                let normal = scale(between, 1.0 / dist);
-                let new_position = add(body.position, scale(normal, reach - dist));
-
-                // Momentum exchange in the mover's frame: a separating
-                // contact (bounce returns its input) injects nothing.
-                let relative = sub(body.linear_velocity, mover.velocity);
-                let reflected = bounce(relative, normal, body.restitution);
-                let launches = reflected != relative;
-
-                let handle = self.handles[index];
-                if let Some(rigid) = self.rigid_bodies.get_mut(handle) {
-                    rigid.set_translation(
-                        Vector::new(new_position[0], new_position[1], new_position[2]),
-                        launches,
-                    );
-                    if launches {
-                        let new_v = add(reflected, mover.velocity);
-                        let tumble = add(
-                            body.angular_velocity,
-                            scale(cross(normal, relative), TUMBLE_FACTOR),
-                        );
-                        rigid.set_linvel(Vector::new(new_v[0], new_v[1], new_v[2]), true);
-                        rigid.set_angvel(Vector::new(tumble[0], tumble[1], tumble[2]), true);
-                    }
-                }
-                self.sync_mirror(index);
-            }
-        }
-    }
-
     /// Facade invariants applied after the engine step: NaN recovery,
     /// speed caps, and exact-rest capture. Bodies already at exact rest
     /// are left untouched (rapier's own sleeping owns them); forcing
     /// `sleep()` by hand would bypass the island manager.
     fn assert_invariants(&mut self, index: usize) {
+        let limits = self.powered[index]
+            .as_ref()
+            .map(|state| state.limits)
+            .unwrap_or(SpeedLimits {
+                linear: BALLISTIC_MAX_SPEED,
+                angular: BALLISTIC_MAX_SPIN,
+            });
         let handle = self.handles[index];
         let Some(rigid) = self.rigid_bodies.get_mut(handle) else {
             return;
@@ -421,11 +532,14 @@ impl KineticWorld {
         if lv == Vector::ZERO && av == Vector::ZERO {
             return;
         }
-        let linear = sanitize([lv.x, lv.y, lv.z], BALLISTIC_MAX_SPEED);
-        let angular = sanitize([av.x, av.y, av.z], BALLISTIC_MAX_SPIN);
+        let linear = sanitize([lv.x, lv.y, lv.z], limits.linear);
+        let angular = sanitize([av.x, av.y, av.z], limits.angular);
         if dot(linear, linear).sqrt() < REST_SPEED {
             rigid.set_linvel(Vector::ZERO, false);
             rigid.set_angvel(Vector::ZERO, false);
+            if let Some(state) = self.powered[index].as_mut() {
+                state.angular = [0.0; 3];
+            }
         } else {
             rigid.set_linvel(Vector::new(linear[0], linear[1], linear[2]), false);
             rigid.set_angvel(Vector::new(angular[0], angular[1], angular[2]), false);
@@ -445,7 +559,12 @@ impl KineticWorld {
         let entry = &mut self.mirror[index];
         entry.position = [t.x, t.y, t.z];
         entry.linear_velocity = [lv.x, lv.y, lv.z];
-        entry.angular_velocity = [av.x, av.y, av.z];
+        // Powered bodies have engine rotations locked; their angular
+        // velocity is facade-owned.
+        entry.angular_velocity = match self.powered[index].as_ref() {
+            Some(state) => state.angular,
+            None => [av.x, av.y, av.z],
+        };
     }
 }
 
@@ -760,94 +879,38 @@ mod tests {
     }
 
     #[test]
-    fn a_moving_mover_launches_a_resting_prop() {
+    fn glancing_strikes_tumble_props_via_friction() {
+        use crate::kinetics::Mass;
+        let (retention, limits) = test_envelope();
         let mut world = KineticWorld::new();
-        let id = world.add_body(BallisticBody::at_rest(
-            [0.1, 0.0, 0.0],
+        let mover = world.add_powered(
+            [-2.0, 0.3, 0.0],
+            0.5,
+            Mass::kilograms(60.0),
+            Restitution::clamped(0.0),
+            retention,
+            limits,
+        );
+        let prop = world.add_body(BallisticBody::at_rest(
+            [1.0, 0.0, 0.0],
             0.5,
             Restitution::clamped(0.6),
         ));
-        let mover = Mover {
-            position: [-1.0, 0.0, 0.0],
-            velocity: [3.0, 0.0, 0.0],
-            radius: 0.7,
-        };
-        world.collide_movers(&[mover]);
-        let body = world.body(id).unwrap();
+        // Coast into the prop off-center: surface friction converts
+        // the tangential slip at the contact into spin.
+        world.disturb(mover, linear([20.0, 0.0, 0.0]));
+        for _ in 0..120 {
+            world.step(DT);
+        }
+        let body = world.body(prop).unwrap();
         assert!(
-            body.linear_velocity()[0] > 0.0,
-            "a prop struck by a moving mover must carry momentum away, got {:?}",
-            body.linear_velocity()
+            !body.is_at_rest(),
+            "the glancing strike must launch the prop"
         );
-        assert!(!body.is_at_rest());
-        let gap = body.position()[0] - mover.position[0];
+        let spin = body.angular_velocity();
         assert!(
-            gap >= 1.2 - 1e-3,
-            "prop must be expelled to the mover's surface, gap {gap}"
-        );
-    }
-
-    #[test]
-    fn a_stationary_mover_displaces_without_launching() {
-        let mut world = KineticWorld::new();
-        let id = world.add_body(BallisticBody::at_rest(
-            [0.1, 0.0, 0.0],
-            0.5,
-            Restitution::clamped(0.6),
-        ));
-        let mover = Mover {
-            position: [-1.0, 0.0, 0.0],
-            velocity: [0.0; 3],
-            radius: 0.7,
-        };
-        world.collide_movers(&[mover]);
-        let body = world.body(id).unwrap();
-        assert!(
-            body.is_at_rest(),
-            "a still mover nudges position but imparts no momentum, got {:?}",
-            body.linear_velocity()
-        );
-        assert!(body.position()[0] - mover.position[0] >= 1.2 - 1e-3);
-    }
-
-    #[test]
-    fn a_glancing_mover_strike_imparts_tumble() {
-        let mut world = KineticWorld::new();
-        let id = world.add_body(BallisticBody::at_rest(
-            [0.6, 0.8, 0.0],
-            0.5,
-            Restitution::clamped(0.6),
-        ));
-        let mover = Mover {
-            position: [0.0; 3],
-            velocity: [3.0, 0.0, 0.0],
-            radius: 0.7,
-        };
-        world.collide_movers(&[mover]);
-        let spin = world.body(id).unwrap().angular_velocity();
-        assert!(
-            spin != [0.0; 3],
-            "an off-center strike must set the prop tumbling"
-        );
-    }
-
-    #[test]
-    fn a_mover_moving_away_does_not_launch() {
-        let mut world = KineticWorld::new();
-        let id = world.add_body(BallisticBody::at_rest(
-            [0.1, 0.0, 0.0],
-            0.5,
-            Restitution::clamped(0.6),
-        ));
-        let mover = Mover {
-            position: [-1.0, 0.0, 0.0],
-            velocity: [-3.0, 0.0, 0.0],
-            radius: 0.7,
-        };
-        world.collide_movers(&[mover]);
-        assert!(
-            world.body(id).unwrap().is_at_rest(),
-            "a separating mover displaces but never injects momentum"
+            dot(spin, spin).sqrt() > 0.1,
+            "friction at the contact must set the prop tumbling, got {spin:?}"
         );
     }
 
@@ -969,6 +1032,306 @@ mod tests {
         assert_eq!(total, 0, "an undisturbed room is silent");
     }
 
+    fn test_envelope() -> (Retention, SpeedLimits) {
+        (
+            Retention::decaying(0.046),
+            SpeedLimits {
+                linear: 50.0,
+                angular: 5.0,
+            },
+        )
+    }
+
+    #[test]
+    fn cruise_thrust_sustains_the_target_speed() {
+        use crate::kinetics::Mass;
+        let (retention, limits) = test_envelope();
+        let mut world = KineticWorld::new();
+        let id = world.add_powered(
+            [0.0; 3],
+            0.5,
+            Mass::kilograms(20.0),
+            Restitution::clamped(0.2),
+            retention,
+            limits,
+        );
+        world.set_control(
+            id,
+            ControlInput {
+                thrust: [retention.cruise_thrust(4.0), 0.0, 0.0],
+                torque: [0.0; 3],
+            },
+        );
+        for _ in 0..360 {
+            world.step(DT);
+        }
+        let v = world.body(id).unwrap().linear_velocity()[0];
+        assert!(
+            (v - 4.0).abs() < 0.3,
+            "cruise_thrust(4.0) must settle near 4 m/s, got {v}"
+        );
+    }
+
+    #[test]
+    fn powered_bodies_accelerate_under_control_and_dissipate_without_it() {
+        use crate::kinetics::Mass;
+        let (retention, limits) = test_envelope();
+        let mut world = KineticWorld::new();
+        let id = world.add_powered(
+            [0.0; 3],
+            0.5,
+            Mass::kilograms(60.0),
+            Restitution::clamped(0.0),
+            retention,
+            limits,
+        );
+        world.set_control(
+            id,
+            ControlInput {
+                thrust: [40.0, 0.0, 0.0],
+                torque: [0.0; 3],
+            },
+        );
+        for _ in 0..120 {
+            world.step(DT);
+        }
+        let body = world.body(id).unwrap();
+        assert!(
+            body.linear_velocity()[0] > 5.0,
+            "thrust must accelerate a powered body, got {:?}",
+            body.linear_velocity()
+        );
+        assert!(body.position()[0] > 1.0, "it must actually travel");
+
+        world.set_control(id, ControlInput::NONE);
+        for _ in 0..600 {
+            world.step(DT);
+        }
+        assert!(
+            world.body(id).unwrap().is_at_rest(),
+            "without control, the envelope's retention must bring it to rest, got {:?}",
+            world.body(id).unwrap().linear_velocity()
+        );
+    }
+
+    #[test]
+    fn powered_hulls_slide_along_walls_without_bouncing() {
+        use crate::kinetics::Mass;
+        let (retention, limits) = test_envelope();
+        let mut world = KineticWorld::new();
+        // Wall face at z = -1.5, long enough in x that two seconds of
+        // sliding never reaches its edge; a restitution-0 hull
+        // thrusting diagonally into it must press and slide, never
+        // bounce.
+        world.add_statics([wall([0.0, 0.0, -2.0], [50.0, 5.0, 0.5])]);
+        let id = world.add_powered(
+            [0.0; 3],
+            0.5,
+            Mass::kilograms(60.0),
+            Restitution::clamped(0.0),
+            retention,
+            limits,
+        );
+        world.set_control(
+            id,
+            ControlInput {
+                thrust: [10.0, 0.0, -20.0],
+                torque: [0.0; 3],
+            },
+        );
+        for _ in 0..240 {
+            world.step(DT);
+            let p = world.body(id).unwrap().position();
+            // Impact-tick transients press a few cm before the solver's
+            // first correction; tunneling is what must never happen.
+            assert!(
+                p[2] > -1.2,
+                "hull tunneled into the wall, center z = {}",
+                p[2]
+            );
+        }
+        let body = world.body(id).unwrap();
+        let p = body.position();
+        let v = body.linear_velocity();
+        assert!(
+            p[2] > -1.02,
+            "the hull must settle non-penetrating, z = {}",
+            p[2]
+        );
+        assert!(
+            p[2] < -0.9,
+            "the hull must stay pressed against the wall (slide, not bounce), z = {}",
+            p[2]
+        );
+        assert!(
+            v[0] > 0.5,
+            "the tangential component must keep flowing (reduced by \
+             honest friction drag while pressing), got {v:?}"
+        );
+        assert!(
+            v[2].abs() < 0.2,
+            "no rebound off a restitution-0 contact, got {v:?}"
+        );
+    }
+
+    #[test]
+    fn props_push_powered_movers_back() {
+        use crate::kinetics::Mass;
+        let (retention, limits) = test_envelope();
+        let mut world = KineticWorld::new();
+        let mover = world.add_powered(
+            [-2.0, 0.0, 0.0],
+            0.5,
+            Mass::kilograms(60.0),
+            Restitution::clamped(0.0),
+            retention,
+            limits,
+        );
+        let prop = world.add_body(
+            BallisticBody::at_rest([2.0, 0.0, 0.0], 0.5, Restitution::clamped(0.6))
+                .with_mass(Mass::kilograms(60.0)),
+        );
+        // Coast into the prop (no thrust), so the exchange is
+        // observable instead of forming a thrust-driven convoy. 20 m/s
+        // outruns the retention decay over the 3 m gap.
+        world.disturb(mover, linear([20.0, 0.0, 0.0]));
+        let mut hit_each_other = false;
+        for _ in 0..120 {
+            for contact in world.step(DT) {
+                if contact.body == mover && contact.with == ContactWith::Body(prop) {
+                    hit_each_other = true;
+                }
+            }
+        }
+        assert!(hit_each_other, "the contact event must name the pair");
+        let prop_v = world.body(prop).unwrap().linear_velocity()[0];
+        let mover_v = world.body(mover).unwrap().linear_velocity()[0];
+        assert!(
+            prop_v > 2.0,
+            "an equal-mass prop must carry momentum away, got {prop_v}"
+        );
+        assert!(
+            mover_v < prop_v,
+            "third law: the striking mover must be slowed by the prop \
+             (mover {mover_v} vs prop {prop_v})"
+        );
+    }
+
+    #[test]
+    fn gentle_thrust_from_rest_still_moves() {
+        // Rest capture is a ballistic settling rule; a powered body
+        // holding ANY thrust must never be frozen by it (attacking
+        // slimes, gentle analog input).
+        use crate::kinetics::Mass;
+        let (retention, limits) = test_envelope();
+        let mut world = KineticWorld::new();
+        let id = world.add_powered(
+            [0.0; 3],
+            0.5,
+            Mass::kilograms(60.0),
+            Restitution::clamped(0.0),
+            retention,
+            limits,
+        );
+        world.set_control(
+            id,
+            ControlInput {
+                thrust: [5.0, 0.0, 0.0],
+                torque: [0.0; 3],
+            },
+        );
+        for _ in 0..240 {
+            world.step(DT);
+        }
+        let body = world.body(id).unwrap();
+        assert!(
+            body.position()[0] > 0.5,
+            "5 m/s² of held thrust must move a body from rest, got {:?} at {:?}",
+            body.linear_velocity(),
+            body.position()
+        );
+    }
+
+    #[test]
+    fn rays_to_an_excluded_target_body_are_not_blocked() {
+        // The LOS calling convention: a looker raycasts to a target's
+        // CENTER — both bodies must be excluded or the target's own
+        // collider blocks every sight line.
+        let mut world = KineticWorld::new();
+        let looker = world.add_body(BallisticBody::at_rest(
+            [0.0; 3],
+            0.5,
+            Restitution::clamped(0.5),
+        ));
+        let target = world.add_body(BallisticBody::at_rest(
+            [4.0, 0.0, 0.0],
+            0.5,
+            Restitution::clamped(0.5),
+        ));
+        world.step(DT);
+        assert!(
+            world.ray_blocked([0.0; 3], [4.0, 0.0, 0.0], &[looker]),
+            "excluding only the looker: the target's own collider blocks"
+        );
+        assert!(
+            !world.ray_blocked([0.0; 3], [4.0, 0.0, 0.0], &[looker, target]),
+            "excluding both endpoints: clear space must be clear"
+        );
+    }
+
+    #[test]
+    fn survivor_snapshots_are_unaffected_by_removals() {
+        // Snapshots compact on removal; survivors keep their ids and
+        // state, and consumers must correlate by id, never by index.
+        let mut world = KineticWorld::new();
+        let doomed = world.add_body(BallisticBody::at_rest(
+            [0.0; 3],
+            0.5,
+            Restitution::clamped(0.5),
+        ));
+        let survivor = world.add_body(BallisticBody::at_rest(
+            [5.0, 0.0, 0.0],
+            0.5,
+            Restitution::clamped(0.5),
+        ));
+        world.disturb(survivor, linear([1.0, 0.0, 0.0]));
+        world.step(DT);
+        world.remove_body(doomed);
+        let snapshot = world.snapshot();
+        assert_eq!(snapshot.bodies.len(), 1);
+        let entry = snapshot.bodies[0];
+        assert_eq!(entry.id, survivor, "the survivor keeps its id");
+        assert!(
+            entry.position[0] > 5.0,
+            "the survivor keeps its own state, got {:?}",
+            entry.position
+        );
+        assert_ne!(
+            entry.id.index(),
+            0,
+            "compaction means index-into-bodies != id — consumers must key by id"
+        );
+    }
+
+    #[test]
+    fn removed_bodies_vanish_from_snapshots_and_queries() {
+        let mut world = KineticWorld::new();
+        let id = world.add_body(BallisticBody::at_rest(
+            [0.0; 3],
+            0.5,
+            Restitution::clamped(0.5),
+        ));
+        world.disturb(id, linear([1.0, 0.0, 0.0]));
+        world.remove_body(id);
+        assert!(world.body(id).is_none(), "a removed body answers no queries");
+        let contacts = world.step(DT);
+        assert!(contacts.is_empty());
+        assert!(
+            world.snapshot().bodies.is_empty(),
+            "a removed body never appears in the landing zone"
+        );
+    }
+
     #[test]
     fn snapshots_publish_the_world_each_tick() {
         let mut world = KineticWorld::new();
@@ -1008,11 +1371,11 @@ mod tests {
         // before querying.
         world.step(DT);
         assert!(
-            world.ray_blocked([0.0, 0.0, 0.0], [0.0, 0.0, -6.0]),
+            world.ray_blocked([0.0, 0.0, 0.0], [0.0, 0.0, -6.0], &[]),
             "a ray through a wall must be blocked"
         );
         assert!(
-            !world.ray_blocked([0.0, 0.0, 0.0], [0.0, 6.0, 0.0]),
+            !world.ray_blocked([0.0, 0.0, 0.0], [0.0, 6.0, 0.0], &[]),
             "a ray through empty space must be clear"
         );
     }

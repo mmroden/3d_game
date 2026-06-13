@@ -9,13 +9,12 @@ use godot::classes::{
 use super::constants::{actions, groups, methods, signals};
 use super::godot_util;
 
-use void_logic::kinetics::{bounce, ControlInput, KineticState, Restitution, SpeedLimits};
+use void_logic::kinetics::{ControlInput, KineticState, Retention, SpeedLimits};
 use void_logic::laser::LaserLevel;
 use void_logic::loadout::Loadout;
 use void_logic::power_routing::PowerMode;
-use void_logic::ram_damage;
 use void_logic::upgrade::{Upgrade, UpgradeKind};
-use void_logic::audio_catalog::{SfxEvent, COLLISION_SFX_MIN_SPEED};
+use void_logic::audio_catalog::SfxEvent;
 use void_logic::weapon::{WeaponState, FireResult};
 
 /// Hard caps on ship velocity, enforced inside the kinetic core.
@@ -23,9 +22,6 @@ const SHIP_SPEED_LIMITS: SpeedLimits = SpeedLimits {
     linear: 50.0,
     angular: 5.0,
 };
-
-/// How lively the hull bounces off level geometry.
-const SHIP_WALL_RESTITUTION: f32 = 0.35;
 
 fn to_array(v: Vector3) -> [f32; 3] {
     [v.x, v.y, v.z]
@@ -51,10 +47,9 @@ const WING_OFFSET: f32 = 0.3;
 pub struct ShipController {
     base: Base<CharacterBody3D>,
 
+    /// Angular motion only: orientation is view/control-side (the
+    /// camera is the ship). Linear motion lives in the kinetic world.
     kinetics: KineticState,
-    /// True while in contact with geometry: bounce fires on contact
-    /// onset only, never per-frame during a sustained scrape.
-    was_colliding: bool,
     weapon: WeaponState,
     beam_nodes: Vec<Gd<MeshInstance3D>>,
     loadout: Loadout,
@@ -68,7 +63,6 @@ impl ICharacterBody3D for ShipController {
         Self {
             base,
             kinetics: KineticState::new(),
-            was_colliding: false,
             weapon: WeaponState::default(),
             beam_nodes: Vec::new(),
             loadout: Loadout::new(),
@@ -81,18 +75,37 @@ impl ICharacterBody3D for ShipController {
         self.base_mut().add_to_group(groups::PLAYER);
     }
 
-    fn physics_process(&mut self, delta: f64) {
-        let delta = delta as f32;
+}
+
+#[godot_api]
+impl ShipController {
+    #[signal]
+    fn player_damaged(amount: f32);
+
+    #[signal]
+    fn power_mode_changed(mode: i32);
+
+    /// Per-tick control, pulled by the level host: reads input,
+    /// integrates orientation locally (the camera is the ship — its
+    /// rotation feel keeps the exact per-second math), fires weapons,
+    /// and returns world-space thrust for the kinetic world, which
+    /// owns all linear motion, wall response, and ram contacts.
+    pub fn control_input(&mut self, delta: f32) -> ControlInput {
         let input = Input::singleton();
 
-        // --- Movement ---
-        let forward = input.get_action_strength(actions::MOVE_FORWARD) - input.get_action_strength(actions::MOVE_BACK);
-        let strafe = input.get_action_strength(actions::MOVE_RIGHT) - input.get_action_strength(actions::MOVE_LEFT);
-        let vertical = input.get_action_strength(actions::MOVE_UP) - input.get_action_strength(actions::MOVE_DOWN);
+        let forward = input.get_action_strength(actions::MOVE_FORWARD)
+            - input.get_action_strength(actions::MOVE_BACK);
+        let strafe = input.get_action_strength(actions::MOVE_RIGHT)
+            - input.get_action_strength(actions::MOVE_LEFT);
+        let vertical = input.get_action_strength(actions::MOVE_UP)
+            - input.get_action_strength(actions::MOVE_DOWN);
 
-        let pitch = input.get_action_strength(actions::LOOK_UP) - input.get_action_strength(actions::LOOK_DOWN);
-        let yaw = input.get_action_strength(actions::LOOK_LEFT) - input.get_action_strength(actions::LOOK_RIGHT);
-        let roll = input.get_action_strength(actions::ROLL_RIGHT) - input.get_action_strength(actions::ROLL_LEFT);
+        let pitch = input.get_action_strength(actions::LOOK_UP)
+            - input.get_action_strength(actions::LOOK_DOWN);
+        let yaw = input.get_action_strength(actions::LOOK_LEFT)
+            - input.get_action_strength(actions::LOOK_RIGHT);
+        let roll = input.get_action_strength(actions::ROLL_RIGHT)
+            - input.get_action_strength(actions::ROLL_LEFT);
 
         // Stabilizer: kill angular velocity on L1/Tab
         if input.is_action_pressed(actions::STABILIZE) {
@@ -117,87 +130,25 @@ impl ICharacterBody3D for ShipController {
         }
         if self.power_mode != old_mode {
             let mode_val = self.power_mode as i32;
-            self.base_mut().emit_signal(
-                "power_mode_changed",
-                &[Variant::from(mode_val)],
-            );
+            self.base_mut()
+                .emit_signal(signals::POWER_MODE_CHANGED, &[Variant::from(mode_val)]);
         }
 
         let basis = self.base().get_transform().basis;
-        let thrust = basis.col_c() * (-forward)
-            + basis.col_a() * strafe
-            + basis.col_b() * vertical;
+        let thrust = basis.col_c() * (-forward) + basis.col_a() * strafe + basis.col_b() * vertical;
 
         let effective_thrust = self.loadout.thrust_power() * self.power_mode.thrust_multiplier();
         let effective_rotation = self.loadout.rotation_speed();
 
-        // Integrate through the kinetic core: acceleration, decay,
-        // speed caps, and NaN recovery all live in void-logic.
-        let control = ControlInput {
-            thrust: to_array(thrust * effective_thrust),
+        // Angular integration stays local and exact.
+        let torque_only = ControlInput {
+            thrust: [0.0; 3],
             torque: to_array(Vector3::new(pitch, yaw, roll) * effective_rotation),
         };
-        self.kinetics.step(control, self.loadout.damping(), SHIP_SPEED_LIMITS, delta);
+        self.kinetics
+            .step(torque_only, self.loadout.damping(), SHIP_SPEED_LIMITS, delta);
 
-        let vel = to_vector(self.kinetics.linear_velocity());
         let rot = to_vector(self.kinetics.angular_velocity()) * delta;
-
-        self.base_mut().set_velocity(vel);
-        self.base_mut().move_and_slide();
-        // Accept the collision-resolved velocity as truth.
-        // Without this, thrust accumulates into walls until the player clips through.
-        let resolved = self.base().get_velocity();
-        self.kinetics.accept_resolved_linear(to_array(resolved));
-
-        // Check for physical collisions (walls, objects, enemies)
-        let pre_collision_speed = vel.length();
-        let collision_count = self.base().get_slide_collision_count();
-        let mut played_collision_sfx = false;
-
-        // Bounce off geometry on contact onset only — a sustained
-        // scrape must never re-inject energy frame after frame.
-        if collision_count > 0 && !self.was_colliding {
-            if let Some(collision) = self.base().get_slide_collision(0) {
-                let normal = to_array(collision.get_normal());
-                let bounced = bounce(
-                    to_array(vel),
-                    normal,
-                    Restitution::clamped(SHIP_WALL_RESTITUTION),
-                );
-                self.kinetics.accept_resolved_linear(bounced);
-            }
-        }
-        self.was_colliding = collision_count > 0;
-
-        for i in 0..collision_count {
-            let Some(collision) = self.base().get_slide_collision(i) else { continue };
-
-            // Play collision SFX once per frame if speed is high enough
-            if !played_collision_sfx && pre_collision_speed > COLLISION_SFX_MIN_SPEED {
-                let contact = collision.get_position();
-                if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
-                    audio.bind_mut().play_event_at(SfxEvent::ImpactMetal, contact);
-                }
-                played_collision_sfx = true;
-            }
-
-            // Ram damage to enemies
-            if let Some(collider) = collision.get_collider() {
-                let obj: Gd<Node3D> = collider.cast();
-                if obj.is_in_group(groups::ENEMIES) && obj.has_method(methods::TAKE_DAMAGE) {
-                    let dmg = ram_damage::ram_damage(pre_collision_speed);
-                    if dmg.as_f32() > 0.0 {
-                        let mut enemy = obj;
-                        enemy.call(methods::TAKE_DAMAGE, &[Variant::from(dmg.as_f32())]);
-                        let player_dmg = dmg.as_f32() * ram_damage::PLAYER_RAM_FRACTION;
-                        self.base_mut().emit_signal(
-                            signals::PLAYER_DAMAGED,
-                            &[Variant::from(player_dmg)],
-                        );
-                    }
-                }
-            }
-        }
 
         // Quaternion-based rotation: compose pitch/yaw/roll independently
         // then apply to current orientation. Avoids gimbal lock and
@@ -207,8 +158,6 @@ impl ICharacterBody3D for ShipController {
             * Quaternion::from_axis_angle(Vector3::BACK, rot.z);
         let current_quat = self.base().get_quaternion();
         let new_quat = (current_quat * local_rotation).normalized();
-
-        // Guard: if the quaternion became NaN, keep the previous one.
         if is_quat_finite(new_quat) {
             self.base_mut().set_quaternion(new_quat);
         }
@@ -224,16 +173,18 @@ impl ICharacterBody3D for ShipController {
                 self.fire_dual_lasers(damage.as_f32());
             }
         }
+
+        ControlInput {
+            thrust: to_array(thrust * effective_thrust),
+            torque: [0.0; 3],
+        }
     }
-}
 
-#[godot_api]
-impl ShipController {
-    #[signal]
-    fn player_damaged(amount: f32);
-
-    #[signal]
-    fn power_mode_changed(mode: i32);
+    /// The ship's motion envelope for the kinetic world (retention
+    /// changes with Stability upgrades mid-run).
+    pub fn envelope(&self) -> (Retention, SpeedLimits) {
+        (self.loadout.damping(), SHIP_SPEED_LIMITS)
+    }
 
     /// Called when a projectile or enemy hits this ship.
     #[func]
