@@ -44,6 +44,13 @@ impl BodyId {
     pub fn index(self) -> usize {
         self.0
     }
+
+    /// Test-only constructor; real ids come only from the world's
+    /// register pathways.
+    #[cfg(test)]
+    pub(crate) fn from_index(index: usize) -> Self {
+        Self(index)
+    }
 }
 
 /// A mover with no propulsion: a drifting bookshelf, a chunk of
@@ -160,20 +167,39 @@ struct PoweredState {
     angular: [f32; 3],
 }
 
+/// Placement, hull, and motion envelope for a powered body — one
+/// named-field argument object, so registration sites read as what
+/// they configure.
+#[derive(Debug, Clone, Copy)]
+pub struct PoweredBodySpec {
+    pub position: [f32; 3],
+    pub radius: f32,
+    pub mass: Mass,
+    pub restitution: Restitution,
+    pub retention: Retention,
+    pub limits: SpeedLimits,
+}
+
+/// A body's complete world-side record. Tombstoned (`alive: false`)
+/// on removal so other BodyIds stay stable; tombstoned slots vanish
+/// from queries, snapshots, and events.
+struct BodySlot {
+    mirror: BallisticBody,
+    handle: RigidBodyHandle,
+    /// `Some` for powered bodies, `None` for ballistic.
+    powered: Option<PoweredState>,
+    alive: bool,
+}
+
 /// Owns all ballistic bodies and the static collision geometry they
 /// bounce around in, simulated by rapier3d behind this facade — rapier
 /// types never escape this module. Statics come from the same
 /// `level_assembly::collision_boxes` output that builds the Godot
 /// colliders — one source of truth for where the walls are.
 pub struct KineticWorld {
-    mirror: Vec<BallisticBody>,
-    handles: Vec<RigidBodyHandle>,
-    /// `Some` for powered bodies, `None` for ballistic; parallel to
-    /// `handles`/`mirror`.
-    powered: Vec<Option<PoweredState>>,
-    /// Tombstones: removed bodies keep their slot so BodyIds stay
-    /// stable, but vanish from queries, snapshots, and events.
-    alive: Vec<bool>,
+    /// One slot per BodyId, in creation order: a body's engine handle,
+    /// read-mirror, control state, and liveness can never disagree.
+    slots: Vec<BodySlot>,
     gravity: Vector,
     params: IntegrationParameters,
     pipeline: PhysicsPipeline,
@@ -204,10 +230,7 @@ impl KineticWorld {
             ..IntegrationParameters::default()
         };
         Self {
-            mirror: Vec::new(),
-            handles: Vec::new(),
-            powered: Vec::new(),
-            alive: Vec::new(),
+            slots: Vec::new(),
             gravity: Vector::new(0.0, 0.0, 0.0),
             params,
             pipeline: PhysicsPipeline::new(),
@@ -246,7 +269,7 @@ impl KineticWorld {
     }
 
     pub fn add_body(&mut self, body: BallisticBody) -> BodyId {
-        let index = self.mirror.len();
+        let index = self.slots.len();
         let mut rigid_builder = RigidBodyBuilder::dynamic()
             .translation(Vector::new(
                 body.position[0],
@@ -273,10 +296,12 @@ impl KineticWorld {
             .build();
         self.colliders
             .insert_with_parent(collider, handle, &mut self.rigid_bodies);
-        self.handles.push(handle);
-        self.mirror.push(body);
-        self.powered.push(None);
-        self.alive.push(true);
+        self.slots.push(BodySlot {
+            mirror: body,
+            handle,
+            powered: None,
+            alive: true,
+        });
         BodyId(index)
     }
 
@@ -284,22 +309,15 @@ impl KineticWorld {
     /// writes each tick. Its hull slides on geometry (restitution 0
     /// unless given); its motion envelope (retention, speed caps) is
     /// enforced by the same kinetic core as every other mover.
-    pub fn add_powered(
-        &mut self,
-        position: [f32; 3],
-        radius: f32,
-        mass: Mass,
-        restitution: Restitution,
-        retention: Retention,
-        limits: SpeedLimits,
-    ) -> BodyId {
+    pub fn add_powered(&mut self, spec: PoweredBodySpec) -> BodyId {
         let id = self.add_body(
-            BallisticBody::at_rest(position, radius, restitution).with_mass(mass),
+            BallisticBody::at_rest(spec.position, spec.radius, spec.restitution)
+                .with_mass(spec.mass),
         );
-        self.powered[id.index()] = Some(PoweredState {
+        self.slots[id.index()].powered = Some(PoweredState {
             control: ControlInput::NONE,
-            retention,
-            limits,
+            retention: spec.retention,
+            limits: spec.limits,
             angular: [0.0; 3],
         });
         // Rotations are facade-owned for powered bodies; the engine
@@ -307,9 +325,9 @@ impl KineticWorld {
         // exponential damping (d = -ln r), so the solver owns velocity
         // end to end — overwriting it per tick would erase contact
         // corrections and grind hulls into walls.
-        if let Some(rigid) = self.rigid_bodies.get_mut(self.handles[id.index()]) {
+        if let Some(rigid) = self.rigid_bodies.get_mut(self.slots[id.index()].handle) {
             rigid.lock_rotations(true, false);
-            rigid.set_linear_damping(-retention.factor().ln());
+            rigid.set_linear_damping(-spec.retention.factor().ln());
         }
         id
     }
@@ -317,7 +335,11 @@ impl KineticWorld {
     /// Write a powered body's control for the coming tick. Writing to
     /// a ballistic or removed body is a no-op by construction.
     pub fn set_control(&mut self, id: BodyId, control: ControlInput) {
-        if let Some(Some(state)) = self.powered.get_mut(id.index()) {
+        if let Some(state) = self
+            .slots
+            .get_mut(id.index())
+            .and_then(|slot| slot.powered.as_mut())
+        {
             state.control = control;
         }
     }
@@ -325,11 +347,13 @@ impl KineticWorld {
     /// Update a powered body's motion envelope (the ship's retention
     /// changes with Stability upgrades mid-run).
     pub fn set_envelope(&mut self, id: BodyId, retention: Retention, limits: SpeedLimits) {
-        let index = id.index();
-        if let Some(Some(state)) = self.powered.get_mut(index) {
+        let Some(slot) = self.slots.get_mut(id.index()) else {
+            return;
+        };
+        if let Some(state) = slot.powered.as_mut() {
             state.retention = retention;
             state.limits = limits;
-            if let Some(rigid) = self.rigid_bodies.get_mut(self.handles[index]) {
+            if let Some(rigid) = self.rigid_bodies.get_mut(slot.handle) {
                 rigid.set_linear_damping(-retention.factor().ln());
             }
         }
@@ -339,14 +363,17 @@ impl KineticWorld {
     /// BodyIds stay stable; the body vanishes from queries, snapshots,
     /// and events.
     pub fn remove_body(&mut self, id: BodyId) {
-        let index = id.index();
-        if !self.alive.get(index).copied().unwrap_or(false) {
+        let Some(slot) = self.slots.get_mut(id.index()) else {
+            return;
+        };
+        if !slot.alive {
             return;
         }
-        self.alive[index] = false;
-        self.powered[index] = None;
+        slot.alive = false;
+        slot.powered = None;
+        let handle = slot.handle;
         self.rigid_bodies.remove(
-            self.handles[index],
+            handle,
             &mut self.islands,
             &mut self.colliders,
             &mut self.impulse_joints,
@@ -356,18 +383,18 @@ impl KineticWorld {
     }
 
     pub fn body(&self, id: BodyId) -> Option<&BallisticBody> {
-        if !self.alive.get(id.0).copied().unwrap_or(false) {
-            return None;
-        }
-        self.mirror.get(id.0)
+        self.slots
+            .get(id.0)
+            .filter(|slot| slot.alive)
+            .map(|slot| &slot.mirror)
     }
 
     pub fn bodies(&self) -> impl Iterator<Item = (BodyId, &BallisticBody)> {
-        self.mirror
+        self.slots
             .iter()
             .enumerate()
-            .filter(|(i, _)| self.alive[*i])
-            .map(|(i, b)| (BodyId(i), b))
+            .filter(|(_, slot)| slot.alive)
+            .map(|(i, slot)| (BodyId(i), &slot.mirror))
     }
 
     /// One-shot impulse: level-setup disturbance ("the occupants
@@ -375,13 +402,10 @@ impl KineticWorld {
     /// Velocity-delta semantics (mass-independent), matching the
     /// kinetic core's `Impulse` contract.
     pub fn disturb(&mut self, id: BodyId, impulse: Impulse) {
-        if !self.alive.get(id.0).copied().unwrap_or(false) {
-            return;
-        }
-        let Some(&handle) = self.handles.get(id.0) else {
+        let Some(slot) = self.slots.get(id.0).filter(|slot| slot.alive) else {
             return;
         };
-        if let Some(rigid) = self.rigid_bodies.get_mut(handle) {
+        if let Some(rigid) = self.rigid_bodies.get_mut(slot.handle) {
             let lv = rigid.linvel()
                 + Vector::new(impulse.linear[0], impulse.linear[1], impulse.linear[2]);
             let av = rigid.angvel()
@@ -397,15 +421,15 @@ impl KineticWorld {
         WorldSnapshot {
             tick: self.tick,
             bodies: self
-                .mirror
+                .slots
                 .iter()
                 .enumerate()
-                .filter(|(i, _)| self.alive[*i])
-                .map(|(i, b)| BodySnapshot {
+                .filter(|(_, slot)| slot.alive)
+                .map(|(i, slot)| BodySnapshot {
                     id: BodyId(i),
-                    position: b.position,
-                    angular_velocity: b.angular_velocity,
-                    at_rest: b.is_at_rest(),
+                    position: slot.mirror.position,
+                    angular_velocity: slot.mirror.angular_velocity,
+                    at_rest: slot.mirror.is_at_rest(),
                 })
                 .collect(),
         }
@@ -431,7 +455,7 @@ impl KineticWorld {
         // multi-exclusion (looker AND target) needs the predicate.
         let excluded: Vec<RigidBodyHandle> = exclude
             .iter()
-            .filter_map(|id| self.handles.get(id.index()).copied())
+            .filter_map(|id| self.slots.get(id.index()).map(|slot| slot.handle))
             .collect();
         let keep = |_collider: ColliderHandle, collider: &Collider| -> bool {
             collider
@@ -460,14 +484,14 @@ impl KineticWorld {
         // friendly impulse (the engine owns linear velocity end to
         // end; damping carries retention), torque integrated facade-
         // side with the exact per-second math (rotation feel).
-        for index in 0..self.handles.len() {
-            if !self.alive[index] {
+        for slot in &mut self.slots {
+            if !slot.alive {
                 continue;
             }
-            let Some(state) = self.powered[index].as_mut() else {
+            let Some(state) = slot.powered.as_mut() else {
                 continue;
             };
-            let Some(rigid) = self.rigid_bodies.get_mut(self.handles[index]) else {
+            let Some(rigid) = self.rigid_bodies.get_mut(slot.handle) else {
                 continue;
             };
             if state.control.thrust != [0.0; 3] {
@@ -499,8 +523,8 @@ impl KineticWorld {
             &collector,
         );
 
-        for index in 0..self.handles.len() {
-            if !self.alive[index] {
+        for index in 0..self.slots.len() {
+            if !self.slots[index].alive {
                 continue;
             }
             self.assert_invariants(index);
@@ -516,14 +540,15 @@ impl KineticWorld {
     /// are left untouched (rapier's own sleeping owns them); forcing
     /// `sleep()` by hand would bypass the island manager.
     fn assert_invariants(&mut self, index: usize) {
-        let limits = self.powered[index]
+        let limits = self.slots[index]
+            .powered
             .as_ref()
             .map(|state| state.limits)
             .unwrap_or(SpeedLimits {
                 linear: BALLISTIC_MAX_SPEED,
                 angular: BALLISTIC_MAX_SPIN,
             });
-        let handle = self.handles[index];
+        let handle = self.slots[index].handle;
         let Some(rigid) = self.rigid_bodies.get_mut(handle) else {
             return;
         };
@@ -537,7 +562,7 @@ impl KineticWorld {
         if dot(linear, linear).sqrt() < REST_SPEED {
             rigid.set_linvel(Vector::ZERO, false);
             rigid.set_angvel(Vector::ZERO, false);
-            if let Some(state) = self.powered[index].as_mut() {
+            if let Some(state) = self.slots[index].powered.as_mut() {
                 state.angular = [0.0; 3];
             }
         } else {
@@ -549,19 +574,18 @@ impl KineticWorld {
     /// Copy engine state into the read-mirror so callers can keep
     /// borrowing `&BallisticBody`.
     fn sync_mirror(&mut self, index: usize) {
-        let handle = self.handles[index];
-        let Some(rigid) = self.rigid_bodies.get(handle) else {
+        let Some(rigid) = self.rigid_bodies.get(self.slots[index].handle) else {
             return;
         };
         let t = rigid.translation();
         let lv = rigid.linvel();
         let av = rigid.angvel();
-        let entry = &mut self.mirror[index];
-        entry.position = [t.x, t.y, t.z];
-        entry.linear_velocity = [lv.x, lv.y, lv.z];
+        let slot = &mut self.slots[index];
+        slot.mirror.position = [t.x, t.y, t.z];
+        slot.mirror.linear_velocity = [lv.x, lv.y, lv.z];
         // Powered bodies have engine rotations locked; their angular
         // velocity is facade-owned.
-        entry.angular_velocity = match self.powered[index].as_ref() {
+        slot.mirror.angular_velocity = match slot.powered.as_ref() {
             Some(state) => state.angular,
             None => [av.x, av.y, av.z],
         };
@@ -883,14 +907,14 @@ mod tests {
         use crate::kinetics::Mass;
         let (retention, limits) = test_envelope();
         let mut world = KineticWorld::new();
-        let mover = world.add_powered(
-            [-2.0, 0.3, 0.0],
-            0.5,
-            Mass::kilograms(60.0),
-            Restitution::clamped(0.0),
+        let mover = world.add_powered(PoweredBodySpec {
+            position: [-2.0, 0.3, 0.0],
+            radius: 0.5,
+            mass: Mass::kilograms(60.0),
+            restitution: Restitution::clamped(0.0),
             retention,
             limits,
-        );
+        });
         let prop = world.add_body(BallisticBody::at_rest(
             [1.0, 0.0, 0.0],
             0.5,
@@ -1047,14 +1071,14 @@ mod tests {
         use crate::kinetics::Mass;
         let (retention, limits) = test_envelope();
         let mut world = KineticWorld::new();
-        let id = world.add_powered(
-            [0.0; 3],
-            0.5,
-            Mass::kilograms(20.0),
-            Restitution::clamped(0.2),
+        let id = world.add_powered(PoweredBodySpec {
+            position: [0.0; 3],
+            radius: 0.5,
+            mass: Mass::kilograms(20.0),
+            restitution: Restitution::clamped(0.2),
             retention,
             limits,
-        );
+        });
         world.set_control(
             id,
             ControlInput {
@@ -1077,14 +1101,14 @@ mod tests {
         use crate::kinetics::Mass;
         let (retention, limits) = test_envelope();
         let mut world = KineticWorld::new();
-        let id = world.add_powered(
-            [0.0; 3],
-            0.5,
-            Mass::kilograms(60.0),
-            Restitution::clamped(0.0),
+        let id = world.add_powered(PoweredBodySpec {
+            position: [0.0; 3],
+            radius: 0.5,
+            mass: Mass::kilograms(60.0),
+            restitution: Restitution::clamped(0.0),
             retention,
             limits,
-        );
+        });
         world.set_control(
             id,
             ControlInput {
@@ -1124,14 +1148,14 @@ mod tests {
         // thrusting diagonally into it must press and slide, never
         // bounce.
         world.add_statics([wall([0.0, 0.0, -2.0], [50.0, 5.0, 0.5])]);
-        let id = world.add_powered(
-            [0.0; 3],
-            0.5,
-            Mass::kilograms(60.0),
-            Restitution::clamped(0.0),
+        let id = world.add_powered(PoweredBodySpec {
+            position: [0.0; 3],
+            radius: 0.5,
+            mass: Mass::kilograms(60.0),
+            restitution: Restitution::clamped(0.0),
             retention,
             limits,
-        );
+        });
         world.set_control(
             id,
             ControlInput {
@@ -1179,14 +1203,14 @@ mod tests {
         use crate::kinetics::Mass;
         let (retention, limits) = test_envelope();
         let mut world = KineticWorld::new();
-        let mover = world.add_powered(
-            [-2.0, 0.0, 0.0],
-            0.5,
-            Mass::kilograms(60.0),
-            Restitution::clamped(0.0),
+        let mover = world.add_powered(PoweredBodySpec {
+            position: [-2.0, 0.0, 0.0],
+            radius: 0.5,
+            mass: Mass::kilograms(60.0),
+            restitution: Restitution::clamped(0.0),
             retention,
             limits,
-        );
+        });
         let prop = world.add_body(
             BallisticBody::at_rest([2.0, 0.0, 0.0], 0.5, Restitution::clamped(0.6))
                 .with_mass(Mass::kilograms(60.0)),
@@ -1225,14 +1249,14 @@ mod tests {
         use crate::kinetics::Mass;
         let (retention, limits) = test_envelope();
         let mut world = KineticWorld::new();
-        let id = world.add_powered(
-            [0.0; 3],
-            0.5,
-            Mass::kilograms(60.0),
-            Restitution::clamped(0.0),
+        let id = world.add_powered(PoweredBodySpec {
+            position: [0.0; 3],
+            radius: 0.5,
+            mass: Mass::kilograms(60.0),
+            restitution: Restitution::clamped(0.0),
             retention,
             limits,
-        );
+        });
         world.set_control(
             id,
             ControlInput {

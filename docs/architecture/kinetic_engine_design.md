@@ -20,9 +20,11 @@ into the scene tree, and it is a view sync.
 
 ## Ontology (void-logic)
 
-- `BodyCore` — position, `KineticState` (velocities), `Mass` (newtype,
-  > 0), collider sphere radius, `Material`, `RoomId`. Orientation
-  remains a view concern while colliders are spheres.
+- `BodyCore` — position, velocities (engine-owned, mirrored for
+  readers), `Mass` (newtype, > 0), collider sphere radius, `Material`,
+  `RoomId`. Orientation remains a view concern while colliders are
+  spheres; the only shell-side integrator left is `AngularState`, the
+  ship's local rotation feel.
 - `PoweredBody` — `BodyCore` + a `ControlInput` slot written each tick
   by the shell. Retention comes from its loadout (always `decaying`).
 - `BallisticBody` — `BodyCore` only. No thrust API exists on it;

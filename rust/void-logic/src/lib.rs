@@ -20,6 +20,7 @@ pub mod level_assembly;
 pub mod weapon;
 pub mod enemy_ai;
 pub mod laser;
+pub mod consequence;
 pub mod credits;
 pub mod enemy_category;
 pub mod enemy_projectile;

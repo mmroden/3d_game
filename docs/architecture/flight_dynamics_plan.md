@@ -98,7 +98,8 @@ there is one source of truth for "where the walls are."
 
 **A — Kinetic core in void-logic (TDD).** `Retention`/`Restitution`
 newtypes (folds in the spin-fix review follow-up: `BaseStats.damping`
-becomes `Retention`, the bug class unrepresentable), `KineticState`,
+becomes `Retention`, the bug class unrepresentable), `KineticState`
+(since pared down to `AngularState` — the world owns linear motion),
 `integrate`, `bounce`, one-shot impulses, the invariant property tests.
 
 **B — Migrate ShipController onto the core.** Behavior-preserving;

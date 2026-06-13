@@ -9,7 +9,7 @@ use godot::classes::{
 use super::constants::{actions, groups, methods, signals};
 use super::godot_util;
 
-use void_logic::kinetics::{ControlInput, KineticState, Retention, SpeedLimits};
+use void_logic::kinetics::{AngularState, ControlInput, Retention, SpeedLimits};
 use void_logic::laser::LaserLevel;
 use void_logic::loadout::Loadout;
 use void_logic::power_routing::PowerMode;
@@ -49,7 +49,7 @@ pub struct ShipController {
 
     /// Angular motion only: orientation is view/control-side (the
     /// camera is the ship). Linear motion lives in the kinetic world.
-    kinetics: KineticState,
+    angular: AngularState,
     weapon: WeaponState,
     beam_nodes: Vec<Gd<MeshInstance3D>>,
     loadout: Loadout,
@@ -62,7 +62,7 @@ impl ICharacterBody3D for ShipController {
     fn init(base: Base<CharacterBody3D>) -> Self {
         Self {
             base,
-            kinetics: KineticState::new(),
+            angular: AngularState::new(),
             weapon: WeaponState::default(),
             beam_nodes: Vec::new(),
             loadout: Loadout::new(),
@@ -109,7 +109,7 @@ impl ShipController {
 
         // Stabilizer: kill angular velocity on L1/Tab
         if input.is_action_pressed(actions::STABILIZE) {
-            self.kinetics.halt_rotation();
+            self.angular.halt();
         }
 
         // Power routing: toggle on press
@@ -141,14 +141,14 @@ impl ShipController {
         let effective_rotation = self.loadout.rotation_speed();
 
         // Angular integration stays local and exact.
-        let torque_only = ControlInput {
-            thrust: [0.0; 3],
-            torque: to_array(Vector3::new(pitch, yaw, roll) * effective_rotation),
-        };
-        self.kinetics
-            .step(torque_only, self.loadout.damping(), SHIP_SPEED_LIMITS, delta);
+        self.angular.step(
+            to_array(Vector3::new(pitch, yaw, roll) * effective_rotation),
+            self.loadout.damping(),
+            SHIP_SPEED_LIMITS.angular,
+            delta,
+        );
 
-        let rot = to_vector(self.kinetics.angular_velocity()) * delta;
+        let rot = to_vector(self.angular.velocity()) * delta;
 
         // Quaternion-based rotation: compose pitch/yaw/roll independently
         // then apply to current orientation. Avoids gimbal lock and
@@ -186,16 +186,24 @@ impl ShipController {
         (self.loadout.damping(), SHIP_SPEED_LIMITS)
     }
 
-    /// Called when a projectile or enemy hits this ship.
+    /// Variant-boundary wrapper: the one f32→Damage conversion for
+    /// GDScript and `Object::call` dispatch. Rust callers use
+    /// `apply_damage`.
     #[func]
     pub fn take_damage(&mut self, amount: f32) {
+        self.apply_damage(void_logic::newtypes::Damage::new(amount));
+    }
+
+    /// Called when a projectile or enemy hits this ship.
+    pub fn apply_damage(&mut self, damage: void_logic::newtypes::Damage) {
         // Player damage SFX (non-positional since it's the player)
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
             audio.bind_mut().play_event(SfxEvent::ImpactHeavy);
         }
+        // Signals are Variant territory: convert at the boundary.
         self.base_mut().emit_signal(
             signals::PLAYER_DAMAGED,
-            &[Variant::from(amount)],
+            &[Variant::from(damage.as_f32())],
         );
     }
 

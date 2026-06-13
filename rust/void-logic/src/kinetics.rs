@@ -4,8 +4,8 @@
 //! motion; this module owns the types that constrain it — `Retention`
 //! (dissipation violations are unrepresentable), `Restitution`,
 //! `SpeedLimits`, `Mass`, `ControlInput`, `Impulse` — plus
-//! `KineticState`, the exact per-second integrator that survives as
-//! the ship's local angular (rotation-feel) state.
+//! `AngularState`, the exact per-second integrator for the ship's
+//! local rotation feel (the camera is the ship).
 
 /// Per-frame velocity retention factor.
 ///
@@ -113,59 +113,35 @@ impl Mass {
     }
 }
 
-/// Linear and angular velocity of a mover. Mutation only through
-/// `step`, `apply_impulse`, `halt_rotation`, and the engine-readback
-/// hook — there is no raw setter.
+/// Angular velocity integrated locally by a body that owns its own
+/// orientation (the ship: the camera is the ship, so rotation feel
+/// keeps this exact per-second math). Linear motion belongs to the
+/// world. Mutation only through `step` and `halt` — no raw setter.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct KineticState {
-    linear_velocity: [f32; 3],
-    angular_velocity: [f32; 3],
+pub struct AngularState {
+    velocity: [f32; 3],
 }
 
-impl KineticState {
+impl AngularState {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn linear_velocity(&self) -> [f32; 3] {
-        self.linear_velocity
+    pub fn velocity(&self) -> [f32; 3] {
+        self.velocity
     }
 
-    pub fn angular_velocity(&self) -> [f32; 3] {
-        self.angular_velocity
-    }
-
-    /// Integrate one tick: accelerate by `control`, decay by
-    /// `retention`, then sanitize (NaN reset, speed caps).
-    pub fn step(
-        &mut self,
-        control: ControlInput,
-        retention: Retention,
-        limits: SpeedLimits,
-        delta: f32,
-    ) {
+    /// Integrate one tick: accelerate by `torque`, decay by
+    /// `retention`, then sanitize (NaN reset, speed cap).
+    pub fn step(&mut self, torque: [f32; 3], retention: Retention, max_speed: f32, delta: f32) {
         let r = retention.factor_for(delta);
-        self.linear_velocity = sanitize(
-            scale(add(self.linear_velocity, scale(control.thrust, delta)), r),
-            limits.linear,
-        );
-        self.angular_velocity = sanitize(
-            scale(add(self.angular_velocity, scale(control.torque, delta)), r),
-            limits.angular,
-        );
-    }
-
-    /// Apply a one-shot momentum change (collision response).
-    pub fn apply_impulse(&mut self, impulse: Impulse) {
-        self.linear_velocity = add(self.linear_velocity, impulse.linear);
-        self.angular_velocity = add(self.angular_velocity, impulse.angular);
+        self.velocity = sanitize(scale(add(self.velocity, scale(torque, delta)), r), max_speed);
     }
 
     /// Stabilizer: kill all rotation immediately.
-    pub fn halt_rotation(&mut self) {
-        self.angular_velocity = [0.0; 3];
+    pub fn halt(&mut self) {
+        self.velocity = [0.0; 3];
     }
-
 }
 
 pub(crate) fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -205,14 +181,15 @@ mod tests {
         dot(v, v).sqrt()
     }
 
-    const LIMITS: SpeedLimits = SpeedLimits {
-        linear: 50.0,
-        angular: 5.0,
-    };
+    const MAX_SPIN: f32 = 5.0;
     const DT: f32 = 1.0 / 60.0;
 
-    fn impulse(linear: [f32; 3], angular: [f32; 3]) -> Impulse {
-        Impulse { linear, angular }
+    /// Spin a fresh state up to exactly `velocity`: one one-second
+    /// FULL-retention step integrates torque·1s with no decay.
+    fn spinning(velocity: [f32; 3]) -> AngularState {
+        let mut state = AngularState::new();
+        state.step(velocity, Retention::FULL, f32::MAX, 1.0);
+        state
     }
 
     #[test]
@@ -236,18 +213,16 @@ mod tests {
         // 60 ticks or 120: changing physics_ticks_per_second can never
         // change handling feel.
         let retention = Retention::decaying(0.05);
-        let mut at_60 = KineticState::new();
-        let mut at_120 = KineticState::new();
-        at_60.apply_impulse(impulse([30.0, 0.0, 0.0], [0.0; 3]));
-        at_120.apply_impulse(impulse([30.0, 0.0, 0.0], [0.0; 3]));
+        let mut at_60 = spinning([30.0, 0.0, 0.0]);
+        let mut at_120 = spinning([30.0, 0.0, 0.0]);
         for _ in 0..60 {
-            at_60.step(ControlInput::NONE, retention, LIMITS, 1.0 / 60.0);
+            at_60.step([0.0; 3], retention, f32::MAX, 1.0 / 60.0);
         }
         for _ in 0..120 {
-            at_120.step(ControlInput::NONE, retention, LIMITS, 1.0 / 120.0);
+            at_120.step([0.0; 3], retention, f32::MAX, 1.0 / 120.0);
         }
-        let v60 = at_60.linear_velocity()[0];
-        let v120 = at_120.linear_velocity()[0];
+        let v60 = at_60.velocity()[0];
+        let v120 = at_120.velocity()[0];
         assert!(
             (v60 - v120).abs() < 0.05,
             "decay must be tick-rate invariant: 60 Hz gave {v60}, 120 Hz gave {v120}"
@@ -267,90 +242,58 @@ mod tests {
     }
 
     #[test]
-    fn thrust_and_torque_accelerate() {
-        let mut state = KineticState::new();
-        state.step(
-            ControlInput { thrust: [10.0, 0.0, 0.0], torque: [0.0, 2.0, 0.0] },
-            Retention::decaying(0.95),
-            LIMITS,
-            DT,
-        );
-        assert!(state.linear_velocity()[0] > 0.0);
-        assert!(state.angular_velocity()[1] > 0.0);
+    fn torque_accelerates() {
+        let mut state = AngularState::new();
+        state.step([0.0, 2.0, 0.0], Retention::decaying(0.95), MAX_SPIN, DT);
+        assert!(state.velocity()[1] > 0.0);
     }
 
     #[test]
-    fn velocity_converges_to_zero_once_input_stops() {
+    fn spin_converges_to_zero_once_input_stops() {
         // The invariant that would have caught the infinite-spin bug:
         // for any finite input history, no input means motion dies.
-        let mut state = KineticState::new();
-        state.apply_impulse(impulse([30.0, -20.0, 10.0], [3.0, -2.0, 1.0]));
+        let mut state = spinning([3.0, -2.0, 1.0]);
         // 5% retained per second over 10 simulated seconds.
         for _ in 0..600 {
-            state.step(ControlInput::NONE, Retention::decaying(0.05), LIMITS, DT);
+            state.step([0.0; 3], Retention::decaying(0.05), MAX_SPIN, DT);
         }
         assert!(
-            speed(state.linear_velocity()) < 1e-3,
-            "linear velocity must decay to zero, got {:?}",
-            state.linear_velocity()
-        );
-        assert!(
-            speed(state.angular_velocity()) < 1e-3,
+            speed(state.velocity()) < 1e-3,
             "angular velocity must decay to zero, got {:?}",
-            state.angular_velocity()
+            state.velocity()
         );
     }
 
     #[test]
-    fn full_retention_preserves_drift_exactly() {
-        let mut state = KineticState::new();
-        state.apply_impulse(impulse([1.5, -0.5, 0.25], [0.1, 0.2, -0.1]));
+    fn full_retention_preserves_spin_exactly() {
+        let mut state = spinning([0.1, 0.2, -0.1]);
         let before = state;
         for _ in 0..600 {
-            state.step(ControlInput::NONE, Retention::FULL, LIMITS, DT);
+            state.step([0.0; 3], Retention::FULL, MAX_SPIN, DT);
         }
-        assert_eq!(state, before, "ballistic drift must neither decay nor grow");
+        assert_eq!(state, before, "drift must neither decay nor grow");
     }
 
     #[test]
-    fn speed_limits_are_enforced_inside_step() {
-        let mut state = KineticState::new();
+    fn speed_limit_is_enforced_inside_step() {
+        let mut state = AngularState::new();
         for _ in 0..1000 {
-            state.step(
-                ControlInput { thrust: [1e6, 0.0, 0.0], torque: [0.0, 1e6, 0.0] },
-                Retention::FULL,
-                LIMITS,
-                DT,
-            );
+            state.step([0.0, 1e6, 0.0], Retention::FULL, MAX_SPIN, DT);
         }
-        assert!(speed(state.linear_velocity()) <= LIMITS.linear + 1e-3);
-        assert!(speed(state.angular_velocity()) <= LIMITS.angular + 1e-3);
+        assert!(speed(state.velocity()) <= MAX_SPIN + 1e-3);
     }
 
     #[test]
-    fn nan_velocity_is_reset_by_step() {
-        let mut state = KineticState::new();
-        state.apply_impulse(impulse([f32::NAN, 0.0, 0.0], [0.0, f32::NAN, 0.0]));
-        state.step(ControlInput::NONE, Retention::decaying(0.95), LIMITS, DT);
-        assert_eq!(state.linear_velocity(), [0.0; 3], "NaN must reset to rest");
-        assert_eq!(state.angular_velocity(), [0.0; 3], "NaN must reset to rest");
+    fn nan_torque_is_reset_by_step() {
+        let mut state = AngularState::new();
+        state.step([0.0, f32::NAN, 0.0], Retention::decaying(0.95), MAX_SPIN, DT);
+        assert_eq!(state.velocity(), [0.0; 3], "NaN must reset to rest");
     }
 
     #[test]
-    fn impulse_changes_both_velocities() {
-        let mut state = KineticState::new();
-        state.apply_impulse(impulse([1.0, 2.0, 3.0], [0.5, 0.0, -0.5]));
-        assert_eq!(state.linear_velocity(), [1.0, 2.0, 3.0]);
-        assert_eq!(state.angular_velocity(), [0.5, 0.0, -0.5]);
+    fn halt_zeroes_rotation() {
+        let mut state = spinning([2.0, 2.0, 2.0]);
+        state.halt();
+        assert_eq!(state.velocity(), [0.0; 3]);
     }
-
-    #[test]
-    fn halt_rotation_zeroes_angular_only() {
-        let mut state = KineticState::new();
-        state.apply_impulse(impulse([1.0, 0.0, 0.0], [2.0, 2.0, 2.0]));
-        state.halt_rotation();
-        assert_eq!(state.angular_velocity(), [0.0; 3]);
-        assert_eq!(state.linear_velocity(), [1.0, 0.0, 0.0]);
-    }
-
 }

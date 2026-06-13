@@ -94,6 +94,31 @@ func test_level_generation_is_owned_by_the_phase_machine():
 		"continue_game from Death must not regenerate: Death -> Playing is invalid")
 
 
+func test_dead_enemies_are_cleaned_up_without_errors():
+	# A freed enemy node (death) must be tombstoned by the host on the
+	# next tick — never cloned first (observed red: the pre-fix host
+	# panicked with a use-after-free here, which GUT surfaces as
+	# engine errors failing the test).
+	var lm = LevelManager.new()
+	add_child_autofree(lm)
+	lm.generate_level(4242, 8)
+	var survivors := []
+	for child in lm.get_children():
+		if child is EnemyDrone:
+			survivors.append(child)
+	assert_gt(survivors.size(), 0,
+		"seed 4242 must spawn enemies for this test to mean anything")
+	var victim: Node = survivors.pop_front()
+	victim.free()
+	await wait_physics_frames(5)
+	var remaining := 0
+	for child in lm.get_children():
+		if child is EnemyDrone:
+			remaining += 1
+	assert_eq(remaining, survivors.size(),
+		"the freed enemy must be gone and every survivor must still be hosted")
+
+
 func _layout_fingerprint(lm: Node3D) -> Array:
 	var entries := []
 	for child in lm.get_children():

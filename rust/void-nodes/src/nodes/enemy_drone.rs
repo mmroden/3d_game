@@ -121,9 +121,16 @@ impl EnemyDrone {
     #[signal]
     fn enemy_killed(type_id: i32);
 
+    /// Variant-boundary wrapper: the one f32→Damage conversion for
+    /// GDScript and `Object::call` dispatch. Rust callers use
+    /// `apply_damage`.
     #[func]
     pub fn take_damage(&mut self, amount: f32) {
-        let died = self.ai.take_damage(Damage::new(amount));
+        self.apply_damage(Damage::new(amount));
+    }
+
+    pub fn apply_damage(&mut self, damage: Damage) {
+        let died = self.ai.take_damage(damage);
         self.update_health_bar_fill();
 
         if died {
@@ -170,8 +177,8 @@ impl EnemyDrone {
     }
 
     /// Damage carried by this enemy's bolts.
-    pub fn bolt_damage(&self) -> f32 {
-        self.damage
+    pub fn bolt_damage(&self) -> Damage {
+        Damage::new(self.damage)
     }
 
     fn on_death(&mut self) {
