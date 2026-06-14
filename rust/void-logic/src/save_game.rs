@@ -5,9 +5,10 @@ use crate::newtypes::Health;
 use crate::run_state::RunState;
 use crate::seed::Seed;
 use crate::shield::ShieldState;
+use serde::{Deserialize, Serialize};
 
 /// A snapshot of game state, saved at end-of-level and on death.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SaveGame {
     pub laser_level: LaserLevel,
     pub loadout: Loadout,
@@ -20,6 +21,17 @@ pub struct SaveGame {
 }
 
 impl SaveGame {
+    /// Serialize to JSON for persistence (one string, stored via the
+    /// same ConfigFile mechanism as options).
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// Reconstruct from a persisted JSON string; `None` if malformed.
+    pub fn from_json(s: &str) -> Option<Self> {
+        serde_json::from_str(s).ok()
+    }
+
     pub fn from_run_state(run: &RunState) -> Self {
         Self {
             laser_level: run.laser_level,
@@ -175,5 +187,26 @@ mod tests {
         assert_eq!(fresh.current_level, 1);
         assert_eq!(fresh.laser_level, LaserLevel::Orange); // Green(4) halved = 2 = Orange
         assert_eq!(fresh.credits.balance, 0);
+    }
+
+    #[test]
+    fn json_round_trips_a_save() {
+        // The full rich save (loadout, upgrades, shield, …) survives a
+        // serialize/parse cycle — what disk persistence relies on.
+        let mut run = RunState::new(Seed::new(42));
+        run.laser_level = LaserLevel::Green;
+        run.current_level = 4;
+        run.credits.earn(5_000);
+        let save = SaveGame::from_run_state(&run);
+
+        let restored = SaveGame::from_json(&save.to_json())
+            .expect("a freshly-serialized save must parse back");
+        assert_eq!(restored, save);
+    }
+
+    #[test]
+    fn malformed_json_yields_none() {
+        assert!(SaveGame::from_json("{ not valid").is_none());
+        assert!(SaveGame::from_json("").is_none());
     }
 }

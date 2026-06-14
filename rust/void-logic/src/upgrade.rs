@@ -1,8 +1,9 @@
 use rand::Rng;
 use rand::RngExt;
+use serde::{Deserialize, Serialize};
 
 /// What aspect of the ship an upgrade modifies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UpgradeKind {
     Thrust,
     RotationSpeed,
@@ -38,7 +39,7 @@ impl UpgradeKind {
 }
 
 /// A single upgrade instance, as found in a lootbox.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Upgrade {
     pub name: String,
     pub kind: UpgradeKind,

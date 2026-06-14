@@ -18,6 +18,10 @@ func after_each():
 	if _main and is_instance_valid(_main):
 		_main.queue_free()
 		await get_tree().process_frame
+	# This suite toggles SBS, which now persists — clear for isolation.
+	var dir = DirAccess.open("user://")
+	if dir and dir.file_exists("options.cfg"):
+		dir.remove("options.cfg")
 
 func test_mono_measures_the_root_viewport():
 	var lm = _main.get_node("LevelManager")

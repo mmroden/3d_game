@@ -3,7 +3,7 @@
 use crate::level_graph::LevelGraph;
 use crate::seed::Seed;
 use crate::room_assembler::{CollisionBox, MeshPlacement};
-use crate::room_furnisher::LightSource;
+use crate::room_furnisher::{LightAccent, LightSource};
 
 /// Axis-aligned world bounds of a room plus its spatial adjacency —
 /// the minimal geometry the shell needs to decide which rooms to draw.
@@ -193,6 +193,31 @@ pub fn spawn_list_full(
                 is_corridor: room.template.kind == crate::room_template::TemplateKind::Corridor,
             },
         });
+    }
+
+    // Light accents by room role, sourced from the level graph (no
+    // parallel structure): the start chamber (first room) reads blue;
+    // the exit chamber — the farthest room, where the portal sits — and
+    // everything visible through corridors from it reads red.
+    let bounds: Vec<RoomBounds> = rooms.iter().map(|r| r.bounds.clone()).collect();
+    let exit_red: std::collections::HashSet<usize> = graph
+        .room_indices()
+        .next()
+        .and_then(|start| graph.farthest_room_from(start))
+        .and_then(|exit| pos_of.get(&exit).copied())
+        .map(|exit_pos| visible_rooms(exit_pos, &bounds).into_iter().collect())
+        .unwrap_or_default();
+    for (pos, room) in rooms.iter_mut().enumerate() {
+        let accent = if pos == 0 {
+            LightAccent::Start
+        } else if exit_red.contains(&pos) {
+            LightAccent::Exit
+        } else {
+            continue; // Neutral: light_fixtures already set warm-white.
+        };
+        for light in &mut room.lights {
+            light.color = accent.color(light.state.liveness());
+        }
     }
 
     rooms
@@ -621,5 +646,33 @@ mod tests {
             levels_that_culled_lights > 0,
             "across 30 seeds, culling never turned a single generated light off"
         );
+    }
+
+    #[test]
+    fn start_room_lights_carry_the_blue_accent() {
+        // Role coloring sourced from the graph: the first room (where the
+        // player spawns) reads blue. Without the accent pass its lights
+        // would be warm-white (red ≈ 1.0), so this pins the wiring.
+        for seed in 0..30u64 {
+            let Ok(graph) = generate(&test_config(seed)) else { continue };
+            let rooms = spawn_list_full(&graph, 4.0, Seed::new(seed));
+            if rooms.is_empty() || rooms[0].lights.is_empty() {
+                continue;
+            }
+            for light in &rooms[0].lights {
+                assert!(
+                    light.color[0] < 0.95,
+                    "start light should be blue-tinted (red={})",
+                    light.color[0]
+                );
+                assert!(
+                    light.color[2] > light.color[1],
+                    "start light should lean blue (blue > green): {:?}",
+                    light.color
+                );
+            }
+            return;
+        }
+        panic!("no seed produced a start room with lights");
     }
 }

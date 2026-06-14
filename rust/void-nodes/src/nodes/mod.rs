@@ -7,6 +7,7 @@ mod telemetry;
 mod enemy_drone;
 mod lootbox;
 mod level_manager;
+mod persistence;
 pub(crate) mod views;
 mod portal;
 mod game_manager;

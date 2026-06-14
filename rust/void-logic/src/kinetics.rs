@@ -7,12 +7,14 @@
 //! `AngularState`, the exact per-second integrator for the ship's
 //! local rotation feel (the camera is the ship).
 
+use serde::{Deserialize, Serialize};
+
 /// Per-frame velocity retention factor.
 ///
 /// `FULL` (exactly 1.0) is reserved for ballistic drift; every other
 /// value is forced below 1.0 so powered motion always dissipates. The
 /// infinite-spin bug (2026-06-11) is unrepresentable in this type.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Retention(f32);
 
 impl Retention {

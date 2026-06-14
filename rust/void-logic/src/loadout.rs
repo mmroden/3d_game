@@ -1,9 +1,10 @@
 use crate::kinetics::Retention;
 use crate::newtypes::{Health, Damage};
 use crate::upgrade::{Upgrade, UpgradeKind};
+use serde::{Deserialize, Serialize};
 
 /// Base stats for the ship before upgrades.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BaseStats {
     pub thrust_power: f32,
     pub rotation_speed: f32,
@@ -31,7 +32,7 @@ impl Default for BaseStats {
 }
 
 /// The player's current ship configuration: base stats + collected upgrades.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Loadout {
     pub base: BaseStats,
     pub upgrades: Vec<Upgrade>,

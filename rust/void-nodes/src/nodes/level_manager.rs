@@ -353,10 +353,11 @@ impl LevelManager {
                     continue;
                 }
                 let energy = match ls.state {
-                    LightState::Dim => ls.energy * DIM_ENERGY_FACTOR,
-                    // On full; Blinking carries full energy and is
-                    // modulated each frame.
-                    _ => ls.energy,
+                    // Dim and Blinking are failing fixtures — weak glow.
+                    // Blinking additionally drops out over time.
+                    LightState::Dim | LightState::Blinking => ls.energy * DIM_ENERGY_FACTOR,
+                    LightState::On => ls.energy,
+                    LightState::Off => ls.energy, // unreachable (Off skipped above)
                 };
                 let mut light = OmniLight3D::new_alloc();
                 light.set_position(vec3(ls.position));
@@ -520,9 +521,10 @@ impl LevelManager {
         self.blink_time += delta;
         let t = self.blink_time;
         for (i, (light, base)) in self.blinking_lights.iter().enumerate() {
-            // Per-light phase offset spreads the flicker out.
+            // Slow, out-of-phase failing fixture: mostly holds its weak
+            // glow, drops out briefly and irregularly — not a strobe.
             let phase = i as f32 * 0.7;
-            let lit = (t * 6.0 + phase).sin() > 0.5;
+            let lit = (t * 1.7 + phase).sin() > -0.55;
             light
                 .clone()
                 .set_param(godot::classes::light_3d::Param::ENERGY, if lit { *base } else { 0.0 });

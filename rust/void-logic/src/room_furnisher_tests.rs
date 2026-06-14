@@ -426,6 +426,32 @@ fn light_ambiance_is_deterministic_for_a_seed() {
 }
 
 #[test]
+fn light_color_warms_as_a_fixture_dims() {
+	// "White going warmer until it dims out": a bright fixture reads
+	// near-white (high blue), a faded one is warm (low blue).
+	let bright = LightAccent::Neutral.color(1.0);
+	let faded = LightAccent::Neutral.color(0.2);
+	assert!(bright[2] > faded[2], "brighter fixture is whiter (more blue)");
+	assert!(faded[2] < faded[0], "faded fixture is warm (blue < red)");
+}
+
+#[test]
+fn accents_tint_start_blue_and_exit_red() {
+	let t = 0.4;
+	let neutral = LightAccent::Neutral.color(t);
+	let start = LightAccent::Start.color(t);
+	let exit = LightAccent::Exit.color(t);
+	assert!(start[2] > neutral[2], "start chamber leans blue");
+	assert!(exit[2] < neutral[2] && exit[0] > exit[2], "exit region leans red");
+}
+
+#[test]
+fn liveness_falls_from_on_to_off() {
+	assert!(LightState::On.liveness() > LightState::Dim.liveness());
+	assert_eq!(LightState::Off.liveness(), 0.0);
+}
+
+#[test]
 fn most_lights_are_dark_in_an_abandoned_base() {
     // Over a large room, Off should dominate (≈50%) — the feature's
     // whole point is that lights exist but mostly are not on.

@@ -1,8 +1,10 @@
 //! ROYGBIV laser level progression system.
 
+use serde::{Deserialize, Serialize};
+
 /// Laser upgrade levels following ROYGBIV color progression.
 /// Each level increases damage by 1 (Red=1 through Violet=7).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum LaserLevel {
     Red = 1,
     Orange = 2,
