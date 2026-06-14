@@ -1,12 +1,13 @@
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
+use serde::{Deserialize, Serialize};
 
 /// Identifies the random stream for a run or a level.
 ///
 /// Owns every conversion at the Godot boundary (Variant carries only
 /// signed 64-bit integers), so raw integer casts never appear outside
 /// this type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Seed(u64);
 
 impl Seed {

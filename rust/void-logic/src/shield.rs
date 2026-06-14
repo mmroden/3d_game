@@ -1,9 +1,10 @@
 //! Shield state: regenerating energy barrier that absorbs damage before health.
 
 use crate::newtypes::{Damage, Shield};
+use serde::{Deserialize, Serialize};
 
 /// Manages shield current level, regeneration, and boost state.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShieldState {
     pub current: Shield,
     pub max_capacity: Shield,

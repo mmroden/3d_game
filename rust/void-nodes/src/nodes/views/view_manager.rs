@@ -82,6 +82,12 @@ impl INode3D for ViewManager {
 
 #[godot_api]
 impl ViewManager {
+    /// Emitted whenever the set of viewports rendering the 3D world
+    /// changes (mode toggle). Telemetry listens so it always measures
+    /// the eyes that actually draw, never the root compositor.
+    #[signal]
+    fn render_viewports_changed(viewports: Array<Rid>);
+
     /// Called when the window resizes (fullscreen transition, manual resize, etc.)
     /// Recomputes all viewport and container sizes from the actual window dims.
     #[func]
@@ -94,29 +100,71 @@ impl ViewManager {
 
     /// Called when GameManager emits options_changed.
     #[func]
-    pub fn on_options_changed(&mut self, sbs_enabled: bool, _msaa_enabled: bool) {
+    pub fn on_options_changed(&mut self, sbs_enabled: bool, msaa_enabled: bool) {
         let target = if sbs_enabled {
             DisplayMode::SideBySide
         } else {
             DisplayMode::Mono
         };
 
-        if target == self.current_mode {
-            return;
+        if target != self.current_mode {
+            let sbs = target == DisplayMode::SideBySide;
+            self.resize_window(sbs);
+            self.current_mode = target;
+            self.resize_viewports();
+            self.apply_visibility(sbs);
+            self.toggle_mono_camera(sbs);
+
+            // Publish the now-active 3D viewports so telemetry re-targets
+            // measurement onto the eyes (SBS) or the root (mono).
+            let rids = self.active_viewport_rids();
+            self.base_mut()
+                .emit_signal(signals::RENDER_VIEWPORTS_CHANGED, &[rids.to_variant()]);
+
+            godot_print!("SBS stereo {}", if sbs { "enabled" } else { "disabled" });
         }
 
-        let sbs = target == DisplayMode::SideBySide;
-        self.resize_window(sbs);
-        self.current_mode = target;
-        self.resize_viewports();
-        self.apply_visibility(sbs);
-        self.toggle_mono_camera(sbs);
-
-        godot_print!("SBS stereo {}", if sbs { "enabled" } else { "disabled" });
+        // ViewManager owns all viewport anti-aliasing: apply MSAA to
+        // whatever is now the active 3D viewport(s). Runs on every
+        // options change — a pure MSAA toggle and a post-mode-switch
+        // re-apply both end up correct.
+        self.apply_msaa(msaa_enabled);
     }
 }
 
 impl ViewManager {
+    /// The viewport RIDs currently rendering the 3D world: the root
+    /// viewport in mono, the two eye sub-viewports in SBS. The single
+    /// source of truth for "what is being drawn", since ViewManager
+    /// owns the display pipeline. Called by typed Rust collaborators
+    /// (LevelManager) — never over a Godot string boundary.
+    pub(crate) fn active_viewport_rids(&self) -> Array<Rid> {
+        let mut rids = Array::new();
+        match self.current_mode {
+            DisplayMode::SideBySide => {
+                for path in [nodes::LEFT_VIEWPORT, nodes::RIGHT_VIEWPORT] {
+                    match self.base().try_get_node_as::<SubViewport>(path) {
+                        Some(vp) => rids.push(vp.get_viewport_rid()),
+                        // The eyes always exist after setup_viewports; a
+                        // miss is a structural invariant break, not a
+                        // soft skip — make it loud so telemetry can't
+                        // silently under-measure.
+                        None => godot_warn!(
+                            "ViewManager: SBS eye viewport '{}' missing; render telemetry under-measures",
+                            path
+                        ),
+                    }
+                }
+            }
+            DisplayMode::Mono => {
+                if let Some(vp) = self.base().get_viewport() {
+                    rids.push(vp.get_viewport_rid());
+                }
+            }
+        }
+        rids
+    }
+
     /// ViewManager is a direct child of Main; GameManager is a sibling.
     fn connect_to_game_manager(&mut self) {
         let Some(main_scene) = self.base().get_parent() else {
@@ -498,9 +546,34 @@ impl ViewManager {
         }
     }
 
+    /// Set up eye anti-aliasing at construction. MSAA starts disabled —
+    /// it is driven by the authoritative option via `apply_eye_msaa`,
+    /// applied at startup by GameManager's options broadcast. TAA is
+    /// always on (cheap, separate from the MSAA option).
     fn apply_aa(viewport: &mut SubViewport) {
-        viewport.set_msaa_3d(Msaa::MSAA_4X);
+        viewport.set_msaa_3d(Msaa::DISABLED);
         viewport.set_use_taa(true);
+    }
+
+    /// Apply the MSAA option to the viewport(s) actually rendering the
+    /// 3D world — the two eye sub-viewports in SBS, the root viewport in
+    /// mono. ViewManager is the sole owner of viewport anti-aliasing.
+    fn apply_msaa(&mut self, enabled: bool) {
+        let msaa = if enabled { Msaa::MSAA_4X } else { Msaa::DISABLED };
+        match self.current_mode {
+            DisplayMode::SideBySide => {
+                for path in [nodes::LEFT_VIEWPORT, nodes::RIGHT_VIEWPORT] {
+                    if let Some(mut vp) = self.base().try_get_node_as::<SubViewport>(path) {
+                        vp.set_msaa_3d(msaa);
+                    }
+                }
+            }
+            DisplayMode::Mono => {
+                if let Some(mut vp) = self.base().get_viewport() {
+                    vp.set_msaa_3d(msaa);
+                }
+            }
+        }
     }
 
     fn resize_window(&mut self, sbs: bool) {

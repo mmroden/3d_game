@@ -321,12 +321,95 @@ fn is_blocking_prop(scene: &str) -> bool {
 
 // ── Light fixtures ──────────────────────────────────────────────────────
 
+/// How alive a light fixture is. A 65-My-abandoned base is mostly dark;
+/// see [`LightState::from_roll`] for the distribution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightState {
+    /// Dead — emits nothing (the fixture mesh remains, unlit).
+    Off,
+    /// Flickering intermittently.
+    Blinking,
+    /// Weak steady glow.
+    Dim,
+    /// Full steady output.
+    On,
+}
+
+impl LightState {
+    /// Classify a uniform sample `r` in `[0, 1)`. The base is mostly
+    /// dead: Off 50%, Blinking 25%, Dim 10%, On 15%.
+    pub fn from_roll(r: f32) -> Self {
+        if r < 0.50 {
+            LightState::Off
+        } else if r < 0.75 {
+            LightState::Blinking
+        } else if r < 0.85 {
+            LightState::Dim
+        } else {
+            LightState::On
+        }
+    }
+
+    /// Liveness in `[0, 1]`: how alive the fixture is. Drives color —
+    /// bright fixtures read near-white, faded ones warm toward amber.
+    pub fn liveness(self) -> f32 {
+        match self {
+            LightState::On => 1.0,
+            LightState::Blinking => 0.4,
+            LightState::Dim => 0.35,
+            LightState::Off => 0.0,
+        }
+    }
+}
+
+fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}
+
+/// A room's lighting accent, derived from its role in the level graph.
+/// Most rooms are Neutral (faded warm-white); the start chamber glows
+/// blue and the exit region red — diegetic wayfinding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightAccent {
+    Neutral,
+    Start,
+    Exit,
+}
+
+impl LightAccent {
+    /// How strongly the accent hue is mixed into the warm-white base.
+    const STRENGTH: f32 = 0.5;
+
+    /// Fixture color at liveness `t`: a bright fixture reads near-white
+    /// and warms toward amber as it dies; the accent hue is then mixed
+    /// in so the start chamber glows blue and the exit region red.
+    pub fn color(self, t: f32) -> [f32; 3] {
+        const AMBER: [f32; 3] = [1.0, 0.62, 0.30];
+        const WHITE: [f32; 3] = [1.0, 0.96, 0.90];
+        let base = lerp3(AMBER, WHITE, t.clamp(0.0, 1.0));
+        let hue = match self {
+            LightAccent::Neutral => return base,
+            LightAccent::Start => [0.40, 0.62, 1.0],
+            LightAccent::Exit => [1.0, 0.28, 0.22],
+        };
+        lerp3(base, hue, Self::STRENGTH)
+    }
+}
+
 /// A light source co-located with a fixture mesh.
 #[derive(Debug, Clone)]
 pub struct LightSource {
     pub position: [f32; 3],
     pub range: f32,
     pub energy: f32,
+    /// How alive this fixture is — set from the level RNG.
+    pub state: LightState,
+    /// Emission color, picked from [`LIGHT_COLORS`] by the level RNG.
+    pub color: [f32; 3],
 }
 
 /// Place light fixtures on ceilings and return both the fixture mesh placement
@@ -339,10 +422,14 @@ pub fn light_fixtures(
     active_connectors: &[Connector],
     world_origin: [f32; 3],
     cell_size: f32,
+    ambiance_seed: u64,
 ) -> Vec<(MeshPlacement, LightSource)> {
     use crate::asset_catalog::CEILING_LIGHTS;
 
     let story_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+    // Per-light state + color come from this stream, kept separate from
+    // geometry so a fixture's position never depends on its liveness.
+    let mut ambiance = SmallRng::seed_from_u64(ambiance_seed);
     let mut out = Vec::new();
     let ex = template.extents[0] as i32;
     let ey = template.extents[1] as i32;
@@ -379,6 +466,10 @@ pub fn light_fixtures(
                 loose: false,
             };
 
+            let state = LightState::from_roll(ambiance.random_range(0.0..1.0));
+            // Default warm-white; spawn_list_full recolors start/exit
+            // rooms once room roles are known from the graph.
+            let color = LightAccent::Neutral.color(state.liveness());
             let light = LightSource {
                 position: [
                     mesh.position[0] + fixture.light_offset[0],
@@ -387,6 +478,8 @@ pub fn light_fixtures(
                 ],
                 range: fixture.range,
                 energy: fixture.energy,
+                state,
+                color,
             };
 
             out.push((mesh, light));

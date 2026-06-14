@@ -2,8 +2,18 @@ use godot::prelude::*;
 use godot::classes::{
     Node, INode, Engine, CanvasLayer, Input, InputEvent,
     input::MouseMode,
-    viewport::Msaa,
 };
+
+use super::persistence;
+
+/// Persisted display/render preferences — the single GameOptions is
+/// loaded from here at startup and rewritten on every change.
+const OPTIONS_FILE: &str = "user://options.cfg";
+const OPTIONS_SECTION: &str = "display";
+/// Persisted run snapshot — the in-memory SaveGame is written here so
+/// "Continue" survives a quit.
+const SAVE_FILE: &str = "user://savegame.cfg";
+const SAVE_SECTION: &str = "run";
 
 use rand::RngExt;
 
@@ -73,7 +83,16 @@ impl INode for GameManager {
         }
 
         // Connect UI signals
+        // Load remembered preferences into the one model object first,
+        // so the broadcast below seeds consumers from the saved values.
+        self.load_options();
+        // Load any persisted run so "Continue" survives a quit.
+        self.load_run();
         self.connect_ui_signals();
+        // Seed every options consumer (menus, ViewManager) from the one
+        // authoritative GameOptions. Deferred so it fires after all
+        // sibling nodes have run ready() and connected their listeners.
+        self.base_mut().call_deferred(methods::BROADCAST_OPTIONS, &[]);
         self.show_phase(GamePhase::MainMenu);
     }
 
@@ -197,6 +216,10 @@ impl GameManager {
     #[func]
     pub fn advance_to_shop(&mut self) {
         if self.phase == GamePhase::KillSummary {
+            // End of level: snapshot and persist so the cleared-level
+            // progress survives a quit (the doc's "saved at end-of-level").
+            self.save_game = Some(SaveGame::from_run_state(&self.run_state));
+            self.save_run();
             self.transition_to(GamePhase::Shop);
             self.show_shop_ui();
         }
@@ -249,6 +272,7 @@ impl GameManager {
             let level_reached = self.run_state.current_level as i32;
             self.run_state.apply_death_penalty();
             self.save_game = Some(SaveGame::from_run_state(&self.run_state));
+            self.save_run();
             let new_laser = self.run_state.laser_level.display_name().to_string();
             self.transition_to(GamePhase::Death);
 
@@ -264,23 +288,54 @@ impl GameManager {
         }
     }
 
+    /// Broadcast the authoritative options to every consumer (menus,
+    /// ViewManager). The single source of truth is `self.game_options`;
+    /// listeners cache a copy but never invent their own default.
+    #[func]
+    fn broadcast_options(&mut self) {
+        let sbs = self.game_options.sbs_enabled;
+        let msaa = self.game_options.msaa_enabled;
+        self.base_mut()
+            .emit_signal(signals::OPTIONS_CHANGED, &[sbs.to_variant(), msaa.to_variant()]);
+    }
+
+    /// The authoritative MSAA option (for tests / inspection).
+    #[func]
+    fn msaa_enabled(&self) -> bool {
+        self.game_options.msaa_enabled
+    }
+
+    /// The authoritative SBS option (for tests / inspection).
+    #[func]
+    fn sbs_enabled(&self) -> bool {
+        self.game_options.sbs_enabled
+    }
+
+    /// Test seam: discard in-memory options and reload from disk, as a
+    /// fresh launch would.
+    #[func]
+    fn reload_options_from_disk(&mut self) {
+        self.game_options = GameOptions::default();
+        self.load_options();
+    }
+
     /// Called from main menu: toggle SBS stereo.
     #[func]
     pub fn on_sbs_toggled(&mut self) {
         let sbs = self.game_options.toggle_sbs();
         let msaa = self.game_options.msaa_enabled;
+        self.save_options();
         self.base_mut().emit_signal(signals::OPTIONS_CHANGED, &[sbs.to_variant(), msaa.to_variant()]);
     }
 
-    /// Called from main menu: toggle MSAA.
+    /// Called from main menu: toggle MSAA. Controller-only — flip the
+    /// option and announce it; ViewManager (the view) applies it to the
+    /// actual viewports.
     #[func]
     pub fn on_msaa_toggled(&mut self) {
         let msaa = self.game_options.toggle_msaa();
-        // Apply MSAA to viewport
-        if let Some(mut viewport) = self.base().get_viewport() {
-            viewport.set_msaa_3d(if msaa { Msaa::MSAA_4X } else { Msaa::DISABLED });
-        }
         let sbs = self.game_options.sbs_enabled;
+        self.save_options();
         self.base_mut().emit_signal(signals::OPTIONS_CHANGED, &[sbs.to_variant(), msaa.to_variant()]);
     }
 
@@ -608,6 +663,64 @@ impl GameManager {
                 Variant::from(self.is_max_laser()),
             ]);
         }
+    }
+
+    /// Load persisted display options into the single GameOptions.
+    /// A missing file leaves the defaults in place. Called before the
+    /// startup broadcast so every consumer is seeded from the remembered
+    /// preference.
+    fn load_options(&mut self) {
+        let Some(cfg) = persistence::load(OPTIONS_FILE) else {
+            return; // no saved preferences yet
+        };
+        self.game_options.sbs_enabled = cfg
+            .get_value_ex(OPTIONS_SECTION, "sbs")
+            .default(&self.game_options.sbs_enabled.to_variant())
+            .done()
+            .to();
+        self.game_options.msaa_enabled = cfg
+            .get_value_ex(OPTIONS_SECTION, "msaa")
+            .default(&self.game_options.msaa_enabled.to_variant())
+            .done()
+            .to();
+    }
+
+    /// Persist the current options so they are remembered next launch.
+    fn save_options(&self) {
+        persistence::save(
+            OPTIONS_FILE,
+            OPTIONS_SECTION,
+            &[
+                ("sbs", self.game_options.sbs_enabled.to_variant()),
+                ("msaa", self.game_options.msaa_enabled.to_variant()),
+            ],
+        );
+    }
+
+    /// Persist the current run snapshot (serialized via serde) so
+    /// "Continue" survives a quit. Reuses the same ConfigFile path as
+    /// options — one persistence mechanism, two files.
+    fn save_run(&self) {
+        if let Some(save) = &self.save_game {
+            persistence::save(
+                SAVE_FILE,
+                SAVE_SECTION,
+                &[("json", save.to_json().to_variant())],
+            );
+        }
+    }
+
+    /// Load a persisted run into the in-memory SaveGame at startup.
+    fn load_run(&mut self) {
+        let Some(cfg) = persistence::load(SAVE_FILE) else {
+            return;
+        };
+        let json: GString = cfg
+            .get_value_ex(SAVE_SECTION, "json")
+            .default(&GString::new().to_variant())
+            .done()
+            .to();
+        self.save_game = SaveGame::from_json(&json.to_string());
     }
 
     fn connect_ui_signals(&mut self) {

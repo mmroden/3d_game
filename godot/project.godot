@@ -169,5 +169,7 @@ enabled=PackedStringArray("res://addons/gut/plugin.cfg")
 [rendering]
 
 textures/default_filters/anisotropic_filtering_level=4
-anti_aliasing/quality/msaa_3d=2
+; MSAA off by default to match GameOptions; ViewManager applies it
+; per-viewport from the authoritative option. TAA stays on (separate AA).
+anti_aliasing/quality/msaa_3d=0
 anti_aliasing/quality/use_taa=true

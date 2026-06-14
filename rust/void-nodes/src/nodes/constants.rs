@@ -28,6 +28,7 @@ pub mod signals {
     pub const PLAYER_DAMAGED: &str = "player_damaged";
     pub const POWER_MODE_CHANGED: &str = "power_mode_changed";
     pub const UPGRADE_COLLECTED: &str = "upgrade_collected";
+    pub const RENDER_VIEWPORTS_CHANGED: &str = "render_viewports_changed";
 }
 
 // ── Callable method names ─────────────────────────────────────────────
@@ -40,6 +41,8 @@ pub mod methods {
     pub const ON_SBS_TOGGLED: &str = "on_sbs_toggled";
     pub const ON_MSAA_TOGGLED: &str = "on_msaa_toggled";
     pub const ON_OPTIONS_CHANGED: &str = "on_options_changed";
+    pub const BROADCAST_OPTIONS: &str = "broadcast_options";
+    pub const ON_RENDER_VIEWPORTS_CHANGED: &str = "on_render_viewports_changed";
     pub const ON_BODY_ENTERED: &str = "on_body_entered";
     pub const ADVANCE_TO_SHOP: &str = "advance_to_shop";
     pub const ADVANCE_TO_NEXT_LEVEL: &str = "advance_to_next_level";
@@ -139,6 +142,9 @@ pub mod nodes {
     pub const RIGHT_CAMERA: &str = "StereoCanvas/RightContainer/RightViewport/RightCamera";
     pub const LEFT_CONTAINER: &str = "StereoCanvas/LeftContainer";
     pub const RIGHT_CONTAINER: &str = "StereoCanvas/RightContainer";
+    pub const VIEW_MANAGER: &str = "ViewManager";
+    pub const LEFT_VIEWPORT: &str = "StereoCanvas/LeftContainer/LeftViewport";
+    pub const RIGHT_VIEWPORT: &str = "StereoCanvas/RightContainer/RightViewport";
     pub const LEFT_UI_OVERLAY: &str = "StereoCanvas/LeftContainer/LeftUIOverlay";
     pub const RIGHT_UI_OVERLAY: &str = "StereoCanvas/RightContainer/RightUIOverlay";
     pub const UI_PLANE: &str = "UIPlane";
@@ -189,6 +195,7 @@ mod tests {
             signals::PLAYER_DAMAGED,
             signals::POWER_MODE_CHANGED,
             signals::UPGRADE_COLLECTED,
+            signals::RENDER_VIEWPORTS_CHANGED,
         ];
         for sig in &all_signals {
             assert!(
@@ -211,6 +218,8 @@ mod tests {
             methods::ON_SBS_TOGGLED,
             methods::ON_MSAA_TOGGLED,
             methods::ON_OPTIONS_CHANGED,
+            methods::BROADCAST_OPTIONS,
+            methods::ON_RENDER_VIEWPORTS_CHANGED,
             methods::ON_BODY_ENTERED,
             methods::ADVANCE_TO_SHOP,
             methods::ADVANCE_TO_NEXT_LEVEL,
@@ -320,6 +329,7 @@ mod tests {
             signals::PLAYER_DAMAGED,
             signals::POWER_MODE_CHANGED,
             signals::UPGRADE_COLLECTED,
+            signals::RENDER_VIEWPORTS_CHANGED,
         ];
         for (i, a) in all.iter().enumerate() {
             for (j, b) in all.iter().enumerate() {
@@ -338,6 +348,8 @@ mod tests {
             methods::ON_ENEMY_KILLED, methods::ON_PORTAL_ENTERED,
             methods::ON_SBS_TOGGLED, methods::ON_MSAA_TOGGLED,
             methods::ON_OPTIONS_CHANGED, methods::ON_BODY_ENTERED,
+            methods::BROADCAST_OPTIONS,
+            methods::ON_RENDER_VIEWPORTS_CHANGED,
             methods::ADVANCE_TO_SHOP, methods::ADVANCE_TO_NEXT_LEVEL,
             methods::BUY_LASER_UPGRADE, methods::RETURN_TO_MENU,
             methods::RESUME_GAME, methods::QUIT_TO_MENU,

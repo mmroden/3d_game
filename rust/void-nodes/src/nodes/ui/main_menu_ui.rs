@@ -5,6 +5,7 @@ use godot::classes::{
 
 use super::menu_panel;
 use crate::nodes::constants::{actions, methods, nodes, signals, theme};
+use void_logic::game_options::GameOptions;
 use void_logic::menu_cursor::MenuCursor;
 use void_logic::ui_style;
 
@@ -20,8 +21,10 @@ pub struct MainMenuUI {
     in_options: bool,
     option_cursor: MenuCursor,
     option_labels: Vec<Gd<Label>>,
-    sbs_enabled: bool,
-    msaa_enabled: bool,
+    /// Cached copy of the authoritative `GameOptions`, seeded from
+    /// GameManager at startup and updated on `options_changed`. One
+    /// type, one default — no second literal to drift out of sync.
+    options: GameOptions,
 }
 
 #[godot_api]
@@ -40,8 +43,7 @@ impl ICanvasLayer for MainMenuUI {
             in_options: false,
             option_cursor: MenuCursor::new(3),
             option_labels: Vec::new(),
-            sbs_enabled: false,
-            msaa_enabled: true,
+            options: GameOptions::default(),
         }
     }
 
@@ -88,11 +90,18 @@ impl MainMenuUI {
     /// Called by GameManager to update displayed option states.
     #[func]
     pub fn set_option_states(&mut self, sbs_on: bool, msaa_on: bool) {
-        self.sbs_enabled = sbs_on;
-        self.msaa_enabled = msaa_on;
+        self.options.sbs_enabled = sbs_on;
+        self.options.msaa_enabled = msaa_on;
         if self.in_options {
             self.refresh_options();
         }
+    }
+
+    /// Test/inspection seam: the MSAA state this menu would display,
+    /// which must always equal GameManager's authoritative option.
+    #[func]
+    pub fn displayed_msaa(&self) -> bool {
+        self.options.msaa_enabled
     }
 
     /// Called when GameManager emits options_changed signal.
@@ -238,8 +247,8 @@ impl MainMenuUI {
         let mut parent: Gd<Node> = parent;
 
         let options = [
-            format!("  SBS Stereo: {}", if self.sbs_enabled { "ON" } else { "OFF" }),
-            format!("  MSAA: {}", if self.msaa_enabled { "ON" } else { "OFF" }),
+            format!("  SBS Stereo: {}", if self.options.sbs_enabled { "ON" } else { "OFF" }),
+            format!("  MSAA: {}", if self.options.msaa_enabled { "ON" } else { "OFF" }),
             "  Back".to_string(),
         ];
 
@@ -290,8 +299,8 @@ impl MainMenuUI {
 
     fn refresh_options(&mut self) {
         let texts = [
-            format!("SBS Stereo: {}", if self.sbs_enabled { "ON" } else { "OFF" }),
-            format!("MSAA: {}", if self.msaa_enabled { "ON" } else { "OFF" }),
+            format!("SBS Stereo: {}", if self.options.sbs_enabled { "ON" } else { "OFF" }),
+            format!("MSAA: {}", if self.options.msaa_enabled { "ON" } else { "OFF" }),
             "Back".to_string(),
         ];
 

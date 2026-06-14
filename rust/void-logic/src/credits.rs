@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotEnoughCredits {
     pub balance: u32,
@@ -14,7 +16,7 @@ impl fmt::Display for NotEnoughCredits {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct CreditAccount {
     pub balance: u32,
 }

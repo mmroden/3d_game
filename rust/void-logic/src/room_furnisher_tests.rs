@@ -239,7 +239,7 @@ fn corridor_gets_no_center_props() {
 fn every_room_cell_gets_at_least_one_light_fixture() {
     let template = room_3x3();
     let cell_size = 4.0;
-    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], cell_size);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], cell_size, 0);
     let cell_count = (template.extents[0] * template.extents[2]) as usize;
     assert_eq!(
         fixtures.len(), cell_count,
@@ -250,7 +250,7 @@ fn every_room_cell_gets_at_least_one_light_fixture() {
 #[test]
 fn corridor_gets_light_fixtures() {
     let template = corridor_1x1();
-    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0, 0);
     assert!(
         !fixtures.is_empty(),
         "corridor should get at least 1 light fixture"
@@ -263,7 +263,7 @@ fn light_fixture_mesh_at_ceiling_height() {
     let cell_size = 4.0;
     let cell_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
     let origin_y = 0.0;
-    let fixtures = light_fixtures(&template, &[], [0.0, origin_y, 0.0], cell_size);
+    let fixtures = light_fixtures(&template, &[], [0.0, origin_y, 0.0], cell_size, 0);
     for (mesh, _) in &fixtures {
         let expected_y = origin_y + cell_height - 0.1;
         assert!(
@@ -277,7 +277,7 @@ fn light_fixture_mesh_at_ceiling_height() {
 #[test]
 fn light_source_within_fixture_bounds() {
     let template = room_3x3();
-    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0, 0);
     for (mesh, light) in &fixtures {
         // Find which fixture catalog entry this is
         let fixture_entry = asset_catalog::ALL_LIGHTS.iter()
@@ -304,7 +304,7 @@ fn light_source_inside_room_bounds() {
     let template = room_5x5();
     let cell_size = 4.0;
     let origin = [4.0, 2.0, 8.0];
-    let fixtures = light_fixtures(&template, &[], origin, cell_size);
+    let fixtures = light_fixtures(&template, &[], origin, cell_size, 0);
     let max_x = origin[0] + template.extents[0] as f32 * cell_size;
     let max_z = origin[2] + template.extents[2] as f32 * cell_size;
     let cell_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
@@ -330,7 +330,7 @@ fn light_source_inside_room_bounds() {
 fn light_source_range_covers_cell() {
     let cell_size = 4.0;
     let template = room_3x3();
-    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], cell_size);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], cell_size, 0);
     for (_, light) in &fixtures {
         assert!(
             light.range >= cell_size / 2.0,
@@ -353,7 +353,7 @@ fn multi_story_room_lights_only_at_top_floor() {
         loot_spawns: vec![],
         extents: [3, 2, 3],
     };
-    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0, 0);
     let cell_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
     // Only top floor (cy=1) has ceilings → 3x3 = 9 lights, NOT 18.
     assert_eq!(
@@ -387,10 +387,82 @@ fn no_light_where_ceiling_removed_by_connector() {
         extents: [1, 1, 1],
     };
     let active = vec![Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosY, frame: FrameStyle::Door }];
-    let fixtures = light_fixtures(&template, &active, [0.0, 0.0, 0.0], 4.0);
+    let fixtures = light_fixtures(&template, &active, [0.0, 0.0, 0.0], 4.0, 0);
     assert_eq!(
         fixtures.len(), 0,
         "cell with active PosY connector has no ceiling → no light"
+    );
+}
+
+// --- Light state + color ---
+
+#[test]
+fn light_state_roll_thresholds_match_weights() {
+    // The base is mostly dark: Off 50%, Blinking 25%, Dim 10%, On 15%.
+    // Pinned at each boundary so the distribution can't silently drift.
+    assert_eq!(LightState::from_roll(0.0), LightState::Off);
+    assert_eq!(LightState::from_roll(0.499), LightState::Off);
+    assert_eq!(LightState::from_roll(0.5), LightState::Blinking);
+    assert_eq!(LightState::from_roll(0.749), LightState::Blinking);
+    assert_eq!(LightState::from_roll(0.75), LightState::Dim);
+    assert_eq!(LightState::from_roll(0.849), LightState::Dim);
+    assert_eq!(LightState::from_roll(0.85), LightState::On);
+    assert_eq!(LightState::from_roll(0.999), LightState::On);
+}
+
+#[test]
+fn light_ambiance_is_deterministic_for_a_seed() {
+    // Same seed → identical states and colors, so a level looks the same
+    // every time it is generated.
+    let template = room_5x5();
+    let a = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0, 777);
+    let b = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0, 777);
+    assert_eq!(a.len(), b.len());
+    for ((_, la), (_, lb)) in a.iter().zip(b.iter()) {
+        assert_eq!(la.state, lb.state);
+        assert_eq!(la.color, lb.color);
+    }
+    assert!(!a.is_empty(), "the room must produce lights to compare");
+}
+
+#[test]
+fn light_color_warms_as_a_fixture_dims() {
+	// "White going warmer until it dims out": a bright fixture reads
+	// near-white (high blue), a faded one is warm (low blue).
+	let bright = LightAccent::Neutral.color(1.0);
+	let faded = LightAccent::Neutral.color(0.2);
+	assert!(bright[2] > faded[2], "brighter fixture is whiter (more blue)");
+	assert!(faded[2] < faded[0], "faded fixture is warm (blue < red)");
+}
+
+#[test]
+fn accents_tint_start_blue_and_exit_red() {
+	let t = 0.4;
+	let neutral = LightAccent::Neutral.color(t);
+	let start = LightAccent::Start.color(t);
+	let exit = LightAccent::Exit.color(t);
+	assert!(start[2] > neutral[2], "start chamber leans blue");
+	assert!(exit[2] < neutral[2] && exit[0] > exit[2], "exit region leans red");
+}
+
+#[test]
+fn liveness_falls_from_on_to_off() {
+	assert!(LightState::On.liveness() > LightState::Dim.liveness());
+	assert_eq!(LightState::Off.liveness(), 0.0);
+}
+
+#[test]
+fn most_lights_are_dark_in_an_abandoned_base() {
+    // Over a large room, Off should dominate (≈50%) — the feature's
+    // whole point is that lights exist but mostly are not on.
+    let template = room_5x5();
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0, 12345);
+    let off = fixtures.iter().filter(|(_, l)| l.state == LightState::Off).count();
+    let on = fixtures.iter().filter(|(_, l)| l.state == LightState::On).count();
+    assert!(
+        off > on,
+        "expected mostly-off lights (off={off}, on={on} of {})",
+        fixtures.len()
     );
 }
 

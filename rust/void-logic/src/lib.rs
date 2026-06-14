@@ -17,6 +17,7 @@ pub mod audio_catalog;
 pub mod room_assembler;
 pub mod room_furnisher;
 pub mod level_assembly;
+pub mod lore;
 pub mod weapon;
 pub mod enemy_ai;
 pub mod laser;

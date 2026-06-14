@@ -1,12 +1,14 @@
 //! Domain-specific newtypes that prevent mixing semantically distinct values.
 //! Health cannot be confused with Damage, Score cannot be confused with Level, etc.
 
+use serde::{Deserialize, Serialize};
+
 /// Hit points remaining on an entity.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct Health(f32);
 
 /// Damage dealt to an entity.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct Damage(f32);
 
 impl Health {
@@ -34,7 +36,7 @@ impl Health {
 }
 
 /// Shield energy on an entity. Absorbs damage before health.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct Shield(f32);
 
 impl Shield {
