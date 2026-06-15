@@ -243,9 +243,9 @@ impl LevelManager {
 
                 match entry.collision {
                     Collision::Dynamic => {
-                        // Loose prop: a RigidBody3D Jolt simulates. The
-                        // mesh rides it as pure visual; a sphere collider
-                        // keeps it cheap and tumbly.
+                        // Loose prop: a RigidBody3D Jolt simulates, with a
+                        // mesh-hugging convex hull per part (built below) so
+                        // it collides like its silhouette, not a loose sphere.
                         node.set_position(Vector3::ZERO);
                         use rand::RngExt;
                         let rx: f32 = loose_rng.random_range(0.0..std::f32::consts::TAU);

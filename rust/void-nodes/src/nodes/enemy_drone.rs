@@ -2,8 +2,8 @@ use godot::prelude::*;
 use godot::prelude::EulerOrder;
 use godot::classes::{
     RigidBody3D, IRigidBody3D, PackedScene, ResourceLoader, PhysicsRayQueryParameters3D,
-    GpuParticles3D, ParticleProcessMaterial, SphereMesh, StandardMaterial3D,
-    MeshInstance3D, BoxMesh, Node3D,
+    PhysicsDirectBodyState3D, GpuParticles3D, ParticleProcessMaterial, SphereMesh,
+    StandardMaterial3D, MeshInstance3D, BoxMesh, Node3D,
 };
 
 use super::constants::{groups, scenes, signals};
@@ -48,6 +48,10 @@ pub struct EnemyDrone {
     player: Option<Gd<Node3D>>,
     health_bar_bg: Option<Gd<MeshInstance3D>>,
     health_bar_fill: Option<Gd<MeshInstance3D>>,
+    /// Chase force decided in `physics_process` (where the LOS ray query is
+    /// legal) and applied in `integrate_forces` (the engine's hook for
+    /// touching physics state) — same split as the ship.
+    chase_force: Vector3,
 }
 
 #[godot_api]
@@ -67,6 +71,7 @@ impl IRigidBody3D for EnemyDrone {
             player: None,
             health_bar_bg: None,
             health_bar_fill: None,
+            chase_force: Vector3::ZERO,
         }
     }
 
@@ -118,7 +123,12 @@ impl IRigidBody3D for EnemyDrone {
         self.create_health_bar();
     }
 
+    /// Sense and decide here — the LOS ray query needs the space unlocked,
+    /// which is only true in `physics_process`. The decided chase force is
+    /// stashed and applied in `integrate_forces`; firing and the health-bar
+    /// transform stay here.
     fn physics_process(&mut self, delta: f64) {
+        self.chase_force = Vector3::ZERO;
         if self.ai.is_dead() {
             return;
         }
@@ -130,15 +140,22 @@ impl IRigidBody3D for EnemyDrone {
         let player_pos = player.get_global_position();
         let has_sight = self.has_line_of_sight(my_pos, player_pos);
         let (desired, should_fire) = self.decide(has_sight, my_pos, player_pos, delta as f32);
-        // Chase with force, not by setting velocity: scaled by damping so
-        // terminal speed equals the desired cruise (v* = force / (mass·damp)).
-        self.base_mut().apply_central_force(desired * ENEMY_LINEAR_DAMP);
+        // Chase with force, not velocity: scaled by damping so terminal speed
+        // equals the desired cruise (v* = force / (mass·damp)).
+        self.chase_force = desired * ENEMY_LINEAR_DAMP;
         if should_fire {
             self.fire_bolt(my_pos, player_pos);
         }
         // Health-bar billboard is a transform write, so it belongs in the
         // physics tick (engine interpolation smooths it between frames).
         self.update_health_bar(player_pos);
+    }
+
+    /// Apply the chase force the engine's way — forces only, never a velocity
+    /// write (docs/architecture/physics_ownership.md). Matches the ship.
+    fn integrate_forces(&mut self, state: Option<Gd<PhysicsDirectBodyState3D>>) {
+        let Some(mut state) = state else { return };
+        state.apply_central_force_ex().force(self.chase_force).done();
     }
 }
 

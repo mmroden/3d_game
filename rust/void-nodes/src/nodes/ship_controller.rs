@@ -104,6 +104,11 @@ impl ShipController {
     /// no-infinite-spin invariant. Re-applied whenever the loadout changes.
     fn apply_envelope(&mut self) {
         let damp = (-self.loadout.damping().factor().ln()).max(0.0);
+        // The `.max(0.0)` is belt-and-suspenders: `Retention::decaying`
+        // clamps the factor below 1.0, so `-ln(factor)` is already strictly
+        // positive. Zero would break the no-infinite-spin invariant, so pin
+        // that it's unreachable — and catch any future loosening of the clamp.
+        debug_assert!(damp > 0.0, "angular/linear damp must be > 0 (no-infinite-spin invariant)");
         let mut base = self.base_mut();
         base.set_linear_damp(damp);
         base.set_angular_damp(damp);

@@ -313,11 +313,11 @@ mod tests {
         assert!(rim_lit_shaft_seen, "no rim-lit vertical shaft found across 30 seeds");
     }
 
-    /// A vertical passage's full-cell aperture must be unobstructed:
-    /// no mesh placement may sit inside the hole column near the
-    /// interface plane. Players report a ~1x1 m visible opening where
-    /// the model intends 4x4 — this test either names the encroaching
-    /// mesh or proves the obstruction is not a placed mesh.
+    /// A vertical passage's aperture must not be capped by a floor/ceiling
+    /// slab. The reported failure was a ~1×1 m visible opening where the
+    /// model intends the full hole — a Platform tile left across the aperture
+    /// cells. This walks generated levels and fails if any Platform sits
+    /// inside an aperture footprint on its interface plane.
     #[test]
     fn vertical_passages_are_unobstructed() {
         let cell = 4.0_f32;
@@ -348,11 +348,19 @@ mod tests {
                 }
                 let Some(room) = graph.room(a) else { continue };
                 let origin = room.world_position(cell, story);
-                // The aperture is a `span`×`span` hole anchored at the
-                // connector offset; its true center is half a span in.
-                let span = from_connector.facing.opening_span() as f32;
-                let hole_x = origin[0] + (from_connector.offset[0] as f32 + span / 2.0) * cell;
-                let hole_z = origin[2] + (from_connector.offset[2] as f32 + span / 2.0) * cell;
+                // The aperture is a `span`×`span` cell footprint anchored at
+                // the connector offset. The way a vertical passage gets
+                // obstructed is a floor/ceiling slab left across it (the
+                // "1×1 visible where 4×4 intended" bug) — a Platform tile
+                // sitting on an aperture cell at the interface plane. Walls
+                // line the perimeter (never a Platform); props are barred from
+                // connector cells by the furnisher; so a Platform inside the
+                // footprint on the plane is exactly the cap to catch.
+                let span = from_connector.facing.opening_span();
+                let x0 = origin[0] + from_connector.offset[0] as f32 * cell;
+                let x1 = x0 + span as f32 * cell;
+                let z0 = origin[2] + from_connector.offset[2] as f32 * cell;
+                let z1 = z0 + span as f32 * cell;
                 let plane_y = match from_connector.facing {
                     ConnectorFacing::PosY => {
                         origin[1] + (from_connector.offset[1] as f32 + 1.0) * story
@@ -362,24 +370,16 @@ mod tests {
                 passages_checked += 1;
 
                 for placement in &meshes {
-                    // Perimeter walls line the shaft by design: they pivot at a
-                    // cell center inside the footprint but their geometry hugs
-                    // the face, leaving the column clear. The bug this guards
-                    // against is a *cap* — a floor/ceiling slab or prop across
-                    // the aperture — so only non-wall meshes are obstructions.
-                    if placement.scene.contains("/walls/") {
-                        continue;
+                    if !placement.scene.contains("Platform") {
+                        continue; // only floor/ceiling slabs can cap the hole
                     }
-                    let dx = (placement.position[0] - hole_x).abs();
-                    let dz = (placement.position[2] - hole_z).abs();
-                    let dy = (placement.position[1] - plane_y).abs();
-                    // Anything pivoting on one of the aperture cells (±0.5 cell
-                    // = 2 m from center) caps the hole; rim lights sit a full
-                    // span out (4 m) and border tiles further still.
+                    let [px, py, pz] = placement.position;
+                    let in_footprint = px > x0 && px < x1 && pz > z0 && pz < z1;
+                    let on_plane = (py - plane_y).abs() < 1.0;
                     assert!(
-                        !(dx < 2.5 && dz < 2.5 && dy < 1.0),
-                        "seed {seed}: '{}' at {:?} obstructs the vertical passage at \
-                         [{hole_x:.1}, {plane_y:.1}, {hole_z:.1}] (dx {dx:.2}, dy {dy:.2}, dz {dz:.2})",
+                        !(in_footprint && on_plane),
+                        "seed {seed}: '{}' at {:?} caps the vertical aperture \
+                         (footprint x[{x0:.1},{x1:.1}] z[{z0:.1},{z1:.1}] plane y {plane_y:.1})",
                         placement.scene,
                         placement.position
                     );
