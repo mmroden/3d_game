@@ -109,9 +109,10 @@ pub fn assemble(
 
 /// Build structural geometry from a pre-built cell grid.
 ///
-/// Each sealed XZ face gets the full 5-layer wall stack:
-/// Bottom + ShortWall + Wall + Top (straight or corner variants).
-/// Floor/ceiling are Platform tiles at room boundaries.
+/// Each sealed XZ face gets the wall stack: Bottom + Wall + Top (straight or
+/// corner variants). The ShortWall layer is intentionally omitted — the
+/// full-height main wall already covers the lower band, so emitting it there
+/// only z-fought. Floor/ceiling are Platform tiles at room boundaries.
 pub fn assemble_from_grid(
     grid: &CellGrid,
     template: &RoomTemplate,

@@ -562,9 +562,12 @@ fn astra_ceiling_does_not_use_topcables() {
 // 5-layer wall stack tests (Chunk 1 TDD)
 // ==========================================================================
 
-/// Each sealed XZ boundary tile must emit all 4 wall layers: Bottom + ShortWall + Wall + Top.
+/// Each sealed XZ boundary tile emits the wall stack: Bottom + Wall + Top.
+/// (The ShortWall layer was dropped — the full-height main wall already
+/// covers the lower band, so a short_wall there only z-fought; see
+/// `room_assembler` flicker fix.)
 #[test]
-fn sealed_wall_emits_4_layer_stack() {
+fn sealed_wall_emits_layer_stack() {
     let ws = &asset_catalog::WALL_SET_ASTRA;
     // Corridor with both ends open: NegZ and PosZ get straight walls.
     let placements = assemble(
@@ -576,13 +579,12 @@ fn sealed_wall_emits_4_layer_stack() {
         [0.0, 0.0, 0.0],
         ws,
     );
-    // 2 sealed faces × 4 layers each = 8 wall-layer meshes
     let bottom_count = count(&placements, ws.bottom.straight);
     let short_count = count(&placements, ws.short_wall.straight);
     let wall_count = count(&placements, ws.straight.wall);
     let top_count = count(&placements, ws.straight.ceiling);
     assert_eq!(bottom_count, 2, "2 sealed faces × 1 bottom each");
-    assert_eq!(short_count, 2, "2 sealed faces × 1 short_wall each");
+    assert_eq!(short_count, 0, "short_wall layer is no longer emitted (z-fight fix)");
     assert_eq!(wall_count, 2, "2 sealed faces × 1 wall each");
     assert_eq!(top_count, 2, "2 sealed faces × 1 top each");
 }
@@ -779,18 +781,20 @@ fn no_duplicate_floor_tiles() {
         "found {} duplicate floor/ceiling tiles", before - floor_keys.len());
 }
 
-/// Corner positions emit all 5 structural layers (bottom, short_wall, wall, top per inner+outer).
+/// Corner positions emit the structural layers (bottom, wall, top per
+/// inner+outer). The ShortWall corner layer was dropped with its straight
+/// sibling (z-fight fix), so it must no longer appear.
 #[test]
 fn corner_emits_all_layer_variants() {
     let ws = &asset_catalog::WALL_SET_ASTRA;
     // 1x1 room: all 4 faces are corners.
     let placements = assemble(&small_room(), &[], [0.0, 0.0, 0.0], ws);
 
-    // 4 corners × 2 (inner+outer) = 8 each for bottom, short_wall, wall, ceiling
+    // 4 corners × 2 (inner+outer) = 8 each for bottom, wall, ceiling
     assert_eq!(count(&placements, ws.bottom.corner_inner), 4);
     assert_eq!(count(&placements, ws.bottom.corner_outer), 4);
-    assert_eq!(count(&placements, ws.short_wall.corner_inner), 4);
-    assert_eq!(count(&placements, ws.short_wall.corner_outer), 4);
+    assert_eq!(count(&placements, ws.short_wall.corner_inner), 0, "short_wall corner dropped (z-fight fix)");
+    assert_eq!(count(&placements, ws.short_wall.corner_outer), 0, "short_wall corner dropped (z-fight fix)");
     assert_eq!(count(&placements, ws.corner_inner.wall), 4);
     assert_eq!(count(&placements, ws.corner_outer.wall), 4);
     assert_eq!(count(&placements, ws.corner_inner.ceiling), 4);

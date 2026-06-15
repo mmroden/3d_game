@@ -28,6 +28,11 @@ pub struct Telemetry {
     /// every active 3D viewport.
     render_cpu: TimingWindow,
     render_gpu: TimingWindow,
+    /// Godot's own per-frame engine costs, sampled each rendered frame:
+    /// the physics step (Jolt) and the main-thread idle process. These
+    /// catch hitches the kinetics/draw windows are blind to.
+    physics: TimingWindow,
+    process: TimingWindow,
     /// The viewports whose render time is summed each frame. In mono
     /// this is the root viewport; in SBS it is the two eye
     /// sub-viewports — never the root compositor, which only blits the
@@ -43,6 +48,8 @@ impl Telemetry {
             frame: TimingWindow::new(TIMING_WINDOW),
             render_cpu: TimingWindow::new(TIMING_WINDOW),
             render_gpu: TimingWindow::new(TIMING_WINDOW),
+            physics: TimingWindow::new(TIMING_WINDOW),
+            process: TimingWindow::new(TIMING_WINDOW),
             viewport_rids: Vec::new(),
             monitors_registered: false,
         }
@@ -119,6 +126,13 @@ impl Telemetry {
             self.render_cpu.record(cpu);
             self.render_gpu.record(gpu);
         }
+        // Godot reports these in seconds; record as ms to match the rest.
+        let perf = Performance::singleton();
+        use godot::classes::performance::Monitor;
+        self.physics
+            .record(perf.get_monitor(Monitor::TIME_PHYSICS_PROCESS) as f32 * 1000.0);
+        self.process
+            .record(perf.get_monitor(Monitor::TIME_PROCESS) as f32 * 1000.0);
     }
 
     pub fn step_ms_p50(&self) -> f32 {
@@ -139,19 +153,24 @@ impl Telemetry {
         if tick == 0 || tick % STATS_EVERY_TICKS != 0 {
             return;
         }
-        let draw_calls = Performance::singleton()
-            .get_monitor(godot::classes::performance::Monitor::RENDER_TOTAL_DRAW_CALLS_IN_FRAME);
+        use godot::classes::performance::Monitor;
+        let perf = Performance::singleton();
+        let draw_calls = perf.get_monitor(Monitor::RENDER_TOTAL_DRAW_CALLS_IN_FRAME);
+        let nodes = perf.get_monitor(Monitor::OBJECT_NODE_COUNT);
         godot_print!(
-            "kinetics: p50 {:.3} | p99 {:.3} | jit {:.3} || frame: p50 {:.2} | p99 {:.2} | jit {:.2} || draw cpu p99 {:.2} | gpu p99 {:.2} | calls {}",
+            "kinetics: p50 {:.3} | p99 {:.3} | jit {:.3} || frame: p50 {:.2} | p99 {:.2} | jit {:.2} || phys p99 {:.2} | proc p99 {:.2} || draw cpu p99 {:.2} | gpu p99 {:.2} | calls {} | nodes {}",
             self.step.percentile(50.0),
             self.step.percentile(99.0),
             self.step.jitter(),
             self.frame.percentile(50.0),
             self.frame.percentile(99.0),
             self.frame.jitter(),
+            self.physics.percentile(99.0),
+            self.process.percentile(99.0),
             self.render_cpu.percentile(99.0),
             self.render_gpu.percentile(99.0),
             draw_calls as i64,
+            nodes as i64,
         );
     }
 }

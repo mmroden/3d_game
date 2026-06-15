@@ -1,7 +1,7 @@
 use godot::prelude::*;
 use godot::classes::{
-    CollisionShape3D, MeshInstance3D, Node3D, INode3D, OmniLight3D, PackedScene,
-    ResourceLoader, RigidBody3D, SphereShape3D,
+    CollisionShape3D, ConcavePolygonShape3D, MeshInstance3D, Node3D, INode3D, OmniLight3D,
+    PackedScene, ResourceLoader, RigidBody3D, StaticBody3D,
 };
 
 use super::constants::{methods, nodes, scenes, signals};
@@ -20,10 +20,6 @@ use void_logic::room_assembler::Collision;
 use void_logic::portal as portal_sys;
 use void_logic::enemy_type;
 use void_logic::seed::Seed;
-
-/// Collision footprint for loose props (sphere). Godot/Jolt simulates
-/// their motion; the engine owns everything past spawn.
-const PROP_RADIUS: f32 = 0.5;
 
 fn vec3(a: [f32; 3]) -> Vector3 {
     Vector3::new(a[0], a[1], a[2])
@@ -223,6 +219,11 @@ impl LevelManager {
             room_node.set_name(&format!("Room{}", self.room_nodes.len()));
             self.base_mut().add_child(&room_node);
 
+            // Structural meshes collected here, then fused into ONE static
+            // collider for the whole room (see below) instead of one body
+            // per tile — keeps Jolt's broadphase and gen time sane.
+            let mut static_meshes: Vec<Gd<Node3D>> = Vec::new();
+
             for entry in &room.meshes {
                 let Some(resource) = loader.load(entry.scene) else {
                     godot_warn!("Could not load: {}", entry.scene);
@@ -234,6 +235,11 @@ impl LevelManager {
                     continue;
                 };
                 let mut node: Gd<Node3D> = instance.cast();
+                // The asset pack bakes its own collision via `_convcolonly`
+                // node suffixes (one StaticBody3D per tile). Strip it so our
+                // build owns collision as the single source — merged per room
+                // for static, convex for dynamic, none for passable.
+                Self::strip_baked_colliders(&node);
 
                 match entry.collision {
                     Collision::Dynamic => {
@@ -251,27 +257,29 @@ impl LevelManager {
                         body.set_rotation(Vector3::new(rx, ry, rz));
                         body.set_gravity_scale(0.0);
 
-                        let mut shape = SphereShape3D::new_gd();
-                        shape.set_radius(PROP_RADIUS);
-                        let mut col = CollisionShape3D::new_alloc();
-                        col.set_shape(&shape);
-                        body.add_child(&col);
                         body.add_child(&node);
+                        // Convex hull per mesh part hugs the geometry (boxy
+                        // crates, round barrels). It's the dynamic-safe
+                        // mesh-derived collider — Jolt allows concave trimesh
+                        // only on static bodies.
+                        let node_xform = node.get_transform();
+                        Self::build_dynamic_collision(&mut body, &node, node_xform);
                         room_node.add_child(&body);
                         // Placed, not flown here: clear interpolation so it
                         // doesn't streak from the origin on the first frame.
                         body.reset_physics_interpolation();
                     }
                     Collision::Static => {
-                        // Fixed structure: position the mesh, then give it
-                        // a mesh-hugging trimesh collider so collisions sit
-                        // on the actual geometry (corners and all).
+                        // Fixed structure: render it now, collect it for the
+                        // room's single merged trimesh collider (built after
+                        // the loop) so collision still hugs the geometry
+                        // without a body per tile.
                         node.set_position(vec3(entry.position));
                         if entry.rotation_x.abs() > 0.001 || entry.rotation_y.abs() > 0.001 {
                             node.set_rotation(Vector3::new(entry.rotation_x, entry.rotation_y, 0.0));
                         }
                         room_node.add_child(&node);
-                        Self::build_static_collision(&node.clone().upcast::<Node>());
+                        static_meshes.push(node);
                     }
                     Collision::Passable => {
                         // Decorative only: rendered, never collided.
@@ -284,6 +292,10 @@ impl LevelManager {
                 }
                 mesh_count += 1;
             }
+
+            // Fuse all of this room's structure into one static body — same
+            // triangles, ~1/300th the bodies. One source: the meshes.
+            Self::build_merged_collision(&mut room_node, &static_meshes);
 
             // Light fixtures. Most are dead in an abandoned base, so an
             // Off fixture gets no light node at all (the mesh stays, dark)
@@ -376,15 +388,87 @@ impl LevelManager {
 }
 
 impl LevelManager {
-    /// Recursively give every `MeshInstance3D` under `node` a trimesh
-    /// static collider, so collision hugs the rendered geometry. This is
-    /// the one place structure becomes solid — one source: the mesh.
-    fn build_static_collision(node: &Gd<Node>) {
+    /// Free the collision bodies the glTF importer baked from `_col`/
+    /// `_convcolonly` node suffixes, leaving a pure visual subtree. Our build
+    /// is the single source of collision; freeing the body also frees its
+    /// collision-shape children.
+    fn strip_baked_colliders(node: &Gd<Node3D>) {
+        let mut bodies: Vec<Gd<Node>> = Vec::new();
+        Self::collect_static_bodies(&node.clone().upcast::<Node>(), &mut bodies);
+        for body in bodies {
+            body.free();
+        }
+    }
+
+    fn collect_static_bodies(node: &Gd<Node>, out: &mut Vec<Gd<Node>>) {
         for child in node.get_children().iter_shared() {
-            if let Ok(mut mesh) = child.clone().try_cast::<MeshInstance3D>() {
-                mesh.create_trimesh_collision();
+            if child.clone().try_cast::<StaticBody3D>().is_ok() {
+                out.push(child); // freeing it also frees its shape children
+            } else {
+                Self::collect_static_bodies(&child, out);
             }
-            Self::build_static_collision(&child);
+        }
+    }
+
+    /// Fuse every structural mesh's triangles into one `ConcavePolygonShape3D`
+    /// on a single `StaticBody3D` for the whole room. Same triangles as a
+    /// per-mesh trimesh — so collision still hugs corners — but Jolt tracks
+    /// one body instead of thousands. One source: the meshes.
+    fn build_merged_collision(room_node: &mut Gd<Node3D>, static_meshes: &[Gd<Node3D>]) {
+        let mut faces = PackedVector3Array::new();
+        for node in static_meshes {
+            Self::collect_faces(node, node.get_transform(), &mut faces);
+        }
+        if faces.is_empty() {
+            return;
+        }
+        let mut shape = ConcavePolygonShape3D::new_gd();
+        shape.set_faces(&faces);
+        let mut col = CollisionShape3D::new_alloc();
+        col.set_shape(&shape);
+        let mut body = StaticBody3D::new_alloc();
+        body.add_child(&col);
+        room_node.add_child(&body);
+    }
+
+    /// Append every triangle of every `MeshInstance3D` under `node` to `faces`,
+    /// transformed into the room's space by the accumulated `xform`.
+    fn collect_faces(node: &Gd<Node3D>, xform: Transform3D, faces: &mut PackedVector3Array) {
+        if let Ok(mesh_inst) = node.clone().try_cast::<MeshInstance3D>() {
+            if let Some(mesh) = mesh_inst.get_mesh() {
+                for v in mesh.get_faces().as_slice() {
+                    faces.push(xform * *v);
+                }
+            }
+        }
+        for child in node.get_children().iter_shared() {
+            if let Ok(child3d) = child.try_cast::<Node3D>() {
+                let child_xform = xform * child3d.get_transform();
+                Self::collect_faces(&child3d, child_xform, faces);
+            }
+        }
+    }
+
+    /// Give a dynamic body a convex collider per `MeshInstance3D` under
+    /// `node`, each placed at the mesh's transform relative to the body so the
+    /// hull hugs the rendered geometry. Convex (not trimesh) because Jolt
+    /// allows concave shapes only on static bodies — one source: the mesh.
+    fn build_dynamic_collision(body: &mut Gd<RigidBody3D>, node: &Gd<Node3D>, xform: Transform3D) {
+        if let Ok(mesh_inst) = node.clone().try_cast::<MeshInstance3D>() {
+            if let Some(mesh) = mesh_inst.get_mesh() {
+                if let Some(shape) = mesh.create_convex_shape() {
+                    let mut col = CollisionShape3D::new_alloc();
+                    col.set_shape(&shape);
+                    col.set_transform(xform);
+                    body.add_child(&col);
+                }
+            }
+        }
+        for child in node.get_children().iter_shared() {
+            if let Ok(child3d) = child.try_cast::<Node3D>() {
+                let child_xform = xform * child3d.get_transform();
+                Self::build_dynamic_collision(body, &child3d, child_xform);
+            }
         }
     }
 
