@@ -123,6 +123,14 @@ pub fn assemble_from_grid(
     let door = asset_catalog::DOOR;
     let story_height = wall_set.story_height;
 
+    // A vertical shaft (an up/down corridor) reads as a square right-angle
+    // tube: straight walls on every sealed face instead of rounded corner
+    // pieces. Ordinary rooms keep their curves.
+    let square_shaft = template.kind == crate::room_template::TemplateKind::Corridor
+        && template.connectors.iter().any(|c| {
+            matches!(c.facing, ConnectorFacing::PosY | ConnectorFacing::NegY)
+        });
+
     for cell in grid.cells() {
         let pos = cell.world_center;
         let cy = cell.grid_pos[1];
@@ -188,7 +196,9 @@ pub fn assemble_from_grid(
             if matches!(facing, ConnectorFacing::NegY | ConnectorFacing::PosY) {
                 continue;
             }
-            if is_corner_face(facing) {
+            // In a square shaft every sealed face gets a straight wall, so
+            // perpendicular faces meet at a hard 90° corner.
+            if is_corner_face(facing) && !square_shaft {
                 continue;
             }
             let (wall_pos, rot) = wall_placement(pos, facing);
@@ -204,7 +214,10 @@ pub fn assemble_from_grid(
         let mut has_corner = false;
         let mut first_corner_rot: f32 = 0.0;
         for (i, &(present, rot)) in corner_rotations.iter().enumerate() {
-            if present {
+            // A square shaft emits no rounded corner pieces; its corners are
+            // formed by the straight walls placed above. has_corner stays
+            // false, so the (absent) floor/ceiling would use straight tiles.
+            if present && !square_shaft {
                 let pair = corner_pairs[i];
                 let [ox, oz] = corner_interior_offset(pair);
                 let corner_pos = [pos[0] + ox, pos[1], pos[2] + oz];
@@ -259,9 +272,14 @@ pub fn assemble_from_grid(
     out
 }
 
-/// Check whether a connector at cell (cx, cy, cz) with the given facing is
-/// both defined in the template AND present in the active list.
-fn is_active_connector(
+/// Whether cell (cx, cy, cz) is covered by the opening of an active
+/// connector with the given facing. A connector's opening is a
+/// `facing.opening_span()`-wide footprint anchored at its offset and
+/// extending toward +x/+z (so vertical openings are 2×2, horizontal ones
+/// one cell). The single check shared by the cell grid (aperture
+/// classification) and assembly (floor/ceiling removal) — one source of
+/// truth for "where an opening is."
+pub(crate) fn is_active_connector(
     template: &RoomTemplate,
     active: &[Connector],
     facing: ConnectorFacing,
@@ -269,9 +287,16 @@ fn is_active_connector(
     cy: i32,
     cz: i32,
 ) -> bool {
-    let matches = |c: &Connector| c.offset == [cx, cy, cz] && c.facing == facing;
-    active.iter().any(matches)
-        && template.connectors.iter().any(matches)
+    let span = facing.opening_span();
+    let covers = |c: &Connector| {
+        c.facing == facing
+            && c.offset[1] == cy
+            && cx >= c.offset[0]
+            && cx < c.offset[0] + span
+            && cz >= c.offset[2]
+            && cz < c.offset[2] + span
+    };
+    active.iter().any(covers) && template.connectors.iter().any(covers)
 }
 
 /// Like `is_active_connector`, but returns the connector's `FrameStyle` if active.

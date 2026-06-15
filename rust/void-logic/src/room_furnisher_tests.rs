@@ -394,6 +394,83 @@ fn no_light_where_ceiling_removed_by_connector() {
     );
 }
 
+/// A vertical (PosY) connector opens a 2×2 ceiling hole, so the four cells
+/// under it lose their ceiling fixture — no light hangs over the open block.
+/// (Rim lights ring the hole's border; see `rim_lights_ring_a_vertical_opening`.)
+#[test]
+fn no_lights_over_a_2x2_ceiling_opening() {
+    let template = RoomTemplate {
+        kind: TemplateKind::Room,
+        connectors: vec![Connector {
+            offset: [1, 0, 1],
+            facing: ConnectorFacing::PosY,
+            frame: FrameStyle::None,
+        }],
+        enemy_spawns: vec![],
+        loot_spawns: vec![],
+        extents: [4, 1, 4],
+    };
+    let active = vec![template.connectors[0]];
+    let fixtures = light_fixtures(&template, &active, [0.0, 0.0, 0.0], 4.0, 0);
+    // The four open cells (1,1)(1,2)(2,1)(2,2) → world centers (6/10, *, 6/10):
+    // no fixture may sit on any of them.
+    let over_hole = [(6.0, 6.0), (6.0, 10.0), (10.0, 6.0), (10.0, 10.0)];
+    let on_hole = fixtures
+        .iter()
+        .filter(|(m, _)| {
+            over_hole.iter().any(|(hx, hz)| {
+                (m.position[0] - hx).abs() < 0.01 && (m.position[2] - hz).abs() < 0.01
+            })
+        })
+        .count();
+    assert_eq!(on_hole, 0, "no light may hang over the opening, found {on_hole}");
+    // 12 ceiling fixtures (16 cells − 4 open) + 4 rim fixtures on the border.
+    assert_eq!(
+        fixtures.len(),
+        16,
+        "12 ceiling + 4 rim lights expected, got {}",
+        fixtures.len()
+    );
+}
+
+/// Each active vertical opening is ringed by accent lights on its solid
+/// border: 4 edge-midpoint fixtures around the 2×2 (8×8 m) hole. A 4×4 room
+/// with one active PosY connector keeps 12 ceiling lights and gains 4 rim
+/// lights = 16, with the 4 rim fixtures sitting on the opening's edges.
+#[test]
+fn rim_lights_ring_a_vertical_opening() {
+    let template = RoomTemplate {
+        kind: TemplateKind::Room,
+        connectors: vec![Connector {
+            offset: [1, 0, 1],
+            facing: ConnectorFacing::PosY,
+            frame: FrameStyle::None,
+        }],
+        enemy_spawns: vec![],
+        loot_spawns: vec![],
+        extents: [4, 1, 4],
+    };
+    let active = vec![template.connectors[0]];
+    let fixtures = light_fixtures(&template, &active, [0.0, 0.0, 0.0], 4.0, 0);
+    assert_eq!(
+        fixtures.len(),
+        16,
+        "expected 12 ceiling + 4 rim lights, got {}",
+        fixtures.len()
+    );
+    // Opening centered at world (8,*,8), 8 m wide → edge midpoints at ±4 m.
+    let rim = [(8.0, 4.0), (8.0, 12.0), (4.0, 8.0), (12.0, 8.0)];
+    let rim_count = fixtures
+        .iter()
+        .filter(|(m, _)| {
+            rim.iter().any(|(rx, rz)| {
+                (m.position[0] - rx).abs() < 0.01 && (m.position[2] - rz).abs() < 0.01
+            })
+        })
+        .count();
+    assert_eq!(rim_count, 4, "4 rim lights should ring the opening, got {rim_count}");
+}
+
 // --- Light state + color ---
 
 #[test]

@@ -256,6 +256,63 @@ mod tests {
     use crate::room_template::ConnectorFacing;
     use crate::seed::Seed;
 
+    /// End-to-end: through the full generation pipeline, a real level's
+    /// vertical shafts are square (no rounded corner pieces) and lit by rim
+    /// fixtures (their ceilings are all open, so any light they carry is a
+    /// rim light). Proves both features survive generation — not just the
+    /// synthetic unit cases — so "I can't see them" is a findability matter,
+    /// not a rendering gap.
+    #[test]
+    fn generated_vertical_shafts_are_square_and_rim_lit() {
+        let cell = 4.0_f32;
+        let mut square_shaft_seen = false;
+        let mut rim_lit_shaft_seen = false;
+
+        'seeds: for seed in 0..30u64 {
+            let config = GeneratorConfig {
+                seed: Seed::new(seed),
+                max_rooms: 30,
+                min_room_xz: 3,
+                max_room_xz: 6,
+                min_room_y: 1,
+                max_room_y: 6,
+            };
+            let Ok(graph) = generate(&config) else { continue };
+            let assemblies = spawn_list_full(&graph, cell, Seed::new(seed));
+
+            for (i, idx) in graph.room_indices().enumerate() {
+                let room = graph.room(idx).unwrap();
+                let is_vertical_shaft = room.template.kind
+                    == crate::room_template::TemplateKind::Corridor
+                    && room.template.extents[0] == 2
+                    && room.template.extents[2] == 2;
+                if !is_vertical_shaft {
+                    continue;
+                }
+                let asm = &assemblies[i];
+                // Square: a shaft emits straight walls and no rounded corners.
+                assert_eq!(
+                    asm.meshes.iter().filter(|m| m.scene.contains("Corner_Round")).count(),
+                    0,
+                    "seed {seed}: vertical shaft still has rounded corner pieces"
+                );
+                if asm.meshes.iter().any(|m| m.scene.contains("_Straight")) {
+                    square_shaft_seen = true;
+                }
+                // Rim-lit: all ceilings are open, so any light is a rim light.
+                if !asm.lights.is_empty() {
+                    rim_lit_shaft_seen = true;
+                }
+                if square_shaft_seen && rim_lit_shaft_seen {
+                    break 'seeds;
+                }
+            }
+        }
+
+        assert!(square_shaft_seen, "no square vertical shaft found across 30 seeds");
+        assert!(rim_lit_shaft_seen, "no rim-lit vertical shaft found across 30 seeds");
+    }
+
     /// A vertical passage's full-cell aperture must be unobstructed:
     /// no mesh placement may sit inside the hole column near the
     /// interface plane. Players report a ~1x1 m visible opening where
@@ -291,8 +348,11 @@ mod tests {
                 }
                 let Some(room) = graph.room(a) else { continue };
                 let origin = room.world_position(cell, story);
-                let hole_x = origin[0] + (from_connector.offset[0] as f32 + 0.5) * cell;
-                let hole_z = origin[2] + (from_connector.offset[2] as f32 + 0.5) * cell;
+                // The aperture is a `span`×`span` hole anchored at the
+                // connector offset; its true center is half a span in.
+                let span = from_connector.facing.opening_span() as f32;
+                let hole_x = origin[0] + (from_connector.offset[0] as f32 + span / 2.0) * cell;
+                let hole_z = origin[2] + (from_connector.offset[2] as f32 + span / 2.0) * cell;
                 let plane_y = match from_connector.facing {
                     ConnectorFacing::PosY => {
                         origin[1] + (from_connector.offset[1] as f32 + 1.0) * story
@@ -302,13 +362,22 @@ mod tests {
                 passages_checked += 1;
 
                 for placement in &meshes {
+                    // Perimeter walls line the shaft by design: they pivot at a
+                    // cell center inside the footprint but their geometry hugs
+                    // the face, leaving the column clear. The bug this guards
+                    // against is a *cap* — a floor/ceiling slab or prop across
+                    // the aperture — so only non-wall meshes are obstructions.
+                    if placement.scene.contains("/walls/") {
+                        continue;
+                    }
                     let dx = (placement.position[0] - hole_x).abs();
                     let dz = (placement.position[2] - hole_z).abs();
                     let dy = (placement.position[1] - plane_y).abs();
-                    // Strictly inside the hole column (rim tiles pivot
-                    // at neighboring cell centers, 4 m away).
+                    // Anything pivoting on one of the aperture cells (±0.5 cell
+                    // = 2 m from center) caps the hole; rim lights sit a full
+                    // span out (4 m) and border tiles further still.
                     assert!(
-                        !(dx < 1.9 && dz < 1.9 && dy < 1.0),
+                        !(dx < 2.5 && dz < 2.5 && dy < 1.0),
                         "seed {seed}: '{}' at {:?} obstructs the vertical passage at \
                          [{hole_x:.1}, {plane_y:.1}, {hole_z:.1}] (dx {dx:.2}, dy {dy:.2}, dz {dz:.2})",
                         placement.scene,

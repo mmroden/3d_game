@@ -85,13 +85,13 @@ impl CellGrid {
                     ];
 
                     let has_active_connector = boundary_faces.iter().any(|&(facing, is_boundary)| {
-                        is_boundary && Self::is_active_connector(template, active_connectors, facing, cx, cy, cz)
+                        is_boundary && crate::room_assembler::is_active_connector(template, active_connectors, facing, cx, cy, cz)
                     });
 
                     let sealed_faces: Vec<ConnectorFacing> = boundary_faces
                         .iter()
                         .filter(|&&(facing, is_boundary)| {
-                            is_boundary && !Self::is_active_connector(template, active_connectors, facing, cx, cy, cz)
+                            is_boundary && !crate::room_assembler::is_active_connector(template, active_connectors, facing, cx, cy, cz)
                         })
                         .map(|&(facing, _)| facing)
                         .collect();
@@ -129,20 +129,6 @@ impl CellGrid {
         }
     }
 
-    /// Check whether a connector at cell (cx, cy, cz) with the given facing is
-    /// both defined in the template AND present in the active list.
-    fn is_active_connector(
-        template: &RoomTemplate,
-        active: &[Connector],
-        facing: ConnectorFacing,
-        cx: i32,
-        cy: i32,
-        cz: i32,
-    ) -> bool {
-        let matches = |c: &Connector| c.offset == [cx, cy, cz] && c.facing == facing;
-        active.iter().any(matches)
-            && template.connectors.iter().any(matches)
-    }
 
     /// Check if a set of sealed faces contains at least one perpendicular XZ pair.
     /// Y-axis faces (floor/ceiling) are universal in single-story rooms and don't

@@ -19,7 +19,7 @@ pub const LIGHT_CEILING_WIDE: LightFixture = LightFixture {
     light_offset: [0.0, -0.3, 0.0],
     fixture_bounds: [1.0, 0.4, 0.5],
     range: 14.0,
-    energy: 3.0,
+    energy: 4.5,
 };
 
 pub const LIGHT_CEILING_SMALL: LightFixture = LightFixture {
@@ -27,7 +27,7 @@ pub const LIGHT_CEILING_SMALL: LightFixture = LightFixture {
     light_offset: [0.0, -0.2, 0.0],
     fixture_bounds: [0.3, 0.3, 0.3],
     range: 12.0,
-    energy: 2.5,
+    energy: 3.75,
 };
 
 pub const LIGHT_CORNER: LightFixture = LightFixture {
@@ -35,7 +35,7 @@ pub const LIGHT_CORNER: LightFixture = LightFixture {
     light_offset: [0.0, -0.2, 0.0],
     fixture_bounds: [0.4, 0.3, 0.4],
     range: 10.0,
-    energy: 2.0,
+    energy: 3.0,
 };
 
 pub const LIGHT_FLOOR: LightFixture = LightFixture {
@@ -43,7 +43,7 @@ pub const LIGHT_FLOOR: LightFixture = LightFixture {
     light_offset: [0.0, 1.0, 0.0],
     fixture_bounds: [0.3, 1.2, 0.3],
     range: 10.0,
-    energy: 2.0,
+    energy: 3.0,
 };
 
 pub const CEILING_LIGHTS: &[LightFixture] = &[LIGHT_CEILING_WIDE, LIGHT_CEILING_SMALL];
