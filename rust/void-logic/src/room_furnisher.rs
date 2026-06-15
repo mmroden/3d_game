@@ -1,5 +1,5 @@
-use crate::asset_catalog::{self, WALL_ADJACENT_PROPS, CENTER_PROPS, CORNER_PROPS};
-use crate::room_assembler::MeshPlacement;
+use crate::asset_catalog::{WALL_ADJACENT_PROPS, CENTER_PROPS, CORNER_PROPS};
+use crate::room_assembler::{Collision, MeshPlacement};
 use crate::room_template::{Connector, ConnectorFacing, RoomTemplate};
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
@@ -82,7 +82,7 @@ pub fn furnish(
                                 position: [cell_center_x + offset_x, y, cell_center_z + offset_z],
                                 rotation_x: 0.0,
                                 rotation_y: rot,
-                                loose: asset_catalog::is_loose_prop(prop.scene),
+                                collision: Collision::for_prop(prop.scene),
                             });
                         }
                     }
@@ -97,7 +97,7 @@ pub fn furnish(
                             position: [cell_center_x, y, cell_center_z],
                             rotation_x: 0.0,
                             rotation_y: 0.0,
-                            loose: asset_catalog::is_loose_prop(prop.scene),
+                            collision: Collision::for_prop(prop.scene),
                         });
                     }
                 }
@@ -112,7 +112,7 @@ pub fn furnish(
                             position: [cell_center_x, y, cell_center_z],
                             rotation_x: 0.0,
                             rotation_y: 0.0,
-                            loose: asset_catalog::is_loose_prop(prop.scene),
+                            collision: Collision::for_prop(prop.scene),
                         });
                     }
                 }
@@ -438,54 +438,127 @@ pub fn light_fixtures(
     for cx in 0..ex {
         for cz in 0..ez {
             // The ceiling exists at the topmost Y level for this XZ column,
-            // unless an active PosY connector removes it.
+            // unless an active PosY connector removes it. The opening spans a
+            // 2×2 cell footprint (see `ConnectorFacing::opening_span`), so the
+            // shared footprint-aware check clears every cell under the hole.
             let top_cy = ey - 1;
-            let has_posy = active_connectors.iter().any(|c| {
-                c.facing == ConnectorFacing::PosY
-                    && c.offset[0] == cx
-                    && c.offset[1] == top_cy
-                    && c.offset[2] == cz
-                    && template.connectors.contains(c)
-            });
-            if has_posy {
+            let ceiling_open = crate::room_assembler::is_active_connector(
+                template,
+                active_connectors,
+                ConnectorFacing::PosY,
+                cx,
+                top_cy,
+                cz,
+            );
+            if ceiling_open {
                 continue; // No ceiling here → no light.
             }
 
             let fixture = &CEILING_LIGHTS[((cx + top_cy + cz) as usize) % CEILING_LIGHTS.len()];
-
             let fixture_y = world_origin[1] + top_cy as f32 * story_height + story_height - 0.1;
-            let mesh = MeshPlacement {
-                scene: fixture.scene,
-                position: [
-                    world_origin[0] + (cx as f32 + 0.5) * cell_size,
-                    fixture_y,
-                    world_origin[2] + (cz as f32 + 0.5) * cell_size,
-                ],
-                rotation_x: 0.0,
-                rotation_y: 0.0,
-                loose: false,
-            };
-
-            let state = LightState::from_roll(ambiance.random_range(0.0..1.0));
-            // Default warm-white; spawn_list_full recolors start/exit
-            // rooms once room roles are known from the graph.
-            let color = LightAccent::Neutral.color(state.liveness());
-            let light = LightSource {
-                position: [
-                    mesh.position[0] + fixture.light_offset[0],
-                    mesh.position[1] + fixture.light_offset[1],
-                    mesh.position[2] + fixture.light_offset[2],
-                ],
-                range: fixture.range,
-                energy: fixture.energy,
-                state,
-                color,
-            };
-
-            out.push((mesh, light));
+            let mesh_pos = [
+                world_origin[0] + (cx as f32 + 0.5) * cell_size,
+                fixture_y,
+                world_origin[2] + (cz as f32 + 0.5) * cell_size,
+            ];
+            out.push(place_fixture(fixture, mesh_pos, &mut ambiance));
         }
     }
 
+    // Ring each active vertical opening with accent lights on its solid
+    // border — same liveness/color logic as the ceiling fixtures above.
+    out.extend(rim_lights(
+        template,
+        active_connectors,
+        world_origin,
+        cell_size,
+        story_height,
+        &mut ambiance,
+    ));
+
+    out
+}
+
+/// Build a fixture's mesh + co-located light at `mesh_pos`, rolling its
+/// liveness from the shared ambiance stream. Color defaults to warm-white;
+/// `spawn_list_full` recolors start/exit rooms once roles are known.
+fn place_fixture(
+    fixture: &crate::asset_catalog::LightFixture,
+    mesh_pos: [f32; 3],
+    ambiance: &mut SmallRng,
+) -> (MeshPlacement, LightSource) {
+    let mesh = MeshPlacement {
+        scene: fixture.scene,
+        position: mesh_pos,
+        rotation_x: 0.0,
+        rotation_y: 0.0,
+        collision: Collision::Passable,
+    };
+    let state = LightState::from_roll(ambiance.random_range(0.0..1.0));
+    let color = LightAccent::Neutral.color(state.liveness());
+    let light = LightSource {
+        position: [
+            mesh_pos[0] + fixture.light_offset[0],
+            mesh_pos[1] + fixture.light_offset[1],
+            mesh_pos[2] + fixture.light_offset[2],
+        ],
+        range: fixture.range,
+        energy: fixture.energy,
+        state,
+        color,
+    };
+    (mesh, light)
+}
+
+/// Accent lights ringing every active vertical opening. The opening is a
+/// `span`×`span` cell hole anchored at the connector offset; a light sits at
+/// the midpoint of each of its four edges, but only where the bordering cell
+/// is in-bounds (so a hole flush against a wall gets fewer, never floating in
+/// the void). Ceiling holes hang a small fixture; floor holes stand a floor
+/// fixture. Liveness comes from the same ambiance stream as ceiling lights.
+fn rim_lights(
+    template: &RoomTemplate,
+    active_connectors: &[Connector],
+    world_origin: [f32; 3],
+    cell_size: f32,
+    story_height: f32,
+    ambiance: &mut SmallRng,
+) -> Vec<(MeshPlacement, LightSource)> {
+    use crate::asset_catalog::{LIGHT_CEILING_SMALL, LIGHT_FLOOR};
+
+    let ex = template.extents[0] as i32;
+    let ez = template.extents[2] as i32;
+    let span = ConnectorFacing::PosY.opening_span();
+    let half = span as f32 / 2.0 * cell_size;
+    let mut out = Vec::new();
+
+    for c in active_connectors {
+        let (fixture, y) = match c.facing {
+            ConnectorFacing::PosY => (
+                LIGHT_CEILING_SMALL,
+                world_origin[1] + c.offset[1] as f32 * story_height + story_height - 0.1,
+            ),
+            ConnectorFacing::NegY => (
+                LIGHT_FLOOR,
+                world_origin[1] + c.offset[1] as f32 * story_height + 0.1,
+            ),
+            _ => continue,
+        };
+        let (vx, vz) = (c.offset[0], c.offset[2]);
+        let cx_c = world_origin[0] + (vx as f32 + span as f32 / 2.0) * cell_size;
+        let cz_c = world_origin[2] + (vz as f32 + span as f32 / 2.0) * cell_size;
+        let edges = [
+            (vz >= 1, [cx_c, y, cz_c - half]),         // toward -Z
+            (vz + span <= ez, [cx_c, y, cz_c + half]), // toward +Z
+            (vx >= 1, [cx_c - half, y, cz_c]),         // toward -X
+            (vx + span <= ex, [cx_c + half, y, cz_c]), // toward +X
+        ];
+        for (in_bounds, pos) in edges {
+            if in_bounds {
+                out.push(place_fixture(&fixture, pos, ambiance));
+            }
+        }
+    }
     out
 }
 

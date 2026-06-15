@@ -558,110 +558,16 @@ fn astra_ceiling_does_not_use_topcables() {
     );
 }
 
-// === Collision box tests ===
-
-/// A sealed 1x1 room must have collision on all 4 XZ walls + floor + ceiling = 6 boxes.
-#[test]
-fn sealed_small_room_collision_box_count() {
-    let boxes = collision_boxes(&small_room(), &[], [0.0, 0.0, 0.0], &asset_catalog::WALL_SET_ASTRA);
-    // 4 XZ walls + 1 floor + 1 ceiling = 6
-    assert_eq!(boxes.len(), 6, "sealed 1x1x1: 4 walls + floor + ceiling");
-}
-
-/// Active connector removes the wall collider on that face.
-#[test]
-fn active_connector_removes_wall_collider() {
-    let all_sealed = collision_boxes(&small_room(), &[], [0.0, 0.0, 0.0], &asset_catalog::WALL_SET_ASTRA);
-    let one_open = collision_boxes(&small_room(), &[Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX, frame: FrameStyle::Door }], [0.0, 0.0, 0.0], &asset_catalog::WALL_SET_ASTRA);
-    assert_eq!(one_open.len(), all_sealed.len() - 1,
-        "opening one connector should remove exactly one collision box");
-}
-
-/// 3x3 sealed room: every cell contributes floor + ceiling. Only boundary cells
-/// contribute wall colliders. Interior cell (1,0,1) has no wall colliders.
-#[test]
-fn sealed_3x3_collision_covers_all_boundaries() {
-    let boxes = collision_boxes(&room_3x3(), &[], [0.0, 0.0, 0.0], &asset_catalog::WALL_SET_ASTRA);
-
-    // 3x3 single story:
-    // Floors: 9, Ceilings: 9
-    // Walls: perimeter = 3+3+3+3 = 12 XZ wall faces
-    // Total = 9 + 9 + 12 = 30
-    let floor_boxes = boxes.iter().filter(|b| b.position[1] < 0.0).count();
-    let ceiling_boxes = boxes.iter().filter(|b| b.position[1] > STORY_HEIGHT).count();
-    let wall_boxes = boxes.len() - floor_boxes - ceiling_boxes;
-    assert_eq!(floor_boxes, 9, "9 floor slabs");
-    assert_eq!(ceiling_boxes, 9, "9 ceiling slabs");
-    assert_eq!(wall_boxes, 12, "12 perimeter wall faces");
-}
-
-/// Collision boxes must fully enclose the room — no position outside the
-/// convex hull of colliders should be reachable from inside.
-#[test]
-fn collision_boxes_form_closed_boundary() {
-    let boxes = collision_boxes(&small_room(), &[], [0.0, 0.0, 0.0], &asset_catalog::WALL_SET_ASTRA);
-
-    // For a sealed 1x1 room at origin, cell center is at (2.0, 0.0, 2.0).
-    // Wall colliders should be at the 4 boundaries of the cell:
-    // NegX: x=0, PosX: x=4, NegZ: z=0, PosZ: z=4
-    // Floor: y~0, Ceiling: y~5
-    let wall_boxes: Vec<_> = boxes.iter().filter(|b| {
-        b.position[1] > 0.0 && b.position[1] < STORY_HEIGHT
-    }).collect();
-    assert_eq!(wall_boxes.len(), 4, "4 wall colliders");
-
-    // Each wall should be at a cell boundary (x=0, x=4, z=0, or z=4)
-    let at_boundary = |b: &CollisionBox| -> bool {
-        let x = b.position[0];
-        let z = b.position[2];
-        (x - 0.0).abs() < 0.01 || (x - 4.0).abs() < 0.01
-            || (z - 0.0).abs() < 0.01 || (z - 4.0).abs() < 0.01
-    };
-    for wb in &wall_boxes {
-        assert!(at_boundary(wb),
-            "wall collider at {:?} is not at a cell boundary", wb.position);
-    }
-}
-
-/// Y-axis connector removes floor or ceiling collider.
-#[test]
-fn vertical_connector_removes_floor_ceiling_collider() {
-    let sealed = collision_boxes(&hub_6way(), &[], [0.0, 0.0, 0.0], &asset_catalog::WALL_SET_ASTRA);
-    let floor_open = collision_boxes(&hub_6way(), &[Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegY, frame: FrameStyle::Door }], [0.0, 0.0, 0.0], &asset_catalog::WALL_SET_ASTRA);
-    let ceiling_open = collision_boxes(&hub_6way(), &[Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosY, frame: FrameStyle::Door }], [0.0, 0.0, 0.0], &asset_catalog::WALL_SET_ASTRA);
-
-    assert_eq!(floor_open.len(), sealed.len() - 1, "NegY removes floor slab");
-    assert_eq!(ceiling_open.len(), sealed.len() - 1, "PosY removes ceiling slab");
-}
-
-/// Corridor collision: door frames don't add extra wall colliders.
-/// The corridor's sealed NegZ/PosZ faces get wall colliders. The connector
-/// faces (NegX/PosX) have no wall collider since they're open passages.
-#[test]
-fn corridor_collision_matches_sealed_faces() {
-    let boxes = collision_boxes(
-        &corridor_ew(),
-        &[
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegX, frame: FrameStyle::Door },
-            Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosX, frame: FrameStyle::Door },
-        ],
-        [0.0, 0.0, 0.0],
-        &asset_catalog::WALL_SET_ASTRA,
-    );
-    // NegZ + PosZ walls = 2, floor + ceiling = 2. No NegX/PosX walls.
-    let wall_boxes = boxes.iter().filter(|b| {
-        b.position[1] > 0.0 && b.position[1] < STORY_HEIGHT
-    }).count();
-    assert_eq!(wall_boxes, 2, "corridor with both ends open: 2 side walls");
-}
-
 // ==========================================================================
 // 5-layer wall stack tests (Chunk 1 TDD)
 // ==========================================================================
 
-/// Each sealed XZ boundary tile must emit all 4 wall layers: Bottom + ShortWall + Wall + Top.
+/// Each sealed XZ boundary tile emits the wall stack: Bottom + Wall + Top.
+/// (The ShortWall layer was dropped — the full-height main wall already
+/// covers the lower band, so a short_wall there only z-fought; see
+/// `room_assembler` flicker fix.)
 #[test]
-fn sealed_wall_emits_4_layer_stack() {
+fn sealed_wall_emits_layer_stack() {
     let ws = &asset_catalog::WALL_SET_ASTRA;
     // Corridor with both ends open: NegZ and PosZ get straight walls.
     let placements = assemble(
@@ -673,13 +579,12 @@ fn sealed_wall_emits_4_layer_stack() {
         [0.0, 0.0, 0.0],
         ws,
     );
-    // 2 sealed faces × 4 layers each = 8 wall-layer meshes
     let bottom_count = count(&placements, ws.bottom.straight);
     let short_count = count(&placements, ws.short_wall.straight);
     let wall_count = count(&placements, ws.straight.wall);
     let top_count = count(&placements, ws.straight.ceiling);
     assert_eq!(bottom_count, 2, "2 sealed faces × 1 bottom each");
-    assert_eq!(short_count, 2, "2 sealed faces × 1 short_wall each");
+    assert_eq!(short_count, 0, "short_wall layer is no longer emitted (z-fight fix)");
     assert_eq!(wall_count, 2, "2 sealed faces × 1 wall each");
     assert_eq!(top_count, 2, "2 sealed faces × 1 top each");
 }
@@ -876,18 +781,20 @@ fn no_duplicate_floor_tiles() {
         "found {} duplicate floor/ceiling tiles", before - floor_keys.len());
 }
 
-/// Corner positions emit all 5 structural layers (bottom, short_wall, wall, top per inner+outer).
+/// Corner positions emit the structural layers (bottom, wall, top per
+/// inner+outer). The ShortWall corner layer was dropped with its straight
+/// sibling (z-fight fix), so it must no longer appear.
 #[test]
 fn corner_emits_all_layer_variants() {
     let ws = &asset_catalog::WALL_SET_ASTRA;
     // 1x1 room: all 4 faces are corners.
     let placements = assemble(&small_room(), &[], [0.0, 0.0, 0.0], ws);
 
-    // 4 corners × 2 (inner+outer) = 8 each for bottom, short_wall, wall, ceiling
+    // 4 corners × 2 (inner+outer) = 8 each for bottom, wall, ceiling
     assert_eq!(count(&placements, ws.bottom.corner_inner), 4);
     assert_eq!(count(&placements, ws.bottom.corner_outer), 4);
-    assert_eq!(count(&placements, ws.short_wall.corner_inner), 4);
-    assert_eq!(count(&placements, ws.short_wall.corner_outer), 4);
+    assert_eq!(count(&placements, ws.short_wall.corner_inner), 0, "short_wall corner dropped (z-fight fix)");
+    assert_eq!(count(&placements, ws.short_wall.corner_outer), 0, "short_wall corner dropped (z-fight fix)");
     assert_eq!(count(&placements, ws.corner_inner.wall), 4);
     assert_eq!(count(&placements, ws.corner_outer.wall), 4);
     assert_eq!(count(&placements, ws.corner_inner.ceiling), 4);

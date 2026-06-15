@@ -1,5 +1,4 @@
-use crate::asset_catalog::is_loose_prop;
-use crate::room_assembler::MeshPlacement;
+use crate::room_assembler::{Collision, MeshPlacement};
 use crate::room_furnisher::RoomDensity;
 use crate::room_template::ConnectorFacing;
 use crate::room_theme::RoomTheme;
@@ -50,7 +49,7 @@ impl CellGrid {
                     if !theme.palette.corner.is_empty() && !near_gap && rng.random_range(0..corner_den) < corner_num {
                         let prop = &theme.palette.corner[rng.random_range(0..theme.palette.corner.len())];
                         let is_column = prop.scene.contains("/columns/");
-                        let loose = is_loose_prop(prop.scene);
+                        let collision = Collision::for_prop(prop.scene);
                         if is_column {
                             // Stack columns at every story level for this XZ position.
                             let story_height = Self::DEFAULT_STORY_HEIGHT;
@@ -66,7 +65,7 @@ impl CellGrid {
                                     ],
                                     rotation_x: 0.0,
                                     rotation_y: 0.0,
-                                    loose,
+                                    collision,
                                 }
                             }).collect();
                             cell.occupant = CellOccupant::Props(placements);
@@ -76,7 +75,7 @@ impl CellGrid {
                                 position: cell.world_center,
                                 rotation_x: 0.0,
                                 rotation_y: 0.0,
-                                loose,
+                                collision,
                             }]);
                         }
                     }
@@ -105,7 +104,7 @@ impl CellGrid {
                             ],
                             rotation_x: 0.0,
                             rotation_y: rot,
-                            loose: is_loose_prop(prop.scene),
+                            collision: Collision::for_prop(prop.scene),
                         }]);
                     }
                 }
@@ -117,7 +116,7 @@ impl CellGrid {
                             position: cell.world_center,
                             rotation_x: 0.0,
                             rotation_y: 0.0,
-                            loose: is_loose_prop(prop.scene),
+                            collision: Collision::for_prop(prop.scene),
                         }]);
                     }
                 }

@@ -6,7 +6,12 @@
 use petgraph::graph::{NodeIndex, UnGraph};
 use rand::rngs::SmallRng;
 
-use crate::room_template::RoomTemplate;
+use crate::room_template::{ConnectorFacing, RoomTemplate};
+
+/// Fraction of spanning-tree edges that take a vertical (up/down) connector
+/// when both rooms offer one. Keeps vertical passages on the level's main
+/// path rather than relegating them to incidental side branches. Tunable.
+const VERTICAL_BIAS: f32 = 0.5;
 
 /// Which connector on each room is wired in an edge.
 #[derive(Debug, Clone, Copy)]
@@ -102,22 +107,32 @@ fn find_compatible_pair(
     rng: &mut SmallRng,
 ) -> Option<ConnectorPair> {
     use rand::prelude::SliceRandom;
+    use rand::RngExt;
 
-    // Collect all compatible pairs.
-    let mut pairs = Vec::new();
+    // Collect all compatible pairs, split by orientation so vertical links
+    // can be favored.
+    let mut vertical = Vec::new();
+    let mut horizontal = Vec::new();
     for (pi, pc) in parent.connectors.iter().enumerate() {
         for (ci, cc) in child.connectors.iter().enumerate() {
             if pc.facing.opposite() == cc.facing {
-                pairs.push(ConnectorPair {
-                    from_connector_idx: pi,
-                    to_connector_idx: ci,
-                });
+                let pair = ConnectorPair { from_connector_idx: pi, to_connector_idx: ci };
+                if matches!(pc.facing, ConnectorFacing::PosY | ConnectorFacing::NegY) {
+                    vertical.push(pair);
+                } else {
+                    horizontal.push(pair);
+                }
             }
         }
     }
 
-    pairs.shuffle(rng);
-    pairs.into_iter().next()
+    // Favor a vertical link when one exists (and we win the bias roll, or
+    // there is no horizontal alternative); otherwise take a horizontal one.
+    let take_vertical = !vertical.is_empty()
+        && (horizontal.is_empty() || rng.random_range(0.0f32..1.0) < VERTICAL_BIAS);
+    let pool = if take_vertical { &mut vertical } else { &mut horizontal };
+    pool.shuffle(rng);
+    pool.first().copied()
 }
 
 #[cfg(test)]
@@ -135,6 +150,52 @@ mod tests {
             min_room_y: 1,
             max_room_y: 6,
         }
+    }
+
+    fn room_with_horizontal_and_vertical() -> RoomTemplate {
+        use crate::room_template::*;
+        let h = |facing| Connector { offset: [0, 0, 0], facing, frame: FrameStyle::Door };
+        let v = |facing| Connector { offset: [0, 0, 0], facing, frame: FrameStyle::None };
+        RoomTemplate {
+            kind: TemplateKind::Room,
+            connectors: vec![
+                h(ConnectorFacing::NegX),
+                h(ConnectorFacing::PosX),
+                h(ConnectorFacing::NegZ),
+                h(ConnectorFacing::PosZ),
+                v(ConnectorFacing::PosY),
+                v(ConnectorFacing::NegY),
+            ],
+            enemy_spawns: vec![],
+            loot_spawns: vec![],
+            extents: [4, 1, 4],
+        }
+    }
+
+    /// When both rooms offer a vertical connector, the spanning tree favors
+    /// it: vertical links should be chosen far above their uniform 2-of-6
+    /// share (~0.33), so up/down passages land on the main path.
+    #[test]
+    fn vertical_links_are_favored_when_available() {
+        use crate::room_template::ConnectorFacing;
+        let room = room_with_horizontal_and_vertical();
+        let mut rng = SmallRng::seed_from_u64(7);
+        let n = 4000;
+        let mut vertical = 0;
+        for _ in 0..n {
+            let pair = find_compatible_pair(&room, &room, &mut rng).unwrap();
+            if matches!(
+                room.connectors[pair.from_connector_idx].facing,
+                ConnectorFacing::PosY | ConnectorFacing::NegY
+            ) {
+                vertical += 1;
+            }
+        }
+        let share = vertical as f64 / n as f64;
+        assert!(
+            (0.42..=0.60).contains(&share),
+            "vertical link share {share:.3} should sit near the 0.5 bias"
+        );
     }
 
     #[test]

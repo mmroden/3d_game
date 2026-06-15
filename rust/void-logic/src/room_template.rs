@@ -34,6 +34,19 @@ impl ConnectorFacing {
             Self::NegY => [0, -1, 0],
         }
     }
+
+    /// How many cells wide a connector's opening is, per XZ axis. Vertical
+    /// (floor/ceiling) openings span 2 cells — an 8×8 m hole — so the
+    /// surrounding tile frames don't overlap; horizontal openings are one
+    /// cell. This is the single source of truth for opening width; every
+    /// site that sizes an opening (corridor footprint, room connector
+    /// placement, aperture cells, floor/ceiling removal) derives it here.
+    pub fn opening_span(self) -> i32 {
+        match self {
+            Self::PosY | Self::NegY => 2,
+            Self::PosX | Self::NegX | Self::PosZ | Self::NegZ => 1,
+        }
+    }
 }
 
 /// Visual treatment at a connector opening.

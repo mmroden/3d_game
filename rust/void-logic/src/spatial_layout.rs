@@ -10,6 +10,10 @@ use crate::room_template::{Connector, ConnectorFacing, FrameStyle, RoomTemplate,
 
 /// Generate a corridor template of the given length along a facing direction.
 pub fn make_corridor(facing: ConnectorFacing, length: u32) -> RoomTemplate {
+    // Vertical corridors share their cross-section with the opening width
+    // (see ConnectorFacing::opening_span) so floor/ceiling holes get a
+    // border and tile frames don't overlap; horizontal corridors stay 1 wide.
+    let span = facing.opening_span() as u32;
     let (extents, c_in, c_out) = match facing {
         ConnectorFacing::PosX => (
             [length, 1, 1],
@@ -32,12 +36,12 @@ pub fn make_corridor(facing: ConnectorFacing, length: u32) -> RoomTemplate {
             Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegZ, frame: FrameStyle::Door },
         ),
         ConnectorFacing::PosY => (
-            [1, length, 1],
+            [span, length, span],
             Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegY, frame: FrameStyle::None },
             Connector { offset: [0, length as i32 - 1, 0], facing: ConnectorFacing::PosY, frame: FrameStyle::None },
         ),
         ConnectorFacing::NegY => (
-            [1, length, 1],
+            [span, length, span],
             Connector { offset: [0, length as i32 - 1, 0], facing: ConnectorFacing::PosY, frame: FrameStyle::None },
             Connector { offset: [0, 0, 0], facing: ConnectorFacing::NegY, frame: FrameStyle::None },
         ),
@@ -337,7 +341,8 @@ mod tests {
     #[test]
     fn make_corridor_posy_correct_extents() {
         let c = make_corridor(ConnectorFacing::PosY, 3);
-        assert_eq!(c.extents, [1, 3, 1]);
+        // Vertical corridor cross-section matches the 2-cell opening span.
+        assert_eq!(c.extents, [2, 3, 2]);
         assert!(c.connectors.iter().any(|c| c.facing == ConnectorFacing::NegY));
         assert!(c.connectors.iter().any(|c| c.facing == ConnectorFacing::PosY));
     }
@@ -509,12 +514,13 @@ mod tests {
             };
             let level = generator::generate(&config).expect("generation should succeed");
 
-            // Check for vertical corridors (extent in Y > 1, extent in X and Z == 1).
+            // Vertical corridors have a 2×2 cross-section (the opening span)
+            // and run along Y.
             for idx in level.room_indices() {
                 let room = level.room(idx).unwrap();
                 if room.template.kind == TemplateKind::Corridor
-                    && room.template.extents[0] == 1
-                    && room.template.extents[2] == 1
+                    && room.template.extents[0] == 2
+                    && room.template.extents[2] == 2
                     && room.template.extents[1] >= 1
                 {
                     // Check if it has PosY/NegY connectors

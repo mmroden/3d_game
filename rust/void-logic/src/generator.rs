@@ -60,9 +60,17 @@ fn auto_connectors(ex: u32, ey: u32, ez: u32, rng: &mut SmallRng) -> Vec<Connect
         Connector { offset: [mid_x, 0, ez as i32 - 1], facing: PosZ, frame: FrameStyle::Door },
     ];
 
-    // All rooms get vertical connectors (frameless — no hatch mesh).
-    connectors.push(Connector { offset: [mid_x, (ey as i32) - 1, mid_z], facing: PosY, frame: FrameStyle::None });
-    connectors.push(Connector { offset: [mid_x, 0, mid_z], facing: NegY, frame: FrameStyle::None });
+    // Vertical connectors (frameless — no hatch mesh). The opening is
+    // `opening_span` cells wide, so it only fits with a floor border in
+    // rooms at least `span + 2` per side; smaller rooms connect
+    // horizontally only. The opening is centered, anchored at its min cell.
+    let v_span = PosY.opening_span();
+    if (ex as i32) >= v_span + 2 && (ez as i32) >= v_span + 2 {
+        let vx = ((ex as i32) - v_span) / 2;
+        let vz = ((ez as i32) - v_span) / 2;
+        connectors.push(Connector { offset: [vx, (ey as i32) - 1, vz], facing: PosY, frame: FrameStyle::None });
+        connectors.push(Connector { offset: [vx, 0, vz], facing: NegY, frame: FrameStyle::None });
+    }
 
     // Multi-story rooms get horizontal connectors at every story level.
     if ey > 1 {
@@ -236,9 +244,12 @@ mod tests {
     }
 
     #[test]
-    fn multi_story_rooms_have_vertical_connectors() {
+    fn rooms_at_least_4x4_have_vertical_connectors() {
+        // Vertical openings are 2×2 cells and need a 1-cell floor border,
+        // so only rooms ≥4×4 get them. Force ex,ez ≥ 4 here.
         let mut rng = SmallRng::seed_from_u64(42);
         let config = GeneratorConfig {
+            min_room_xz: 4,
             min_room_y: 2,
             max_room_y: 6,
             ..test_config(42)
@@ -247,7 +258,27 @@ mod tests {
             let room = generate_room(&mut rng, &config);
             let has_pos_y = room.connectors.iter().any(|c| c.facing == ConnectorFacing::PosY);
             let has_neg_y = room.connectors.iter().any(|c| c.facing == ConnectorFacing::NegY);
-            assert!(has_pos_y && has_neg_y);
+            assert!(has_pos_y && has_neg_y,
+                "rooms ≥4×4 must have vertical connectors, extents {:?}", room.extents);
+        }
+    }
+
+    #[test]
+    fn rooms_smaller_than_4x4_have_no_vertical_connectors() {
+        // A 2×2 opening can't fit a floor border in a 3×3 room, so these
+        // are skipped and connect horizontally only.
+        let mut rng = SmallRng::seed_from_u64(7);
+        let config = GeneratorConfig {
+            min_room_xz: 3,
+            max_room_xz: 3,
+            ..test_config(7)
+        };
+        for _ in 0..50 {
+            let room = generate_room(&mut rng, &config);
+            let has_vert = room.connectors.iter()
+                .any(|c| matches!(c.facing, ConnectorFacing::PosY | ConnectorFacing::NegY));
+            assert!(!has_vert,
+                "3×3 room should have no vertical connectors, extents {:?}", room.extents);
         }
     }
 
