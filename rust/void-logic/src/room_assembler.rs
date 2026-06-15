@@ -203,7 +203,6 @@ pub fn assemble_from_grid(
             }
             let (wall_pos, rot) = wall_placement(pos, facing);
             out.push(MeshPlacement { scene: wall_set.bottom.straight, position: wall_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
-            out.push(MeshPlacement { scene: wall_set.short_wall.straight, position: wall_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
             out.push(MeshPlacement { scene: wall_set.straight.wall, position: wall_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
             out.push(MeshPlacement { scene: wall_set.straight.ceiling, position: wall_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
         }
@@ -224,9 +223,6 @@ pub fn assemble_from_grid(
                 // Bottom layer corners
                 out.push(MeshPlacement { scene: wall_set.bottom.corner_inner, position: corner_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
                 out.push(MeshPlacement { scene: wall_set.bottom.corner_outer, position: corner_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
-                // ShortWall layer corners
-                out.push(MeshPlacement { scene: wall_set.short_wall.corner_inner, position: corner_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
-                out.push(MeshPlacement { scene: wall_set.short_wall.corner_outer, position: corner_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
                 // Wall layer corners
                 out.push(MeshPlacement { scene: wall_set.corner_inner.wall, position: corner_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
                 out.push(MeshPlacement { scene: wall_set.corner_outer.wall, position: corner_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
