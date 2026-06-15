@@ -121,3 +121,44 @@ fn rotate_y(x: f32, z: f32, theta: f32) -> (f32, f32) {
     (x * c + z * s, -x * s + z * c)
 }
 
+/// Completeness/assignment invariant: structural geometry is fixed, so
+/// every placement `assemble` emits is `Collision::Static`. The Godot
+/// shell turns each into a `StaticBody3D` with a mesh-derived collider —
+/// no structural mesh can be emitted without a collider intent.
+#[test]
+fn structural_assembly_is_all_static() {
+    let placements = assemble_default(&small_room(), &[], [0.0, 0.0, 0.0]);
+    assert!(!placements.is_empty(), "a sealed room should emit geometry");
+    for p in &placements {
+        assert_eq!(
+            p.collision,
+            Collision::Static,
+            "structural mesh {} must be Static, got {:?}",
+            p.scene,
+            p.collision,
+        );
+    }
+}
+
+/// The single shared prop classifier: loose debris tumbles (`Dynamic`),
+/// anchored equipment stays fixed (`Static`).
+#[test]
+fn for_prop_classifies_loose_as_dynamic_and_anchored_as_static() {
+    assert_eq!(
+        Collision::for_prop("res://props/Prop_Crate1.gltf"),
+        Collision::Dynamic,
+    );
+    assert_eq!(
+        Collision::for_prop("res://props/Prop_Barrel_Large.gltf"),
+        Collision::Dynamic,
+    );
+    assert_eq!(
+        Collision::for_prop("res://columns/Column_Astra.gltf"),
+        Collision::Static,
+    );
+    assert_eq!(
+        Collision::for_prop("res://props/Prop_Computer.gltf"),
+        Collision::Static,
+    );
+}
+

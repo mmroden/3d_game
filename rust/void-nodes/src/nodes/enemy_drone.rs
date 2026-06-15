@@ -1,23 +1,35 @@
 use godot::prelude::*;
 use godot::prelude::EulerOrder;
 use godot::classes::{
-    CharacterBody3D, ICharacterBody3D, PackedScene, ResourceLoader,
+    RigidBody3D, IRigidBody3D, PackedScene, ResourceLoader, PhysicsRayQueryParameters3D,
     GpuParticles3D, ParticleProcessMaterial, SphereMesh, StandardMaterial3D,
     MeshInstance3D, BoxMesh, Node3D,
 };
 
 use super::constants::{groups, scenes, signals};
+use super::enemy_bolt::EnemyBolt;
 use super::godot_util;
 use void_logic::enemy_ai::{DroneAi, DroneConfig, DroneState};
 use void_logic::audio_catalog::SfxEvent;
 use void_logic::enemy_type::EnemyType;
 use void_logic::newtypes::{Health, Damage};
 
-/// A hostile drone that chases and attacks the player.
+const BOLT_SPEED: f32 = 15.0;
+/// Clearance so a newborn bolt spawns clear of the firer's own hull.
+const MUZZLE_CLEARANCE: f32 = 0.6;
+/// Engine damping (≈ -ln(0.05/s) retention). The chase force is scaled by
+/// it so terminal cruise speed equals the AI's desired speed
+/// (`v* = force / (mass · damp)`).
+const ENEMY_LINEAR_DAMP: f32 = 3.0;
+
+/// A hostile drone that chases and attacks the player. Motion and
+/// collision are Godot/Jolt's (docs/architecture/physics_ownership.md):
+/// the drone chases with force; the engine integrates, damps, and
+/// resolves walls and impacts. We never set its velocity.
 #[derive(GodotClass)]
-#[class(base=CharacterBody3D)]
+#[class(base=RigidBody3D)]
 pub struct EnemyDrone {
-    base: Base<CharacterBody3D>,
+    base: Base<RigidBody3D>,
 
     #[export]
     enemy_type_id: i32,
@@ -33,14 +45,14 @@ pub struct EnemyDrone {
     damage: f32,
 
     ai: DroneAi,
-    player: Option<Gd<CharacterBody3D>>,
+    player: Option<Gd<Node3D>>,
     health_bar_bg: Option<Gd<MeshInstance3D>>,
     health_bar_fill: Option<Gd<MeshInstance3D>>,
 }
 
 #[godot_api]
-impl ICharacterBody3D for EnemyDrone {
-    fn init(base: Base<CharacterBody3D>) -> Self {
+impl IRigidBody3D for EnemyDrone {
+    fn init(base: Base<RigidBody3D>) -> Self {
         let config = DroneConfig::default();
         let ai = DroneAi::new(config);
         Self {
@@ -84,34 +96,48 @@ impl ICharacterBody3D for EnemyDrone {
             });
         }
 
-        self.base_mut().add_to_group(groups::ENEMIES);
+        // Engine owns motion: zero-g; damping is the decay; rotation is
+        // locked so impacts don't tumble the drone. We chase with force,
+        // never by setting velocity.
+        let mut base = self.base_mut();
+        base.set_gravity_scale(0.0);
+        base.set_linear_damp(ENEMY_LINEAR_DAMP);
+        base.set_can_sleep(false);
+        base.set_lock_rotation_enabled(true);
+        base.add_to_group(groups::ENEMIES);
+        drop(base);
 
-        // Find player via group
+        // Find player via group (the ship is a RigidBody3D; Node3D is
+        // enough for position and group queries).
         let tree = self.base().get_tree();
         let players = tree.get_nodes_in_group(groups::PLAYER);
         if let Some(player_node) = players.get(0) {
-            let typed: Gd<CharacterBody3D> = player_node.cast();
-            self.player = Some(typed);
+            self.player = Some(player_node.cast::<Node3D>());
         }
 
         self.create_health_bar();
     }
 
-    fn process(&mut self, _delta: f64) {
-        // Cosmetics only: motion belongs to the kinetic world (the
-        // level host pulls decide() each tick and syncs our position
-        // from snapshots).
+    fn physics_process(&mut self, delta: f64) {
         if self.ai.is_dead() {
             return;
         }
-        let Some(player) = &self.player else { return };
+        let Some(player) = self.player.clone() else { return };
         if !player.is_instance_valid() {
             return;
         }
+        let my_pos = self.base().get_global_position();
         let player_pos = player.get_global_position();
-        if self.base().get_global_position().distance_to(player_pos) > 0.1 {
-            self.safe_look_at(player_pos);
+        let has_sight = self.has_line_of_sight(my_pos, player_pos);
+        let (desired, should_fire) = self.decide(has_sight, my_pos, player_pos, delta as f32);
+        // Chase with force, not by setting velocity: scaled by damping so
+        // terminal speed equals the desired cruise (v* = force / (mass·damp)).
+        self.base_mut().apply_central_force(desired * ENEMY_LINEAR_DAMP);
+        if should_fire {
+            self.fire_bolt(my_pos, player_pos);
         }
+        // Health-bar billboard is a transform write, so it belongs in the
+        // physics tick (engine interpolation smooths it between frames).
         self.update_health_bar(player_pos);
     }
 }
@@ -140,12 +166,8 @@ impl EnemyDrone {
         }
     }
 
-    /// Per-tick decision, pulled by the level host: the desired cruise
-    /// velocity and whether to fire (the host spawns the bolt as a
-    /// ballistic world body). All positions are world-body positions
-    /// supplied by the host — render-interpolated node transforms are
-    /// never physics inputs.
-    pub fn decide(
+    /// Desired cruise velocity toward the player and whether to fire.
+    fn decide(
         &mut self,
         has_sight: bool,
         my_pos: Vector3,
@@ -176,9 +198,36 @@ impl EnemyDrone {
         (desired, should_fire)
     }
 
-    /// Damage carried by this enemy's bolts.
-    pub fn bolt_damage(&self) -> Damage {
-        Damage::new(self.damage)
+    /// Clear sight to the player: cast a ray and confirm the first thing
+    /// it hits is the player, not a wall or prop.
+    fn has_line_of_sight(&self, from: Vector3, to: Vector3) -> bool {
+        let Some(world) = self.base().get_world_3d() else { return false };
+        let Some(mut space) = world.get_direct_space_state() else { return false };
+        let Some(mut query) = PhysicsRayQueryParameters3D::create(from, to) else { return false };
+        query.set_exclude(&array![self.base().get_rid()]);
+        let result = space.intersect_ray(&query);
+        if result.is_empty() {
+            return true; // nothing between us
+        }
+        match result.get("collider") {
+            Some(collider) => collider
+                .to::<Gd<Node3D>>()
+                .is_in_group(groups::PLAYER),
+            None => true,
+        }
+    }
+
+    fn fire_bolt(&mut self, my_pos: Vector3, player_pos: Vector3) {
+        let Some(mut root) = godot_util::scene_root(self.base().get_tree()) else { return };
+        let to_player = player_pos - my_pos;
+        if to_player.length() < 0.01 {
+            return; // colocated with the target — no firing direction
+        }
+        let dir = to_player.normalized();
+        let muzzle = my_pos + dir * MUZZLE_CLEARANCE;
+        let mut bolt = EnemyBolt::new_alloc();
+        root.add_child(&bolt);
+        bolt.bind_mut().launch(muzzle, dir * BOLT_SPEED, self.damage);
     }
 
     fn on_death(&mut self) {
@@ -285,21 +334,6 @@ impl EnemyDrone {
             let callable = debris.callable("queue_free");
             timer.connect("timeout", &callable);
         }
-    }
-
-    /// look_at that skips when direction is colinear with UP (avoids Godot warning).
-    fn safe_look_at(&mut self, target: Vector3) {
-        let my_pos = self.base().get_global_position();
-        let diff = target - my_pos;
-        if diff.length() < 0.1 {
-            return;
-        }
-        let dir = diff.normalized();
-        // Colinear check: if direction is nearly parallel to UP, skip
-        if dir.cross(Vector3::UP).length() < 0.01 {
-            return;
-        }
-        self.base_mut().look_at(target);
     }
 
     fn create_health_bar(&mut self) {

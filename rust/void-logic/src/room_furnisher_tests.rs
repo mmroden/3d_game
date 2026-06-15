@@ -500,7 +500,7 @@ fn single_opening_always_passes() {
         position: [6.0, 0.0, 6.0], // center of 3x3 room at origin
         rotation_x: 0.0,
         rotation_y: 0.0,
-        loose: false,
+        collision: Collision::Static,
     };
     assert!(
         flight_paths_clear(&template, &active, &[block], 4.0),
@@ -518,9 +518,9 @@ fn blocking_prop_in_path_detected() {
     let blocking_scene = asset_catalog::CENTER_PROPS.iter()
         .find(|p| p.blocks_flight).unwrap().scene;
     let blocks = vec![
-        MeshPlacement { scene: blocking_scene, position: [6.0, 0.0, 2.0], rotation_x: 0.0, rotation_y: 0.0, loose: false },  // cell (1,0)
-        MeshPlacement { scene: blocking_scene, position: [6.0, 0.0, 6.0], rotation_x: 0.0, rotation_y: 0.0, loose: false },  // cell (1,1)
-        MeshPlacement { scene: blocking_scene, position: [6.0, 0.0, 10.0], rotation_x: 0.0, rotation_y: 0.0, loose: false }, // cell (1,2)
+        MeshPlacement { scene: blocking_scene, position: [6.0, 0.0, 2.0], rotation_x: 0.0, rotation_y: 0.0, collision: Collision::Static },  // cell (1,0)
+        MeshPlacement { scene: blocking_scene, position: [6.0, 0.0, 6.0], rotation_x: 0.0, rotation_y: 0.0, collision: Collision::Static },  // cell (1,1)
+        MeshPlacement { scene: blocking_scene, position: [6.0, 0.0, 10.0], rotation_x: 0.0, rotation_y: 0.0, collision: Collision::Static }, // cell (1,2)
     ];
     assert!(
         !flight_paths_clear(&template, &active, &blocks, 4.0),

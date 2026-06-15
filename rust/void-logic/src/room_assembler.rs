@@ -28,6 +28,37 @@ const FLOOR_CURVE: &str =
     "res://addons/quaternius/modularscifimegakit/platforms/Platform_Simple_Curve.gltf";
 
 
+/// How a placed mesh participates in the physics world. Every placement
+/// must declare one — there is no way to emit a renderable without a
+/// collision intent, so "a mesh with no collider" is unrepresentable.
+/// The Godot shell turns each variant into a body + collider (or none)
+/// at scene-build time; the engine owns the simulation from there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Collision {
+    /// Fixed structure and anchored equipment: a `StaticBody3D`, collider
+    /// derived from the mesh.
+    Static,
+    /// Loose props that float and tumble in zero-g: a `RigidBody3D`,
+    /// collider derived from the mesh.
+    Dynamic,
+    /// Decorative only — no collider (cables, holograms, light fixtures).
+    /// A deliberate, named choice, never an omission.
+    Passable,
+}
+
+impl Collision {
+    /// Classify a furnished prop: loose debris tumbles (`Dynamic`);
+    /// everything else the furnisher places is anchored equipment fixed
+    /// in place (`Static`).
+    pub fn for_prop(scene: &str) -> Collision {
+        if asset_catalog::is_loose_prop(scene) {
+            Collision::Dynamic
+        } else {
+            Collision::Static
+        }
+    }
+}
+
 /// A single mesh to place in the level.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MeshPlacement {
@@ -35,25 +66,10 @@ pub struct MeshPlacement {
     pub position: [f32; 3],
     pub rotation_x: f32,
     pub rotation_y: f32,
-    /// Loose props float freely in zero-g. Structural meshes and anchored
-    /// equipment stay fixed.
-    pub loose: bool,
+    /// How this mesh collides. Replaces the old `loose` flag: `Dynamic`
+    /// is the former `loose: true`; structure is `Static`.
+    pub collision: Collision,
 }
-
-/// An axis-aligned box collider for physics.
-/// `half_extents` is the half-size along each axis BEFORE rotation.
-/// `rotation_y` rotates the box around Y (same convention as MeshPlacement).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CollisionBox {
-    pub position: [f32; 3],
-    pub half_extents: [f32; 3],
-    pub rotation_y: f32,
-}
-
-/// Wall thickness for collision boxes (meters).
-const WALL_THICKNESS: f32 = 0.3;
-/// Floor/ceiling thickness for collision boxes (meters).
-const SLAB_THICKNESS: f32 = 0.2;
 
 // ── Corner offset geometry ──────────────────────────────────────────────
 
@@ -129,7 +145,7 @@ pub fn assemble_from_grid(
                 {
                     if frame == FrameStyle::Door {
                         let (door_pos, door_rot) = door_placement(pos, *facing, wall_set.tile_width);
-                        out.push(MeshPlacement { scene: door, position: door_pos, rotation_x: 0.0, rotation_y: door_rot, loose: false });
+                        out.push(MeshPlacement { scene: door, position: door_pos, rotation_x: 0.0, rotation_y: door_rot, collision: Collision::Static });
                     }
                 }
             }
@@ -176,10 +192,10 @@ pub fn assemble_from_grid(
                 continue;
             }
             let (wall_pos, rot) = wall_placement(pos, facing);
-            out.push(MeshPlacement { scene: wall_set.bottom.straight, position: wall_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
-            out.push(MeshPlacement { scene: wall_set.short_wall.straight, position: wall_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
-            out.push(MeshPlacement { scene: wall_set.straight.wall, position: wall_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
-            out.push(MeshPlacement { scene: wall_set.straight.ceiling, position: wall_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
+            out.push(MeshPlacement { scene: wall_set.bottom.straight, position: wall_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
+            out.push(MeshPlacement { scene: wall_set.short_wall.straight, position: wall_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
+            out.push(MeshPlacement { scene: wall_set.straight.wall, position: wall_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
+            out.push(MeshPlacement { scene: wall_set.straight.ceiling, position: wall_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
         }
 
         // Place corner pieces (5-layer stack) offset from cell center toward interior.
@@ -193,17 +209,17 @@ pub fn assemble_from_grid(
                 let [ox, oz] = corner_interior_offset(pair);
                 let corner_pos = [pos[0] + ox, pos[1], pos[2] + oz];
                 // Bottom layer corners
-                out.push(MeshPlacement { scene: wall_set.bottom.corner_inner, position: corner_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
-                out.push(MeshPlacement { scene: wall_set.bottom.corner_outer, position: corner_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
+                out.push(MeshPlacement { scene: wall_set.bottom.corner_inner, position: corner_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
+                out.push(MeshPlacement { scene: wall_set.bottom.corner_outer, position: corner_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
                 // ShortWall layer corners
-                out.push(MeshPlacement { scene: wall_set.short_wall.corner_inner, position: corner_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
-                out.push(MeshPlacement { scene: wall_set.short_wall.corner_outer, position: corner_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
+                out.push(MeshPlacement { scene: wall_set.short_wall.corner_inner, position: corner_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
+                out.push(MeshPlacement { scene: wall_set.short_wall.corner_outer, position: corner_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
                 // Wall layer corners
-                out.push(MeshPlacement { scene: wall_set.corner_inner.wall, position: corner_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
-                out.push(MeshPlacement { scene: wall_set.corner_outer.wall, position: corner_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
+                out.push(MeshPlacement { scene: wall_set.corner_inner.wall, position: corner_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
+                out.push(MeshPlacement { scene: wall_set.corner_outer.wall, position: corner_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
                 // Top layer corners
-                out.push(MeshPlacement { scene: wall_set.corner_inner.ceiling, position: corner_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
-                out.push(MeshPlacement { scene: wall_set.corner_outer.ceiling, position: corner_pos, rotation_x: 0.0, rotation_y: rot, loose: false });
+                out.push(MeshPlacement { scene: wall_set.corner_inner.ceiling, position: corner_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
+                out.push(MeshPlacement { scene: wall_set.corner_outer.ceiling, position: corner_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
                 if !has_corner {
                     first_corner_rot = rot;
                 }
@@ -218,9 +234,9 @@ pub fn assemble_from_grid(
                 cell.grid_pos[0], cy, cell.grid_pos[2])
         {
             if has_corner {
-                out.push(MeshPlacement { scene: wall_set.corner_inner.floor, position: pos, rotation_x: 0.0, rotation_y: first_corner_rot, loose: false });
+                out.push(MeshPlacement { scene: wall_set.corner_inner.floor, position: pos, rotation_x: 0.0, rotation_y: first_corner_rot, collision: Collision::Static });
             } else {
-                out.push(MeshPlacement { scene: wall_set.straight.floor, position: pos, rotation_x: 0.0, rotation_y: 0.0, loose: false });
+                out.push(MeshPlacement { scene: wall_set.straight.floor, position: pos, rotation_x: 0.0, rotation_y: 0.0, collision: Collision::Static });
             }
         }
 
@@ -233,9 +249,9 @@ pub fn assemble_from_grid(
         {
             let ceiling_pos = [pos[0], pos[1] + story_height, pos[2]];
             if has_corner {
-                out.push(MeshPlacement { scene: wall_set.corner_inner.floor, position: ceiling_pos, rotation_x: PI, rotation_y: first_corner_rot - FRAC_PI_2, loose: false });
+                out.push(MeshPlacement { scene: wall_set.corner_inner.floor, position: ceiling_pos, rotation_x: PI, rotation_y: first_corner_rot - FRAC_PI_2, collision: Collision::Static });
             } else {
-                out.push(MeshPlacement { scene: wall_set.straight.floor, position: ceiling_pos, rotation_x: PI, rotation_y: 0.0, loose: false });
+                out.push(MeshPlacement { scene: wall_set.straight.floor, position: ceiling_pos, rotation_x: PI, rotation_y: 0.0, collision: Collision::Static });
             }
         }
     }
@@ -300,98 +316,6 @@ pub(crate) fn door_placement(cell_pos: [f32; 3], facing: ConnectorFacing, cell_s
     }
 }
 
-/// Generate collision boxes for a room's sealed boundaries, floor, and ceiling.
-pub fn collision_boxes(
-    template: &RoomTemplate,
-    active_connectors: &[Connector],
-    world_origin: [f32; 3],
-    wall_set: &WallSet,
-) -> Vec<CollisionBox> {
-    let grid = CellGrid::new(template, active_connectors, world_origin, wall_set.tile_width);
-    collision_boxes_from_grid(&grid, template, active_connectors, wall_set)
-}
-
-/// Generate collision boxes from a pre-built cell grid.
-pub fn collision_boxes_from_grid(
-    grid: &CellGrid,
-    template: &RoomTemplate,
-    active_connectors: &[Connector],
-    wall_set: &WallSet,
-) -> Vec<CollisionBox> {
-    let mut out = Vec::new();
-    let ey = grid.extents[1] as i32;
-    let half_cell = wall_set.tile_width / 2.0;
-    let story_height = wall_set.story_height;
-    let half_height = story_height / 2.0;
-
-    for cell in grid.cells() {
-        let pos = cell.world_center;
-        let cy = cell.grid_pos[1];
-
-        // XZ wall colliders on sealed faces.
-        for &facing in &cell.sealed_faces {
-            match facing {
-                ConnectorFacing::NegX => {
-                    out.push(CollisionBox {
-                        position: [pos[0] - half_cell, pos[1] + half_height, pos[2]],
-                        half_extents: [WALL_THICKNESS / 2.0, half_height, half_cell],
-                        rotation_y: 0.0,
-                    });
-                }
-                ConnectorFacing::PosX => {
-                    out.push(CollisionBox {
-                        position: [pos[0] + half_cell, pos[1] + half_height, pos[2]],
-                        half_extents: [WALL_THICKNESS / 2.0, half_height, half_cell],
-                        rotation_y: 0.0,
-                    });
-                }
-                ConnectorFacing::NegZ => {
-                    out.push(CollisionBox {
-                        position: [pos[0], pos[1] + half_height, pos[2] - half_cell],
-                        half_extents: [half_cell, half_height, WALL_THICKNESS / 2.0],
-                        rotation_y: 0.0,
-                    });
-                }
-                ConnectorFacing::PosZ => {
-                    out.push(CollisionBox {
-                        position: [pos[0], pos[1] + half_height, pos[2] + half_cell],
-                        half_extents: [half_cell, half_height, WALL_THICKNESS / 2.0],
-                        rotation_y: 0.0,
-                    });
-                }
-                ConnectorFacing::NegY | ConnectorFacing::PosY => {}
-            }
-        }
-
-        // Floor slab.
-        let is_bottom = cy == 0;
-        if is_bottom
-            && !is_active_connector(template, active_connectors, ConnectorFacing::NegY,
-                cell.grid_pos[0], cy, cell.grid_pos[2])
-        {
-            out.push(CollisionBox {
-                position: [pos[0], pos[1] - SLAB_THICKNESS / 2.0, pos[2]],
-                half_extents: [half_cell, SLAB_THICKNESS / 2.0, half_cell],
-                rotation_y: 0.0,
-            });
-        }
-
-        // Ceiling slab.
-        let is_top = cy == ey - 1;
-        if is_top
-            && !is_active_connector(template, active_connectors, ConnectorFacing::PosY,
-                cell.grid_pos[0], cy, cell.grid_pos[2])
-        {
-            out.push(CollisionBox {
-                position: [pos[0], pos[1] + story_height + SLAB_THICKNESS / 2.0, pos[2]],
-                half_extents: [half_cell, SLAB_THICKNESS / 2.0, half_cell],
-                rotation_y: 0.0,
-            });
-        }
-    }
-
-    out
-}
 
 #[cfg(test)]
 #[path = "room_assembler_tests/mod.rs"]

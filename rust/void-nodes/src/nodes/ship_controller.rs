@@ -1,6 +1,6 @@
 use godot::prelude::*;
 use godot::classes::{
-    CharacterBody3D, ICharacterBody3D, PhysicsRayQueryParameters3D,
+    RigidBody3D, IRigidBody3D, PhysicsDirectBodyState3D, PhysicsRayQueryParameters3D,
     MeshInstance3D,
     GpuParticles3D, SphereMesh, StandardMaterial3D,
     Input,
@@ -9,7 +9,6 @@ use godot::classes::{
 use super::constants::{actions, groups, methods, signals};
 use super::godot_util;
 
-use void_logic::kinetics::{AngularState, ControlInput, Retention, SpeedLimits};
 use void_logic::laser::LaserLevel;
 use void_logic::loadout::Loadout;
 use void_logic::power_routing::PowerMode;
@@ -17,39 +16,28 @@ use void_logic::upgrade::{Upgrade, UpgradeKind};
 use void_logic::audio_catalog::SfxEvent;
 use void_logic::weapon::{WeaponState, FireResult};
 
-/// Hard caps on ship velocity, enforced inside the kinetic core.
-const SHIP_SPEED_LIMITS: SpeedLimits = SpeedLimits {
-    linear: 50.0,
-    angular: 5.0,
-};
-
-fn to_array(v: Vector3) -> [f32; 3] {
-    [v.x, v.y, v.z]
-}
-
-fn to_vector(a: [f32; 3]) -> Vector3 {
-    Vector3::new(a[0], a[1], a[2])
-}
-
-/// Check if all quaternion components are finite.
-fn is_quat_finite(q: Quaternion) -> bool {
-    q.x.is_finite() && q.y.is_finite() && q.z.is_finite() && q.w.is_finite()
-}
-
+/// Commanded angular speed (rad/s) at full stick (before rotation
+/// upgrades). A feel value to tune.
+const TURN_RATE: f32 = 2.5;
+/// Stiffness of the steering controller: how hard torque drives spin
+/// toward the commanded rate. Higher = snappier. A feel value to tune.
+const TURN_GAIN: f32 = 12.0;
 
 /// Wing offset from ship center (local X axis), in meters.
 const WING_OFFSET: f32 = 0.3;
 
-/// 6DOF flight controller for the player ship.
-/// Dual wing-mounted hitscan lasers, upgrade loadout.
+/// 6DOF flight controller for the player ship. Per the simulation idiom
+/// (docs/architecture/physics_ownership.md): the engine owns motion,
+/// collision, decay and rest; we only supply intent inside
+/// `integrate_forces` — thrust as force, steering as torque toward a
+/// commanded angular velocity — and let the engine integrate and damp.
+/// `angular_damp > 0` is the no-infinite-spin guarantee. Lasers stay
+/// hitscan (in `physics_process`, where space queries are legal).
 #[derive(GodotClass)]
-#[class(base=CharacterBody3D)]
+#[class(base=RigidBody3D)]
 pub struct ShipController {
-    base: Base<CharacterBody3D>,
+    base: Base<RigidBody3D>,
 
-    /// Angular motion only: orientation is view/control-side (the
-    /// camera is the ship). Linear motion lives in the kinetic world.
-    angular: AngularState,
     weapon: WeaponState,
     beam_nodes: Vec<Gd<MeshInstance3D>>,
     loadout: Loadout,
@@ -58,11 +46,10 @@ pub struct ShipController {
 }
 
 #[godot_api]
-impl ICharacterBody3D for ShipController {
-    fn init(base: Base<CharacterBody3D>) -> Self {
+impl IRigidBody3D for ShipController {
+    fn init(base: Base<RigidBody3D>) -> Self {
         Self {
             base,
-            angular: AngularState::new(),
             weapon: WeaponState::default(),
             beam_nodes: Vec::new(),
             loadout: Loadout::new(),
@@ -73,8 +60,34 @@ impl ICharacterBody3D for ShipController {
 
     fn ready(&mut self) {
         self.base_mut().add_to_group(groups::PLAYER);
+        {
+            let mut base = self.base_mut();
+            base.set_gravity_scale(0.0);
+            base.set_can_sleep(false);
+            // Continuous collision so fast flight never tunnels through walls.
+            base.set_use_continuous_collision_detection(true);
+        }
+        // Decay is the engine's: damping = -ln(retention). Sets the
+        // no-infinite-spin invariant (angular_damp > 0).
+        self.apply_envelope();
     }
 
+    /// Flight runs in `integrate_forces`, the engine's hook for safely
+    /// touching physics state. Forces/torque only — never velocity writes
+    /// (the one exception, stabilize, is a deliberate discrete reset).
+    fn integrate_forces(&mut self, state: Option<Gd<PhysicsDirectBodyState3D>>) {
+        let Some(mut state) = state else {
+            return;
+        };
+        self.fly(&mut state);
+    }
+
+    /// Weapons + power routing. Hitscan needs the space unlocked, which is
+    /// only true in `physics_process` — so it lives here, not in
+    /// `integrate_forces`.
+    fn physics_process(&mut self, delta: f64) {
+        self.handle_weapons_and_power(delta as f32);
+    }
 }
 
 #[godot_api]
@@ -85,12 +98,23 @@ impl ShipController {
     #[signal]
     fn power_mode_changed(mode: i32);
 
-    /// Per-tick control, pulled by the level host: reads input,
-    /// integrates orientation locally (the camera is the ship — its
-    /// rotation feel keeps the exact per-second math), fires weapons,
-    /// and returns world-space thrust for the kinetic world, which
-    /// owns all linear motion, wall response, and ram contacts.
-    pub fn control_input(&mut self, delta: f32) -> ControlInput {
+    /// Set linear/angular damping from the loadout's per-second
+    /// `Retention` (`damp = -ln(retention)`). The engine's damping *is*
+    /// the project's retention decay; `angular_damp > 0` is the
+    /// no-infinite-spin invariant. Re-applied whenever the loadout changes.
+    fn apply_envelope(&mut self) {
+        let damp = (-self.loadout.damping().factor().ln()).max(0.0);
+        let mut base = self.base_mut();
+        base.set_linear_damp(damp);
+        base.set_angular_damp(damp);
+    }
+
+    /// Flight intent, applied to the physics state inside
+    /// `integrate_forces`. Thrust is a force; steering is torque toward a
+    /// commanded angular velocity (zero when the stick is centered, so the
+    /// engine drives spin back to rest — no uncommanded tumble). We never
+    /// assign velocity to steer; the lone exception is stabilize.
+    fn fly(&mut self, state: &mut Gd<PhysicsDirectBodyState3D>) {
         let input = Input::singleton();
 
         let forward = input.get_action_strength(actions::MOVE_FORWARD)
@@ -99,7 +123,6 @@ impl ShipController {
             - input.get_action_strength(actions::MOVE_LEFT);
         let vertical = input.get_action_strength(actions::MOVE_UP)
             - input.get_action_strength(actions::MOVE_DOWN);
-
         let pitch = input.get_action_strength(actions::LOOK_UP)
             - input.get_action_strength(actions::LOOK_DOWN);
         let yaw = input.get_action_strength(actions::LOOK_LEFT)
@@ -107,12 +130,40 @@ impl ShipController {
         let roll = input.get_action_strength(actions::ROLL_RIGHT)
             - input.get_action_strength(actions::ROLL_LEFT);
 
-        // Stabilizer: kill angular velocity on L1/Tab
-        if input.is_action_pressed(actions::STABILIZE) {
-            self.angular.halt();
+        let basis = state.get_transform().basis;
+
+        // Thrust: a force along the hull axes. The engine integrates it
+        // and (via linear_damp) bleeds it back toward rest — terminal
+        // cruise speed ≈ thrust / (mass · linear_damp).
+        let thrust_dir =
+            basis.col_c() * (-forward) + basis.col_a() * strafe + basis.col_b() * vertical;
+        if thrust_dir.length() > 0.01 {
+            let force = thrust_dir.normalized()
+                * (self.loadout.thrust_power() * self.power_mode.thrust_multiplier());
+            state.apply_central_force_ex().force(force).done();
         }
 
-        // Power routing: toggle on press
+        // Steering: torque toward a commanded angular velocity. Rotation
+        // upgrades scale the rate; the controller drives spin toward the
+        // command (and to zero on release).
+        let turn_mult = self.loadout.rotation_speed() / self.loadout.base.rotation_speed;
+        let command = basis * Vector3::new(pitch, yaw, roll) * (TURN_RATE * turn_mult);
+        let torque = (command - state.get_angular_velocity()) * TURN_GAIN;
+        state.apply_torque(torque);
+
+        // Stabilize: the one allowed direct velocity write — a deliberate,
+        // discrete hard stop on the spin.
+        if input.is_action_pressed(actions::STABILIZE) {
+            state.set_angular_velocity(Vector3::ZERO);
+        }
+    }
+
+    /// Weapons and power routing — runs in `physics_process` because
+    /// hitscan needs the physics space unlocked.
+    fn handle_weapons_and_power(&mut self, delta: f32) {
+        let input = Input::singleton();
+
+        // Power routing: toggle on press.
         let old_mode = self.power_mode;
         if input.is_action_just_pressed(actions::ROUTE_SHIELDS) {
             self.power_mode = if self.power_mode == PowerMode::ShieldBoost {
@@ -134,35 +185,7 @@ impl ShipController {
                 .emit_signal(signals::POWER_MODE_CHANGED, &[Variant::from(mode_val)]);
         }
 
-        let basis = self.base().get_transform().basis;
-        let thrust = basis.col_c() * (-forward) + basis.col_a() * strafe + basis.col_b() * vertical;
-
-        let effective_thrust = self.loadout.thrust_power() * self.power_mode.thrust_multiplier();
-        let effective_rotation = self.loadout.rotation_speed();
-
-        // Angular integration stays local and exact.
-        self.angular.step(
-            to_array(Vector3::new(pitch, yaw, roll) * effective_rotation),
-            self.loadout.damping(),
-            SHIP_SPEED_LIMITS.angular,
-            delta,
-        );
-
-        let rot = to_vector(self.angular.velocity()) * delta;
-
-        // Quaternion-based rotation: compose pitch/yaw/roll independently
-        // then apply to current orientation. Avoids gimbal lock and
-        // frame-of-reference contamination from sequential rotate_x/y/z.
-        let local_rotation = Quaternion::from_axis_angle(Vector3::RIGHT, rot.x)
-            * Quaternion::from_axis_angle(Vector3::UP, rot.y)
-            * Quaternion::from_axis_angle(Vector3::BACK, rot.z);
-        let current_quat = self.base().get_quaternion();
-        let new_quat = (current_quat * local_rotation).normalized();
-        if is_quat_finite(new_quat) {
-            self.base_mut().set_quaternion(new_quat);
-        }
-
-        // --- Weapon ---
+        // Weapon.
         self.weapon.fire_rate = self.loadout.fire_rate() * self.power_mode.fire_rate_multiplier();
         self.weapon.damage = void_logic::newtypes::Damage::new(self.laser_level.damage());
         self.weapon.tick(delta);
@@ -173,17 +196,6 @@ impl ShipController {
                 self.fire_dual_lasers(damage.as_f32());
             }
         }
-
-        ControlInput {
-            thrust: to_array(thrust * effective_thrust),
-            torque: [0.0; 3],
-        }
-    }
-
-    /// The ship's motion envelope for the kinetic world (retention
-    /// changes with Stability upgrades mid-run).
-    pub fn envelope(&self) -> (Retention, SpeedLimits) {
-        (self.loadout.damping(), SHIP_SPEED_LIMITS)
     }
 
     /// Variant-boundary wrapper: the one f32→Damage conversion for
@@ -213,6 +225,7 @@ impl ShipController {
         self.loadout = Loadout::new();
         self.laser_level = LaserLevel::Red;
         self.power_mode = PowerMode::default();
+        self.apply_envelope();
     }
 
     #[func]
@@ -245,6 +258,8 @@ impl ShipController {
         };
         godot_print!("Applied upgrade: {} (x{:.2})", upgrade.name, upgrade.multiplier);
         self.loadout.add_upgrade(upgrade);
+        // Stability upgrades change retention → re-derive engine damping.
+        self.apply_envelope();
     }
 
     fn fire_dual_lasers(&mut self, damage: f32) {

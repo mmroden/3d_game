@@ -2,7 +2,7 @@
 
 use crate::level_graph::LevelGraph;
 use crate::seed::Seed;
-use crate::room_assembler::{CollisionBox, MeshPlacement};
+use crate::room_assembler::MeshPlacement;
 use crate::room_furnisher::{LightAccent, LightSource};
 
 /// Axis-aligned world bounds of a room plus its spatial adjacency —
@@ -66,7 +66,6 @@ pub struct RoomAssembly {
     pub meshes: Vec<MeshPlacement>,
     pub lights: Vec<LightSource>,
     pub enemy_positions: Vec<[f32; 3]>,
-    pub colliders: Vec<CollisionBox>,
     pub bounds: RoomBounds,
 }
 
@@ -137,13 +136,6 @@ pub fn spawn_list_full(
             theme.wall_set,
         );
 
-        let colliders = crate::room_assembler::collision_boxes_from_grid(
-            &grid,
-            &room.template,
-            &active,
-            theme.wall_set,
-        );
-
         let room_seed = seed.value().wrapping_add(room_idx as u64).wrapping_mul(2654435761);
         grid.populate(theme, room_seed);
         meshes.extend(grid.prop_placements());
@@ -165,18 +157,24 @@ pub fn spawn_list_full(
             }
         }
 
-        // World bounds = union of this room's collider AABBs. Collider
-        // `rotation_y` is ignored: the unrotated extents still enclose
-        // the flyable interior, which is all a point-in-room test needs.
+        // World bounds = union of this room's cell AABBs (each cell spans
+        // [floor, floor + story_height] in Y, ±half-cell in XZ). A
+        // point-in-room test only needs to enclose the flyable interior.
+        let half_cell = cell_size / 2.0;
         let mut min = [f32::INFINITY; 3];
         let mut max = [f32::NEG_INFINITY; 3];
-        for c in &colliders {
-            for a in 0..3 {
-                min[a] = min[a].min(c.position[a] - c.half_extents[a]);
-                max[a] = max[a].max(c.position[a] + c.half_extents[a]);
-            }
+        let mut any = false;
+        for cell in grid.cells() {
+            any = true;
+            let c = cell.world_center;
+            min[0] = min[0].min(c[0] - half_cell);
+            max[0] = max[0].max(c[0] + half_cell);
+            min[1] = min[1].min(c[1]);
+            max[1] = max[1].max(c[1] + story_height);
+            min[2] = min[2].min(c[2] - half_cell);
+            max[2] = max[2].max(c[2] + half_cell);
         }
-        if colliders.is_empty() {
+        if !any {
             min = origin;
             max = origin;
         }
@@ -185,7 +183,6 @@ pub fn spawn_list_full(
             meshes,
             lights,
             enemy_positions,
-            colliders,
             bounds: RoomBounds {
                 min,
                 max,

@@ -1,5 +1,5 @@
-use crate::asset_catalog::{self, WALL_ADJACENT_PROPS, CENTER_PROPS, CORNER_PROPS};
-use crate::room_assembler::MeshPlacement;
+use crate::asset_catalog::{WALL_ADJACENT_PROPS, CENTER_PROPS, CORNER_PROPS};
+use crate::room_assembler::{Collision, MeshPlacement};
 use crate::room_template::{Connector, ConnectorFacing, RoomTemplate};
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
@@ -82,7 +82,7 @@ pub fn furnish(
                                 position: [cell_center_x + offset_x, y, cell_center_z + offset_z],
                                 rotation_x: 0.0,
                                 rotation_y: rot,
-                                loose: asset_catalog::is_loose_prop(prop.scene),
+                                collision: Collision::for_prop(prop.scene),
                             });
                         }
                     }
@@ -97,7 +97,7 @@ pub fn furnish(
                             position: [cell_center_x, y, cell_center_z],
                             rotation_x: 0.0,
                             rotation_y: 0.0,
-                            loose: asset_catalog::is_loose_prop(prop.scene),
+                            collision: Collision::for_prop(prop.scene),
                         });
                     }
                 }
@@ -112,7 +112,7 @@ pub fn furnish(
                             position: [cell_center_x, y, cell_center_z],
                             rotation_x: 0.0,
                             rotation_y: 0.0,
-                            loose: asset_catalog::is_loose_prop(prop.scene),
+                            collision: Collision::for_prop(prop.scene),
                         });
                     }
                 }
@@ -463,7 +463,7 @@ pub fn light_fixtures(
                 ],
                 rotation_x: 0.0,
                 rotation_y: 0.0,
-                loose: false,
+                collision: Collision::Passable,
             };
 
             let state = LightState::from_roll(ambiance.random_range(0.0..1.0));
