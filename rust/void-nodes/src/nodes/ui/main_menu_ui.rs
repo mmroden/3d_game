@@ -131,7 +131,13 @@ impl MainMenuUI {
     }
 
     fn build_ui(&mut self) {
-        let (panel, mut vbox) = menu_panel::create_menu_panel();
+        // Dark overlay + a low panel so the showcase ship (and, later, live
+        // action) shows above the menu — the same framing as the ship-select
+        // and bestiary screens.
+        let overlay = menu_panel::create_showcase_overlay();
+        self.base_mut().add_child(&overlay);
+        let (mut panel, mut vbox) = menu_panel::create_menu_panel();
+        menu_panel::seat_panel_low(&mut panel);
 
         // Title
         let mut title = Label::new_alloc();

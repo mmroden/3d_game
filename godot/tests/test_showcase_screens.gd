@@ -35,6 +35,25 @@ func test_showcase_sits_in_front_of_the_camera():
 	assert_lt(d, 12.0,
 		"the showcase must be parked in front of the camera, not off in the void")
 
+func test_main_menu_panel_sits_low_so_action_shows_above_it():
+	# The menu panel must be seated in the lower half (like ship-select and the
+	# bestiary), leaving the showcase ship — and future live action — visible in
+	# the upper-middle rather than covered by a centered panel.
+	var ui = main.get_node("MainMenuUI")
+	var panel = null
+	for c in ui.get_children():
+		if c is PanelContainer:
+			panel = c
+			break
+	assert_not_null(panel, "main menu must have a panel")
+	# Bottom-anchored (CENTER_BOTTOM), the same framing as ship-select and the
+	# bestiary, so the showcase shows above it. The anchor is the robust signal;
+	# pixel geometry is unreliable in the tiny headless viewport.
+	assert_almost_eq(panel.anchor_top, 1.0, 0.01,
+		"main menu panel must be bottom-anchored so the action shows above it")
+	assert_almost_eq(panel.anchor_bottom, 1.0, 0.01,
+		"main menu panel must be bottom-anchored")
+
 func test_ship_select_shows_the_showcase_in_a_backdrop_room():
 	var gm = main.get_node("GameManager")
 	gm.start_new_game()  # MainMenu -> ShipSelect, builds the backdrop room

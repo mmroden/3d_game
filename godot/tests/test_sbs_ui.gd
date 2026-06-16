@@ -39,7 +39,9 @@ func test_all_ui_layers_render_into_ui_viewport():
 # --- Menu centering ---
 
 func test_menu_panels_are_centered():
-	var menus = ["MainMenuUI", "PauseMenuUI"]
+	# The main menu is deliberately bottom-seated now (showcase shows above it —
+	# see test_showcase_screens.gd); only the modal pause menu stays centered.
+	var menus = ["PauseMenuUI"]
 	for menu_name in menus:
 		var panel = _find_panel_container(_main.get_node(menu_name))
 		if panel == null:

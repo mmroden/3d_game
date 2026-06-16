@@ -2,7 +2,6 @@ use godot::prelude::*;
 use godot::classes::{
     CanvasLayer, ICanvasLayer, Label, Control,
     Engine, Input,
-    control::{LayoutPreset, GrowDirection},
 };
 
 use super::menu_panel;
@@ -97,9 +96,7 @@ impl ShipSelectUI {
         let (mut panel, mut vbox) = menu_panel::create_menu_panel();
         // Sit the loadout panel low so the rotating ship stays clear in the
         // middle of the screen, rather than centred behind the panel.
-        panel.set_anchors_preset(LayoutPreset::CENTER_BOTTOM);
-        panel.set_v_grow_direction(GrowDirection::BEGIN);
-        panel.set_offset(godot::builtin::Side::BOTTOM, -50.0);
+        menu_panel::seat_panel_low(&mut panel);
 
         let mut title = Label::new_alloc();
         title.set_text("SHIP LOADOUT");

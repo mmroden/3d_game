@@ -2,7 +2,6 @@ use godot::prelude::*;
 use godot::classes::{
     CanvasLayer, ICanvasLayer, Label, Control,
     Engine, Input,
-    control::{LayoutPreset, GrowDirection},
     text_server::AutowrapMode,
 };
 
@@ -67,9 +66,7 @@ impl BestiaryUI {
         let (mut panel, mut vbox) = menu_panel::create_menu_panel();
         // Sit the panel low so the spinning subject stays clear in the middle,
         // matching the loadout screen's framing.
-        panel.set_anchors_preset(LayoutPreset::CENTER_BOTTOM);
-        panel.set_v_grow_direction(GrowDirection::BEGIN);
-        panel.set_offset(godot::builtin::Side::BOTTOM, -50.0);
+        menu_panel::seat_panel_low(&mut panel);
 
         let mut position_label = Label::new_alloc();
         position_label.set_text(&position.to_string());
