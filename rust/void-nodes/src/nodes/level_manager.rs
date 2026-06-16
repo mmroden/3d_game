@@ -175,6 +175,14 @@ impl LevelManager {
         self.update_room_culling(arr(point));
     }
 
+    /// Test seam: how many blinking light fixtures the host is tracking. Lets a
+    /// test confirm there are handles to strand before exercising the per-frame
+    /// flicker against freed lights.
+    #[func]
+    pub fn blinking_light_count(&self) -> i64 {
+        self.blinking_lights.len() as i64
+    }
+
     /// Build a single room for use as a menu/loadout backdrop: run the real
     /// generator for one room, then strip everything that isn't room geometry
     /// (enemies, loot, portal) so only the quiet room remains. The generation
@@ -519,8 +527,13 @@ impl LevelManager {
         }
         self.current_room = Some(current);
         let visible = level_assembly::visible_rooms(current, &self.room_bounds);
-        for (i, node) in self.room_nodes.iter().enumerate() {
-            node.clone().set_visible(visible.contains(&i));
+        // Skip any room freed out from under us (keeping the index aligned with
+        // room_bounds), and set visibility on the handle in place — never clone
+        // a stored handle, since a freed one is a use-after-free panic.
+        for (i, node) in self.room_nodes.iter_mut().enumerate() {
+            if node.is_instance_valid() {
+                node.set_visible(visible.contains(&i));
+            }
         }
     }
 
@@ -530,12 +543,16 @@ impl LevelManager {
     fn update_blinking_lights(&mut self, delta: f32) {
         self.blink_time += delta;
         let t = self.blink_time;
-        for (i, (light, base)) in self.blinking_lights.iter().enumerate() {
+        // A fixture can be freed out from under us — a regen, or GameManager
+        // clearing our children, frees the rooms while we still hold light
+        // handles. Drop the dead ones, and mutate the live ones in place rather
+        // than cloning the handle: cloning a freed `Gd` is a use-after-free that
+        // panicked here every frame.
+        self.blinking_lights.retain(|(light, _)| light.is_instance_valid());
+        for (i, (light, base)) in self.blinking_lights.iter_mut().enumerate() {
             let phase = i as f32 * 0.7;
             let lit = (t * 1.7 + phase).sin() > -0.55;
-            light
-                .clone()
-                .set_param(godot::classes::light_3d::Param::ENERGY, if lit { *base } else { 0.0 });
+            light.set_param(godot::classes::light_3d::Param::ENERGY, if lit { *base } else { 0.0 });
         }
     }
 
