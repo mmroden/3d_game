@@ -2,9 +2,8 @@ use godot::prelude::*;
 use godot::classes::{
     RigidBody3D, IRigidBody3D, PhysicsDirectBodyState3D, PhysicsRayQueryParameters3D,
     MeshInstance3D, Camera3D, Node3D, CollisionShape3D, CapsuleShape3D, OmniLight3D,
-    PackedScene, ResourceLoader,
     GpuParticles3D, SphereMesh, StandardMaterial3D,
-    Input, light_3d,
+    Input,
 };
 
 use super::constants::{actions, groups, methods, scenes, signals};
@@ -43,9 +42,6 @@ const SHAKE_AMP: f32 = 0.25;
 /// Target length (longest dimension) of the player ship, in world units.
 /// The model is auto-scaled to this regardless of its native size.
 const TARGET_SHIP_LENGTH: f32 = 2.0;
-/// Yaw applied to the imported model so its nose points along the ship's
-/// forward (-Z). This model is modelled facing backward, so it needs a half turn.
-const SHIP_MODEL_YAW: f32 = std::f32::consts::PI;
 /// Flight collider capsule, in world units (independent of the model's scale).
 /// Tighter than the visual hull so the ship slides through doorways.
 const SHIP_COLLIDER_RADIUS: f32 = 0.45;
@@ -94,9 +90,9 @@ pub struct ShipController {
     /// The ship model node — hidden in cockpit view (you look out of it),
     /// shown in chase view.
     ship_model: Option<Gd<Node3D>>,
-    /// Coloured accent light on the ship model (the player's chosen colour).
+    /// Color accent light on the ship model (the player's chosen color).
     color_glow: Option<Gd<OmniLight3D>>,
-    /// Flight-speed multiplier from the chosen ship colour.
+    /// Flight-speed multiplier from the chosen ship color.
     ship_thrust_mul: f32,
 }
 
@@ -221,31 +217,23 @@ impl ShipController {
         }
     }
 
-    /// Apply the player's chosen ship colour (accent glow) and its flight-speed
-    /// multiplier. Called by GameManager when the ship colour is chosen/synced.
+    /// Apply the player's chosen ship color (accent glow) and its flight-speed
+    /// multiplier. Called by GameManager when the ship color is chosen/synced.
     #[func]
     pub fn configure_ship(&mut self, color: Color, thrust_mul: f32) {
         self.ship_thrust_mul = thrust_mul;
-        if let Some(glow) = &mut self.color_glow {
-            if glow.is_instance_valid() {
-                glow.set_color(Color::from_rgb(color.r, color.g, color.b));
-            }
-        }
+        godot_util::recolor_glow(&mut self.color_glow, color);
     }
 
-    /// Instance the ship model under the Player, fit the collision box to it,
-    /// and attach the colour accent light. The model is loaded in code so the
-    /// player ship and the menu showcase share one source of truth.
+    /// Build the player ship: the shared model helper, a capsule collider, and
+    /// the color accent light.
     fn spawn_ship_model(&mut self) {
-        let Some(scene) = ResourceLoader::singleton().load(scenes::SHIP_MODEL) else { return };
-        let Ok(packed) = scene.try_cast::<PackedScene>() else { return };
-        let Some(instance) = packed.instantiate() else { return };
-        let mut model: Gd<Node3D> = instance.cast();
-        model.set_name("Model");
-        self.base_mut().add_child(&model);
-        // Auto-scale, then face the nose along the ship's forward.
-        godot_util::fit_model_to_length(&mut model, TARGET_SHIP_LENGTH);
-        model.rotate_y(SHIP_MODEL_YAW);
+        let mut parent: Gd<Node3D> = self.base().clone().upcast();
+        let Some(mut model) =
+            godot_util::spawn_fitted_model(&mut parent, scenes::SHIP_MODEL, TARGET_SHIP_LENGTH)
+        else {
+            return;
+        };
         self.ship_model = Some(model.clone());
 
         // Flight collider: a capsule laid along the hull. It's rounded, so it
@@ -265,14 +253,9 @@ impl ShipController {
             shape_node.set_position(Vector3::ZERO);
         }
 
-        // Colour accent light (Standard until GameManager pushes the choice).
+        // Color accent light (Standard until GameManager pushes the choice).
         let c = ShipColor::default().color();
-        let mut light = OmniLight3D::new_alloc();
-        light.set_color(Color::from_rgb(c[0], c[1], c[2]));
-        light.set_param(light_3d::Param::ENERGY, 2.0);
-        light.set_param(light_3d::Param::RANGE, 6.0);
-        model.add_child(&light);
-        self.color_glow = Some(light);
+        self.color_glow = Some(godot_util::attach_glow_light(&mut model, &c, 2.0, 6.0));
     }
 
     /// Place the camera for the current view mode, and show the ship model only

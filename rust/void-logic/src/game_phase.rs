@@ -8,7 +8,7 @@ pub enum GamePhase {
     LevelComplete,
     KillSummary,
     Shop,
-    /// Between-level (and new-game) screen to pick the ship colour/loadout.
+    /// Between-level (and new-game) screen to pick the ship color/loadout.
     ShipSelect,
     Death,
 }
@@ -43,7 +43,7 @@ impl GamePhase {
                 | (GamePhase::LevelComplete, GamePhase::KillSummary)
                 | (GamePhase::KillSummary, GamePhase::Shop)
                 | (GamePhase::Shop, GamePhase::Playing)
-                // Loadout / ship-colour screen, reached on new game and between levels.
+                // Loadout / ship-color screen, reached on new game and between levels.
                 | (GamePhase::MainMenu, GamePhase::ShipSelect)
                 | (GamePhase::Shop, GamePhase::ShipSelect)
                 | (GamePhase::ShipSelect, GamePhase::Playing)

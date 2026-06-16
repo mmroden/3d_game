@@ -1,7 +1,6 @@
 use godot::prelude::*;
 use godot::classes::{
-    Node3D, INode3D, MeshInstance3D, Engine, OmniLight3D,
-    PackedScene, ResourceLoader, light_3d,
+    Node3D, INode3D, MeshInstance3D, Engine, OmniLight3D, light_3d,
 };
 
 use super::constants::scenes;
@@ -10,8 +9,8 @@ use super::godot_util;
 /// Target length of the showcase ship (auto-scaled to fit the view).
 const SHOWCASE_SHIP_LENGTH: f32 = 2.5;
 
-/// Cosmetic rotating ship with laser beams for end-of-level screens.
-/// Spawned by GameManager during KillSummary/Shop/Death phases.
+/// Cosmetic rotating ship with laser beams for the non-gameplay screens.
+/// Shown by GameManager on MainMenu, ShipSelect, KillSummary, Shop, and Death.
 #[derive(GodotClass)]
 #[class(base=Node3D)]
 pub struct ShipShowcase {
@@ -19,9 +18,9 @@ pub struct ShipShowcase {
     rotation_speed: f32,
     beam_timer: f32,
     beam_interval: f32,
-    laser_color: [f32; 4],
+    accent_color: [f32; 4],
     beams: Vec<Gd<MeshInstance3D>>,
-    /// Coloured accent light on the showcase model.
+    /// Color accent light on the showcase model.
     model_glow: Option<Gd<OmniLight3D>>,
 }
 
@@ -33,7 +32,7 @@ impl INode3D for ShipShowcase {
             rotation_speed: 0.5,
             beam_timer: 0.0,
             beam_interval: 1.5,
-            laser_color: [1.0, 0.2, 0.2, 1.0],
+            accent_color: [1.0, 0.2, 0.2, 1.0],
             beams: Vec::new(),
             model_glow: None,
         }
@@ -73,12 +72,8 @@ impl INode3D for ShipShowcase {
 impl ShipShowcase {
     #[func]
     pub fn show_showcase(&mut self, color: Color) {
-        self.laser_color = [color.r, color.g, color.b, color.a];
-        if let Some(glow) = &mut self.model_glow {
-            if glow.is_instance_valid() {
-                glow.set_color(Color::from_rgb(color.r, color.g, color.b));
-            }
-        }
+        self.accent_color = [color.r, color.g, color.b, color.a];
+        godot_util::recolor_glow(&mut self.model_glow, color);
         self.beam_timer = 0.0;
         self.base_mut().set_visible(true);
     }
@@ -97,17 +92,14 @@ impl ShipShowcase {
 
 impl ShipShowcase {
     fn build_ship_model(&mut self) {
-        // The real player ship model (same asset the player flies), so the
-        // menu/between-level showcase matches what you take into the level.
-        let Some(scene) = ResourceLoader::singleton().load(scenes::SHIP_MODEL) else { return };
-        let Ok(packed) = scene.try_cast::<PackedScene>() else { return };
-        let Some(instance) = packed.instantiate() else { return };
-        let mut model: Gd<Node3D> = instance.cast();
-        self.base_mut().add_child(&model);
-        godot_util::fit_model_to_length(&mut model, SHOWCASE_SHIP_LENGTH);
-        // The model is built facing backward; face its nose forward so the
-        // cosmetic beams come from the nose, not the tail (matches the player).
-        model.rotate_y(std::f32::consts::PI);
+        // The real player ship model (same asset the player flies, via the same
+        // shared helper), so the showcase matches what you take into the level.
+        let mut base: Gd<Node3D> = self.base().clone();
+        let Some(mut model) =
+            godot_util::spawn_fitted_model(&mut base, scenes::SHIP_MODEL, SHOWCASE_SHIP_LENGTH)
+        else {
+            return;
+        };
 
         // Neutral key light so the showcase ship and the room around it are lit
         // (a freshly-generated abandoned base is deliberately dim). On the
@@ -119,13 +111,8 @@ impl ShipShowcase {
         key.set_position(Vector3::new(0.0, 2.5, 0.0));
         self.base_mut().add_child(&key);
 
-        // Colour accent light — recoloured by show_showcase to the ship colour.
-        let mut light = OmniLight3D::new_alloc();
-        light.set_color(Color::from_rgb(self.laser_color[0], self.laser_color[1], self.laser_color[2]));
-        light.set_param(light_3d::Param::ENERGY, 3.0);
-        light.set_param(light_3d::Param::RANGE, 12.0);
-        model.add_child(&light);
-        self.model_glow = Some(light);
+        // Color accent light — recolored by show_showcase to the ship color.
+        self.model_glow = Some(godot_util::attach_glow_light(&mut model, &self.accent_color, 3.0, 12.0));
     }
 
     fn fire_cosmetic_beams(&mut self) {
@@ -143,7 +130,7 @@ impl ShipShowcase {
     }
 
     fn spawn_beam(&mut self, from: Vector3, to: Vector3) {
-        if let Some(mesh_instance) = godot_util::create_beam_mesh(from, to, &self.laser_color) {
+        if let Some(mesh_instance) = godot_util::create_beam_mesh(from, to, &self.accent_color) {
             if let Some(root) = godot_util::scene_root(self.base().get_tree()) {
                 let node = mesh_instance.clone();
                 root.clone().add_child(&mesh_instance);
@@ -154,6 +141,6 @@ impl ShipShowcase {
 
     fn age_beams(&mut self, delta: f32) {
         const BEAM_LIFETIME: f32 = 0.3;
-        godot_util::age_beams(&mut self.beams, delta, BEAM_LIFETIME, &self.laser_color);
+        godot_util::age_beams(&mut self.beams, delta, BEAM_LIFETIME, &self.accent_color);
     }
 }

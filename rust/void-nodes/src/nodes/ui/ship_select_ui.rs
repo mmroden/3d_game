@@ -11,15 +11,15 @@ use void_logic::menu_cursor::MenuCursor;
 use void_logic::ship::ShipColor;
 use void_logic::ui_style;
 
-/// Between-level loadout screen: pick a ship colour, each a real stat tradeoff.
-/// Colours apply live (the showcase recolours); Continue starts the level.
+/// Between-level loadout screen: pick a ship color, each a real stat tradeoff.
+/// Colors apply live (the showcase recolors); Continue starts the level.
 #[derive(GodotClass)]
 #[class(base=CanvasLayer)]
 pub struct ShipSelectUI {
     base: Base<CanvasLayer>,
     cursor: MenuCursor,
     labels: Vec<Gd<Label>>,
-    /// Currently applied ship colour id (for the selection marker).
+    /// Currently applied ship color id (for the selection marker).
     selected_id: i32,
 }
 
@@ -28,7 +28,7 @@ impl ICanvasLayer for ShipSelectUI {
     fn init(base: Base<CanvasLayer>) -> Self {
         Self {
             base,
-            // One row per colour, plus Continue.
+            // One row per color, plus Continue.
             cursor: MenuCursor::new(ShipColor::ALL.len() + 1),
             labels: Vec::new(),
             selected_id: 0,
@@ -57,7 +57,7 @@ impl ICanvasLayer for ShipSelectUI {
         } else if input.is_action_just_pressed(actions::MENU_SELECT) {
             let index = self.cursor.index();
             if index < ShipColor::ALL.len() {
-                // Apply this colour (game_manager recolours ship + showcase).
+                // Apply this color (game_manager recolors ship + showcase).
                 self.selected_id = index as i32;
                 self.base_mut()
                     .emit_signal(signals::SHIP_COLOR_SELECTED, &[Variant::from(index as i32)]);
@@ -77,7 +77,7 @@ impl ShipSelectUI {
     #[signal]
     fn continue_pressed();
 
-    /// Show the screen, marking `current_id` as the active colour.
+    /// Show the screen, marking `current_id` as the active color.
     #[func]
     pub fn show_ship_select(&mut self, current_id: i32) {
         self.selected_id = current_id;
@@ -110,7 +110,7 @@ impl ShipSelectUI {
         spacer.set_custom_minimum_size(Vector2::new(0.0, 24.0));
         vbox.add_child(&spacer);
 
-        // One row per colour.
+        // One row per color.
         for variant in ShipColor::ALL {
             let c = variant.color();
             let chosen = variant.id() == self.selected_id;
@@ -146,7 +146,7 @@ impl ShipSelectUI {
             if i == self.cursor.index() {
                 label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_SELECTED));
             } else if i < ShipColor::ALL.len() {
-                // Restore the colour's own hue when not under the cursor.
+                // Restore the color's own hue when not under the cursor.
                 let c = ShipColor::from_id(i as i32).unwrap_or_default().color();
                 label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgba(c[0], c[1], c[2], c[3]));
             } else {

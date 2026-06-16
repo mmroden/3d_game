@@ -25,7 +25,7 @@ pub struct RunState {
     pub kills: KillTracker,
     pub laser_level: LaserLevel,
     pub current_level: u32,
-    /// Chosen ship colour — a loadout tradeoff that shapes shields and thrust.
+    /// Chosen ship color — a loadout tradeoff that shapes shields and thrust.
     pub ship_color: ShipColor,
 }
 
@@ -42,7 +42,7 @@ impl RunState {
         self.run_seed.for_level(self.current_level)
     }
 
-    /// Build a shield sized and tuned for the given ship colour.
+    /// Build a shield sized and tuned for the given ship color.
     fn shield_for(color: ShipColor) -> ShieldState {
         ShieldState::new(
             Shield::new(Self::DEFAULT_SHIELD_CAPACITY * color.shield_capacity_mul()),
@@ -73,7 +73,7 @@ impl RunState {
         }
     }
 
-    /// Choose a ship colour, rebuilding the shield to its capacity/regen.
+    /// Choose a ship color, rebuilding the shield to its capacity/regen.
     pub fn set_ship_color(&mut self, color: ShipColor) {
         self.ship_color = color;
         self.shield = Self::shield_for(color);

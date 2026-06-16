@@ -9,7 +9,7 @@ use godot::classes::{
 use super::constants::{groups, methods, scenes, signals};
 use super::enemy_bolt::EnemyBolt;
 use super::godot_util;
-use void_logic::enemy_ai::{Archetype, Attack, DroneAi, DroneConfig, Movement};
+use void_logic::enemy_ai::{strafe_velocity, Archetype, Attack, DroneAi, DroneConfig, Movement};
 use void_logic::audio_catalog::SfxEvent;
 use void_logic::difficulty;
 use void_logic::enemy_type::EnemyType;
@@ -289,14 +289,16 @@ impl EnemyDrone {
             Movement::Chase { speed_mul } => direction * self.speed * speed_mul,
             Movement::Retreat { speed_mul } => -direction * self.speed * speed_mul,
             Movement::Strafe { speed_mul } => {
-                // Orbit, plus a pull toward the stand-off radius. Without the
-                // radial term a pure tangent step keeps nudging the drone past
-                // attack range, so it bounces in and out and parks instead of
-                // circling — especially when the player holds still.
-                let tangent = self.strafe_dir(direction) * self.speed * speed_mul;
-                let radius_error = distance - self.ai.config.standoff_range;
-                let radial = direction * (radius_error.clamp(-self.speed, self.speed) * 0.5);
-                tangent + radial
+                // void-logic owns the orbit geometry (tangent + radial pull
+                // toward stand-off); the node only points those scalars along
+                // its perpendicular and toward-player unit vectors and sums them.
+                let v = strafe_velocity(
+                    speed_mul,
+                    distance,
+                    self.ai.config.standoff_range,
+                    self.speed,
+                );
+                self.strafe_dir(direction) * v.tangent + direction * v.radial
             }
         };
         (desired, tick.attack)

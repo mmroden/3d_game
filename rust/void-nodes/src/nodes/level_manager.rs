@@ -154,8 +154,9 @@ impl LevelManager {
         self.apply_measured_viewports(viewports);
     }
 
-    /// Test seam: world-space center of room `i` (midpoint of its
-    /// bounds), for driving culling from a known interior point.
+    /// World-space center of room `i` (midpoint of its bounds). Used to park
+    /// the player inside the loadout backdrop and to drive room culling from a
+    /// known interior point. Returns `ZERO` for an out-of-range index.
     #[func]
     pub fn room_center(&self, room: i64) -> Vector3 {
         match self.room_bounds.get(room as usize) {

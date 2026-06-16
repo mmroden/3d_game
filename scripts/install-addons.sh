@@ -199,6 +199,9 @@ echo "  Quaternius addon ready at: $ADDON_DIR"
 du -sh "$ADDON_DIR"
 
 # ========== Player ship models (CGTrader, royalty-free, not redistributable) ==========
+# Source .glb files under assets/cgtrader_ships/ are deliberately git-tracked:
+# this is a private, non-open-source repo, so the convenience of a self-contained
+# checkout outweighs keeping third-party binaries out of history.
 
 SHIPS_SRC="$ASSETS_DIR/cgtrader_ships"
 

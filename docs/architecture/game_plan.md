@@ -8,12 +8,13 @@
 
 ### Combat System
 - Dual hitscan lasers (ROYGBIV progression, 7 levels, damage 1-7)
-- 5 mechanical enemy types, each with a distinct AI archetype: GunDrone (kiter),
-  QuadOrb (swarmer — slows the player on contact), Bomber (suicide/detonate),
-  EyeDrone (kiter, spawns a GunDrone on death), QuadShell (shielded tank).
-  Behaviour is selected by an `Archetype` in `enemy_ai.rs`; the node turns the
-  per-tick intent into forces. A timed `SlowDebuff` (`debuff.rs`) drives the
-  swarmer's slow, shown by a HUD "SLOWED" indicator.
+- 5 mechanical enemy types, each driven by an `Archetype` in `enemy_ai.rs`:
+  GunDrone (kiter), QuadOrb (swarmer — slows the player on contact), Bomber
+  (suicide/detonate), EyeDrone (kiter today; spawns a GunDrone on death),
+  QuadShell (shielded tank). The node turns the per-tick intent into forces.
+  A timed `SlowDebuff` (`debuff.rs`) drives the swarmer's slow, shown by a HUD
+  "SLOWED" indicator. (`Archetype::Shooter` exists as the default but no roster
+  enemy uses it yet.)
 - Enemy projectiles (Area3D, red spheres, collision via body_entered)
 - Ram/contact damage wired: enemies deal impact-scaled damage on player collision
 - Player take_damage → signal → GameManager → RunState
@@ -27,8 +28,8 @@
 - HUD: blue shield bar + power mode indicator ("SHIELDS" / "WEAPONS")
 
 ### Enemy Classification
-- All enemies are mechanical (drop components). The `EnemyCategory::Biological`
-  variant is retained for forward-compatibility but currently unused.
+- All enemies are mechanical and drop components; there is no enemy taxonomy
+  enum (the old `EnemyCategory` was removed once organics moved to barrels).
 - Dual currency is wired: mechanical kills earn **components** (in-run, lost on
   death); **organics** (permanent) are collected from glowing barrels, not kills.
 
@@ -61,7 +62,7 @@
 #### 4.1 Currency Types
 - **New file:** `void-logic/src/currency.rs`
 - `ComponentAccount` — in-run currency from mechanical kills, lost on death
-- `OrganicAccount` — permanent currency from biological kills, kept across runs
+- `OrganicAccount` — permanent currency from glowing barrels, kept across runs
 - Distinct types prevent accidental mixing at compile time
 - Same earn/spend/can_afford API as existing CreditAccount
 

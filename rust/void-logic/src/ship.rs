@@ -1,9 +1,9 @@
-//! Player ship colour variants. Each colour is a real loadout tradeoff, not
+//! Player ship color variants. Each color is a real loadout tradeoff, not
 //! just cosmetics: it shifts shield capacity/regen and flight thrust.
 
 use serde::{Deserialize, Serialize};
 
-/// A player-selectable ship colour / loadout.
+/// A player-selectable ship color / loadout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum ShipColor {
     /// Balanced baseline.
@@ -18,7 +18,7 @@ pub enum ShipColor {
 impl ShipColor {
     pub const ALL: &[ShipColor] = &[ShipColor::Standard, ShipColor::Armored, ShipColor::Swift];
 
-    /// Accent/identity colour [R, G, B, A].
+    /// Accent/identity color [R, G, B, A].
     pub fn color(&self) -> [f32; 4] {
         match self {
             Self::Standard => [0.2, 0.6, 1.0, 1.0], // cyan-blue
@@ -126,7 +126,7 @@ mod tests {
     fn colors_are_valid_rgba() {
         for variant in ShipColor::ALL {
             for &c in &variant.color() {
-                assert!((0.0..=1.0).contains(&c), "{:?} colour out of range", variant);
+                assert!((0.0..=1.0).contains(&c), "{:?} color out of range", variant);
             }
         }
     }

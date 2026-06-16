@@ -4,7 +4,7 @@
 use godot::prelude::*;
 use godot::classes::{
     MeshInstance3D, BoxMesh, StandardMaterial3D, OmniLight3D,
-    RigidBody3D, CollisionShape3D,
+    RigidBody3D, CollisionShape3D, PackedScene, ResourceLoader,
     ParticleProcessMaterial,
     particle_process_material::Parameter,
     light_3d,
@@ -12,6 +12,11 @@ use godot::classes::{
 
 use super::audio_manager::AudioManager;
 use super::constants::{meta_keys, nodes};
+
+/// Yaw applied to the imported ship model so its nose points along the ship's
+/// forward (-Z); the asset is modelled facing backward. One source of truth for
+/// both the player ship and the menu showcase.
+pub const SHIP_MODEL_YAW: f32 = std::f32::consts::PI;
 
 /// Get the scene tree root node from a SceneTree (or Optional SceneTree).
 /// Returns `None` during early initialization or after the tree is torn down.
@@ -84,15 +89,43 @@ pub fn create_beam_mesh(from: Vector3, to: Vector3, color: &[f32]) -> Option<Gd<
     Some(mesh_instance)
 }
 
-/// Attach a coloured point light to a node so it reads as "glowing"
-/// (used for collectible pickups — blue lootboxes, green organic barrels).
-pub fn attach_glow_light(parent: &mut Gd<Node3D>, color: &[f32], energy: f32, range: f32) {
+/// Attach a colored point light to a node so it reads as "glowing" (collectible
+/// pickups, the ship's color accent). Returns the light so callers that need to
+/// recolor it later can keep the handle; callers that don't can ignore it.
+pub fn attach_glow_light(parent: &mut Gd<Node3D>, color: &[f32], energy: f32, range: f32) -> Gd<OmniLight3D> {
     let mut light = OmniLight3D::new_alloc();
     light.set_color(Color::from_rgb(color[0], color[1], color[2]));
     light.set_param(light_3d::Param::ENERGY, energy);
     light.set_param(light_3d::Param::RANGE, range);
     light.set_param(light_3d::Param::ATTENUATION, 1.5);
     parent.add_child(&light);
+    light
+}
+
+/// Recolor a glow light (e.g. when the player changes ship color). No-op if the
+/// handle is absent or freed. One recolor path for the player and the showcase.
+pub fn recolor_glow(glow: &mut Option<Gd<OmniLight3D>>, color: Color) {
+    if let Some(light) = glow {
+        if light.is_instance_valid() {
+            light.set_color(Color::from_rgb(color.r, color.g, color.b));
+        }
+    }
+}
+
+/// Load the ship model scene at `path`, instance it under `parent`, scale it to
+/// `length`, and face its nose forward. Returns the model node. The single
+/// source of truth for building the ship — both the player and the menu
+/// showcase call this instead of repeating the load/fit/yaw sequence.
+pub fn spawn_fitted_model(parent: &mut Gd<Node3D>, path: &str, length: f32) -> Option<Gd<Node3D>> {
+    let scene = ResourceLoader::singleton().load(path)?;
+    let packed = scene.try_cast::<PackedScene>().ok()?;
+    let instance = packed.instantiate()?;
+    let mut model: Gd<Node3D> = instance.cast();
+    model.set_name("Model");
+    parent.add_child(&model);
+    fit_model_to_length(&mut model, length);
+    model.rotate_y(SHIP_MODEL_YAW);
+    Some(model)
 }
 
 /// Uniformly scale `model` (already in the tree, currently unscaled) so its
@@ -113,9 +146,10 @@ pub fn fit_model_to_length(model: &mut Gd<Node3D>, target: f32) {
 
 /// Add convex-hull collision shapes (one per `MeshInstance3D`) found under
 /// `node` to `body`, each placed by its accumulated transform starting from
-/// `xform`. The dynamic-safe, mesh-hugging collider — used by both the loose
-/// props and the player ship (Jolt allows convex hulls on dynamic bodies;
-/// concave trimesh is static-only).
+/// `xform`. The dynamic-safe, mesh-hugging collider for loose props (Jolt
+/// allows convex hulls on dynamic bodies; concave trimesh is static-only). The
+/// player ship deliberately uses a capsule instead — a mesh hull baked with the
+/// model's extreme fit-scale confused Jolt and snagged the ship on doorways.
 pub fn add_convex_collision(body: &mut Gd<RigidBody3D>, node: &Gd<Node3D>, xform: Transform3D) {
     if let Ok(mesh_inst) = node.clone().try_cast::<MeshInstance3D>() {
         if let Some(mesh) = mesh_inst.get_mesh() {

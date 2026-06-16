@@ -1,7 +1,6 @@
 //! Enemy type taxonomy with stats, behavioural archetype, display names, and scene paths.
 
 use crate::enemy_ai::{Archetype, DroneConfig};
-use crate::enemy_category::EnemyCategory;
 use crate::newtypes::{Damage, Health, Shield};
 
 /// All enemy types in the game, ordered by difficulty tier. Every enemy is a
@@ -97,15 +96,6 @@ impl EnemyType {
         }
     }
 
-    /// Every enemy is a mechanical defense system (drops components). The
-    /// `Biological` category is retained for forward-compatibility but unused.
-    pub fn category(&self) -> EnemyCategory {
-        match self {
-            Self::GunDrone | Self::QuadOrb | Self::Bomber
-            | Self::EyeDrone | Self::QuadShell => EnemyCategory::Mechanical,
-        }
-    }
-
     pub fn from_id(id: i32) -> Option<EnemyType> {
         Self::ALL.get(id as usize).copied()
     }
@@ -151,7 +141,6 @@ pub struct EnemyStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::enemy_category::EnemyCategory;
     use crate::newtypes::Health;
 
     #[test]
@@ -259,20 +248,8 @@ mod tests {
     }
 
     #[test]
-    fn all_enemies_are_mechanical() {
-        for enemy in EnemyType::ALL {
-            assert_eq!(enemy.category(), EnemyCategory::Mechanical,
-                "{:?} should be Mechanical", enemy);
-        }
-    }
-
-    #[test]
-    fn category_counts_are_correct() {
-        let mech_count = EnemyType::ALL.iter()
-            .filter(|e| e.category() == EnemyCategory::Mechanical)
-            .count();
-        assert_eq!(mech_count, 5, "Should have 5 mechanical enemies");
-        assert_eq!(mech_count, EnemyType::ALL.len());
+    fn roster_is_the_five_mechanical_enemies() {
+        assert_eq!(EnemyType::ALL.len(), 5, "the roster is five enemies");
     }
 
     #[test]

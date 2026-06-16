@@ -45,6 +45,30 @@ pub enum Movement {
     Strafe { speed_mul: f32 },
 }
 
+/// Desired strafe velocity for a kiting drone, in world units/sec. `tangent`
+/// drives the orbit (applied along the perpendicular-to-player unit vector);
+/// `radial` is signed and applied along the toward-player unit vector —
+/// positive pulls inward when the drone has drifted past `standoff`, negative
+/// pushes it back out when the player crowds it. All orbit geometry lives here;
+/// the node only multiplies these scalars by its two unit vectors and adds them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StrafeVelocity {
+    pub tangent: f32,
+    pub radial: f32,
+}
+
+/// Resolve a `Movement::Strafe` intent into concrete velocity components for a
+/// drone cruising at `speed`, currently `distance` from the player, that wants
+/// to orbit at `standoff`. `speed_mul` scales the tangential orbit speed. The
+/// radial pull is capped at the drone's cruise speed so a far-off kiter doesn't
+/// lunge, then halved so the orbit dominates the correction.
+pub fn strafe_velocity(speed_mul: f32, distance: f32, standoff: f32, speed: f32) -> StrafeVelocity {
+    let tangent = speed * speed_mul;
+    let radius_error = distance - standoff;
+    let radial = radius_error.clamp(-speed, speed) * 0.5;
+    StrafeVelocity { tangent, radial }
+}
+
 /// What the enemy wants to do offensively this tick.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Attack {
@@ -539,6 +563,40 @@ mod tests {
         let mut ai = DroneAi::new(config_with(Archetype::Kiter));
         let tick = ai.update(20.0, true, 0.016);
         assert_eq!(tick.movement, Movement::Chase { speed_mul: 1.0 });
+    }
+
+    // --- Kiter orbit geometry: strafe_velocity (owned by void-logic) ---
+
+    #[test]
+    fn strafe_tangent_scales_with_speed_and_mul() {
+        // At the standoff radius there is no radius error, so all motion is
+        // tangential: speed (10) * speed_mul (0.7).
+        let v = strafe_velocity(0.7, 5.0, 5.0, 10.0);
+        assert_eq!(v.tangent, 7.0);
+        assert_eq!(v.radial, 0.0);
+    }
+
+    #[test]
+    fn strafe_pulls_inward_when_beyond_standoff() {
+        // distance 8, standoff 5 → radius_error +3, within ±speed → +3 * 0.5.
+        // Positive radial is applied along the toward-player vector: close in.
+        let v = strafe_velocity(0.7, 8.0, 5.0, 10.0);
+        assert_eq!(v.radial, 1.5);
+    }
+
+    #[test]
+    fn strafe_pushes_outward_when_inside_standoff() {
+        // distance 3, standoff 5 → radius_error −2 → −1.0: back away from player.
+        let v = strafe_velocity(0.7, 3.0, 5.0, 10.0);
+        assert_eq!(v.radial, -1.0);
+    }
+
+    #[test]
+    fn strafe_radial_is_clamped_to_cruise_speed() {
+        // A far-off kiter shouldn't lunge: radius_error 100 clamps to speed (4),
+        // then halves → 2.0, never the full 50.
+        let v = strafe_velocity(1.0, 104.0, 4.0, 4.0);
+        assert_eq!(v.radial, 2.0);
     }
 
     // --- Swarmer: rams, no projectile ---

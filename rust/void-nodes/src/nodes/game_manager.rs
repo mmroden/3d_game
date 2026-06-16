@@ -151,7 +151,7 @@ impl GameManager {
             self.set_scene_paused(false);
             self.transition_to(GamePhase::MainMenu);
         }
-        // New game starts at the loadout (ship-colour) screen.
+        // New game starts at the loadout (ship-color) screen.
         if !self.phase.can_transition_to(GamePhase::ShipSelect) {
             return;
         }
@@ -267,14 +267,14 @@ impl GameManager {
         }
     }
 
-    /// Called from the ship-select UI: a colour was chosen — apply it live.
+    /// Called from the ship-select UI: a color was chosen — apply it live.
     #[func]
     pub fn on_ship_color_selected(&mut self, color_id: i32) {
         let Some(color) = ShipColor::from_id(color_id) else { return };
         self.run_state.set_ship_color(color);
         self.sync_player_state();
         self.update_hud();
-        // Recolour the showcase ship behind the loadout screen.
+        // Recolor the showcase ship behind the loadout screen.
         if let Some(parent) = self.base().get_parent() {
             if let Some(mut showcase) = parent.try_get_node_as::<Node>(nodes::SHIP_SHOWCASE) {
                 let c = self.run_state.ship_color.color();
@@ -295,7 +295,7 @@ impl GameManager {
         }
     }
 
-    /// Populate and show the ship-select UI with the current colour marked.
+    /// Populate and show the ship-select UI with the current color marked.
     fn show_ship_select_ui(&self) {
         let Some(parent) = self.base().get_parent() else { return };
         if let Some(mut ui) = Self::find_ui_node(&parent, nodes::SHIP_SELECT_UI) {
@@ -733,7 +733,7 @@ impl GameManager {
                     Variant::from(upgrade.multiplier),
                 ]);
             }
-            // Push the chosen ship colour (accent) + its thrust tradeoff.
+            // Push the chosen ship color (accent) + its thrust tradeoff.
             let c = self.run_state.ship_color.color();
             player.call(methods::CONFIGURE_SHIP, &[
                 Variant::from(Color::from_rgba(c[0], c[1], c[2], c[3])),
