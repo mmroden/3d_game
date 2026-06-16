@@ -98,7 +98,12 @@ impl INode for GameManager {
         // authoritative GameOptions. Deferred so it fires after all
         // sibling nodes have run ready() and connected their listeners.
         self.base_mut().call_deferred(methods::BROADCAST_OPTIONS, &[]);
-        self.show_phase(GamePhase::MainMenu);
+        // Apply the opening screen deferred, NOT inline: sibling nodes (the
+        // showcase, player, UI) run their own ready() after ours, and a node
+        // that defaults itself hidden in ready() would clobber an inline
+        // show_phase — that was the black-menu regression. Deferred runs once
+        // every sibling is ready, so GameManager's visibility wins.
+        self.base_mut().call_deferred(methods::ENTER_INITIAL_PHASE, &[]);
     }
 
     fn input(&mut self, event: Gd<InputEvent>) {
@@ -146,6 +151,14 @@ impl GameManager {
 
     #[signal]
     fn options_changed(sbs_enabled: bool, msaa_enabled: bool);
+
+    /// Deferred from `ready()`: show the opening screen once every sibling node
+    /// has finished its own `ready()`. See the call site for why it can't be
+    /// inline.
+    #[func]
+    fn enter_initial_phase(&mut self) {
+        self.show_phase(self.phase);
+    }
 
     /// Called from UI: start a fresh new game.
     #[func]
