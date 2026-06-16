@@ -74,7 +74,7 @@ impl ShopUI {
     #[allow(clippy::too_many_arguments)]
     pub fn show_shop(
         &mut self,
-        credits: i64,
+        components: i64,
         laser_name: GString,
         laser_color: Color,
         laser_damage: f32,
@@ -116,12 +116,12 @@ impl ShopUI {
         current.add_theme_color_override(theme::FONT_COLOR, laser_color);
         vbox.add_child(&current);
 
-        // Credits
-        let mut credits_label = Label::new_alloc();
-        credits_label.set_text(&format!("Credits: {}", credits));
-        credits_label.add_theme_font_size_override(theme::FONT_SIZE, 28);
-        credits_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_CREDITS));
-        vbox.add_child(&credits_label);
+        // Components (in-run currency)
+        let mut components_label = Label::new_alloc();
+        components_label.set_text(&format!("Components: {}", components));
+        components_label.add_theme_font_size_override(theme::FONT_SIZE, 28);
+        components_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_COMPONENTS));
+        vbox.add_child(&components_label);
 
         let mut spacer2 = Control::new_alloc();
         spacer2.set_custom_minimum_size(Vector2::new(0.0, 30.0));
@@ -131,9 +131,9 @@ impl ShopUI {
         let upgrade_text = if is_max {
             "  LASER MAXED OUT".to_string()
         } else if can_afford {
-            format!("> Upgrade Laser ({} credits)", next_cost)
+            format!("> Upgrade Laser ({} components)", next_cost)
         } else {
-            format!("  Upgrade Laser ({} credits) [NOT ENOUGH]", next_cost)
+            format!("  Upgrade Laser ({} components) [NOT ENOUGH]", next_cost)
         };
         let mut upgrade_label = Label::new_alloc();
         upgrade_label.set_text(&upgrade_text);

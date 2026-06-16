@@ -9,7 +9,10 @@ use super::constants::{groups, methods};
 /// Enemy bolt: a small Area3D projectile. Godot moves nothing for us
 /// here — it travels at constant velocity (set on spawn) and detonates
 /// on first contact: damage to the player, or just vanish on a wall.
-const BOLT_RADIUS: f32 = 0.15;
+// Bolts are an Area3D moved by teleporting each physics frame, so a small,
+// fast bolt tunnels past the player between frames. A larger radius makes hits
+// land reliably (the dominant cause of "damage feels low").
+const BOLT_RADIUS: f32 = 0.35;
 const BOLT_LIFETIME_S: f64 = 3.0;
 
 #[derive(GodotClass)]
@@ -81,11 +84,18 @@ impl EnemyBolt {
 
     #[func]
     fn on_body_entered(&mut self, body: Gd<Node3D>) {
+        // Pass harmlessly through enemies. The bolt and enemies share a
+        // collision layer, and a bolt spawns at the firer's muzzle inside its
+        // own collision sphere — without this it would detonate on the firing
+        // enemy the instant it appears (no visible shot, no damage).
+        if body.is_in_group(groups::ENEMIES) {
+            return;
+        }
         let mut body = body;
         if body.is_in_group(groups::PLAYER) && body.has_method(methods::TAKE_DAMAGE) {
             body.call(methods::TAKE_DAMAGE, &[Variant::from(self.damage)]);
         }
-        // Detonate on anything solid — player, wall, or prop.
+        // Detonate on the player or solid world geometry.
         self.base_mut().queue_free();
     }
 }

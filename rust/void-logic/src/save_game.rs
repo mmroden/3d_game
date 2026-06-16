@@ -1,4 +1,4 @@
-use crate::credits::CreditAccount;
+use crate::currency::{ComponentAccount, OrganicAccount};
 use crate::laser::LaserLevel;
 use crate::loadout::Loadout;
 use crate::newtypes::Health;
@@ -15,7 +15,8 @@ pub struct SaveGame {
     pub score: u32,
     pub current_level: u32,
     pub run_seed: Seed,
-    pub credits: CreditAccount,
+    pub components: ComponentAccount,
+    pub organics: OrganicAccount,
     pub health: Health,
     pub shield: ShieldState,
 }
@@ -39,7 +40,8 @@ impl SaveGame {
             score: run.score,
             current_level: run.current_level,
             run_seed: run.run_seed,
-            credits: run.credits,
+            components: run.components,
+            organics: run.organics,
             health: run.health,
             shield: run.shield.clone(),
         }
@@ -51,7 +53,8 @@ impl SaveGame {
         run.score = self.score;
         run.current_level = self.current_level;
         run.run_seed = self.run_seed;
-        run.credits = self.credits;
+        run.components = self.components;
+        run.organics = self.organics;
         run.health = self.health;
         run.shield = self.shield.clone();
         // Reset ephemeral state
@@ -81,11 +84,13 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_captures_credits() {
+    fn snapshot_captures_components_and_organics() {
         let mut run = RunState::new(Seed::new(42));
-        run.credits.earn(5_000);
+        run.components.earn(5_000);
+        run.collect_organics(120);
         let save = SaveGame::from_run_state(&run);
-        assert_eq!(save.credits.balance, 5_000);
+        assert_eq!(save.components.balance, 5_000);
+        assert_eq!(save.organics.balance, 120);
     }
 
     #[test]
@@ -128,14 +133,28 @@ mod tests {
     }
 
     #[test]
-    fn apply_restores_credits() {
+    fn apply_restores_components() {
         let mut run = RunState::new(Seed::new(42));
-        run.credits.earn(5_000);
+        run.components.earn(5_000);
         let save = SaveGame::from_run_state(&run);
 
         let mut fresh = RunState::new(Seed::new(99));
         save.apply_to(&mut fresh);
-        assert_eq!(fresh.credits.balance, 5_000);
+        assert_eq!(fresh.components.balance, 5_000);
+    }
+
+    #[test]
+    fn organics_survive_a_death_save() {
+        let mut run = RunState::new(Seed::new(42));
+        run.components.earn(10_000);
+        run.collect_organics(250);
+        run.apply_death_penalty(); // components lost, organics kept
+        let save = SaveGame::from_run_state(&run);
+
+        let mut fresh = RunState::new(Seed::new(99));
+        save.apply_to(&mut fresh);
+        assert_eq!(fresh.components.balance, 0);
+        assert_eq!(fresh.organics.balance, 250);
     }
 
     #[test]
@@ -147,7 +166,7 @@ mod tests {
         let save = SaveGame::from_run_state(&run);
 
         let mut fresh = RunState::new(Seed::new(99));
-        fresh.record_kill(crate::enemy_type::EnemyType::Bat);
+        fresh.record_kill(crate::enemy_type::EnemyType::QuadOrb);
         fresh.clear_room(1);
         save.apply_to(&mut fresh);
 
@@ -161,7 +180,7 @@ mod tests {
         let mut run = RunState::new(Seed::new(42));
         run.laser_level = LaserLevel::Green;
         run.current_level = 4;
-        run.credits.earn(5_000);
+        run.components.earn(5_000);
         let save = SaveGame::from_run_state(&run);
 
         let mut fresh = RunState::new(Seed::new(99));
@@ -169,7 +188,7 @@ mod tests {
 
         assert_eq!(fresh.current_level, 4);
         assert_eq!(fresh.laser_level, LaserLevel::Green);
-        assert_eq!(fresh.credits.balance, 5_000);
+        assert_eq!(fresh.components.balance, 5_000);
     }
 
     #[test]
@@ -177,7 +196,7 @@ mod tests {
         let mut run = RunState::new(Seed::new(42));
         run.laser_level = LaserLevel::Green; // level 4
         run.current_level = 4;
-        run.credits.earn(10_000);
+        run.components.earn(10_000);
         run.apply_death_penalty();
         let save = SaveGame::from_run_state(&run);
 
@@ -186,7 +205,7 @@ mod tests {
 
         assert_eq!(fresh.current_level, 1);
         assert_eq!(fresh.laser_level, LaserLevel::Orange); // Green(4) halved = 2 = Orange
-        assert_eq!(fresh.credits.balance, 0);
+        assert_eq!(fresh.components.balance, 0);
     }
 
     #[test]
@@ -196,7 +215,7 @@ mod tests {
         let mut run = RunState::new(Seed::new(42));
         run.laser_level = LaserLevel::Green;
         run.current_level = 4;
-        run.credits.earn(5_000);
+        run.components.earn(5_000);
         let save = SaveGame::from_run_state(&run);
 
         let restored = SaveGame::from_json(&save.to_json())

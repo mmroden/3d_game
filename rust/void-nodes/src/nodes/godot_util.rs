@@ -83,6 +83,17 @@ pub fn create_beam_mesh(from: Vector3, to: Vector3, color: &[f32]) -> Option<Gd<
     Some(mesh_instance)
 }
 
+/// Attach a coloured point light to a node so it reads as "glowing"
+/// (used for collectible pickups — blue lootboxes, green organic barrels).
+pub fn attach_glow_light(parent: &mut Gd<Node3D>, color: &[f32], energy: f32, range: f32) {
+    let mut light = OmniLight3D::new_alloc();
+    light.set_color(Color::from_rgb(color[0], color[1], color[2]));
+    light.set_param(light_3d::Param::ENERGY, energy);
+    light.set_param(light_3d::Param::RANGE, range);
+    light.set_param(light_3d::Param::ATTENUATION, 1.5);
+    parent.add_child(&light);
+}
+
 /// Age all beams in a list, fading their alpha. Returns only those still alive.
 pub fn age_beams(beams: &mut Vec<Gd<MeshInstance3D>>, delta: f32, lifetime: f32, color: &[f32]) {
     beams.retain_mut(|beam| {

@@ -8,6 +8,14 @@ use godot::classes::{
 use crate::nodes::constants::theme;
 use void_logic::ui_style;
 
+/// Health/shield bar dimensions. Shared by `build_hud` (background + fill) and
+/// the `update_*` resizers so the two can't drift out of sync.
+const BAR_WIDTH: f32 = 360.0;
+const HEALTH_BAR_HEIGHT: f32 = 30.0;
+const SHIELD_BAR_HEIGHT: f32 = 22.0;
+/// Top-left inset for the absolutely-positioned bar fills.
+const BAR_INSET: f32 = 20.0;
+
 /// In-game HUD: health bar, credits, laser level, level number.
 #[derive(GodotClass)]
 #[class(base=CanvasLayer)]
@@ -19,10 +27,13 @@ pub struct HUD {
     shield_fill: Option<Gd<ColorRect>>,
     shield_label: Option<Gd<Label>>,
     power_mode_label: Option<Gd<Label>>,
-    credits_label: Option<Gd<Label>>,
+    components_label: Option<Gd<Label>>,
+    organics_label: Option<Gd<Label>>,
     laser_label: Option<Gd<Label>>,
     level_label: Option<Gd<Label>>,
     laser_indicator: Option<Gd<ColorRect>>,
+    slow_overlay: Option<Gd<ColorRect>>,
+    slow_label: Option<Gd<Label>>,
 }
 
 #[godot_api]
@@ -35,10 +46,13 @@ impl ICanvasLayer for HUD {
             shield_fill: None,
             shield_label: None,
             power_mode_label: None,
-            credits_label: None,
+            components_label: None,
+            organics_label: None,
             laser_label: None,
             level_label: None,
             laser_indicator: None,
+            slow_overlay: None,
+            slow_label: None,
         }
     }
 
@@ -59,7 +73,7 @@ impl HUD {
 
         if let Some(fill) = &mut self.health_fill {
             if fill.is_instance_valid() {
-                fill.set_size(Vector2::new(200.0 * fraction, 20.0));
+                fill.set_size(Vector2::new(BAR_WIDTH * fraction, HEALTH_BAR_HEIGHT));
                 let color = if fraction > 0.5 {
                     Color::from_rgb(0.2, 0.9, 0.2)
                 } else if fraction > 0.25 {
@@ -84,7 +98,7 @@ impl HUD {
 
         if let Some(fill) = &mut self.shield_fill {
             if fill.is_instance_valid() {
-                fill.set_size(Vector2::new(200.0 * fraction, 14.0));
+                fill.set_size(Vector2::new(BAR_WIDTH * fraction, SHIELD_BAR_HEIGHT));
                 // Blue to dark blue as shield depletes
                 let brightness = 0.3 + fraction * 0.7;
                 fill.set_color(Color::from_rgb(0.2 * brightness, 0.4 * brightness, brightness));
@@ -115,10 +129,19 @@ impl HUD {
     }
 
     #[func]
-    pub fn update_credits(&mut self, credits: i64) {
-        if let Some(label) = &mut self.credits_label {
+    pub fn update_components(&mut self, components: i64) {
+        if let Some(label) = &mut self.components_label {
             if label.is_instance_valid() {
-                label.set_text(&format!("Credits: {}", credits));
+                label.set_text(&format!("Components: {}", components));
+            }
+        }
+    }
+
+    #[func]
+    pub fn update_organics(&mut self, organics: i64) {
+        if let Some(label) = &mut self.organics_label {
+            if label.is_instance_valid() {
+                label.set_text(&format!("Organics: {}", organics));
             }
         }
     }
@@ -146,6 +169,21 @@ impl HUD {
             }
         }
     }
+
+    /// Show/hide the "SLOWED" debuff indicator (red screen tint + label).
+    #[func]
+    pub fn update_slow(&mut self, active: bool) {
+        if let Some(overlay) = &mut self.slow_overlay {
+            if overlay.is_instance_valid() {
+                overlay.set_visible(active);
+            }
+        }
+        if let Some(label) = &mut self.slow_label {
+            if label.is_instance_valid() {
+                label.set_visible(active);
+            }
+        }
+    }
 }
 
 impl HUD {
@@ -160,21 +198,21 @@ impl HUD {
         let mut health_row = HBoxContainer::new_alloc();
 
         let mut health_bg = ColorRect::new_alloc();
-        health_bg.set_custom_minimum_size(Vector2::new(200.0, 20.0));
+        health_bg.set_custom_minimum_size(Vector2::new(BAR_WIDTH, HEALTH_BAR_HEIGHT));
         health_bg.set_color(Color::from_rgba(0.2, 0.2, 0.2, 0.7));
         health_row.add_child(&health_bg);
 
         // Health fill overlaid on top of bg (we'll position it absolutely)
         // For simplicity, use a separate ColorRect that gets resized
         let mut health_fill = ColorRect::new_alloc();
-        health_fill.set_custom_minimum_size(Vector2::new(200.0, 20.0));
+        health_fill.set_custom_minimum_size(Vector2::new(BAR_WIDTH, HEALTH_BAR_HEIGHT));
         health_fill.set_color(Color::from_rgb(0.2, 0.9, 0.2));
         // Place fill at same position as bg (overlapping)
         health_fill.set_position(Vector2::new(0.0, 0.0));
 
         let mut health_label = Label::new_alloc();
         health_label.set_text("100/100");
-        health_label.add_theme_font_size_override(theme::FONT_SIZE, 18);
+        health_label.add_theme_font_size_override(theme::FONT_SIZE, 22);
         health_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.9, 0.9, 0.9));
         health_row.add_child(&health_label);
 
@@ -189,18 +227,18 @@ impl HUD {
         let mut shield_row = HBoxContainer::new_alloc();
 
         let mut shield_bg = ColorRect::new_alloc();
-        shield_bg.set_custom_minimum_size(Vector2::new(200.0, 14.0));
+        shield_bg.set_custom_minimum_size(Vector2::new(BAR_WIDTH, SHIELD_BAR_HEIGHT));
         shield_bg.set_color(Color::from_rgba(0.1, 0.1, 0.3, 0.7));
         shield_row.add_child(&shield_bg);
 
         let mut shield_fill = ColorRect::new_alloc();
-        shield_fill.set_custom_minimum_size(Vector2::new(200.0, 14.0));
+        shield_fill.set_custom_minimum_size(Vector2::new(BAR_WIDTH, SHIELD_BAR_HEIGHT));
         shield_fill.set_color(Color::from_rgb(0.2, 0.4, 1.0));
         shield_fill.set_position(Vector2::new(0.0, 0.0));
 
         let mut shield_label = Label::new_alloc();
         shield_label.set_text("50/50");
-        shield_label.add_theme_font_size_override(theme::FONT_SIZE, 14);
+        shield_label.add_theme_font_size_override(theme::FONT_SIZE, 18);
         shield_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.5, 0.7, 1.0));
         shield_row.add_child(&shield_label);
 
@@ -217,20 +255,28 @@ impl HUD {
         top_left.add_child(&power_mode_label);
         self.power_mode_label = Some(power_mode_label);
 
-        // Credits
-        let mut credits_label = Label::new_alloc();
-        credits_label.set_text("Credits: 0");
-        credits_label.add_theme_font_size_override(theme::FONT_SIZE, 18);
-        credits_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_CREDITS));
-        top_left.add_child(&credits_label);
-        self.credits_label = Some(credits_label);
+        // Components (in-run currency)
+        let mut components_label = Label::new_alloc();
+        components_label.set_text("Components: 0");
+        components_label.add_theme_font_size_override(theme::FONT_SIZE, 18);
+        components_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_COMPONENTS));
+        top_left.add_child(&components_label);
+        self.components_label = Some(components_label);
+
+        // Organics (permanent currency)
+        let mut organics_label = Label::new_alloc();
+        organics_label.set_text("Organics: 0");
+        organics_label.add_theme_font_size_override(theme::FONT_SIZE, 18);
+        organics_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_ORGANICS));
+        top_left.add_child(&organics_label);
+        self.organics_label = Some(organics_label);
 
         self.base_mut().add_child(&top_left);
         // Add health fill as overlay on CanvasLayer, positioned at top-left
-        health_fill.set_position(Vector2::new(20.0, 20.0));
+        health_fill.set_position(Vector2::new(BAR_INSET, BAR_INSET));
         self.base_mut().add_child(&health_fill);
-        // Shield fill overlay below health
-        shield_fill.set_position(Vector2::new(20.0, 44.0));
+        // Shield fill overlay just below the (now taller) health bar.
+        shield_fill.set_position(Vector2::new(BAR_INSET, BAR_INSET + HEALTH_BAR_HEIGHT + 4.0));
         self.base_mut().add_child(&shield_fill);
 
         // === Top-right: Laser info + Level ===
@@ -284,5 +330,23 @@ impl HUD {
         bottom_center.add_child(&controls);
 
         self.base_mut().add_child(&bottom_center);
+
+        // === Slow debuff indicator (hidden until a swarmer slows the player) ===
+        let mut slow_overlay = ColorRect::new_alloc();
+        slow_overlay.set_anchors_preset(LayoutPreset::FULL_RECT);
+        slow_overlay.set_color(Color::from_rgba(0.7, 0.1, 0.1, 0.16));
+        slow_overlay.set_visible(false);
+        self.base_mut().add_child(&slow_overlay);
+        self.slow_overlay = Some(slow_overlay);
+
+        let mut slow_label = Label::new_alloc();
+        slow_label.set_anchors_preset(LayoutPreset::CENTER_TOP);
+        slow_label.set_offset(godot::builtin::Side::TOP, 80.0);
+        slow_label.set_text("SLOWED");
+        slow_label.add_theme_font_size_override(theme::FONT_SIZE, 30);
+        slow_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(1.0, 0.4, 0.4));
+        slow_label.set_visible(false);
+        self.base_mut().add_child(&slow_label);
+        self.slow_label = Some(slow_label);
     }
 }

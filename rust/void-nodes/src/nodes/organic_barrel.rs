@@ -5,12 +5,16 @@ use super::constants::{groups, methods, signals};
 use super::godot_util;
 use void_logic::audio_catalog::SfxEvent;
 
-/// A pickup that grants the player an upgrade.
+/// A barrel of organics floating in the debris. Flying into it collects the
+/// organics (the permanent currency) — mirrors [`super::lootbox::Lootbox`] but
+/// grants currency rather than an upgrade, and glows green rather than blue.
 #[derive(GodotClass)]
 #[class(base=Area3D)]
-pub struct Lootbox {
+pub struct OrganicBarrel {
     base: Base<Area3D>,
 
+    #[export]
+    organics_amount: i32,
     #[export]
     bob_speed: f32,
     #[export]
@@ -23,12 +27,13 @@ pub struct Lootbox {
 }
 
 #[godot_api]
-impl IArea3D for Lootbox {
+impl IArea3D for OrganicBarrel {
     fn init(base: Base<Area3D>) -> Self {
         Self {
             base,
-            bob_speed: 2.0,
-            bob_amplitude: 0.3,
+            organics_amount: 50,
+            bob_speed: 1.5,
+            bob_amplitude: 0.25,
             time: 0.0,
             origin_y: 0.0,
             origin_captured: false,
@@ -37,18 +42,17 @@ impl IArea3D for Lootbox {
     }
 
     fn ready(&mut self) {
-        // Monitor for bodies entering (player collision)
+        // Detect the player flying into the barrel.
         self.base_mut().set_monitoring(true);
-        self.base_mut().set_collision_mask(1); // Detect layer 1 (player)
-        self.base_mut().set_collision_layer(0); // Don't block anything
+        self.base_mut().set_collision_mask(1); // layer 1 (player)
+        self.base_mut().set_collision_layer(0); // don't block anything
 
-        // Connect body_entered signal
         let callable = self.base().callable(methods::ON_BODY_ENTERED);
         self.base_mut().connect(signals::BODY_ENTERED, &callable);
 
-        // Soft blue glow distinguishes the upgrade lootbox from green organics.
+        // Soft green glow marks this as an organics pickup.
         let mut node: Gd<Node3D> = self.base().clone().upcast();
-        godot_util::attach_glow_light(&mut node, &[0.2, 0.5, 1.0], 4.0, 5.0);
+        godot_util::attach_glow_light(&mut node, &[0.2, 0.9, 0.2], 4.0, 5.0);
     }
 
     fn process(&mut self, delta: f64) {
@@ -56,29 +60,25 @@ impl IArea3D for Lootbox {
             return;
         }
 
-        // Capture the bob origin lazily on the first frame so it is correct
-        // regardless of whether position was set before or after entering the
-        // tree (a spawner that adds-then-positions would otherwise bob at ~0).
+        // Capture the bob origin lazily so it is correct regardless of whether
+        // the spawner positioned the barrel before or after adding it to the tree.
         if !self.origin_captured {
             self.origin_y = self.base().get_global_position().y;
             self.origin_captured = true;
         }
 
-        // Gentle bobbing animation
         self.time += delta as f32;
         let mut pos = self.base().get_global_position();
         pos.y = self.origin_y + (self.time * self.bob_speed).sin() * self.bob_amplitude;
         self.base_mut().set_global_position(pos);
-
-        // Slow rotation
-        self.base_mut().rotate_y((delta * 1.5) as f32);
+        self.base_mut().rotate_y((delta * 1.0) as f32);
     }
 }
 
 #[godot_api]
-impl Lootbox {
+impl OrganicBarrel {
     #[signal]
-    fn upgrade_collected(name: GString, kind_id: i32, multiplier: f32);
+    fn organics_collected(amount: i32);
 
     #[func]
     fn on_body_entered(&mut self, body: Gd<Node3D>) {
@@ -97,32 +97,15 @@ impl Lootbox {
         }
         self.collected = true;
 
-        use void_logic::upgrade::random_upgrade;
-        use rand::SeedableRng;
-        use rand::rngs::SmallRng;
-
         let pos = self.base().get_global_position();
-        let seed = ((pos.x * 1000.0) as u64)
-            .wrapping_add((pos.z * 7777.0) as u64)
-            .wrapping_add((self.time * 9999.0) as u64);
-        let mut rng = SmallRng::seed_from_u64(seed);
-        let upgrade = random_upgrade(&mut rng);
-
-        // Loot pickup SFX
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
             audio.bind_mut().play_event_at(SfxEvent::LootPickup, pos);
         }
 
-        godot_print!("Collected upgrade: {} (x{:.0}%)", upgrade.name, (upgrade.multiplier - 1.0) * 100.0);
-
-        // Emit signal — GameManager routes to RunState then pushes to ShipController
+        let amount = self.organics_amount;
         self.base_mut().emit_signal(
-            signals::UPGRADE_COLLECTED,
-            &[
-                Variant::from(GString::from(&upgrade.name)),
-                Variant::from(upgrade.kind as i32),
-                Variant::from(upgrade.multiplier),
-            ],
+            signals::ORGANICS_COLLECTED,
+            &[Variant::from(amount)],
         );
 
         self.base_mut().queue_free();

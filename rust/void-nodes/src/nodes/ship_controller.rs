@@ -1,7 +1,7 @@
 use godot::prelude::*;
 use godot::classes::{
     RigidBody3D, IRigidBody3D, PhysicsDirectBodyState3D, PhysicsRayQueryParameters3D,
-    MeshInstance3D,
+    MeshInstance3D, Camera3D,
     GpuParticles3D, SphereMesh, StandardMaterial3D,
     Input,
 };
@@ -9,6 +9,7 @@ use godot::classes::{
 use super::constants::{actions, groups, methods, signals};
 use super::godot_util;
 
+use void_logic::debuff::SlowDebuff;
 use void_logic::laser::LaserLevel;
 use void_logic::loadout::Loadout;
 use void_logic::power_routing::PowerMode;
@@ -25,6 +26,11 @@ const TURN_GAIN: f32 = 12.0;
 
 /// Wing offset from ship center (local X axis), in meters.
 const WING_OFFSET: f32 = 0.3;
+
+/// Camera-shake burst when a grabber latches on: how long and how hard
+/// (Camera3D frustum-offset units).
+const SHAKE_DURATION: f32 = 0.5;
+const SHAKE_AMP: f32 = 0.25;
 
 /// 6DOF flight controller for the player ship. Per the simulation idiom
 /// (docs/architecture/physics_ownership.md): the engine owns motion,
@@ -43,6 +49,12 @@ pub struct ShipController {
     loadout: Loadout,
     laser_level: LaserLevel,
     power_mode: PowerMode,
+    /// Movement slow applied by swarmer contact.
+    slow: SlowDebuff,
+    /// Cached player camera, jittered for the grab shake.
+    camera: Option<Gd<Camera3D>>,
+    shake_timer: f32,
+    shake_phase: f32,
 }
 
 #[godot_api]
@@ -55,6 +67,10 @@ impl IRigidBody3D for ShipController {
             loadout: Loadout::new(),
             laser_level: LaserLevel::Red,
             power_mode: PowerMode::default(),
+            slow: SlowDebuff::new(),
+            camera: None,
+            shake_timer: 0.0,
+            shake_phase: 0.0,
         }
     }
 
@@ -70,6 +86,9 @@ impl IRigidBody3D for ShipController {
         // Decay is the engine's: damping = -ln(retention). Sets the
         // no-infinite-spin invariant (angular_damp > 0).
         self.apply_envelope();
+
+        // Cache the camera for the grab shake (None-safe if absent).
+        self.camera = self.base().try_get_node_as::<Camera3D>("Camera3D");
     }
 
     /// Flight runs in `integrate_forces`, the engine's hook for safely
@@ -87,6 +106,13 @@ impl IRigidBody3D for ShipController {
     /// `integrate_forces`.
     fn physics_process(&mut self, delta: f64) {
         self.handle_weapons_and_power(delta as f32);
+        // Tick the movement slow; tell the HUD only when it switches on/off.
+        if self.slow.tick(delta as f32) {
+            let active = self.slow.is_active();
+            self.base_mut()
+                .emit_signal(signals::PLAYER_SLOWED, &[Variant::from(active)]);
+        }
+        self.tick_shake(delta as f32);
     }
 }
 
@@ -97,6 +123,48 @@ impl ShipController {
 
     #[signal]
     fn power_mode_changed(mode: i32);
+
+    /// Player started/stopped being slowed (drives the HUD indicator).
+    #[signal]
+    fn player_slowed(active: bool);
+
+    /// Apply a movement slow (e.g. from swarmer contact). `factor` is the
+    /// thrust multiplier (0..1); `duration` is in seconds.
+    #[func]
+    pub fn apply_slow(&mut self, factor: f32, duration: f32) {
+        let was_active = self.slow.is_active();
+        self.slow.apply(factor, duration);
+        // On a fresh grab: tell the HUD, kick the camera shake, and play the
+        // latch sound so the player feels the attachment land.
+        if !was_active && self.slow.is_active() {
+            self.shake_timer = SHAKE_DURATION;
+            let pos = self.base().get_global_position();
+            if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+                audio.bind_mut().play_event_at(SfxEvent::ImpactMetal, pos);
+            }
+            self.base_mut()
+                .emit_signal(signals::PLAYER_SLOWED, &[Variant::from(true)]);
+        }
+    }
+
+    /// Jitter the camera with a decaying offset while the grab shake is active.
+    fn tick_shake(&mut self, delta: f32) {
+        let Some(mut camera) = self.camera.clone() else { return };
+        if !camera.is_instance_valid() {
+            return;
+        }
+        if self.shake_timer > 0.0 {
+            self.shake_timer = (self.shake_timer - delta).max(0.0);
+            self.shake_phase += delta;
+            let amp = SHAKE_AMP * (self.shake_timer / SHAKE_DURATION);
+            camera.set_h_offset((self.shake_phase * 91.0).sin() * amp);
+            camera.set_v_offset((self.shake_phase * 123.0).cos() * amp);
+            if self.shake_timer <= 0.0 {
+                camera.set_h_offset(0.0);
+                camera.set_v_offset(0.0);
+            }
+        }
+    }
 
     /// Set linear/angular damping from the loadout's per-second
     /// `Retention` (`damp = -ln(retention)`). The engine's damping *is*
@@ -144,7 +212,9 @@ impl ShipController {
             basis.col_c() * (-forward) + basis.col_a() * strafe + basis.col_b() * vertical;
         if thrust_dir.length() > 0.01 {
             let force = thrust_dir.normalized()
-                * (self.loadout.thrust_power() * self.power_mode.thrust_multiplier());
+                * (self.loadout.thrust_power()
+                    * self.power_mode.thrust_multiplier()
+                    * self.slow.multiplier());
             state.apply_central_force_ex().force(force).done();
         }
 

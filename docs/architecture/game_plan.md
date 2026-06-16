@@ -8,8 +8,14 @@
 
 ### Combat System
 - Dual hitscan lasers (ROYGBIV progression, 7 levels, damage 1-7)
-- 11 enemy types (Slime through Dragon) with chase/attack AI
+- 5 mechanical enemy types, each with a distinct AI archetype: GunDrone (kiter),
+  QuadOrb (swarmer — slows the player on contact), Bomber (suicide/detonate),
+  EyeDrone (kiter, spawns a GunDrone on death), QuadShell (shielded tank).
+  Behaviour is selected by an `Archetype` in `enemy_ai.rs`; the node turns the
+  per-tick intent into forces. A timed `SlowDebuff` (`debuff.rs`) drives the
+  swarmer's slow, shown by a HUD "SLOWED" indicator.
 - Enemy projectiles (Area3D, red spheres, collision via body_entered)
+- Ram/contact damage wired: enemies deal impact-scaled damage on player collision
 - Player take_damage → signal → GameManager → RunState
 - Ram damage on physical collision (scales with impact speed, both bounce)
 - Stabilizer button (Tab/L1) zeroes angular velocity
@@ -21,8 +27,10 @@
 - HUD: blue shield bar + power mode indicator ("SHIELDS" / "WEAPONS")
 
 ### Enemy Classification
-- EnemyCategory enum: Mechanical (GunDrone, EyeDrone, QuadOrb, QuadShell) / Biological (Slime, Bat, Shark, Raptor, Skeleton, Trilobite, Dragon)
-- category() method on EnemyType — ready for dual currency
+- All enemies are mechanical (drop components). The `EnemyCategory::Biological`
+  variant is retained for forward-compatibility but currently unused.
+- Dual currency is wired: mechanical kills earn **components** (in-run, lost on
+  death); **organics** (permanent) are collected from glowing barrels, not kills.
 
 ### Physics Architecture (Remediated)
 - Velocity readback after move_and_slide() on both player and enemies
@@ -45,7 +53,10 @@
 
 ### Phase 4: Dual Currency System
 
-**The economy split:** mechanical enemies drop components (in-run, lost on death), biological enemies drop organics (permanent, kept across runs). Information caches (crystalline pickups, 1-2 per level) are a third permanent currency.
+**The economy split:** mechanical enemy kills drop components (in-run, lost on death); organics (permanent, kept across runs) are collected from glowing barrels scattered in the level debris, not from kills. Information caches (crystalline pickups, 1-2 per level) are a third permanent currency.
+
+> **Status:** components + organics are implemented (`currency.rs`, `RunState`, `SaveGame`),
+> with organics sourced from `OrganicBarrel` pickups. Information caches are still pending.
 
 #### 4.1 Currency Types
 - **New file:** `void-logic/src/currency.rs`
@@ -156,7 +167,7 @@
 
 ## Key Design Decisions
 
-- **Trilobite is Biological** (de-evolved creature, drops organics)
+- **All enemies are mechanical** (organic enemies removed; organics come from barrels)
 - **10 levels per chapter, 40 total**
 - **Components lost on death, organics permanent** — creates the roguelite tension
 - **Player-enemy collision is gameplay** — ramming is a tactic, stabilizer is recovery

@@ -346,6 +346,17 @@ impl LevelManager {
             }
         }
 
+        // Scatter organics barrels (permanent currency) through the level.
+        if !enemy_positions.is_empty() {
+            let barrel_count = (enemy_positions.len() / 4).clamp(1, 6);
+            let mut barrel_rng = SmallRng::seed_from_u64(seed.value() ^ 0xBA22E1);
+            for _ in 0..barrel_count {
+                if let Some(pos) = enemy_positions.choose(&mut barrel_rng).copied() {
+                    self.spawn_organic_barrel(&mut loader, pos);
+                }
+            }
+        }
+
         // Spawn end-of-level portal in the last room
         if let Some(portal_pos) = portal_sys::portal_position(&graph, self.grid_cell_size) {
             if let Some(portal_scene) = loader.load(scenes::PORTAL) {
@@ -550,6 +561,23 @@ impl LevelManager {
         enemy.set_position(vec3(pos));
         self.base_mut().add_child(&enemy);
         enemy.reset_physics_interpolation();
+        true
+    }
+
+    /// Instantiate an organics barrel at `pos` as a LevelManager child so the
+    /// GameManager's spawned-entity scan connects its `organics_collected` signal.
+    fn spawn_organic_barrel(&mut self, loader: &mut Gd<ResourceLoader>, pos: [f32; 3]) -> bool {
+        let Some(scene_res) = loader.load(scenes::ORGANIC_BARREL) else {
+            return false;
+        };
+        let packed: Gd<PackedScene> = scene_res.cast();
+        let Some(instance) = packed.instantiate() else {
+            return false;
+        };
+        let mut node: Gd<Node3D> = instance.cast();
+        node.set_position(vec3(pos));
+        self.base_mut().add_child(&node);
+        node.reset_physics_interpolation();
         true
     }
 }

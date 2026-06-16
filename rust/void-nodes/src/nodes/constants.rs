@@ -26,8 +26,10 @@ pub mod signals {
     pub const BODY_ENTERED: &str = "body_entered";
     pub const SIZE_CHANGED: &str = "size_changed";
     pub const PLAYER_DAMAGED: &str = "player_damaged";
+    pub const PLAYER_SLOWED: &str = "player_slowed";
     pub const POWER_MODE_CHANGED: &str = "power_mode_changed";
     pub const UPGRADE_COLLECTED: &str = "upgrade_collected";
+    pub const ORGANICS_COLLECTED: &str = "organics_collected";
     pub const RENDER_VIEWPORTS_CHANGED: &str = "render_viewports_changed";
 }
 
@@ -61,13 +63,18 @@ pub mod methods {
     pub const RESET_LOADOUT: &str = "reset_loadout";
     pub const SET_LASER_LEVEL: &str = "set_laser_level";
     pub const UPDATE_HEALTH: &str = "update_health";
-    pub const UPDATE_CREDITS: &str = "update_credits";
+    pub const UPDATE_COMPONENTS: &str = "update_components";
+    pub const UPDATE_ORGANICS: &str = "update_organics";
+    pub const ON_ORGANICS_COLLECTED: &str = "on_organics_collected";
     pub const UPDATE_LASER: &str = "update_laser";
     pub const UPDATE_LEVEL: &str = "update_level";
     pub const UPDATE_SHIELD: &str = "update_shield";
     pub const UPDATE_POWER_MODE: &str = "update_power_mode";
     pub const GENERATE_LEVEL: &str = "generate_level";
     pub const ON_PLAYER_DAMAGED: &str = "on_player_damaged";
+    pub const ON_PLAYER_SLOWED: &str = "on_player_slowed";
+    pub const APPLY_SLOW: &str = "apply_slow";
+    pub const UPDATE_SLOW: &str = "update_slow";
     pub const ON_POWER_MODE_CHANGED: &str = "on_power_mode_changed";
     pub const ON_UPGRADE_COLLECTED: &str = "on_upgrade_collected";
     pub const ON_PHASE_CHANGED_AUDIO: &str = "on_phase_changed_audio";
@@ -161,6 +168,7 @@ pub mod properties {
 
 pub mod scenes {
     pub const LOOTBOX: &str = "res://scenes/items/lootbox.tscn";
+    pub const ORGANIC_BARREL: &str = "res://scenes/items/organic_barrel.tscn";
     pub const PORTAL: &str = "res://scenes/items/portal.tscn";
     pub const ENEMY_DRONE_FALLBACK: &str = "res://scenes/enemies/enemy_drone.tscn";
 }
@@ -193,8 +201,10 @@ mod tests {
             signals::BODY_ENTERED,
             signals::SIZE_CHANGED,
             signals::PLAYER_DAMAGED,
+            signals::PLAYER_SLOWED,
             signals::POWER_MODE_CHANGED,
             signals::UPGRADE_COLLECTED,
+            signals::ORGANICS_COLLECTED,
             signals::RENDER_VIEWPORTS_CHANGED,
         ];
         for sig in &all_signals {
@@ -234,11 +244,16 @@ mod tests {
             methods::HIDE_SHOWCASE,
             methods::SET_LASER_LEVEL,
             methods::UPDATE_HEALTH,
-            methods::UPDATE_CREDITS,
+            methods::UPDATE_COMPONENTS,
+            methods::UPDATE_ORGANICS,
+            methods::ON_ORGANICS_COLLECTED,
             methods::UPDATE_LASER,
             methods::UPDATE_LEVEL,
             methods::GENERATE_LEVEL,
             methods::ON_PLAYER_DAMAGED,
+            methods::ON_PLAYER_SLOWED,
+            methods::APPLY_SLOW,
+            methods::UPDATE_SLOW,
             methods::UPDATE_SHIELD,
             methods::ON_POWER_MODE_CHANGED,
             methods::ON_UPGRADE_COLLECTED,
@@ -296,6 +311,7 @@ mod tests {
     fn scene_paths_are_valid_godot_paths() {
         let all_scenes = [
             scenes::LOOTBOX,
+            scenes::ORGANIC_BARREL,
             scenes::PORTAL,
             scenes::ENEMY_DRONE_FALLBACK,
         ];
@@ -327,8 +343,10 @@ mod tests {
             signals::BODY_ENTERED,
             signals::SIZE_CHANGED,
             signals::PLAYER_DAMAGED,
+            signals::PLAYER_SLOWED,
             signals::POWER_MODE_CHANGED,
             signals::UPGRADE_COLLECTED,
+            signals::ORGANICS_COLLECTED,
             signals::RENDER_VIEWPORTS_CHANGED,
         ];
         for (i, a) in all.iter().enumerate() {
@@ -358,9 +376,11 @@ mod tests {
             methods::SHOW_SUMMARY, methods::SHOW_DEATH,
             methods::SHOW_SHOP, methods::SHOW_SHOWCASE,
             methods::HIDE_SHOWCASE, methods::SET_LASER_LEVEL,
-            methods::UPDATE_HEALTH, methods::UPDATE_CREDITS,
+            methods::UPDATE_HEALTH, methods::UPDATE_COMPONENTS,
+            methods::UPDATE_ORGANICS, methods::ON_ORGANICS_COLLECTED,
             methods::UPDATE_LASER, methods::UPDATE_LEVEL,
             methods::GENERATE_LEVEL, methods::ON_PLAYER_DAMAGED,
+            methods::ON_PLAYER_SLOWED, methods::APPLY_SLOW, methods::UPDATE_SLOW,
             methods::UPDATE_SHIELD, methods::ON_POWER_MODE_CHANGED,
             methods::ON_UPGRADE_COLLECTED, methods::UPDATE_POWER_MODE,
             methods::ON_PHASE_CHANGED_AUDIO, methods::ON_MUSIC_FINISHED,

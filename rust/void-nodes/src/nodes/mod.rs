@@ -6,6 +6,7 @@ mod telemetry;
 mod enemy_drone;
 mod enemy_bolt;
 mod lootbox;
+mod organic_barrel;
 mod level_manager;
 mod persistence;
 pub(crate) mod views;

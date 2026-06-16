@@ -184,9 +184,9 @@ impl GameManager {
         if let Some(enemy_type) = EnemyType::from_id(type_id) {
             self.run_state.record_kill(enemy_type);
             godot_print!(
-                "Kill: {} | Credits: {}",
+                "Kill: {} | Components: {}",
                 enemy_type.display_name(),
-                self.run_state.credits.balance,
+                self.run_state.components.balance,
             );
         }
     }
@@ -205,7 +205,7 @@ impl GameManager {
                 let kill_data = self.get_kill_summary();
                 summary.call(methods::SHOW_SUMMARY, &[
                     Variant::from(kill_data),
-                    Variant::from(self.run_state.credits.balance as i64),
+                    Variant::from(self.run_state.components.balance as i64),
                     Variant::from(self.run_state.current_level as i32),
                 ]);
             }
@@ -236,7 +236,7 @@ impl GameManager {
             Some(c) => c,
             None => return false,
         };
-        if self.run_state.credits.spend(cost).is_ok() {
+        if self.run_state.components.spend(cost).is_ok() {
             self.run_state.laser_level = next;
             godot_print!(
                 "Laser upgraded to {} (damage: {})",
@@ -369,6 +369,15 @@ impl GameManager {
         }
     }
 
+    /// Relay the player's slow state to the HUD indicator.
+    #[func]
+    pub fn on_player_slowed(&mut self, active: bool) {
+        let Some(parent) = self.base().get_parent() else { return };
+        if let Some(mut hud) = Self::find_ui_node(&parent, nodes::HUD) {
+            hud.call(methods::UPDATE_SLOW, &[Variant::from(active)]);
+        }
+    }
+
     /// Called when a lootbox is collected — update RunState then push to ShipController.
     #[func]
     pub fn on_upgrade_collected(&mut self, name: GString, kind_id: i32, multiplier: f32) {
@@ -401,6 +410,14 @@ impl GameManager {
         }
     }
 
+    /// Called when an organics barrel is collected — adds to the permanent
+    /// organics account and refreshes the HUD.
+    #[func]
+    pub fn on_organics_collected(&mut self, amount: i32) {
+        self.run_state.collect_organics(amount.max(0) as u32);
+        self.update_hud();
+    }
+
     /// Called when the player changes power routing mode.
     #[func]
     pub fn on_power_mode_changed(&mut self, mode: i32) {
@@ -426,8 +443,13 @@ impl GameManager {
     // --- Getters for UI ---
 
     #[func]
-    pub fn get_credits(&self) -> i64 {
-        self.run_state.credits.balance as i64
+    pub fn get_components(&self) -> i64 {
+        self.run_state.components.balance as i64
+    }
+
+    #[func]
+    pub fn get_organics(&self) -> i64 {
+        self.run_state.organics.balance as i64
     }
 
     #[func]
@@ -496,7 +518,7 @@ impl GameManager {
     pub fn can_afford_upgrade(&self) -> bool {
         if let Some(next) = self.run_state.laser_level.next() {
             if let Some(cost) = next.upgrade_cost() {
-                return self.run_state.credits.can_afford(cost);
+                return self.run_state.components.can_afford(cost);
             }
         }
         false
@@ -654,7 +676,7 @@ impl GameManager {
             let c = self.run_state.laser_level.color();
             let color = Color::from_rgba(c[0], c[1], c[2], c[3]);
             shop.call(methods::SHOW_SHOP, &[
-                Variant::from(self.run_state.credits.balance as i64),
+                Variant::from(self.run_state.components.balance as i64),
                 Variant::from(GString::from(self.run_state.laser_level.display_name())),
                 Variant::from(color),
                 Variant::from(self.run_state.laser_damage().as_f32()),
@@ -786,6 +808,8 @@ impl GameManager {
                 player.connect(signals::PLAYER_DAMAGED, &damage_callable);
                 let power_callable = self.base().callable(methods::ON_POWER_MODE_CHANGED);
                 player.connect(signals::POWER_MODE_CHANGED, &power_callable);
+                let slow_callable = self.base().callable(methods::ON_PLAYER_SLOWED);
+                player.connect(signals::PLAYER_SLOWED, &slow_callable);
             }
         }
 
@@ -806,16 +830,21 @@ impl GameManager {
         let kill_callable = self.base().callable(methods::ON_ENEMY_KILLED);
         let portal_callable = self.base().callable(methods::ON_PORTAL_ENTERED);
         let upgrade_callable = self.base().callable(methods::ON_UPGRADE_COLLECTED);
+        let organics_callable = self.base().callable(methods::ON_ORGANICS_COLLECTED);
 
-        // Scan LevelManager children (enemies, portals)
+        // Scan LevelManager children (enemies, portals, organics barrels)
         for child in level_mgr.get_children().iter_shared() {
             if child.has_signal(signals::ENEMY_KILLED) && !child.is_connected(signals::ENEMY_KILLED, &kill_callable) {
                 let mut c = child.clone();
                 c.connect(signals::ENEMY_KILLED, &kill_callable);
             }
             if child.has_signal(signals::PORTAL_ENTERED) && !child.is_connected(signals::PORTAL_ENTERED, &portal_callable) {
-                let mut c = child;
+                let mut c = child.clone();
                 c.connect(signals::PORTAL_ENTERED, &portal_callable);
+            }
+            if child.has_signal(signals::ORGANICS_COLLECTED) && !child.is_connected(signals::ORGANICS_COLLECTED, &organics_callable) {
+                let mut c = child;
+                c.connect(signals::ORGANICS_COLLECTED, &organics_callable);
             }
         }
 
@@ -846,8 +875,11 @@ impl GameManager {
             hud.call(methods::UPDATE_POWER_MODE, &[
                 Variant::from(self.current_power_mode),
             ]);
-            hud.call(methods::UPDATE_CREDITS, &[
-                Variant::from(self.run_state.credits.balance as i64),
+            hud.call(methods::UPDATE_COMPONENTS, &[
+                Variant::from(self.run_state.components.balance as i64),
+            ]);
+            hud.call(methods::UPDATE_ORGANICS, &[
+                Variant::from(self.run_state.organics.balance as i64),
             ]);
             hud.call(methods::UPDATE_LASER, &[
                 Variant::from(GString::from(self.run_state.laser_level.display_name())),

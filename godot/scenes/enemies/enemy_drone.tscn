@@ -6,11 +6,11 @@
 radius = 0.65
 
 [node name="EnemyDrone" type="EnemyDrone"]
-enemy_type_id = 1
+enemy_type_id = 0
 speed = 8.0
 health = 3.0
 detection_range = 25.0
-attack_range = 5.0
+attack_range = 10.0
 damage = 3.0
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="."]
