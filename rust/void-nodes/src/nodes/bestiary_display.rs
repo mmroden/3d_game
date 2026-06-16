@@ -5,6 +5,7 @@ use void_logic::enemy_type::EnemyType;
 
 use super::constants::scenes;
 use super::godot_util;
+use super::live_handle::LiveRef;
 
 /// Kind ids shared with the bestiary UI (mirror of `void_logic::bestiary::
 /// BestiaryKind`): 0 = organic barrel, 1 = component cache, 2 = enemy.
@@ -25,7 +26,7 @@ const ROTATION_SPEED: f32 = 0.6;
 #[class(base=Node3D)]
 pub struct BestiaryDisplay {
     base: Base<Node3D>,
-    model: Option<Gd<Node3D>>,
+    model: Option<LiveRef<Node3D>>,
 }
 
 #[godot_api]
@@ -78,7 +79,7 @@ impl BestiaryDisplay {
                 if let Some(color) = glow {
                     godot_util::attach_glow_light(&mut model, &color, 3.0, 8.0);
                 }
-                self.model = Some(model);
+                self.model = Some(LiveRef::new(&model));
             }
         }
         self.base_mut().set_visible(true);
@@ -94,10 +95,8 @@ impl BestiaryDisplay {
 
 impl BestiaryDisplay {
     fn clear_model(&mut self) {
-        if let Some(mut model) = self.model.take() {
-            if model.is_instance_valid() {
-                model.queue_free();
-            }
+        if let Some(model) = self.model.take() {
+            model.with(|m| m.queue_free());
         }
     }
 }

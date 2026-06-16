@@ -6,6 +6,7 @@ use godot::classes::{
 
 use super::constants::{methods, nodes, scenes, signals};
 use super::godot_util;
+use super::live_handle::{LiveRef, LiveVec, LiveOpt};
 use super::enemy_drone::EnemyDrone;
 use super::ship_controller::ShipController;
 use super::telemetry::Telemetry;
@@ -51,7 +52,7 @@ pub struct LevelManager {
     /// One container node per room (index = room-list order). Toggling
     /// a container's visibility culls that whole room — geometry and
     /// its lights — in one move.
-    room_nodes: Vec<Gd<Node3D>>,
+    room_nodes: LiveVec<Node3D>,
     /// Per-room world bounds + adjacency, parallel to `room_nodes`,
     /// for deciding which rooms to draw.
     room_bounds: Vec<RoomBounds>,
@@ -59,10 +60,10 @@ pub struct LevelManager {
     /// when this changes.
     current_room: Option<usize>,
     /// Cached player node, for reading position each tick.
-    player: Option<Gd<Node3D>>,
+    player: Option<LiveRef<Node3D>>,
     /// Blinking light fixtures and their full ("on") energy, modulated
     /// each frame so a flickering abandoned base reads as alive.
-    blinking_lights: Vec<(Gd<OmniLight3D>, f32)>,
+    blinking_lights: LiveVec<OmniLight3D, f32>,
     /// Accumulated time driving the blink phase.
     blink_time: f32,
 }
@@ -78,11 +79,11 @@ impl INode3D for LevelManager {
             grid_cell_size: 4.0,
             current_level: 1_i32,
             telemetry: Telemetry::new(),
-            room_nodes: Vec::new(),
+            room_nodes: LiveVec::new(),
             room_bounds: Vec::new(),
             current_room: None,
             player: None,
-            blinking_lights: Vec::new(),
+            blinking_lights: LiveVec::new(),
             blink_time: 0.0,
         }
     }
@@ -106,7 +107,7 @@ impl INode3D for LevelManager {
         // player's current location (cheap point-in-AABB; only re-toggles
         // visibility when the player changes rooms) — and times that work.
         let started = std::time::Instant::now();
-        let player_pos = self.player.as_ref().map(|p| arr(p.get_global_position()));
+        let player_pos = self.player.with(|p| arr(p.get_global_position()));
         if let Some(pos) = player_pos {
             self.update_room_culling(pos);
         }
@@ -180,7 +181,7 @@ impl LevelManager {
     /// flicker against freed lights.
     #[func]
     pub fn blinking_light_count(&self) -> i64 {
-        self.blinking_lights.len() as i64
+        self.blinking_lights.live_count() as i64
     }
 
     /// Build a single room for use as a menu/loadout backdrop: run the real
@@ -224,9 +225,8 @@ impl LevelManager {
         let rooms = level_assembly::spawn_list_full(&graph, self.grid_cell_size, seed);
 
         // Drop any room nodes from a previous level before rebuilding.
-        for mut node in std::mem::take(&mut self.room_nodes) {
-            node.queue_free();
-        }
+        self.room_nodes.for_each_live(|_, node, _| node.queue_free());
+        self.room_nodes.clear();
         self.room_bounds.clear();
         self.current_room = None;
         // Blinking lights are children of the freed room nodes.
@@ -343,13 +343,13 @@ impl LevelManager {
                 light.set_color(Color::from_rgb(ls.color[0], ls.color[1], ls.color[2]));
                 room_node.add_child(&light);
                 if ls.state == LightState::Blinking {
-                    self.blinking_lights.push((light.clone(), energy));
+                    self.blinking_lights.push(&light, energy);
                 }
                 light_count += 1;
             }
 
             self.room_bounds.push(room.bounds.clone());
-            self.room_nodes.push(room_node);
+            self.room_nodes.push(&room_node, ());
         }
 
         let enemy_positions: Vec<[f32; 3]> = rooms
@@ -408,7 +408,7 @@ impl LevelManager {
                     let mut player_node = player.clone();
                     player_node.set_position(vec3(spawn));
                     player_node.reset_physics_interpolation();
-                    self.player = Some(player_node.upcast::<Node3D>());
+                    self.player = Some(LiveRef::new(&player_node.upcast::<Node3D>()));
                     godot_print!("Player spawned at ({}, {}, {})", spawn[0], spawn[1], spawn[2]);
                 }
             }
@@ -527,14 +527,12 @@ impl LevelManager {
         }
         self.current_room = Some(current);
         let visible = level_assembly::visible_rooms(current, &self.room_bounds);
-        // Skip any room freed out from under us (keeping the index aligned with
-        // room_bounds), and set visibility on the handle in place — never clone
-        // a stored handle, since a freed one is a use-after-free panic.
-        for (i, node) in self.room_nodes.iter_mut().enumerate() {
-            if node.is_instance_valid() {
-                node.set_visible(visible.contains(&i));
-            }
-        }
+        // `for_each_live` skips any room freed out from under us and keeps the
+        // index aligned with room_bounds — a freed handle is structurally
+        // unreachable, so this can't use-after-free.
+        self.room_nodes.for_each_live(|i, node, _| {
+            node.set_visible(visible.contains(&i));
+        });
     }
 
     /// Flicker blinking fixtures: each toggles between its full energy
@@ -543,17 +541,15 @@ impl LevelManager {
     fn update_blinking_lights(&mut self, delta: f32) {
         self.blink_time += delta;
         let t = self.blink_time;
-        // A fixture can be freed out from under us — a regen, or GameManager
-        // clearing our children, frees the rooms while we still hold light
-        // handles. Drop the dead ones, and mutate the live ones in place rather
-        // than cloning the handle: cloning a freed `Gd` is a use-after-free that
-        // panicked here every frame.
-        self.blinking_lights.retain(|(light, _)| light.is_instance_valid());
-        for (i, (light, base)) in self.blinking_lights.iter_mut().enumerate() {
+        // `for_each_live` resolves each light by id and skips freed ones, so a
+        // fixture freed out from under us (a regen, or GameManager clearing our
+        // children) is a no-op rather than the use-after-free that panicked here
+        // every frame.
+        self.blinking_lights.for_each_live(|i, light, base| {
             let phase = i as f32 * 0.7;
             let lit = (t * 1.7 + phase).sin() > -0.55;
             light.set_param(godot::classes::light_3d::Param::ENERGY, if lit { *base } else { 0.0 });
-        }
+        });
     }
 
     /// Instantiate an enemy scene and position it. It self-drives as a

@@ -6,6 +6,7 @@ use godot::classes::{
 
 use super::menu_panel;
 use crate::nodes::constants::{actions, signals, theme};
+use crate::nodes::live_handle::LiveVec;
 use void_logic::menu_cursor::MenuCursor;
 use void_logic::ui_style;
 
@@ -15,7 +16,7 @@ use void_logic::ui_style;
 pub struct ShopUI {
     base: Base<CanvasLayer>,
     cursor: MenuCursor,
-    labels: Vec<Gd<Label>>,
+    labels: LiveVec<Label>,
 }
 
 #[godot_api]
@@ -24,7 +25,7 @@ impl ICanvasLayer for ShopUI {
         Self {
             base,
             cursor: MenuCursor::new(2),
-            labels: Vec::new(),
+            labels: LiveVec::new(),
         }
     }
 
@@ -147,7 +148,7 @@ impl ShopUI {
         };
         upgrade_label.add_theme_color_override(theme::FONT_COLOR, upgrade_color);
         vbox.add_child(&upgrade_label);
-        self.labels.push(upgrade_label);
+        self.labels.push(&upgrade_label, ());
 
         // Continue
         let mut continue_label = Label::new_alloc();
@@ -155,7 +156,7 @@ impl ShopUI {
         continue_label.add_theme_font_size_override(theme::FONT_SIZE, 28);
         continue_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_UNSELECTED));
         vbox.add_child(&continue_label);
-        self.labels.push(continue_label);
+        self.labels.push(&continue_label, ());
 
         self.base_mut().add_child(&panel);
         self.base_mut().set_visible(true);
@@ -163,16 +164,14 @@ impl ShopUI {
     }
 
     fn update_cursor(&mut self) {
-        for (i, label) in self.labels.iter_mut().enumerate() {
-            if !label.is_instance_valid() {
-                continue;
-            }
-            let color = if i == self.cursor.index() {
+        let selected = self.cursor.index();
+        self.labels.for_each_live(|i, label, _| {
+            let color = if i == selected {
                 super::rgb(ui_style::TEXT_SELECTED)
             } else {
                 super::rgb(ui_style::TEXT_UNSELECTED)
             };
             label.add_theme_color_override(theme::FONT_COLOR, color);
-        }
+        });
     }
 }

@@ -6,6 +6,7 @@ use godot::classes::{
 use rand::seq::{IndexedRandom, SliceRandom};
 
 use super::constants::{signals, methods, nodes};
+use super::live_handle::{LiveOpt, LiveRef};
 use void_logic::audio_catalog::{
     MusicContext, SfxEvent,
     CROSSFADE_SECS, GAMEPLAY_MUSIC_VOL, MENU_MUSIC_VOL, TRANSITION_MUSIC_VOL,
@@ -32,8 +33,8 @@ impl ActivePlayer {
 #[class(base=Node)]
 pub struct AudioManager {
     base: Base<Node>,
-    music_player_a: Option<Gd<AudioStreamPlayer>>,
-    music_player_b: Option<Gd<AudioStreamPlayer>>,
+    music_player_a: Option<LiveRef<AudioStreamPlayer>>,
+    music_player_b: Option<LiveRef<AudioStreamPlayer>>,
     active_player: ActivePlayer,
     crossfade_timer: f32,
     crossfade_target_vol: f32,
@@ -85,8 +86,8 @@ impl INode for AudioManager {
         player_a.connect("finished", &self.base().callable(methods::ON_MUSIC_FINISHED));
         player_b.connect("finished", &self.base().callable(methods::ON_MUSIC_FINISHED));
 
-        self.music_player_a = Some(player_a);
-        self.music_player_b = Some(player_b);
+        self.music_player_a = Some(LiveRef::new(&player_a));
+        self.music_player_b = Some(LiveRef::new(&player_b));
 
         // Connect to GameManager's phase_changed signal
         if let Some(parent) = self.base().get_parent() {
@@ -111,19 +112,17 @@ impl INode for AudioManager {
         let target_vol = self.crossfade_target_vol;
 
         let (active, inactive) = match self.active_player {
-            ActivePlayer::A => (&mut self.music_player_a, &mut self.music_player_b),
-            ActivePlayer::B => (&mut self.music_player_b, &mut self.music_player_a),
+            ActivePlayer::A => (&self.music_player_a, &self.music_player_b),
+            ActivePlayer::B => (&self.music_player_b, &self.music_player_a),
         };
-        if let Some(a) = active.as_mut() {
-            a.set_volume_db(linear_to_db(t * target_vol));
-        }
-        if let Some(i) = inactive.as_mut() {
+        active.with(|a| a.set_volume_db(linear_to_db(t * target_vol)));
+        inactive.with(|i| {
             let cur = db_to_linear(i.get_volume_db());
             i.set_volume_db(linear_to_db(cur * (1.0 - t)));
             if t >= 1.0 {
                 i.stop();
             }
-        }
+        });
 
         if t >= 1.0 {
             self.is_crossfading = false;
@@ -281,25 +280,24 @@ impl AudioManager {
     }
 
     fn start_music(&mut self, path: &str, volume: f32) {
-        let player = self.active_music_player_mut();
-        if let Some(p) = player {
-            if let Some(stream) = Self::load_audio_stream(path) {
+        if let Some(stream) = Self::load_audio_stream(path) {
+            self.active_music_player().with(|p| {
                 p.set_stream(&stream);
                 p.set_volume_db(linear_to_db(volume));
                 p.play();
-            }
+            });
         }
     }
 
     fn crossfade_to(&mut self, path: &str, target_vol: f32) {
         self.active_player = self.active_player.flip();
 
-        if let Some(p) = self.active_music_player_mut() {
-            if let Some(stream) = Self::load_audio_stream(path) {
+        if let Some(stream) = Self::load_audio_stream(path) {
+            self.active_music_player().with(|p| {
                 p.set_stream(&stream);
                 p.set_volume_db(linear_to_db(0.0));
                 p.play();
-            }
+            });
         }
 
         self.crossfade_target_vol = target_vol;
@@ -308,15 +306,14 @@ impl AudioManager {
     }
 
     fn set_active_volume(&mut self, volume: f32) {
-        if let Some(p) = self.active_music_player_mut() {
-            p.set_volume_db(linear_to_db(volume));
-        }
+        self.active_music_player()
+            .with(|p| p.set_volume_db(linear_to_db(volume)));
     }
 
-    fn active_music_player_mut(&mut self) -> Option<&mut Gd<AudioStreamPlayer>> {
+    fn active_music_player(&self) -> &Option<LiveRef<AudioStreamPlayer>> {
         match self.active_player {
-            ActivePlayer::A => self.music_player_a.as_mut(),
-            ActivePlayer::B => self.music_player_b.as_mut(),
+            ActivePlayer::A => &self.music_player_a,
+            ActivePlayer::B => &self.music_player_b,
         }
     }
 

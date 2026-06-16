@@ -6,6 +6,7 @@ use godot::classes::{
 };
 
 use crate::nodes::constants::theme;
+use crate::nodes::live_handle::{LiveOpt, LiveRef};
 use void_logic::ui_style;
 
 /// Health/shield bar dimensions. Shared by `build_hud` (background + fill) and
@@ -22,18 +23,18 @@ const BAR_INSET: f32 = 20.0;
 #[allow(clippy::upper_case_acronyms)]
 pub struct HUD {
     base: Base<CanvasLayer>,
-    health_fill: Option<Gd<ColorRect>>,
-    health_label: Option<Gd<Label>>,
-    shield_fill: Option<Gd<ColorRect>>,
-    shield_label: Option<Gd<Label>>,
-    power_mode_label: Option<Gd<Label>>,
-    components_label: Option<Gd<Label>>,
-    organics_label: Option<Gd<Label>>,
-    laser_label: Option<Gd<Label>>,
-    level_label: Option<Gd<Label>>,
-    laser_indicator: Option<Gd<ColorRect>>,
-    slow_overlay: Option<Gd<ColorRect>>,
-    slow_label: Option<Gd<Label>>,
+    health_fill: Option<LiveRef<ColorRect>>,
+    health_label: Option<LiveRef<Label>>,
+    shield_fill: Option<LiveRef<ColorRect>>,
+    shield_label: Option<LiveRef<Label>>,
+    power_mode_label: Option<LiveRef<Label>>,
+    components_label: Option<LiveRef<Label>>,
+    organics_label: Option<LiveRef<Label>>,
+    laser_label: Option<LiveRef<Label>>,
+    level_label: Option<LiveRef<Label>>,
+    laser_indicator: Option<LiveRef<ColorRect>>,
+    slow_overlay: Option<LiveRef<ColorRect>>,
+    slow_label: Option<LiveRef<Label>>,
 }
 
 #[godot_api]
@@ -71,118 +72,83 @@ impl HUD {
     pub fn update_health(&mut self, current: f32, max: f32) {
         let fraction = (current / max).clamp(0.0, 1.0);
 
-        if let Some(fill) = &mut self.health_fill {
-            if fill.is_instance_valid() {
-                fill.set_size(Vector2::new(BAR_WIDTH * fraction, HEALTH_BAR_HEIGHT));
-                let color = if fraction > 0.5 {
-                    Color::from_rgb(0.2, 0.9, 0.2)
-                } else if fraction > 0.25 {
-                    Color::from_rgb(0.9, 0.9, 0.2)
-                } else {
-                    Color::from_rgb(0.9, 0.2, 0.2)
-                };
-                fill.set_color(color);
-            }
-        }
+        self.health_fill.with(|fill| {
+            fill.set_size(Vector2::new(BAR_WIDTH * fraction, HEALTH_BAR_HEIGHT));
+            let color = if fraction > 0.5 {
+                Color::from_rgb(0.2, 0.9, 0.2)
+            } else if fraction > 0.25 {
+                Color::from_rgb(0.9, 0.9, 0.2)
+            } else {
+                Color::from_rgb(0.9, 0.2, 0.2)
+            };
+            fill.set_color(color);
+        });
 
-        if let Some(label) = &mut self.health_label {
-            if label.is_instance_valid() {
-                label.set_text(&format!("{}/{}", current as i32, max as i32));
-            }
-        }
+        self.health_label
+            .with(|label| label.set_text(&format!("{}/{}", current as i32, max as i32)));
     }
 
     #[func]
     pub fn update_shield(&mut self, current: f32, max: f32) {
         let fraction = if max > 0.0 { (current / max).clamp(0.0, 1.0) } else { 0.0 };
 
-        if let Some(fill) = &mut self.shield_fill {
-            if fill.is_instance_valid() {
-                fill.set_size(Vector2::new(BAR_WIDTH * fraction, SHIELD_BAR_HEIGHT));
-                // Blue to dark blue as shield depletes
-                let brightness = 0.3 + fraction * 0.7;
-                fill.set_color(Color::from_rgb(0.2 * brightness, 0.4 * brightness, brightness));
-            }
-        }
+        self.shield_fill.with(|fill| {
+            fill.set_size(Vector2::new(BAR_WIDTH * fraction, SHIELD_BAR_HEIGHT));
+            // Blue to dark blue as shield depletes
+            let brightness = 0.3 + fraction * 0.7;
+            fill.set_color(Color::from_rgb(0.2 * brightness, 0.4 * brightness, brightness));
+        });
 
-        if let Some(label) = &mut self.shield_label {
-            if label.is_instance_valid() {
-                label.set_text(&format!("{}/{}", current as i32, max as i32));
-            }
-        }
+        self.shield_label
+            .with(|label| label.set_text(&format!("{}/{}", current as i32, max as i32)));
     }
 
     /// Update power routing mode display. 0=Balanced, 1=ShieldBoost, 2=WeaponBoost.
     #[func]
     pub fn update_power_mode(&mut self, mode: i32) {
-        if let Some(label) = &mut self.power_mode_label {
-            if label.is_instance_valid() {
-                let (text, color) = match mode {
-                    1 => ("SHIELDS", Color::from_rgb(0.3, 0.6, 1.0)),
-                    2 => ("WEAPONS", Color::from_rgb(1.0, 0.4, 0.2)),
-                    _ => ("", Color::from_rgba(0.5, 0.5, 0.5, 0.5)),
-                };
-                label.set_text(text);
-                label.add_theme_color_override(theme::FONT_COLOR, color);
-            }
-        }
+        self.power_mode_label.with(|label| {
+            let (text, color) = match mode {
+                1 => ("SHIELDS", Color::from_rgb(0.3, 0.6, 1.0)),
+                2 => ("WEAPONS", Color::from_rgb(1.0, 0.4, 0.2)),
+                _ => ("", Color::from_rgba(0.5, 0.5, 0.5, 0.5)),
+            };
+            label.set_text(text);
+            label.add_theme_color_override(theme::FONT_COLOR, color);
+        });
     }
 
     #[func]
     pub fn update_components(&mut self, components: i64) {
-        if let Some(label) = &mut self.components_label {
-            if label.is_instance_valid() {
-                label.set_text(&format!("Components: {}", components));
-            }
-        }
+        self.components_label
+            .with(|label| label.set_text(&format!("Components: {}", components)));
     }
 
     #[func]
     pub fn update_organics(&mut self, organics: i64) {
-        if let Some(label) = &mut self.organics_label {
-            if label.is_instance_valid() {
-                label.set_text(&format!("Organics: {}", organics));
-            }
-        }
+        self.organics_label
+            .with(|label| label.set_text(&format!("Organics: {}", organics)));
     }
 
     #[func]
     pub fn update_laser(&mut self, name: GString, color: Color) {
-        if let Some(label) = &mut self.laser_label {
-            if label.is_instance_valid() {
-                label.set_text(&format!("Laser: {}", name));
-                label.add_theme_color_override(theme::FONT_COLOR, color);
-            }
-        }
-        if let Some(indicator) = &mut self.laser_indicator {
-            if indicator.is_instance_valid() {
-                indicator.set_color(color);
-            }
-        }
+        self.laser_label.with(|label| {
+            label.set_text(&format!("Laser: {}", name));
+            label.add_theme_color_override(theme::FONT_COLOR, color);
+        });
+        self.laser_indicator.with(|indicator| indicator.set_color(color));
     }
 
     #[func]
     pub fn update_level(&mut self, level: i32) {
-        if let Some(label) = &mut self.level_label {
-            if label.is_instance_valid() {
-                label.set_text(&format!("Level {}", level));
-            }
-        }
+        self.level_label
+            .with(|label| label.set_text(&format!("Level {}", level)));
     }
 
     /// Show/hide the "SLOWED" debuff indicator (red screen tint + label).
     #[func]
     pub fn update_slow(&mut self, active: bool) {
-        if let Some(overlay) = &mut self.slow_overlay {
-            if overlay.is_instance_valid() {
-                overlay.set_visible(active);
-            }
-        }
-        if let Some(label) = &mut self.slow_label {
-            if label.is_instance_valid() {
-                label.set_visible(active);
-            }
-        }
+        self.slow_overlay.with(|overlay| overlay.set_visible(active));
+        self.slow_label.with(|label| label.set_visible(active));
     }
 }
 
@@ -220,8 +186,8 @@ impl HUD {
 
         // We need health_fill overlapping the bg — add it to the CanvasLayer directly
         // and position it relative to the top_left container
-        self.health_fill = Some(health_fill.clone());
-        self.health_label = Some(health_label);
+        self.health_fill = Some(LiveRef::new(&health_fill));
+        self.health_label = Some(LiveRef::new(&health_label));
 
         // Shield bar row (below health)
         let mut shield_row = HBoxContainer::new_alloc();
@@ -244,8 +210,8 @@ impl HUD {
 
         top_left.add_child(&shield_row);
 
-        self.shield_fill = Some(shield_fill.clone());
-        self.shield_label = Some(shield_label);
+        self.shield_fill = Some(LiveRef::new(&shield_fill));
+        self.shield_label = Some(LiveRef::new(&shield_label));
 
         // Power mode indicator (below shield bar)
         let mut power_mode_label = Label::new_alloc();
@@ -253,7 +219,7 @@ impl HUD {
         power_mode_label.add_theme_font_size_override(theme::FONT_SIZE, 16);
         power_mode_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgba(0.5, 0.5, 0.5, 0.5));
         top_left.add_child(&power_mode_label);
-        self.power_mode_label = Some(power_mode_label);
+        self.power_mode_label = Some(LiveRef::new(&power_mode_label));
 
         // Components (in-run currency)
         let mut components_label = Label::new_alloc();
@@ -261,7 +227,7 @@ impl HUD {
         components_label.add_theme_font_size_override(theme::FONT_SIZE, 18);
         components_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_COMPONENTS));
         top_left.add_child(&components_label);
-        self.components_label = Some(components_label);
+        self.components_label = Some(LiveRef::new(&components_label));
 
         // Organics (permanent currency)
         let mut organics_label = Label::new_alloc();
@@ -269,7 +235,7 @@ impl HUD {
         organics_label.add_theme_font_size_override(theme::FONT_SIZE, 18);
         organics_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_ORGANICS));
         top_left.add_child(&organics_label);
-        self.organics_label = Some(organics_label);
+        self.organics_label = Some(LiveRef::new(&organics_label));
 
         self.base_mut().add_child(&top_left);
         // Add health fill as overlay on CanvasLayer, positioned at top-left
@@ -293,14 +259,14 @@ impl HUD {
         laser_indicator.set_custom_minimum_size(Vector2::new(16.0, 16.0));
         laser_indicator.set_color(Color::from_rgb(1.0, 0.2, 0.2));
         laser_row.add_child(&laser_indicator);
-        self.laser_indicator = Some(laser_indicator);
+        self.laser_indicator = Some(LiveRef::new(&laser_indicator));
 
         let mut laser_label = Label::new_alloc();
         laser_label.set_text("Laser: Red");
         laser_label.add_theme_font_size_override(theme::FONT_SIZE, 18);
         laser_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(1.0, 0.2, 0.2));
         laser_row.add_child(&laser_label);
-        self.laser_label = Some(laser_label);
+        self.laser_label = Some(LiveRef::new(&laser_label));
 
         top_right.add_child(&laser_row);
 
@@ -310,7 +276,7 @@ impl HUD {
         level_label.add_theme_font_size_override(theme::FONT_SIZE, 18);
         level_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_SECONDARY));
         top_right.add_child(&level_label);
-        self.level_label = Some(level_label);
+        self.level_label = Some(LiveRef::new(&level_label));
 
         self.base_mut().add_child(&top_right);
 
@@ -364,7 +330,7 @@ impl HUD {
         slow_overlay.set_color(Color::from_rgba(0.7, 0.1, 0.1, 0.16));
         slow_overlay.set_visible(false);
         self.base_mut().add_child(&slow_overlay);
-        self.slow_overlay = Some(slow_overlay);
+        self.slow_overlay = Some(LiveRef::new(&slow_overlay));
 
         let mut slow_label = Label::new_alloc();
         slow_label.set_anchors_preset(LayoutPreset::CENTER_TOP);
@@ -374,6 +340,6 @@ impl HUD {
         slow_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(1.0, 0.4, 0.4));
         slow_label.set_visible(false);
         self.base_mut().add_child(&slow_label);
-        self.slow_label = Some(slow_label);
+        self.slow_label = Some(LiveRef::new(&slow_label));
     }
 }

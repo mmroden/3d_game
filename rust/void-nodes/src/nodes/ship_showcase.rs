@@ -5,6 +5,7 @@ use godot::classes::{
 
 use super::constants::scenes;
 use super::godot_util;
+use super::live_handle::{LiveRef, LiveVec};
 
 /// Target length of the showcase ship (auto-scaled to fit the view).
 const SHOWCASE_SHIP_LENGTH: f32 = 2.5;
@@ -19,9 +20,9 @@ pub struct ShipShowcase {
     beam_timer: f32,
     beam_interval: f32,
     accent_color: [f32; 4],
-    beams: Vec<Gd<MeshInstance3D>>,
+    beams: LiveVec<MeshInstance3D>,
     /// Color accent light on the showcase model.
-    model_glow: Option<Gd<OmniLight3D>>,
+    model_glow: Option<LiveRef<OmniLight3D>>,
 }
 
 #[godot_api]
@@ -33,7 +34,7 @@ impl INode3D for ShipShowcase {
             beam_timer: 0.0,
             beam_interval: 1.5,
             accent_color: [1.0, 0.2, 0.2, 1.0],
-            beams: Vec::new(),
+            beams: LiveVec::new(),
             model_glow: None,
         }
     }
@@ -73,7 +74,7 @@ impl ShipShowcase {
     #[func]
     pub fn show_showcase(&mut self, color: Color) {
         self.accent_color = [color.r, color.g, color.b, color.a];
-        godot_util::recolor_glow(&mut self.model_glow, color);
+        godot_util::recolor_glow(&self.model_glow, color);
         self.beam_timer = 0.0;
         self.base_mut().set_visible(true);
     }
@@ -82,11 +83,8 @@ impl ShipShowcase {
     pub fn hide_showcase(&mut self) {
         self.base_mut().set_visible(false);
         // Clean up beams
-        for mut beam in self.beams.drain(..) {
-            if beam.is_instance_valid() {
-                beam.queue_free();
-            }
-        }
+        self.beams.for_each_live(|_, beam, _| beam.queue_free());
+        self.beams.clear();
     }
 }
 
@@ -132,9 +130,8 @@ impl ShipShowcase {
     fn spawn_beam(&mut self, from: Vector3, to: Vector3) {
         if let Some(mesh_instance) = godot_util::create_beam_mesh(from, to, &self.accent_color) {
             if let Some(root) = godot_util::scene_root(self.base().get_tree()) {
-                let node = mesh_instance.clone();
                 root.clone().add_child(&mesh_instance);
-                self.beams.push(node);
+                self.beams.push(&mesh_instance, ());
             }
         }
     }

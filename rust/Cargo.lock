@@ -441,7 +441,9 @@ name = "void_scavenger"
 version = "0.1.0"
 dependencies = [
  "godot",
+ "quote",
  "rand",
+ "syn",
  "void_logic",
 ]
 

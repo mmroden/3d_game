@@ -9,6 +9,7 @@ use godot::classes::{
 use super::constants::{groups, methods, scenes, signals};
 use super::enemy_bolt::EnemyBolt;
 use super::godot_util;
+use super::live_handle::{LiveOpt, LiveRef};
 use void_logic::enemy_ai::{strafe_velocity, Archetype, Attack, DroneAi, DroneConfig, Movement};
 use void_logic::audio_catalog::SfxEvent;
 use void_logic::difficulty;
@@ -53,9 +54,9 @@ pub struct EnemyDrone {
     level: i32,
 
     ai: DroneAi,
-    player: Option<Gd<Node3D>>,
-    health_bar_bg: Option<Gd<MeshInstance3D>>,
-    health_bar_fill: Option<Gd<MeshInstance3D>>,
+    player: Option<LiveRef<Node3D>>,
+    health_bar_bg: Option<LiveRef<MeshInstance3D>>,
+    health_bar_fill: Option<LiveRef<MeshInstance3D>>,
     /// Chase force decided in `physics_process` (where the LOS ray query is
     /// legal) and applied in `integrate_forces` (the engine's hook for
     /// touching physics state) — same split as the ship.
@@ -134,7 +135,7 @@ impl IRigidBody3D for EnemyDrone {
         let tree = self.base().get_tree();
         let players = tree.get_nodes_in_group(groups::PLAYER);
         if let Some(player_node) = players.get(0) {
-            self.player = Some(player_node.cast::<Node3D>());
+            self.player = Some(LiveRef::new(&player_node.cast::<Node3D>()));
         }
 
         self.create_health_bar();
@@ -149,12 +150,8 @@ impl IRigidBody3D for EnemyDrone {
         if self.ai.is_dead() {
             return;
         }
-        let Some(player) = self.player.clone() else { return };
-        if !player.is_instance_valid() {
-            return;
-        }
+        let Some(player_pos) = self.player.with(|p| p.get_global_position()) else { return };
         let my_pos = self.base().get_global_position();
-        let player_pos = player.get_global_position();
         let has_sight = self.has_line_of_sight(my_pos, player_pos);
         let (desired, attack) = self.decide(has_sight, my_pos, player_pos, delta as f32);
         // Chase with force, not velocity: scaled by damping so terminal speed
@@ -253,13 +250,13 @@ impl EnemyDrone {
     /// Bomber detonation: deal area damage to the player if within blast radius,
     /// then run the normal death sequence (explosion + loot + cleanup).
     fn detonate(&mut self, my_pos: Vector3, player_pos: Vector3, radius: f32) {
-        if let Some(mut player) = self.player.clone() {
-            if player.is_instance_valid()
-                && my_pos.distance_to(player_pos) <= radius
-                && player.has_method(methods::TAKE_DAMAGE)
-            {
-                player.call(methods::TAKE_DAMAGE, &[Variant::from(self.damage)]);
-            }
+        if my_pos.distance_to(player_pos) <= radius {
+            let damage = self.damage;
+            self.player.with(|player| {
+                if player.has_method(methods::TAKE_DAMAGE) {
+                    player.call(methods::TAKE_DAMAGE, &[Variant::from(damage)]);
+                }
+            });
         }
         self.on_death();
     }
@@ -501,7 +498,7 @@ impl EnemyDrone {
         bg.set_surface_override_material(0, &bg_mat);
         bg.set_position(Vector3::new(0.0, 1.0, 0.0));
         self.base_mut().add_child(&bg);
-        self.health_bar_bg = Some(bg);
+        self.health_bar_bg = Some(LiveRef::new(&bg));
 
         // Fill (green/red bar)
         let mut fill = MeshInstance3D::new_alloc();
@@ -517,7 +514,7 @@ impl EnemyDrone {
         fill.set_surface_override_material(0, &fill_mat);
         fill.set_position(Vector3::new(0.0, 1.0, 0.005));
         self.base_mut().add_child(&fill);
-        self.health_bar_fill = Some(fill);
+        self.health_bar_fill = Some(LiveRef::new(&fill));
     }
 
     fn update_health_bar(&mut self, player_pos: Vector3) {
@@ -543,44 +540,33 @@ impl EnemyDrone {
         let bg_transform = Transform3D::new(billboard_basis, bar_pos);
         let fill_transform = Transform3D::new(billboard_basis, bar_pos + dir * -0.005);
 
-        if let Some(bg) = &mut self.health_bar_bg {
-            if bg.is_instance_valid() {
-                bg.set_global_transform(bg_transform);
-            }
-        }
-        if let Some(fill) = &mut self.health_bar_fill {
-            if fill.is_instance_valid() {
-                fill.set_global_transform(fill_transform);
-            }
-        }
+        self.health_bar_bg.with(|bg| bg.set_global_transform(bg_transform));
+        self.health_bar_fill.with(|fill| fill.set_global_transform(fill_transform));
     }
 
     fn update_health_bar_fill(&mut self) {
         let fraction = self.ai.health.fraction(self.ai.config.health);
 
-        if let Some(fill) = &mut self.health_bar_fill {
-            if !fill.is_instance_valid() {
-                return;
-            }
+        // Color: green → yellow → red
+        let color = if fraction > 0.5 {
+            let t = (fraction - 0.5) * 2.0;
+            Color::from_rgba(1.0 - t, 0.9, 0.1 * (1.0 - t), 0.9)
+        } else {
+            let t = fraction * 2.0;
+            Color::from_rgba(0.9, t * 0.9, 0.0, 0.9)
+        };
+
+        self.health_bar_fill.with(|fill| {
             // Scale X to represent remaining health
             let mut transform = fill.get_transform();
             transform.basis = transform.basis.scaled(Vector3::new(fraction.max(0.01), 1.0, 1.0));
             fill.set_transform(transform);
 
-            // Color: green → yellow → red
-            let color = if fraction > 0.5 {
-                let t = (fraction - 0.5) * 2.0;
-                Color::from_rgba(1.0 - t, 0.9, 0.1 * (1.0 - t), 0.9)
-            } else {
-                let t = fraction * 2.0;
-                Color::from_rgba(0.9, t * 0.9, 0.0, 0.9)
-            };
-
             if let Some(mat) = fill.get_surface_override_material(0) {
                 let mut std_mat = mat.cast::<StandardMaterial3D>();
                 std_mat.set_albedo(color);
             }
-        }
+        });
     }
 
     fn spawn_hit_flash(&mut self) {

@@ -7,6 +7,7 @@ use godot::classes::{
 
 use super::menu_panel;
 use crate::nodes::constants::{actions, signals, theme};
+use crate::nodes::live_handle::LiveVec;
 use void_logic::menu_cursor::MenuCursor;
 use void_logic::ship::ShipColor;
 use void_logic::ui_style;
@@ -18,7 +19,7 @@ use void_logic::ui_style;
 pub struct ShipSelectUI {
     base: Base<CanvasLayer>,
     cursor: MenuCursor,
-    labels: Vec<Gd<Label>>,
+    labels: LiveVec<Label>,
     /// Currently applied ship color id (for the selection marker).
     selected_id: i32,
 }
@@ -30,7 +31,7 @@ impl ICanvasLayer for ShipSelectUI {
             base,
             // One row per color, plus Continue.
             cursor: MenuCursor::new(ShipColor::ALL.len() + 1),
-            labels: Vec::new(),
+            labels: LiveVec::new(),
             selected_id: 0,
         }
     }
@@ -120,7 +121,7 @@ impl ShipSelectUI {
             label.add_theme_font_size_override(theme::FONT_SIZE, 28);
             label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgba(c[0], c[1], c[2], c[3]));
             vbox.add_child(&label);
-            self.labels.push(label);
+            self.labels.push(&label, ());
         }
 
         let mut spacer2 = Control::new_alloc();
@@ -132,18 +133,16 @@ impl ShipSelectUI {
         continue_label.add_theme_font_size_override(theme::FONT_SIZE, 28);
         continue_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_UNSELECTED));
         vbox.add_child(&continue_label);
-        self.labels.push(continue_label);
+        self.labels.push(&continue_label, ());
 
         self.base_mut().add_child(&panel);
         self.update_cursor();
     }
 
     fn update_cursor(&mut self) {
-        for (i, label) in self.labels.iter_mut().enumerate() {
-            if !label.is_instance_valid() {
-                continue;
-            }
-            if i == self.cursor.index() {
+        let selected = self.cursor.index();
+        self.labels.for_each_live(|i, label, _| {
+            if i == selected {
                 label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_SELECTED));
             } else if i < ShipColor::ALL.len() {
                 // Restore the color's own hue when not under the cursor.
@@ -152,6 +151,6 @@ impl ShipSelectUI {
             } else {
                 label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_UNSELECTED));
             }
-        }
+        });
     }
 }

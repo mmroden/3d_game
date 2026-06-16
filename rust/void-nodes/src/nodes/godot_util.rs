@@ -12,6 +12,7 @@ use godot::classes::{
 
 use super::audio_manager::AudioManager;
 use super::constants::{meta_keys, nodes};
+use super::live_handle::{LiveOpt, LiveRef, LiveVec};
 
 /// Yaw applied to the imported ship model so its nose points along the ship's
 /// forward (-Z); the asset is modelled facing backward. One source of truth for
@@ -92,24 +93,20 @@ pub fn create_beam_mesh(from: Vector3, to: Vector3, color: &[f32]) -> Option<Gd<
 /// Attach a colored point light to a node so it reads as "glowing" (collectible
 /// pickups, the ship's color accent). Returns the light so callers that need to
 /// recolor it later can keep the handle; callers that don't can ignore it.
-pub fn attach_glow_light(parent: &mut Gd<Node3D>, color: &[f32], energy: f32, range: f32) -> Gd<OmniLight3D> {
+pub fn attach_glow_light(parent: &mut Gd<Node3D>, color: &[f32], energy: f32, range: f32) -> LiveRef<OmniLight3D> {
     let mut light = OmniLight3D::new_alloc();
     light.set_color(Color::from_rgb(color[0], color[1], color[2]));
     light.set_param(light_3d::Param::ENERGY, energy);
     light.set_param(light_3d::Param::RANGE, range);
     light.set_param(light_3d::Param::ATTENUATION, 1.5);
     parent.add_child(&light);
-    light
+    LiveRef::new(&light)
 }
 
 /// Recolor a glow light (e.g. when the player changes ship color). No-op if the
 /// handle is absent or freed. One recolor path for the player and the showcase.
-pub fn recolor_glow(glow: &mut Option<Gd<OmniLight3D>>, color: Color) {
-    if let Some(light) = glow {
-        if light.is_instance_valid() {
-            light.set_color(Color::from_rgb(color.r, color.g, color.b));
-        }
-    }
+pub fn recolor_glow(glow: &Option<LiveRef<OmniLight3D>>, color: Color) {
+    glow.with(|light| light.set_color(Color::from_rgb(color.r, color.g, color.b)));
 }
 
 /// Load the ship model scene at `path`, instance it under `parent`, scale it to
@@ -195,31 +192,29 @@ pub fn combined_mesh_aabb(root: &Gd<Node3D>) -> Option<godot::builtin::Aabb> {
     result
 }
 
-/// Age all beams in a list, fading their alpha. Returns only those still alive.
-pub fn age_beams(beams: &mut Vec<Gd<MeshInstance3D>>, delta: f32, lifetime: f32, color: &[f32]) {
-    beams.retain_mut(|beam| {
-        if !beam.is_instance_valid() {
-            return false;
-        }
+/// Age all beams in a list, fading their alpha and dropping the ones that have
+/// lived out their lifetime (or been freed). Beams are held by identity, so an
+/// already-freed beam is dropped rather than touched.
+pub fn age_beams(beams: &mut LiveVec<MeshInstance3D>, delta: f32, lifetime: f32, color: &[f32]) {
+    beams.retain_live(|beam, _| {
         let age = beam.get_meta(meta_keys::BEAM_AGE).to::<f32>() + delta;
         if age >= lifetime {
             beam.queue_free();
-            false
-        } else {
-            beam.set_meta(meta_keys::BEAM_AGE, &Variant::from(age));
-            let alpha = 1.0 - (age / lifetime);
-            if let Some(mat) = beam.get_surface_override_material(0) {
-                let mut std_mat = mat.cast::<StandardMaterial3D>();
-                std_mat.set_albedo(Color::from_rgba(color[0], color[1], color[2], alpha));
-            }
-            // Fade the attached light
-            for child in beam.get_children().iter_shared() {
-                if let Ok(mut light) = child.try_cast::<OmniLight3D>() {
-                    light.set_param(light_3d::Param::ENERGY, 3.0 * alpha);
-                }
-            }
-            true
+            return false;
         }
+        beam.set_meta(meta_keys::BEAM_AGE, &Variant::from(age));
+        let alpha = 1.0 - (age / lifetime);
+        if let Some(mat) = beam.get_surface_override_material(0) {
+            let mut std_mat = mat.cast::<StandardMaterial3D>();
+            std_mat.set_albedo(Color::from_rgba(color[0], color[1], color[2], alpha));
+        }
+        // Fade the attached light
+        for child in beam.get_children().iter_shared() {
+            if let Ok(mut light) = child.try_cast::<OmniLight3D>() {
+                light.set_param(light_3d::Param::ENERGY, 3.0 * alpha);
+            }
+        }
+        true
     });
 }
 

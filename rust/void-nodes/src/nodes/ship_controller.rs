@@ -8,6 +8,7 @@ use godot::classes::{
 
 use super::constants::{actions, groups, methods, scenes, signals};
 use super::godot_util;
+use super::live_handle::{LiveOpt, LiveRef, LiveVec};
 
 use void_logic::debuff::SlowDebuff;
 use void_logic::laser::LaserLevel;
@@ -72,14 +73,14 @@ pub struct ShipController {
     base: Base<RigidBody3D>,
 
     weapon: WeaponState,
-    beam_nodes: Vec<Gd<MeshInstance3D>>,
+    beam_nodes: LiveVec<MeshInstance3D>,
     loadout: Loadout,
     laser_level: LaserLevel,
     power_mode: PowerMode,
     /// Movement slow applied by swarmer contact.
     slow: SlowDebuff,
     /// Cached player camera, jittered for the grab shake.
-    camera: Option<Gd<Camera3D>>,
+    camera: Option<LiveRef<Camera3D>>,
     shake_timer: f32,
     shake_phase: f32,
     camera_mode: CameraMode,
@@ -89,9 +90,9 @@ pub struct ShipController {
     was_in_contact: bool,
     /// The ship model node — hidden in cockpit view (you look out of it),
     /// shown in chase view.
-    ship_model: Option<Gd<Node3D>>,
+    ship_model: Option<LiveRef<Node3D>>,
     /// Color accent light on the ship model (the player's chosen color).
-    color_glow: Option<Gd<OmniLight3D>>,
+    color_glow: Option<LiveRef<OmniLight3D>>,
     /// Flight-speed multiplier from the chosen ship color.
     ship_thrust_mul: f32,
 }
@@ -102,7 +103,7 @@ impl IRigidBody3D for ShipController {
         Self {
             base,
             weapon: WeaponState::default(),
-            beam_nodes: Vec::new(),
+            beam_nodes: LiveVec::new(),
             loadout: Loadout::new(),
             laser_level: LaserLevel::Red,
             power_mode: PowerMode::default(),
@@ -136,7 +137,9 @@ impl IRigidBody3D for ShipController {
         self.apply_envelope();
 
         // Cache the camera for the grab shake (None-safe if absent).
-        self.camera = self.base().try_get_node_as::<Camera3D>("Camera3D");
+        self.camera = self.base()
+            .try_get_node_as::<Camera3D>("Camera3D")
+            .map(|c| LiveRef::new(&c));
         self.spawn_ship_model();
         self.apply_camera_mode();
     }
@@ -222,7 +225,7 @@ impl ShipController {
     #[func]
     pub fn configure_ship(&mut self, color: Color, thrust_mul: f32) {
         self.ship_thrust_mul = thrust_mul;
-        godot_util::recolor_glow(&mut self.color_glow, color);
+        godot_util::recolor_glow(&self.color_glow, color);
     }
 
     /// Build the player ship: the shared model helper, a capsule collider, and
@@ -234,7 +237,7 @@ impl ShipController {
         else {
             return;
         };
-        self.ship_model = Some(model.clone());
+        self.ship_model = Some(LiveRef::new(&model));
 
         // Flight collider: a capsule laid along the hull. It's rounded, so it
         // slides off doorframe edges instead of snagging a wingtip, and sized in
@@ -261,15 +264,8 @@ impl ShipController {
     /// Place the camera for the current view mode, and show the ship model only
     /// in chase view (in cockpit you're inside the hull, so it would block the view).
     fn apply_camera_mode(&mut self) {
-        if let Some(model) = &mut self.ship_model {
-            if model.is_instance_valid() {
-                model.set_visible(self.camera_mode == CameraMode::Chase);
-            }
-        }
-        let Some(mut camera) = self.camera.clone() else { return };
-        if !camera.is_instance_valid() {
-            return;
-        }
+        let chase = self.camera_mode == CameraMode::Chase;
+        self.ship_model.with(|model| model.set_visible(chase));
         let transform = match self.camera_mode {
             CameraMode::Cockpit => Transform3D::new(Basis::IDENTITY, COCKPIT_OFFSET),
             CameraMode::Chase => {
@@ -278,26 +274,31 @@ impl ShipController {
                 Transform3D::new(godot_util::basis_from_direction(look_dir), CHASE_OFFSET)
             }
         };
-        camera.set_transform(transform);
+        self.camera.with(|camera| camera.set_transform(transform));
     }
 
     /// Jitter the camera with a decaying offset while the grab shake is active.
     fn tick_shake(&mut self, delta: f32) {
-        let Some(mut camera) = self.camera.clone() else { return };
-        if !camera.is_instance_valid() {
+        if self.shake_timer <= 0.0 {
             return;
         }
-        if self.shake_timer > 0.0 {
-            self.shake_timer = (self.shake_timer - delta).max(0.0);
-            self.shake_phase += delta;
+        // Advance the shake state first, then push the offsets to the camera —
+        // self can't be mutated while `camera.with` borrows it.
+        self.shake_timer = (self.shake_timer - delta).max(0.0);
+        self.shake_phase += delta;
+        let (h, v) = if self.shake_timer <= 0.0 {
+            (0.0, 0.0)
+        } else {
             let amp = SHAKE_AMP * (self.shake_timer / SHAKE_DURATION);
-            camera.set_h_offset((self.shake_phase * 91.0).sin() * amp);
-            camera.set_v_offset((self.shake_phase * 123.0).cos() * amp);
-            if self.shake_timer <= 0.0 {
-                camera.set_h_offset(0.0);
-                camera.set_v_offset(0.0);
-            }
-        }
+            (
+                (self.shake_phase * 91.0).sin() * amp,
+                (self.shake_phase * 123.0).cos() * amp,
+            )
+        };
+        self.camera.with(|camera| {
+            camera.set_h_offset(h);
+            camera.set_v_offset(v);
+        });
     }
 
     /// Set linear/angular damping from the loadout's per-second
@@ -590,9 +591,8 @@ impl ShipController {
     fn spawn_beam(&mut self, from: Vector3, to: Vector3) {
         if let Some(mesh_instance) = godot_util::create_beam_mesh(from, to, &self.laser_level.color()) {
             if let Some(root) = godot_util::scene_root(self.base().get_tree()) {
-                let node = mesh_instance.clone();
                 root.clone().add_child(&mesh_instance);
-                self.beam_nodes.push(node);
+                self.beam_nodes.push(&mesh_instance, ());
             }
         }
     }

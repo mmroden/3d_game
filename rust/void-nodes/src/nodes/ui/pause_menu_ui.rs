@@ -5,6 +5,7 @@ use godot::classes::{
 
 use super::menu_panel;
 use crate::nodes::constants::{actions, methods, nodes, signals, theme};
+use crate::nodes::live_handle::LiveVec;
 use void_logic::game_options::GameOptions;
 use void_logic::menu_cursor::MenuCursor;
 use void_logic::ui_style;
@@ -17,10 +18,10 @@ pub struct PauseMenuUI {
     base: Base<CanvasLayer>,
     cursor: MenuCursor,
     menu_items: Vec<String>,
-    labels: Vec<Gd<Label>>,
+    labels: LiveVec<Label>,
     in_options: bool,
     option_cursor: MenuCursor,
-    option_labels: Vec<Gd<Label>>,
+    option_labels: LiveVec<Label>,
     /// Cached copy of the authoritative `GameOptions` (see MainMenuUI).
     options: GameOptions,
 }
@@ -37,10 +38,10 @@ impl ICanvasLayer for PauseMenuUI {
                 "New Game".to_string(),
                 "Quit to Main Menu".to_string(),
             ],
-            labels: Vec::new(),
+            labels: LiveVec::new(),
             in_options: false,
             option_cursor: MenuCursor::new(3),
-            option_labels: Vec::new(),
+            option_labels: LiveVec::new(),
             options: GameOptions::default(),
         }
     }
@@ -142,7 +143,7 @@ impl PauseMenuUI {
             };
             label.add_theme_color_override(theme::FONT_COLOR, color);
             vbox.add_child(&label);
-            self.labels.push(label);
+            self.labels.push(&label, ());
         }
 
         self.base_mut().add_child(&panel);
@@ -184,40 +185,32 @@ impl PauseMenuUI {
     }
 
     fn update_cursor(&mut self) {
-        for (i, label) in self.labels.iter_mut().enumerate() {
-            if !label.is_instance_valid() {
-                continue;
-            }
-            let color = if i == self.cursor.index() {
+        let selected = self.cursor.index();
+        let items = &self.menu_items;
+        self.labels.for_each_live(|i, label, _| {
+            let color = if i == selected {
                 super::rgb(ui_style::TEXT_SELECTED)
             } else {
                 super::rgb(ui_style::TEXT_UNSELECTED)
             };
             label.add_theme_color_override(theme::FONT_COLOR, color);
 
-            let base_text = self.menu_items[i].clone();
-            if i == self.cursor.index() {
-                label.set_text(&format!("> {}", base_text));
+            if i == selected {
+                label.set_text(&format!("> {}", items[i]));
             } else {
-                label.set_text(&format!("  {}", base_text));
+                label.set_text(&format!("  {}", items[i]));
             }
-        }
+        });
     }
 
     fn show_options(&mut self) {
-        for mut label in self.option_labels.drain(..) {
-            if label.is_instance_valid() {
-                label.queue_free();
-            }
-        }
+        self.option_labels.for_each_live(|_, label, _| label.queue_free());
+        self.option_labels.clear();
 
-        for label in &mut self.labels {
-            if label.is_instance_valid() {
-                label.set_visible(false);
-            }
-        }
-        let Some(parent) = self.labels[0].get_parent() else { return };
-        let mut parent: Gd<godot::classes::Node> = parent;
+        self.labels.for_each_live(|_, label, _| label.set_visible(false));
+        let Some(mut parent) = self.labels.get_live(0).and_then(|l| l.get_parent()) else {
+            return;
+        };
 
         let options = [
             format!("  SBS Stereo: {}", if self.options.sbs_enabled { "ON" } else { "OFF" }),
@@ -241,7 +234,7 @@ impl PauseMenuUI {
             };
             label.add_theme_color_override(theme::FONT_COLOR, color);
             parent.add_child(&label);
-            self.option_labels.push(label);
+            self.option_labels.push(&label, ());
         }
     }
 
@@ -277,36 +270,27 @@ impl PauseMenuUI {
             "Back".to_string(),
         ];
 
-        for (i, label) in self.option_labels.iter_mut().enumerate() {
-            if !label.is_instance_valid() {
-                continue;
-            }
-            let display = if i == self.option_cursor.index() {
+        let selected = self.option_cursor.index();
+        self.option_labels.for_each_live(|i, label, _| {
+            let display = if i == selected {
                 format!("> {}", texts[i])
             } else {
                 format!("  {}", texts[i])
             };
             label.set_text(&display);
-            let color = if i == self.option_cursor.index() {
+            let color = if i == selected {
                 super::rgb(ui_style::TEXT_SELECTED)
             } else {
                 super::rgb(ui_style::TEXT_UNSELECTED)
             };
             label.add_theme_color_override(theme::FONT_COLOR, color);
-        }
+        });
     }
 
     fn close_options(&mut self) {
-        for mut label in self.option_labels.drain(..) {
-            if label.is_instance_valid() {
-                label.queue_free();
-            }
-        }
-        for label in &mut self.labels {
-            if label.is_instance_valid() {
-                label.set_visible(true);
-            }
-        }
+        self.option_labels.for_each_live(|_, label, _| label.queue_free());
+        self.option_labels.clear();
+        self.labels.for_each_live(|_, label, _| label.set_visible(true));
         self.in_options = false;
         self.update_cursor();
     }
