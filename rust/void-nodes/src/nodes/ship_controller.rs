@@ -1,16 +1,18 @@
 use godot::prelude::*;
 use godot::classes::{
     RigidBody3D, IRigidBody3D, PhysicsDirectBodyState3D, PhysicsRayQueryParameters3D,
-    MeshInstance3D, Camera3D,
+    MeshInstance3D, Camera3D, Node3D, CollisionShape3D, CapsuleShape3D, OmniLight3D,
+    PackedScene, ResourceLoader,
     GpuParticles3D, SphereMesh, StandardMaterial3D,
-    Input,
+    Input, light_3d,
 };
 
-use super::constants::{actions, groups, methods, signals};
+use super::constants::{actions, groups, methods, scenes, signals};
 use super::godot_util;
 
 use void_logic::debuff::SlowDebuff;
 use void_logic::laser::LaserLevel;
+use void_logic::ship::ShipColor;
 use void_logic::loadout::Loadout;
 use void_logic::power_routing::PowerMode;
 use void_logic::upgrade::{Upgrade, UpgradeKind};
@@ -27,10 +29,39 @@ const TURN_GAIN: f32 = 12.0;
 /// Wing offset from ship center (local X axis), in meters.
 const WING_OFFSET: f32 = 0.3;
 
+/// Aim forgiveness: lasers also test a ring of this radius around the centre
+/// line, so a near-miss still connects instead of needing pixel-perfect aim.
+const LASER_AIM_RADIUS: f32 = 0.7;
+/// Minimum gap between collision sounds (so a wall scrape doesn't machine-gun).
+const IMPACT_SOUND_COOLDOWN: f32 = 0.4;
+
 /// Camera-shake burst when a grabber latches on: how long and how hard
 /// (Camera3D frustum-offset units).
 const SHAKE_DURATION: f32 = 0.5;
 const SHAKE_AMP: f32 = 0.25;
+
+/// Target length (longest dimension) of the player ship, in world units.
+/// The model is auto-scaled to this regardless of its native size.
+const TARGET_SHIP_LENGTH: f32 = 2.0;
+/// Yaw applied to the imported model so its nose points along the ship's
+/// forward (-Z). This model is modelled facing backward, so it needs a half turn.
+const SHIP_MODEL_YAW: f32 = std::f32::consts::PI;
+/// Flight collider capsule, in world units (independent of the model's scale).
+/// Tighter than the visual hull so the ship slides through doorways.
+const SHIP_COLLIDER_RADIUS: f32 = 0.45;
+const SHIP_COLLIDER_HEIGHT: f32 = 1.1;
+/// Cockpit camera offset (local), looking forward.
+const COCKPIT_OFFSET: Vector3 = Vector3::new(0.0, 0.5, 0.0);
+/// Chase camera offset (local): behind (+Z) and above the ship — high enough
+/// to see where the nose points.
+const CHASE_OFFSET: Vector3 = Vector3::new(0.0, 2.4, 4.5);
+
+/// Which way the player views the ship.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CameraMode {
+    Cockpit,
+    Chase,
+}
 
 /// 6DOF flight controller for the player ship. Per the simulation idiom
 /// (docs/architecture/physics_ownership.md): the engine owns motion,
@@ -55,6 +86,18 @@ pub struct ShipController {
     camera: Option<Gd<Camera3D>>,
     shake_timer: f32,
     shake_phase: f32,
+    camera_mode: CameraMode,
+    /// Throttle so a wall scrape doesn't machine-gun the impact clang.
+    impact_cooldown: f32,
+    /// Edge-detect collision onset so resting against a wall stays silent.
+    was_in_contact: bool,
+    /// The ship model node — hidden in cockpit view (you look out of it),
+    /// shown in chase view.
+    ship_model: Option<Gd<Node3D>>,
+    /// Coloured accent light on the ship model (the player's chosen colour).
+    color_glow: Option<Gd<OmniLight3D>>,
+    /// Flight-speed multiplier from the chosen ship colour.
+    ship_thrust_mul: f32,
 }
 
 #[godot_api]
@@ -71,6 +114,12 @@ impl IRigidBody3D for ShipController {
             camera: None,
             shake_timer: 0.0,
             shake_phase: 0.0,
+            camera_mode: CameraMode::Cockpit,
+            impact_cooldown: 0.0,
+            was_in_contact: false,
+            ship_model: None,
+            color_glow: None,
+            ship_thrust_mul: 1.0,
         }
     }
 
@@ -82,6 +131,9 @@ impl IRigidBody3D for ShipController {
             base.set_can_sleep(false);
             // Continuous collision so fast flight never tunnels through walls.
             base.set_use_continuous_collision_detection(true);
+            // Report contacts so we can play an impact clang on collision.
+            base.set_contact_monitor(true);
+            base.set_max_contacts_reported(4);
         }
         // Decay is the engine's: damping = -ln(retention). Sets the
         // no-infinite-spin invariant (angular_damp > 0).
@@ -89,6 +141,8 @@ impl IRigidBody3D for ShipController {
 
         // Cache the camera for the grab shake (None-safe if absent).
         self.camera = self.base().try_get_node_as::<Camera3D>("Camera3D");
+        self.spawn_ship_model();
+        self.apply_camera_mode();
     }
 
     /// Flight runs in `integrate_forces`, the engine's hook for safely
@@ -99,12 +153,31 @@ impl IRigidBody3D for ShipController {
             return;
         };
         self.fly(&mut state);
+
+        // Heavy collision thud, on impact *onset* (resting against a wall is
+        // silent) and throttled by the cooldown. Non-positional — positional
+        // audio is currently inaudible in this project.
+        let in_contact = state.get_contact_count() > 0;
+        if in_contact && !self.was_in_contact && self.impact_cooldown <= 0.0 {
+            self.impact_cooldown = IMPACT_SOUND_COOLDOWN;
+            if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+                audio.bind_mut().play_event(SfxEvent::ImpactHeavy);
+            }
+        }
+        self.was_in_contact = in_contact;
     }
 
     /// Weapons + power routing. Hitscan needs the space unlocked, which is
     /// only true in `physics_process` — so it lives here, not in
     /// `integrate_forces`.
     fn physics_process(&mut self, delta: f64) {
+        if Input::singleton().is_action_just_pressed(actions::TOGGLE_VIEW) {
+            self.camera_mode = match self.camera_mode {
+                CameraMode::Cockpit => CameraMode::Chase,
+                CameraMode::Chase => CameraMode::Cockpit,
+            };
+            self.apply_camera_mode();
+        }
         self.handle_weapons_and_power(delta as f32);
         // Tick the movement slow; tell the HUD only when it switches on/off.
         if self.slow.tick(delta as f32) {
@@ -113,6 +186,7 @@ impl IRigidBody3D for ShipController {
                 .emit_signal(signals::PLAYER_SLOWED, &[Variant::from(active)]);
         }
         self.tick_shake(delta as f32);
+        self.impact_cooldown = (self.impact_cooldown - delta as f32).max(0.0);
     }
 }
 
@@ -145,6 +219,83 @@ impl ShipController {
             self.base_mut()
                 .emit_signal(signals::PLAYER_SLOWED, &[Variant::from(true)]);
         }
+    }
+
+    /// Apply the player's chosen ship colour (accent glow) and its flight-speed
+    /// multiplier. Called by GameManager when the ship colour is chosen/synced.
+    #[func]
+    pub fn configure_ship(&mut self, color: Color, thrust_mul: f32) {
+        self.ship_thrust_mul = thrust_mul;
+        if let Some(glow) = &mut self.color_glow {
+            if glow.is_instance_valid() {
+                glow.set_color(Color::from_rgb(color.r, color.g, color.b));
+            }
+        }
+    }
+
+    /// Instance the ship model under the Player, fit the collision box to it,
+    /// and attach the colour accent light. The model is loaded in code so the
+    /// player ship and the menu showcase share one source of truth.
+    fn spawn_ship_model(&mut self) {
+        let Some(scene) = ResourceLoader::singleton().load(scenes::SHIP_MODEL) else { return };
+        let Ok(packed) = scene.try_cast::<PackedScene>() else { return };
+        let Some(instance) = packed.instantiate() else { return };
+        let mut model: Gd<Node3D> = instance.cast();
+        model.set_name("Model");
+        self.base_mut().add_child(&model);
+        // Auto-scale, then face the nose along the ship's forward.
+        godot_util::fit_model_to_length(&mut model, TARGET_SHIP_LENGTH);
+        model.rotate_y(SHIP_MODEL_YAW);
+        self.ship_model = Some(model.clone());
+
+        // Flight collider: a capsule laid along the hull. It's rounded, so it
+        // slides off doorframe edges instead of snagging a wingtip, and sized in
+        // world units so it never inherits the imported model's extreme scale —
+        // a scaled, mesh-derived hull sized wrong in Jolt and let the ship clip
+        // through walls. The visual model may overhang it slightly.
+        if let Some(mut shape_node) =
+            self.base().try_get_node_as::<CollisionShape3D>("CollisionShape3D")
+        {
+            let mut capsule = CapsuleShape3D::new_gd();
+            capsule.set_radius(SHIP_COLLIDER_RADIUS);
+            capsule.set_height(SHIP_COLLIDER_HEIGHT);
+            shape_node.set_shape(&capsule);
+            // Lay the capsule along the ship's length rather than its default Y.
+            shape_node.set_rotation(Vector3::new(std::f32::consts::FRAC_PI_2, 0.0, 0.0));
+            shape_node.set_position(Vector3::ZERO);
+        }
+
+        // Colour accent light (Standard until GameManager pushes the choice).
+        let c = ShipColor::default().color();
+        let mut light = OmniLight3D::new_alloc();
+        light.set_color(Color::from_rgb(c[0], c[1], c[2]));
+        light.set_param(light_3d::Param::ENERGY, 2.0);
+        light.set_param(light_3d::Param::RANGE, 6.0);
+        model.add_child(&light);
+        self.color_glow = Some(light);
+    }
+
+    /// Place the camera for the current view mode, and show the ship model only
+    /// in chase view (in cockpit you're inside the hull, so it would block the view).
+    fn apply_camera_mode(&mut self) {
+        if let Some(model) = &mut self.ship_model {
+            if model.is_instance_valid() {
+                model.set_visible(self.camera_mode == CameraMode::Chase);
+            }
+        }
+        let Some(mut camera) = self.camera.clone() else { return };
+        if !camera.is_instance_valid() {
+            return;
+        }
+        let transform = match self.camera_mode {
+            CameraMode::Cockpit => Transform3D::new(Basis::IDENTITY, COCKPIT_OFFSET),
+            CameraMode::Chase => {
+                // Look from behind/above toward a point just ahead of the ship.
+                let look_dir = (Vector3::new(0.0, 0.0, -2.0) - CHASE_OFFSET).normalized();
+                Transform3D::new(godot_util::basis_from_direction(look_dir), CHASE_OFFSET)
+            }
+        };
+        camera.set_transform(transform);
     }
 
     /// Jitter the camera with a decaying offset while the grab shake is active.
@@ -214,7 +365,8 @@ impl ShipController {
             let force = thrust_dir.normalized()
                 * (self.loadout.thrust_power()
                     * self.power_mode.thrust_multiplier()
-                    * self.slow.multiplier());
+                    * self.slow.multiplier()
+                    * self.ship_thrust_mul);
             state.apply_central_force_ex().force(force).done();
         }
 
@@ -283,9 +435,9 @@ impl ShipController {
 
     /// Called when a projectile or enemy hits this ship.
     pub fn apply_damage(&mut self, damage: void_logic::newtypes::Damage) {
-        // Player damage SFX (non-positional since it's the player)
+        // Energy-hit sound — distinct from the heavy collision thud.
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
-            audio.bind_mut().play_event(SfxEvent::ImpactHeavy);
+            audio.bind_mut().play_event(SfxEvent::ImpactShield);
         }
         // Signals are Variant territory: convert at the boundary.
         self.base_mut().emit_signal(
@@ -342,13 +494,17 @@ impl ShipController {
         let center = self.base().get_global_position() + global_basis.col_b() * 0.5;
         let forward = -global_basis.col_c();
         let right = global_basis.col_a();
+        let up = global_basis.col_b();
 
-        // Each laser fires full damage independently
         let left_origin = center - right * WING_OFFSET;
         let right_origin = center + right * WING_OFFSET;
 
-        self.fire_single_ray(left_origin, forward, damage);
-        self.fire_single_ray(right_origin, forward, damage);
+        // Hit-test down the reticle (centre line) with an aim-assist spread, then
+        // converge both visible beams on whatever it found — so the lasers hit
+        // where the crosshair points, not parallel-offset from the wings.
+        let hit_point = self.cast_forgiving(center, forward, right, up, damage * 2.0);
+        self.spawn_beam(left_origin, hit_point);
+        self.spawn_beam(right_origin, hit_point);
 
         // Laser fire SFX (non-positional — it's the player's own gun)
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
@@ -356,37 +512,58 @@ impl ShipController {
         }
     }
 
-    fn fire_single_ray(&mut self, origin: Vector3, forward: Vector3, damage: f32) {
-        let end = origin + forward * self.weapon.max_range;
-
-        let Some(world) = self.base().get_world_3d() else { return };
-        let Some(mut space) = world.get_direct_space_state() else { return };
-        let Some(mut query) = PhysicsRayQueryParameters3D::create(origin, end) else { return };
+    /// Hit-test from the centre line plus a ring of offset rays (aim assist).
+    /// The first ray to strike a damageable target wins (full dual damage);
+    /// otherwise the centre ray's wall/end point is returned so the beams land.
+    fn cast_forgiving(
+        &mut self,
+        center: Vector3,
+        forward: Vector3,
+        right: Vector3,
+        up: Vector3,
+        damage: f32,
+    ) -> Vector3 {
+        let max_range = self.weapon.max_range;
+        let fallback = center + forward * max_range;
+        let Some(world) = self.base().get_world_3d() else { return fallback };
+        let Some(mut space) = world.get_direct_space_state() else { return fallback };
         let self_rid = self.base().get_rid();
-        query.set_exclude(&array![self_rid]);
 
-        let result = space.intersect_ray(&query);
-        let hit_point = if result.is_empty() {
-            end
-        } else {
-            let Some(hit_pos_var) = result.get("position") else { return };
+        let r = LASER_AIM_RADIUS;
+        let offsets = [Vector3::ZERO, right * r, -right * r, up * r, -up * r];
+        let mut beam_end = fallback;
+        for (i, off) in offsets.iter().enumerate() {
+            let origin = center + *off;
+            let Some(mut query) =
+                PhysicsRayQueryParameters3D::create(origin, origin + forward * max_range)
+            else {
+                continue;
+            };
+            query.set_exclude(&array![self_rid]);
+            let result = space.intersect_ray(&query);
+            if result.is_empty() {
+                continue;
+            }
+            let Some(hit_pos_var) = result.get("position") else { continue };
             let hit_pos = hit_pos_var.to::<Vector3>();
-
             if let Some(collider) = result.get("collider") {
                 let mut obj = collider.to::<Gd<Node3D>>();
                 if obj.has_method(methods::TAKE_DAMAGE) {
                     obj.call(methods::TAKE_DAMAGE, &[Variant::from(damage)]);
+                    let normal = result
+                        .get("normal")
+                        .unwrap_or(Variant::from(Vector3::UP))
+                        .to::<Vector3>();
+                    self.spawn_hit_sparks(hit_pos, normal);
+                    return hit_pos;
                 }
             }
-
-            // Spawn hit sparks at impact point
-            let hit_normal = result.get("normal").unwrap_or(Variant::from(Vector3::UP)).to::<Vector3>();
-            self.spawn_hit_sparks(hit_pos, hit_normal);
-
-            hit_pos
-        };
-
-        self.spawn_beam(origin, hit_point);
+            // No target on this ray; the centre ray defines where the beam lands.
+            if i == 0 {
+                beam_end = hit_pos;
+            }
+        }
+        beam_end
     }
 
     fn spawn_hit_sparks(&mut self, position: Vector3, normal: Vector3) {

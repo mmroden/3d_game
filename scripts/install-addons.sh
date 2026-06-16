@@ -198,6 +198,22 @@ fi
 echo "  Quaternius addon ready at: $ADDON_DIR"
 du -sh "$ADDON_DIR"
 
+# ========== Player ship models (CGTrader, royalty-free, not redistributable) ==========
+
+SHIPS_SRC="$ASSETS_DIR/cgtrader_ships"
+
+if [ -d "$SHIPS_SRC" ]; then
+    echo "  Installing player ship models..."
+    SHIPS_DIR="$GODOT_DIR/addons/ships"
+    mkdir -p "$SHIPS_DIR"
+    # Self-contained .glb (mesh + embedded PBR textures) — Godot imports natively.
+    find "$SHIPS_SRC" -maxdepth 1 -name "*.glb" -exec cp {} "$SHIPS_DIR/" \;
+    chmod -R u+w "$SHIPS_DIR"
+    echo "  Player ship models installed ($(ls "$SHIPS_DIR"/*.glb 2>/dev/null | wc -l | tr -d ' ') models)."
+else
+    echo "  cgtrader_ships not found, skipping player ships."
+fi
+
 # ========== Audio assets (music + SFX) ==========
 
 AUDIO_DIR="$GODOT_DIR/addons/audio"

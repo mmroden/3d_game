@@ -5,6 +5,7 @@ use godot::classes::{
 };
 
 use super::constants::{methods, nodes, scenes, signals};
+use super::godot_util;
 use super::enemy_drone::EnemyDrone;
 use super::ship_controller::ShipController;
 use super::telemetry::Telemetry;
@@ -173,6 +174,22 @@ impl LevelManager {
         self.update_room_culling(arr(point));
     }
 
+    /// Build a single room for use as a menu/loadout backdrop: run the real
+    /// generator for one room, then strip everything that isn't room geometry
+    /// (enemies, loot, portal) so only the quiet room remains. The generation
+    /// pipeline itself is untouched — this only prunes its output.
+    #[func]
+    pub fn generate_backdrop(&mut self, seed: i64) {
+        self.generate_level(seed, 1);
+        let children: Vec<Gd<Node>> = self.base().get_children().iter_shared().collect();
+        for mut child in children {
+            // Room containers are named "Room{n}"; everything else is populace.
+            if !child.get_name().to_string().starts_with("Room") {
+                child.queue_free();
+            }
+        }
+    }
+
     #[func]
     pub fn generate_level(&mut self, seed: i64, target_rooms: u32) {
         let seed = Seed::from_i64(seed);
@@ -263,7 +280,7 @@ impl LevelManager {
                         // mesh-derived collider — Jolt allows concave trimesh
                         // only on static bodies.
                         let node_xform = node.get_transform();
-                        Self::build_dynamic_collision(&mut body, &node, node_xform);
+                        godot_util::add_convex_collision(&mut body, &node, node_xform);
                         room_node.add_child(&body);
                         // Placed, not flown here: clear interpolation so it
                         // doesn't streak from the origin on the first frame.
@@ -464,25 +481,6 @@ impl LevelManager {
     /// `node`, each placed at the mesh's transform relative to the body so the
     /// hull hugs the rendered geometry. Convex (not trimesh) because Jolt
     /// allows concave shapes only on static bodies — one source: the mesh.
-    fn build_dynamic_collision(body: &mut Gd<RigidBody3D>, node: &Gd<Node3D>, xform: Transform3D) {
-        if let Ok(mesh_inst) = node.clone().try_cast::<MeshInstance3D>() {
-            if let Some(mesh) = mesh_inst.get_mesh() {
-                if let Some(shape) = mesh.create_convex_shape() {
-                    let mut col = CollisionShape3D::new_alloc();
-                    col.set_shape(&shape);
-                    col.set_transform(xform);
-                    body.add_child(&col);
-                }
-            }
-        }
-        for child in node.get_children().iter_shared() {
-            if let Ok(child3d) = child.try_cast::<Node3D>() {
-                let child_xform = xform * child3d.get_transform();
-                Self::build_dynamic_collision(body, &child3d, child_xform);
-            }
-        }
-    }
-
     /// Subscribe to ViewManager's active-viewport publication (so
     /// render measurement follows mode changes) and seed the current
     /// set immediately — ViewManager is the sole authority on which
@@ -558,6 +556,8 @@ impl LevelManager {
         let Ok(mut enemy) = instance.try_cast::<EnemyDrone>() else {
             return false;
         };
+        // Set the level before entering the tree so ready() scales the enemy.
+        enemy.bind_mut().set_spawn_level(self.current_level);
         enemy.set_position(vec3(pos));
         self.base_mut().add_child(&enemy);
         enemy.reset_physics_interpolation();

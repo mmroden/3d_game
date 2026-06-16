@@ -30,6 +30,7 @@ pub mod signals {
     pub const POWER_MODE_CHANGED: &str = "power_mode_changed";
     pub const UPGRADE_COLLECTED: &str = "upgrade_collected";
     pub const ORGANICS_COLLECTED: &str = "organics_collected";
+    pub const SHIP_COLOR_SELECTED: &str = "ship_color_selected";
     pub const RENDER_VIEWPORTS_CHANGED: &str = "render_viewports_changed";
 }
 
@@ -66,11 +67,17 @@ pub mod methods {
     pub const UPDATE_COMPONENTS: &str = "update_components";
     pub const UPDATE_ORGANICS: &str = "update_organics";
     pub const ON_ORGANICS_COLLECTED: &str = "on_organics_collected";
+    pub const ON_SHIP_COLOR_SELECTED: &str = "on_ship_color_selected";
+    pub const ADVANCE_FROM_SHIP_SELECT: &str = "advance_from_ship_select";
+    pub const SHOW_SHIP_SELECT: &str = "show_ship_select";
+    pub const CONFIGURE_SHIP: &str = "configure_ship";
     pub const UPDATE_LASER: &str = "update_laser";
     pub const UPDATE_LEVEL: &str = "update_level";
     pub const UPDATE_SHIELD: &str = "update_shield";
     pub const UPDATE_POWER_MODE: &str = "update_power_mode";
     pub const GENERATE_LEVEL: &str = "generate_level";
+    pub const GENERATE_BACKDROP: &str = "generate_backdrop";
+    pub const ROOM_CENTER: &str = "room_center";
     pub const ON_PLAYER_DAMAGED: &str = "on_player_damaged";
     pub const ON_PLAYER_SLOWED: &str = "on_player_slowed";
     pub const APPLY_SLOW: &str = "apply_slow";
@@ -106,6 +113,7 @@ pub mod actions {
     pub const ROUTE_SHIELDS: &str = "route_shields";
     pub const ROUTE_WEAPONS: &str = "route_weapons";
     pub const STABILIZE: &str = "stabilize";
+    pub const TOGGLE_VIEW: &str = "toggle_view";
 }
 
 // ── Group names ───────────────────────────────────────────────────────
@@ -140,6 +148,7 @@ pub mod nodes {
     pub const HUD: &str = "HUD";
     pub const KILL_SUMMARY_UI: &str = "KillSummaryUI";
     pub const SHOP_UI: &str = "ShopUI";
+    pub const SHIP_SELECT_UI: &str = "ShipSelectUI";
     pub const DEATH_SCREEN_UI: &str = "DeathScreenUI";
     pub const PAUSE_MENU_UI: &str = "PauseMenuUI";
     pub const STEREO_CANVAS: &str = "StereoCanvas";
@@ -170,6 +179,8 @@ pub mod scenes {
     pub const LOOTBOX: &str = "res://scenes/items/lootbox.tscn";
     pub const ORGANIC_BARREL: &str = "res://scenes/items/organic_barrel.tscn";
     pub const PORTAL: &str = "res://scenes/items/portal.tscn";
+    /// Player ship model (CGTrader, installed via `make assets`).
+    pub const SHIP_MODEL: &str = "res://addons/ships/Spacecraft_1.glb";
     pub const ENEMY_DRONE_FALLBACK: &str = "res://scenes/enemies/enemy_drone.tscn";
 }
 
@@ -205,6 +216,7 @@ mod tests {
             signals::POWER_MODE_CHANGED,
             signals::UPGRADE_COLLECTED,
             signals::ORGANICS_COLLECTED,
+            signals::SHIP_COLOR_SELECTED,
             signals::RENDER_VIEWPORTS_CHANGED,
         ];
         for sig in &all_signals {
@@ -247,9 +259,15 @@ mod tests {
             methods::UPDATE_COMPONENTS,
             methods::UPDATE_ORGANICS,
             methods::ON_ORGANICS_COLLECTED,
+            methods::ON_SHIP_COLOR_SELECTED,
+            methods::ADVANCE_FROM_SHIP_SELECT,
+            methods::SHOW_SHIP_SELECT,
+            methods::CONFIGURE_SHIP,
             methods::UPDATE_LASER,
             methods::UPDATE_LEVEL,
             methods::GENERATE_LEVEL,
+            methods::GENERATE_BACKDROP,
+            methods::ROOM_CENTER,
             methods::ON_PLAYER_DAMAGED,
             methods::ON_PLAYER_SLOWED,
             methods::APPLY_SLOW,
@@ -295,6 +313,7 @@ mod tests {
             actions::ROUTE_SHIELDS,
             actions::ROUTE_WEAPONS,
             actions::STABILIZE,
+            actions::TOGGLE_VIEW,
         ];
         for action in &all_actions {
             assert!(!action.is_empty());
@@ -314,6 +333,7 @@ mod tests {
             scenes::ORGANIC_BARREL,
             scenes::PORTAL,
             scenes::ENEMY_DRONE_FALLBACK,
+            scenes::SHIP_MODEL,
         ];
         for path in &all_scenes {
             assert!(
@@ -347,6 +367,7 @@ mod tests {
             signals::POWER_MODE_CHANGED,
             signals::UPGRADE_COLLECTED,
             signals::ORGANICS_COLLECTED,
+            signals::SHIP_COLOR_SELECTED,
             signals::RENDER_VIEWPORTS_CHANGED,
         ];
         for (i, a) in all.iter().enumerate() {

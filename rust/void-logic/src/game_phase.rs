@@ -8,6 +8,8 @@ pub enum GamePhase {
     LevelComplete,
     KillSummary,
     Shop,
+    /// Between-level (and new-game) screen to pick the ship colour/loadout.
+    ShipSelect,
     Death,
 }
 
@@ -22,6 +24,7 @@ impl GamePhase {
             "LevelComplete" => Some(Self::LevelComplete),
             "KillSummary" => Some(Self::KillSummary),
             "Shop" => Some(Self::Shop),
+            "ShipSelect" => Some(Self::ShipSelect),
             "Death" => Some(Self::Death),
             _ => None,
         }
@@ -40,6 +43,10 @@ impl GamePhase {
                 | (GamePhase::LevelComplete, GamePhase::KillSummary)
                 | (GamePhase::KillSummary, GamePhase::Shop)
                 | (GamePhase::Shop, GamePhase::Playing)
+                // Loadout / ship-colour screen, reached on new game and between levels.
+                | (GamePhase::MainMenu, GamePhase::ShipSelect)
+                | (GamePhase::Shop, GamePhase::ShipSelect)
+                | (GamePhase::ShipSelect, GamePhase::Playing)
                 | (GamePhase::Death, GamePhase::MainMenu)
         )
     }
@@ -80,6 +87,16 @@ mod tests {
     }
 
     #[test]
+    fn ship_select_flow() {
+        assert!(GamePhase::MainMenu.can_transition_to(GamePhase::ShipSelect));
+        assert!(GamePhase::Shop.can_transition_to(GamePhase::ShipSelect));
+        assert!(GamePhase::ShipSelect.can_transition_to(GamePhase::Playing));
+        // Not a free-for-all.
+        assert!(!GamePhase::ShipSelect.can_transition_to(GamePhase::Shop));
+        assert!(!GamePhase::Playing.can_transition_to(GamePhase::ShipSelect));
+    }
+
+    #[test]
     fn death_to_main_menu() {
         assert!(GamePhase::Death.can_transition_to(GamePhase::MainMenu));
     }
@@ -117,7 +134,7 @@ mod tests {
         let all = [
             GamePhase::MainMenu, GamePhase::Playing, GamePhase::Paused,
             GamePhase::LevelComplete, GamePhase::KillSummary,
-            GamePhase::Shop, GamePhase::Death,
+            GamePhase::Shop, GamePhase::ShipSelect, GamePhase::Death,
         ];
         for phase in all {
             let name = format!("{phase:?}");

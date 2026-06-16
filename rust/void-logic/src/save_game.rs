@@ -5,6 +5,7 @@ use crate::newtypes::Health;
 use crate::run_state::RunState;
 use crate::seed::Seed;
 use crate::shield::ShieldState;
+use crate::ship::ShipColor;
 use serde::{Deserialize, Serialize};
 
 /// A snapshot of game state, saved at end-of-level and on death.
@@ -19,6 +20,7 @@ pub struct SaveGame {
     pub organics: OrganicAccount,
     pub health: Health,
     pub shield: ShieldState,
+    pub ship_color: ShipColor,
 }
 
 impl SaveGame {
@@ -44,6 +46,7 @@ impl SaveGame {
             organics: run.organics,
             health: run.health,
             shield: run.shield.clone(),
+            ship_color: run.ship_color,
         }
     }
 
@@ -57,6 +60,7 @@ impl SaveGame {
         run.organics = self.organics;
         run.health = self.health;
         run.shield = self.shield.clone();
+        run.ship_color = self.ship_color;
         // Reset ephemeral state
         run.kills.reset();
         run.rooms_cleared.clear();
@@ -141,6 +145,19 @@ mod tests {
         let mut fresh = RunState::new(Seed::new(99));
         save.apply_to(&mut fresh);
         assert_eq!(fresh.components.balance, 5_000);
+    }
+
+    #[test]
+    fn ship_color_persists_through_a_save() {
+        let mut run = RunState::new(Seed::new(42));
+        run.set_ship_color(ShipColor::Armored);
+        let save = SaveGame::from_run_state(&run);
+
+        let mut fresh = RunState::new(Seed::new(99));
+        save.apply_to(&mut fresh);
+        assert_eq!(fresh.ship_color, ShipColor::Armored);
+        assert_eq!(fresh.shield.max_capacity, run.shield.max_capacity,
+            "restored shield matches the saved ship");
     }
 
     #[test]

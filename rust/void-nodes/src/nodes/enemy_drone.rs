@@ -11,6 +11,7 @@ use super::enemy_bolt::EnemyBolt;
 use super::godot_util;
 use void_logic::enemy_ai::{Archetype, Attack, DroneAi, DroneConfig, Movement};
 use void_logic::audio_catalog::SfxEvent;
+use void_logic::difficulty;
 use void_logic::enemy_type::EnemyType;
 use void_logic::newtypes::{Health, Damage};
 use void_logic::ram_damage::{ram_damage, PLAYER_RAM_FRACTION};
@@ -47,6 +48,9 @@ pub struct EnemyDrone {
     attack_range: f32,
     #[export]
     damage: f32,
+    /// Current level; scales speed and fire rate (set by the spawner).
+    #[export]
+    level: i32,
 
     ai: DroneAi,
     player: Option<Gd<Node3D>>,
@@ -71,6 +75,7 @@ impl IRigidBody3D for EnemyDrone {
             detection_range: 25.0,
             attack_range: 5.0,
             damage: 3.0,
+            level: 1,
             ai,
             player: None,
             health_bar_bg: None,
@@ -100,6 +105,12 @@ impl IRigidBody3D for EnemyDrone {
                 ..DroneConfig::default()
             });
         }
+
+        // Scale speed and fire rate by level (health is left alone, so a single
+        // shot still kills no matter how quick later enemies get).
+        let level = self.level.max(1) as u32;
+        self.speed *= difficulty::speed_multiplier(level);
+        self.ai.config.attack_cooldown *= difficulty::cooldown_multiplier(level);
 
         // Engine owns motion: zero-g; damping is the decay; rotation is
         // locked so impacts don't tumble the drone. We chase with force,
@@ -184,6 +195,12 @@ impl EnemyDrone {
     #[func]
     pub fn take_damage(&mut self, amount: f32) {
         self.apply_damage(Damage::new(amount));
+    }
+
+    /// Set the spawn level before the node enters the tree, so `ready()` scales
+    /// speed and fire rate for it.
+    pub fn set_spawn_level(&mut self, level: i32) {
+        self.level = level;
     }
 
     pub fn apply_damage(&mut self, damage: Damage) {
@@ -271,7 +288,16 @@ impl EnemyDrone {
             Movement::Hold => Vector3::ZERO,
             Movement::Chase { speed_mul } => direction * self.speed * speed_mul,
             Movement::Retreat { speed_mul } => -direction * self.speed * speed_mul,
-            Movement::Strafe { speed_mul } => self.strafe_dir(direction) * self.speed * speed_mul,
+            Movement::Strafe { speed_mul } => {
+                // Orbit, plus a pull toward the stand-off radius. Without the
+                // radial term a pure tangent step keeps nudging the drone past
+                // attack range, so it bounces in and out and parks instead of
+                // circling — especially when the player holds still.
+                let tangent = self.strafe_dir(direction) * self.speed * speed_mul;
+                let radius_error = distance - self.ai.config.standoff_range;
+                let radial = direction * (radius_error.clamp(-self.speed, self.speed) * 0.5);
+                tangent + radial
+            }
         };
         (desired, tick.attack)
     }
@@ -307,7 +333,7 @@ impl EnemyDrone {
     }
 
     fn fire_bolt(&mut self, my_pos: Vector3, player_pos: Vector3) {
-        let Some(mut root) = godot_util::scene_root(self.base().get_tree()) else { return };
+        let Some(root) = godot_util::scene_root(self.base().get_tree()) else { return };
         let to_player = player_pos - my_pos;
         if to_player.length() < 0.01 {
             return; // colocated with the target — no firing direction
@@ -315,8 +341,21 @@ impl EnemyDrone {
         let dir = to_player.normalized();
         let muzzle = my_pos + dir * MUZZLE_CLEARANCE;
         let mut bolt = EnemyBolt::new_alloc();
-        root.add_child(&bolt);
+        root.clone().add_child(&bolt);
         bolt.bind_mut().launch(muzzle, dir * BOLT_SPEED, self.damage);
+        Self::spawn_muzzle_flash(&root, muzzle);
+    }
+
+    /// A brief bright flash at the muzzle when a drone fires — sells the shot
+    /// and throws light into the dark room. Self-destructs almost immediately.
+    fn spawn_muzzle_flash(root: &Gd<Node>, pos: Vector3) {
+        let mut flash = Node3D::new_alloc();
+        flash.set_position(pos);
+        godot_util::attach_glow_light(&mut flash, &[1.0, 0.55, 0.2], 7.0, 4.5);
+        root.clone().add_child(&flash);
+        let mut timer = flash.get_tree().create_timer(0.09);
+        let callable = flash.callable("queue_free");
+        timer.connect("timeout", &callable);
     }
 
     fn on_death(&mut self) {

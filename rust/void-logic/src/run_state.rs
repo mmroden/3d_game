@@ -6,6 +6,7 @@ use crate::loadout::Loadout;
 use crate::newtypes::{Health, Damage, Shield};
 use crate::seed::Seed;
 use crate::shield::ShieldState;
+use crate::ship::ShipColor;
 
 /// Tracks the state of a single roguelike run.
 #[derive(Debug)]
@@ -24,6 +25,8 @@ pub struct RunState {
     pub kills: KillTracker,
     pub laser_level: LaserLevel,
     pub current_level: u32,
+    /// Chosen ship colour — a loadout tradeoff that shapes shields and thrust.
+    pub ship_color: ShipColor,
 }
 
 impl RunState {
@@ -39,14 +42,20 @@ impl RunState {
         self.run_seed.for_level(self.current_level)
     }
 
+    /// Build a shield sized and tuned for the given ship colour.
+    fn shield_for(color: ShipColor) -> ShieldState {
+        ShieldState::new(
+            Shield::new(Self::DEFAULT_SHIELD_CAPACITY * color.shield_capacity_mul()),
+            Self::DEFAULT_SHIELD_REGEN * color.shield_regen_mul(),
+            Self::DEFAULT_SHIELD_DELAY,
+        )
+    }
+
     pub fn new(seed: Seed) -> Self {
         let loadout = Loadout::new();
         let health = loadout.max_health();
-        let shield = ShieldState::new(
-            Shield::new(Self::DEFAULT_SHIELD_CAPACITY),
-            Self::DEFAULT_SHIELD_REGEN,
-            Self::DEFAULT_SHIELD_DELAY,
-        );
+        let ship_color = ShipColor::default();
+        let shield = Self::shield_for(ship_color);
         Self {
             loadout,
             current_room: 0,
@@ -60,7 +69,14 @@ impl RunState {
             kills: KillTracker::new(),
             laser_level: LaserLevel::Red,
             current_level: 1,
+            ship_color,
         }
+    }
+
+    /// Choose a ship colour, rebuilding the shield to its capacity/regen.
+    pub fn set_ship_color(&mut self, color: ShipColor) {
+        self.ship_color = color;
+        self.shield = Self::shield_for(color);
     }
 
     pub fn is_alive(&self) -> bool {
@@ -200,6 +216,30 @@ mod tests {
         run.record_kill(EnemyType::QuadShell);
         assert_eq!(run.components.balance, 3_000);
         assert_eq!(run.kills.total_kills(), 3);
+    }
+
+    #[test]
+    fn new_run_is_standard_ship() {
+        let run = RunState::new(Seed::new(42));
+        assert_eq!(run.ship_color, ShipColor::Standard);
+        assert_eq!(run.shield.max_capacity, Shield::new(50.0));
+    }
+
+    #[test]
+    fn armored_ship_has_a_bigger_shield() {
+        let mut run = RunState::new(Seed::new(42));
+        run.set_ship_color(ShipColor::Armored);
+        assert_eq!(run.ship_color, ShipColor::Armored);
+        assert_eq!(run.shield.max_capacity, Shield::new(50.0 * 1.4));
+        assert_eq!(run.shield.current, Shield::new(50.0 * 1.4), "rebuilt shield starts full");
+    }
+
+    #[test]
+    fn death_keeps_the_chosen_ship_color() {
+        let mut run = RunState::new(Seed::new(42));
+        run.set_ship_color(ShipColor::Swift);
+        run.apply_death_penalty();
+        assert_eq!(run.ship_color, ShipColor::Swift);
     }
 
     #[test]

@@ -331,6 +331,33 @@ impl HUD {
 
         self.base_mut().add_child(&bottom_center);
 
+        // === Center targeting reticle (dot + crosshair) ===
+        let reticle_color = Color::from_rgba(0.5, 1.0, 0.6, 0.85);
+        let mut reticle = Control::new_alloc();
+        reticle.set_anchors_preset(LayoutPreset::CENTER);
+
+        let mut dot = ColorRect::new_alloc();
+        dot.set_color(reticle_color);
+        dot.set_size(Vector2::new(4.0, 4.0));
+        dot.set_position(Vector2::new(-2.0, -2.0));
+        reticle.add_child(&dot);
+
+        // Four ticks around a center gap: (size, position) relative to center.
+        let ticks = [
+            (Vector2::new(9.0, 2.0), Vector2::new(-18.0, -1.0)), // left
+            (Vector2::new(9.0, 2.0), Vector2::new(9.0, -1.0)),   // right
+            (Vector2::new(2.0, 9.0), Vector2::new(-1.0, -18.0)), // up
+            (Vector2::new(2.0, 9.0), Vector2::new(-1.0, 9.0)),   // down
+        ];
+        for (size, posn) in ticks {
+            let mut tick = ColorRect::new_alloc();
+            tick.set_color(reticle_color);
+            tick.set_size(size);
+            tick.set_position(posn);
+            reticle.add_child(&tick);
+        }
+        self.base_mut().add_child(&reticle);
+
         // === Slow debuff indicator (hidden until a swarmer slows the player) ===
         let mut slow_overlay = ColorRect::new_alloc();
         slow_overlay.set_anchors_preset(LayoutPreset::FULL_RECT);

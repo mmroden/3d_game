@@ -5,6 +5,7 @@ use godot::classes::{
 };
 
 use super::constants::{groups, methods};
+use super::godot_util;
 
 /// Enemy bolt: a small Area3D projectile. Godot moves nothing for us
 /// here — it travels at constant velocity (set on spawn) and detonates
@@ -53,6 +54,10 @@ impl IArea3D for EnemyBolt {
         mesh.set_mesh(&sphere);
         mesh.set_surface_override_material(0, &mat);
         self.base_mut().add_child(&mesh);
+
+        // The bolt is its own light source — it lights the dark room as it flies.
+        let mut node: Gd<Node3D> = self.base().clone().upcast();
+        godot_util::attach_glow_light(&mut node, &[1.0, 0.45, 0.12], 4.0, 6.0);
 
         let callable = self.base().callable("on_body_entered");
         self.base_mut().connect("body_entered", &callable);

@@ -1,9 +1,14 @@
 use godot::prelude::*;
 use godot::classes::{
-    Node3D, INode3D, MeshInstance3D, BoxMesh, StandardMaterial3D, Engine,
+    Node3D, INode3D, MeshInstance3D, Engine, OmniLight3D,
+    PackedScene, ResourceLoader, light_3d,
 };
 
+use super::constants::scenes;
 use super::godot_util;
+
+/// Target length of the showcase ship (auto-scaled to fit the view).
+const SHOWCASE_SHIP_LENGTH: f32 = 2.5;
 
 /// Cosmetic rotating ship with laser beams for end-of-level screens.
 /// Spawned by GameManager during KillSummary/Shop/Death phases.
@@ -16,6 +21,8 @@ pub struct ShipShowcase {
     beam_interval: f32,
     laser_color: [f32; 4],
     beams: Vec<Gd<MeshInstance3D>>,
+    /// Coloured accent light on the showcase model.
+    model_glow: Option<Gd<OmniLight3D>>,
 }
 
 #[godot_api]
@@ -28,6 +35,7 @@ impl INode3D for ShipShowcase {
             beam_interval: 1.5,
             laser_color: [1.0, 0.2, 0.2, 1.0],
             beams: Vec::new(),
+            model_glow: None,
         }
     }
 
@@ -66,6 +74,11 @@ impl ShipShowcase {
     #[func]
     pub fn show_showcase(&mut self, color: Color) {
         self.laser_color = [color.r, color.g, color.b, color.a];
+        if let Some(glow) = &mut self.model_glow {
+            if glow.is_instance_valid() {
+                glow.set_color(Color::from_rgb(color.r, color.g, color.b));
+            }
+        }
         self.beam_timer = 0.0;
         self.base_mut().set_visible(true);
     }
@@ -84,53 +97,35 @@ impl ShipShowcase {
 
 impl ShipShowcase {
     fn build_ship_model(&mut self) {
-        // Simple placeholder ship body — a sleek box
-        let mut body = MeshInstance3D::new_alloc();
-        let mut body_mesh = BoxMesh::new_gd();
-        body_mesh.set_size(Vector3::new(0.6, 0.2, 1.2));
-        body.set_mesh(&body_mesh);
+        // The real player ship model (same asset the player flies), so the
+        // menu/between-level showcase matches what you take into the level.
+        let Some(scene) = ResourceLoader::singleton().load(scenes::SHIP_MODEL) else { return };
+        let Ok(packed) = scene.try_cast::<PackedScene>() else { return };
+        let Some(instance) = packed.instantiate() else { return };
+        let mut model: Gd<Node3D> = instance.cast();
+        self.base_mut().add_child(&model);
+        godot_util::fit_model_to_length(&mut model, SHOWCASE_SHIP_LENGTH);
+        // The model is built facing backward; face its nose forward so the
+        // cosmetic beams come from the nose, not the tail (matches the player).
+        model.rotate_y(std::f32::consts::PI);
 
-        let mut body_mat = StandardMaterial3D::new_gd();
-        body_mat.set_albedo(Color::from_rgb(0.3, 0.35, 0.4));
-        body_mat.set_metallic(0.8);
-        body_mat.set_roughness(0.3);
-        body.set_surface_override_material(0, &body_mat);
-        self.base_mut().add_child(&body);
+        // Neutral key light so the showcase ship and the room around it are lit
+        // (a freshly-generated abandoned base is deliberately dim). On the
+        // y-axis at (0, h, 0) it stays put as the showcase spins.
+        let mut key = OmniLight3D::new_alloc();
+        key.set_color(Color::from_rgb(1.0, 1.0, 0.97));
+        key.set_param(light_3d::Param::ENERGY, 4.0);
+        key.set_param(light_3d::Param::RANGE, 30.0);
+        key.set_position(Vector3::new(0.0, 2.5, 0.0));
+        self.base_mut().add_child(&key);
 
-        // Left wing
-        let mut left_wing = MeshInstance3D::new_alloc();
-        let mut wing_mesh = BoxMesh::new_gd();
-        wing_mesh.set_size(Vector3::new(0.8, 0.05, 0.4));
-        left_wing.set_mesh(&wing_mesh);
-        left_wing.set_position(Vector3::new(-0.5, 0.0, 0.2));
-
-        let mut wing_mat = StandardMaterial3D::new_gd();
-        wing_mat.set_albedo(Color::from_rgb(0.25, 0.3, 0.35));
-        wing_mat.set_metallic(0.7);
-        left_wing.set_surface_override_material(0, &wing_mat);
-        self.base_mut().add_child(&left_wing);
-
-        // Right wing
-        let mut right_wing = MeshInstance3D::new_alloc();
-        right_wing.set_mesh(&wing_mesh);
-        right_wing.set_position(Vector3::new(0.5, 0.0, 0.2));
-        right_wing.set_surface_override_material(0, &wing_mat);
-        self.base_mut().add_child(&right_wing);
-
-        // Engine glow
-        let mut engine = MeshInstance3D::new_alloc();
-        let mut engine_mesh = BoxMesh::new_gd();
-        engine_mesh.set_size(Vector3::new(0.15, 0.15, 0.1));
-        engine.set_mesh(&engine_mesh);
-        engine.set_position(Vector3::new(0.0, 0.0, 0.65));
-
-        let mut engine_mat = StandardMaterial3D::new_gd();
-        engine_mat.set_albedo(Color::from_rgb(0.2, 0.5, 1.0));
-        engine_mat.set_feature(godot::classes::base_material_3d::Feature::EMISSION, true);
-        engine_mat.set_emission(Color::from_rgb(0.3, 0.6, 1.0));
-        engine_mat.set_emission_energy_multiplier(5.0);
-        engine.set_surface_override_material(0, &engine_mat);
-        self.base_mut().add_child(&engine);
+        // Colour accent light — recoloured by show_showcase to the ship colour.
+        let mut light = OmniLight3D::new_alloc();
+        light.set_color(Color::from_rgb(self.laser_color[0], self.laser_color[1], self.laser_color[2]));
+        light.set_param(light_3d::Param::ENERGY, 3.0);
+        light.set_param(light_3d::Param::RANGE, 12.0);
+        model.add_child(&light);
+        self.model_glow = Some(light);
     }
 
     fn fire_cosmetic_beams(&mut self) {

@@ -28,6 +28,7 @@ use void_logic::power_routing::PowerMode;
 use void_logic::run_state::RunState;
 use void_logic::save_game::SaveGame;
 use void_logic::seed::Seed;
+use void_logic::ship::ShipColor;
 use void_logic::upgrade::{Upgrade, UpgradeKind};
 
 /// Central orchestrator: owns RunState, manages game phase transitions,
@@ -150,14 +151,15 @@ impl GameManager {
             self.set_scene_paused(false);
             self.transition_to(GamePhase::MainMenu);
         }
-        // Don't touch the run unless the phase machine can enter Playing.
-        if !self.phase.can_transition_to(GamePhase::Playing) {
+        // New game starts at the loadout (ship-colour) screen.
+        if !self.phase.can_transition_to(GamePhase::ShipSelect) {
             return;
         }
         self.run_state = RunState::new(self.fresh_run_seed());
         self.save_game = None;
         self.sync_player_state();
-        self.transition_to(GamePhase::Playing);
+        self.transition_to(GamePhase::ShipSelect);
+        self.show_ship_select_ui();
     }
 
     /// Called from UI: continue from saved game.
@@ -252,7 +254,7 @@ impl GameManager {
         }
     }
 
-    /// Called from shop UI: proceed to next level.
+    /// Called from shop UI: proceed to the loadout screen, then the next level.
     #[func]
     pub fn advance_to_next_level(&mut self) {
         if self.phase == GamePhase::Shop {
@@ -260,7 +262,44 @@ impl GameManager {
             self.run_state.kills.reset();
             self.run_state.health = self.run_state.loadout.max_health();
             self.run_state.shield.reset();
+            self.transition_to(GamePhase::ShipSelect);
+            self.show_ship_select_ui();
+        }
+    }
+
+    /// Called from the ship-select UI: a colour was chosen — apply it live.
+    #[func]
+    pub fn on_ship_color_selected(&mut self, color_id: i32) {
+        let Some(color) = ShipColor::from_id(color_id) else { return };
+        self.run_state.set_ship_color(color);
+        self.sync_player_state();
+        self.update_hud();
+        // Recolour the showcase ship behind the loadout screen.
+        if let Some(parent) = self.base().get_parent() {
+            if let Some(mut showcase) = parent.try_get_node_as::<Node>(nodes::SHIP_SHOWCASE) {
+                let c = self.run_state.ship_color.color();
+                showcase.call(
+                    methods::SHOW_SHOWCASE,
+                    &[Variant::from(Color::from_rgba(c[0], c[1], c[2], c[3]))],
+                );
+            }
+        }
+    }
+
+    /// Called from the ship-select UI's Continue: start the level.
+    #[func]
+    pub fn advance_from_ship_select(&mut self) {
+        if self.phase == GamePhase::ShipSelect {
+            self.sync_player_state();
             self.transition_to(GamePhase::Playing);
+        }
+    }
+
+    /// Populate and show the ship-select UI with the current colour marked.
+    fn show_ship_select_ui(&self) {
+        let Some(parent) = self.base().get_parent() else { return };
+        if let Some(mut ui) = Self::find_ui_node(&parent, nodes::SHIP_SELECT_UI) {
+            ui.call(methods::SHOW_SHIP_SELECT, &[Variant::from(self.run_state.ship_color.id())]);
         }
     }
 
@@ -553,6 +592,14 @@ impl GameManager {
         }
         let prev = self.phase;
         self.phase = next;
+
+        // The loadout screen sits in a quiet one-room backdrop. Build it before
+        // show_phase so the showcase ship is placed in front of the camera the
+        // backdrop just parked in the room.
+        if next == GamePhase::ShipSelect {
+            self.generate_backdrop();
+        }
+
         self.show_phase(next);
 
         let phase_name: GString = GString::from(format!("{:?}", next).as_str());
@@ -563,6 +610,28 @@ impl GameManager {
         // resuming from pause, which returns to the level in progress.
         if next == GamePhase::Playing && prev != GamePhase::Paused {
             self.regenerate_level();
+        }
+    }
+
+    /// Build the quiet one-room backdrop shown behind the loadout screen.
+    fn generate_backdrop(&self) {
+        let Some(parent) = self.base().get_parent() else { return };
+        if let Some(mut level_mgr) = parent.try_get_node_as::<Node>(nodes::LEVEL_MANAGER) {
+            for mut child in level_mgr.get_children().iter_shared() {
+                child.queue_free();
+            }
+            level_mgr.set(properties::CURRENT_LEVEL, &Variant::from(self.run_state.current_level as i32));
+            let seed = self.run_state.level_seed();
+            level_mgr.call(methods::GENERATE_BACKDROP, &[Variant::from(seed.as_i64())]);
+            // Park the player (and its camera) inside the room so the loadout
+            // screen renders the room as a backdrop rather than empty space.
+            let center = level_mgr
+                .call(methods::ROOM_CENTER, &[Variant::from(0_i64)])
+                .to::<Vector3>();
+            if let Some(mut player) = parent.try_get_node_as::<Node3D>(nodes::PLAYER) {
+                player.set_global_position(center + Vector3::new(0.0, 1.5, 0.0));
+                player.reset_physics_interpolation();
+            }
         }
     }
 
@@ -579,6 +648,7 @@ impl GameManager {
         let pause_vis = phase == GamePhase::Paused;
         let summary_vis = phase == GamePhase::KillSummary;
         let shop_vis = phase == GamePhase::Shop;
+        let ship_select_vis = phase == GamePhase::ShipSelect;
         let death_vis = phase == GamePhase::Death;
 
         Self::set_ui_visible(&parent, nodes::MAIN_MENU_UI, menu_vis);
@@ -586,22 +656,26 @@ impl GameManager {
         Self::set_ui_visible(&parent, nodes::PAUSE_MENU_UI, pause_vis);
         Self::set_ui_visible(&parent, nodes::KILL_SUMMARY_UI, summary_vis);
         Self::set_ui_visible(&parent, nodes::SHOP_UI, shop_vis);
+        Self::set_ui_visible(&parent, nodes::SHIP_SELECT_UI, ship_select_vis);
         Self::set_ui_visible(&parent, nodes::DEATH_SCREEN_UI, death_vis);
 
-        // Show/hide gameplay elements (keep visible when paused)
+        // Show/hide gameplay elements (keep visible when paused). The player's
+        // own ship stays hidden on the loadout screen (the showcase ship stands
+        // in for it), but the room is shown there as a backdrop.
         let gameplay_vis = phase == GamePhase::Playing || phase == GamePhase::Paused;
+        let level_vis = gameplay_vis || ship_select_vis;
         if let Some(mut player) = parent.try_get_node_as::<Node3D>(nodes::PLAYER) {
             player.set_visible(gameplay_vis);
         }
         if let Some(mut level) = parent.try_get_node_as::<Node3D>(nodes::LEVEL_MANAGER) {
-            level.set_visible(gameplay_vis);
+            level.set_visible(level_vis);
         }
 
-        // Show/hide ship showcase for end-of-level screens
-        let showcase_vis = summary_vis || shop_vis || death_vis;
+        // Ship flies on the menu, the loadout screen, and end-of-level screens.
+        let showcase_vis = menu_vis || ship_select_vis || summary_vis || shop_vis || death_vis;
         if let Some(mut showcase) = parent.try_get_node_as::<Node>(nodes::SHIP_SHOWCASE) {
             if showcase_vis {
-                let c = self.run_state.laser_level.color();
+                let c = self.run_state.ship_color.color();
                 let color = Color::from_rgba(c[0], c[1], c[2], c[3]);
                 showcase.call(methods::SHOW_SHOWCASE, &[Variant::from(color)]);
 
@@ -609,7 +683,7 @@ impl GameManager {
                 if let Some(camera) = parent.try_get_node_as::<Node3D>(nodes::PLAYER_CAMERA) {
                     let cam_transform = camera.get_global_transform();
                     let forward = -cam_transform.basis.col_c();
-                    let showcase_pos = cam_transform.origin + forward * 3.0;
+                    let showcase_pos = cam_transform.origin + forward * 6.0;
                     if let Some(mut showcase_3d) = parent.try_get_node_as::<Node3D>(nodes::SHIP_SHOWCASE) {
                         showcase_3d.set_global_position(showcase_pos);
                     }
@@ -659,6 +733,12 @@ impl GameManager {
                     Variant::from(upgrade.multiplier),
                 ]);
             }
+            // Push the chosen ship colour (accent) + its thrust tradeoff.
+            let c = self.run_state.ship_color.color();
+            player.call(methods::CONFIGURE_SHIP, &[
+                Variant::from(Color::from_rgba(c[0], c[1], c[2], c[3])),
+                Variant::from(self.run_state.ship_color.thrust_mul()),
+            ]);
         }
     }
 
@@ -797,6 +877,17 @@ impl GameManager {
                 let mut shop = shop;
                 shop.connect(signals::BUY_PRESSED, &buy_callable);
                 shop.connect(signals::CONTINUE_PRESSED, &continue_callable);
+            }
+        }
+
+        // Connect ShipSelectUI
+        if let Some(ship_select) = Self::find_ui_node(&parent, nodes::SHIP_SELECT_UI) {
+            let color_callable = self.base().callable(methods::ON_SHIP_COLOR_SELECTED);
+            let continue_callable = self.base().callable(methods::ADVANCE_FROM_SHIP_SELECT);
+            if !ship_select.is_connected(signals::SHIP_COLOR_SELECTED, &color_callable) {
+                let mut ship_select = ship_select;
+                ship_select.connect(signals::SHIP_COLOR_SELECTED, &color_callable);
+                ship_select.connect(signals::CONTINUE_PRESSED, &continue_callable);
             }
         }
 

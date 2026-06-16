@@ -4,6 +4,7 @@
 use godot::prelude::*;
 use godot::classes::{
     MeshInstance3D, BoxMesh, StandardMaterial3D, OmniLight3D,
+    RigidBody3D, CollisionShape3D,
     ParticleProcessMaterial,
     particle_process_material::Parameter,
     light_3d,
@@ -92,6 +93,72 @@ pub fn attach_glow_light(parent: &mut Gd<Node3D>, color: &[f32], energy: f32, ra
     light.set_param(light_3d::Param::RANGE, range);
     light.set_param(light_3d::Param::ATTENUATION, 1.5);
     parent.add_child(&light);
+}
+
+/// Uniformly scale `model` (already in the tree, currently unscaled) so its
+/// longest dimension spans `target` world units. No-op if it has no meshes.
+/// Robust to whatever native units the imported model uses.
+pub fn fit_model_to_length(model: &mut Gd<Node3D>, target: f32) {
+    if let Some(aabb) = combined_mesh_aabb(model) {
+        let longest = aabb.size.x.max(aabb.size.y).max(aabb.size.z).max(0.001);
+        let scale = target / longest;
+        model.set_scale(Vector3::splat(scale));
+        // Re-centre: imported models often sit off their own origin, which
+        // makes them render off-axis and orbit when rotated. Shift so the
+        // geometry centroid lands on the node origin.
+        let center = aabb.position + aabb.size * 0.5;
+        model.set_position(-center * scale);
+    }
+}
+
+/// Add convex-hull collision shapes (one per `MeshInstance3D`) found under
+/// `node` to `body`, each placed by its accumulated transform starting from
+/// `xform`. The dynamic-safe, mesh-hugging collider — used by both the loose
+/// props and the player ship (Jolt allows convex hulls on dynamic bodies;
+/// concave trimesh is static-only).
+pub fn add_convex_collision(body: &mut Gd<RigidBody3D>, node: &Gd<Node3D>, xform: Transform3D) {
+    if let Ok(mesh_inst) = node.clone().try_cast::<MeshInstance3D>() {
+        if let Some(mesh) = mesh_inst.get_mesh() {
+            if let Some(shape) = mesh.create_convex_shape() {
+                let mut col = CollisionShape3D::new_alloc();
+                col.set_shape(&shape);
+                col.set_transform(xform);
+                body.add_child(&col);
+            }
+        }
+    }
+    for child in node.get_children().iter_shared() {
+        if let Ok(child3d) = child.try_cast::<Node3D>() {
+            let child_xform = xform * child3d.get_transform();
+            add_convex_collision(body, &child3d, child_xform);
+        }
+    }
+}
+
+/// Union of every `MeshInstance3D` AABB under `root`, expressed in `root`'s
+/// local space. `None` if there are no meshes. Used to fit a collision box to
+/// an imported model regardless of how it's nested or scaled.
+pub fn combined_mesh_aabb(root: &Gd<Node3D>) -> Option<godot::builtin::Aabb> {
+    use godot::classes::Node;
+    let inv = root.get_global_transform().affine_inverse();
+    let mut result: Option<godot::builtin::Aabb> = None;
+    let mut stack: Vec<Gd<Node>> = vec![root.clone().upcast()];
+    while let Some(node) = stack.pop() {
+        for child in node.get_children().iter_shared() {
+            stack.push(child);
+        }
+        if let Ok(mesh) = node.try_cast::<MeshInstance3D>() {
+            if mesh.get_mesh().is_some() {
+                let local = inv * mesh.get_global_transform();
+                let aabb = local * mesh.get_aabb();
+                result = Some(match result {
+                    Some(acc) => acc.merge(aabb),
+                    None => aabb,
+                });
+            }
+        }
+    }
+    result
 }
 
 /// Age all beams in a list, fading their alpha. Returns only those still alive.
