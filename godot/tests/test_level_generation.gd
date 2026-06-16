@@ -38,6 +38,13 @@ class UIStub:
 	func show_ship_select(_current_id: int) -> void:
 		pass
 
+	## Bestiary briefing contract: GameManager calls these on the Bestiary phase.
+	func show_bestiary(_title: String, _blurb: String, _position: String, _hint: String) -> void:
+		pass
+
+	func hide_bestiary() -> void:
+		pass
+
 
 func test_does_not_generate_on_ready():
 	var lm = LevelManager.new()
@@ -79,7 +86,7 @@ func test_level_generation_is_owned_by_the_phase_machine():
 	add_child_autofree(root)
 	# Stub the UI layers show_phase toggles, so the minimal scene
 	# exercises the real phase machinery without UI warnings.
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "DeathScreenUI"]:
+	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI"]:
 		var stub = UIStub.new()
 		stub.name = ui_name
 		root.add_child(stub)
@@ -89,10 +96,17 @@ func test_level_generation_is_owned_by_the_phase_machine():
 	root.add_child(lm)
 	root.add_child(gm)
 
-	# New game now opens the loadout screen first; entering Playing from it
-	# is what generates the level.
-	gm.start_new_game()           # MainMenu -> ShipSelect (no generation yet)
-	gm.advance_from_ship_select()  # ShipSelect -> Playing (generates)
+	# New game now opens the loadout screen, then the bestiary briefing, before
+	# the level: MainMenu -> ShipSelect -> Bestiary -> ... -> Playing (generates).
+	gm.start_new_game()            # MainMenu -> ShipSelect (no generation yet)
+	gm.advance_from_ship_select()  # ShipSelect -> Bestiary briefing
+	# Tap through the briefing; the final tap enters Playing and generates.
+	for _i in range(10):
+		if gm.get_phase_name() == "Playing":
+			break
+		gm.advance_from_bestiary()
+	assert_eq(gm.get_phase_name(), "Playing",
+		"the briefing must lead into Playing")
 	assert_gt(lm.get_child_count(), 0,
 		"entering Playing through the FSM must generate a level")
 

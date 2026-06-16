@@ -33,6 +33,21 @@
 - Dual currency is wired: mechanical kills earn **components** (in-run, lost on
   death); **organics** (permanent) are collected from glowing barrels, not kills.
 
+### Bestiary Briefing (`Bestiary` phase)
+
+- Between ship-select and the level, a briefing screen reuses the loadout
+  backdrop room: one subject spins on a turntable while a low panel shows its
+  name and lore; the player taps to step through the catalog and the final tap
+  drops into the level. Flow: `ShipSelect → Bestiary → Playing`.
+- The catalog (`void-logic/src/bestiary.rs`) always leads with the two pickups —
+  the green **Organic Barrel** (permanent, run-to-run upgrades) and the blue
+  **Component Cache** (this-run upgrades) — so level 1, before any enemy is met,
+  teaches the economy. Then it lists every enemy **seen so far**, in roster
+  order. Enemies are marked on first encounter (level entry) and the seen-set is
+  **permanent** across runs (`SeenEnemies` in `RunState`/`SaveGame`, like
+  organics). GameManager owns the paging; `BestiaryUI` is the panel and
+  `BestiaryDisplay` the turntable.
+
 ### Physics Architecture (Remediated)
 - Velocity readback after move_and_slide() on both player and enemies
 - Death as event (in take_damage, not polled in physics_process)

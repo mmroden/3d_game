@@ -5,7 +5,7 @@ use crate::newtypes::{Damage, Health, Shield};
 
 /// All enemy types in the game, ordered by difficulty tier. Every enemy is a
 /// mechanical defense system; their behaviour is set by [`Archetype`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum EnemyType {
     GunDrone,
     QuadOrb,
@@ -93,6 +93,19 @@ impl EnemyType {
             Self::Bomber =>    "res://scenes/enemies/enemy_bomber.tscn",
             Self::EyeDrone =>  "res://scenes/enemies/enemy_eye_drone.tscn",
             Self::QuadShell => "res://scenes/enemies/enemy_quad_shell.tscn",
+        }
+    }
+
+    /// The bare visual model (no AI/collision) each enemy wears — for the
+    /// bestiary briefing, which spins the model without the gameplay node.
+    /// The Bomber reuses the QuadOrb model (a placeholder until it has its own).
+    pub fn model_path(&self) -> &'static str {
+        match self {
+            Self::GunDrone =>  "res://addons/quaternius/essentials/enemies/Enemy_GunDrone.gltf",
+            Self::QuadOrb =>   "res://addons/quaternius/essentials/enemies/Enemy_QuadOrb.gltf",
+            Self::Bomber =>    "res://addons/quaternius/essentials/enemies/Enemy_QuadOrb.gltf",
+            Self::EyeDrone =>  "res://addons/quaternius/essentials/enemies/Enemy_EyeDrone.gltf",
+            Self::QuadShell => "res://addons/quaternius/essentials/enemies/Enemy_QuadShell.gltf",
         }
     }
 
@@ -200,6 +213,15 @@ mod tests {
     fn scene_paths_non_empty() {
         for enemy in EnemyType::ALL {
             assert!(enemy.scene_path().starts_with("res://"), "{:?} bad scene path", enemy);
+        }
+    }
+
+    #[test]
+    fn model_paths_are_gltf_resources() {
+        for enemy in EnemyType::ALL {
+            let path = enemy.model_path();
+            assert!(path.starts_with("res://"), "{:?} bad model path", enemy);
+            assert!(path.ends_with(".gltf"), "{:?} model should be a gltf", enemy);
         }
     }
 

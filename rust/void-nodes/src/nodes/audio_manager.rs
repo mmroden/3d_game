@@ -151,6 +151,7 @@ impl AudioManager {
                 if prev == GamePhase::MainMenu
                     || prev == GamePhase::Shop
                     || prev == GamePhase::ShipSelect
+                    || prev == GamePhase::Bestiary
                 {
                     let track = self.next_gameplay_track();
                     self.crossfade_to(track, GAMEPLAY_MUSIC_VOL);
@@ -163,7 +164,7 @@ impl AudioManager {
             }
             // Transition/menu screens all reduce volume.
             GamePhase::KillSummary | GamePhase::Shop | GamePhase::ShipSelect
-            | GamePhase::Paused | GamePhase::LevelComplete => {
+            | GamePhase::Bestiary | GamePhase::Paused | GamePhase::LevelComplete => {
                 self.set_active_volume(TRANSITION_MUSIC_VOL);
             }
         }
@@ -264,7 +265,9 @@ impl AudioManager {
             GamePhase::Playing => GAMEPLAY_MUSIC_VOL,
             GamePhase::Death => DEATH_MUSIC_VOL,
             GamePhase::KillSummary | GamePhase::Shop | GamePhase::ShipSelect
-            | GamePhase::Paused | GamePhase::LevelComplete => TRANSITION_MUSIC_VOL,
+            | GamePhase::Bestiary | GamePhase::Paused | GamePhase::LevelComplete => {
+                TRANSITION_MUSIC_VOL
+            }
         }
     }
 

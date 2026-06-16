@@ -1,3 +1,4 @@
+use crate::bestiary::SeenEnemies;
 use crate::currency::{ComponentAccount, OrganicAccount};
 use crate::laser::LaserLevel;
 use crate::loadout::Loadout;
@@ -21,6 +22,8 @@ pub struct SaveGame {
     pub health: Health,
     pub shield: ShieldState,
     pub ship_color: ShipColor,
+    /// Permanent bestiary: every enemy type sighted across all runs.
+    pub seen_enemies: SeenEnemies,
 }
 
 impl SaveGame {
@@ -47,6 +50,7 @@ impl SaveGame {
             health: run.health,
             shield: run.shield.clone(),
             ship_color: run.ship_color,
+            seen_enemies: run.seen_enemies.clone(),
         }
     }
 
@@ -61,6 +65,7 @@ impl SaveGame {
         run.health = self.health;
         run.shield = self.shield.clone();
         run.ship_color = self.ship_color;
+        run.seen_enemies = self.seen_enemies.clone(); // permanent, like organics
         // Reset ephemeral state
         run.kills.reset();
         run.rooms_cleared.clear();
@@ -158,6 +163,34 @@ mod tests {
         assert_eq!(fresh.ship_color, ShipColor::Armored);
         assert_eq!(fresh.shield.max_capacity, run.shield.max_capacity,
             "restored shield matches the saved ship");
+    }
+
+    #[test]
+    fn bestiary_persists_through_a_save() {
+        use crate::enemy_type::EnemyType;
+        let mut run = RunState::new(Seed::new(42));
+        run.mark_enemy_seen(EnemyType::GunDrone);
+        run.mark_enemy_seen(EnemyType::QuadShell);
+        let save = SaveGame::from_run_state(&run);
+
+        let mut fresh = RunState::new(Seed::new(99));
+        save.apply_to(&mut fresh);
+        assert!(fresh.seen_enemies.contains(EnemyType::GunDrone));
+        assert!(fresh.seen_enemies.contains(EnemyType::QuadShell));
+        assert_eq!(fresh.seen_enemies.count(), 2);
+    }
+
+    #[test]
+    fn bestiary_survives_a_death_save() {
+        use crate::enemy_type::EnemyType;
+        let mut run = RunState::new(Seed::new(42));
+        run.mark_enemy_seen(EnemyType::Bomber);
+        run.apply_death_penalty(); // bestiary is permanent
+        let save = SaveGame::from_run_state(&run);
+
+        let mut fresh = RunState::new(Seed::new(99));
+        save.apply_to(&mut fresh);
+        assert!(fresh.seen_enemies.contains(EnemyType::Bomber));
     }
 
     #[test]

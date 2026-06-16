@@ -60,6 +60,8 @@ environment = SubResource("env")
 
 [node name="ShipShowcase" type="ShipShowcase" parent="."]
 
+[node name="BestiaryDisplay" type="BestiaryDisplay" parent="."]
+
 [node name="MainMenuUI" type="MainMenuUI" parent="."]
 
 [node name="HUD" type="HUD" parent="."]
@@ -69,6 +71,8 @@ environment = SubResource("env")
 [node name="ShopUI" type="ShopUI" parent="."]
 
 [node name="ShipSelectUI" type="ShipSelectUI" parent="."]
+
+[node name="BestiaryUI" type="BestiaryUI" parent="."]
 
 [node name="DeathScreenUI" type="DeathScreenUI" parent="."]
 

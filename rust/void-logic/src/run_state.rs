@@ -1,3 +1,4 @@
+use crate::bestiary::SeenEnemies;
 use crate::currency::{ComponentAccount, OrganicAccount};
 use crate::enemy_type::EnemyType;
 use crate::kill_tracker::KillTracker;
@@ -27,6 +28,9 @@ pub struct RunState {
     pub current_level: u32,
     /// Chosen ship color — a loadout tradeoff that shapes shields and thrust.
     pub ship_color: ShipColor,
+    /// Enemy types catalogued in the bestiary. Permanent: an enemy is marked on
+    /// first sighting and survives death, like organics.
+    pub seen_enemies: SeenEnemies,
 }
 
 impl RunState {
@@ -70,6 +74,7 @@ impl RunState {
             laser_level: LaserLevel::Red,
             current_level: 1,
             ship_color,
+            seen_enemies: SeenEnemies::new(),
         }
     }
 
@@ -109,6 +114,12 @@ impl RunState {
     /// Collect organics from a barrel pickup. Permanent currency.
     pub fn collect_organics(&mut self, amount: u32) {
         self.organics.earn(amount);
+    }
+
+    /// Catalogue an enemy on sighting. Returns `true` the first time this type
+    /// is seen, so the caller can persist the freshly-grown bestiary.
+    pub fn mark_enemy_seen(&mut self, enemy_type: EnemyType) -> bool {
+        self.seen_enemies.mark(enemy_type)
     }
 
     /// Current laser damage per beam.
@@ -240,6 +251,23 @@ mod tests {
         run.set_ship_color(ShipColor::Swift);
         run.apply_death_penalty();
         assert_eq!(run.ship_color, ShipColor::Swift);
+    }
+
+    #[test]
+    fn marking_an_enemy_seen_reports_first_sighting() {
+        let mut run = RunState::new(Seed::new(42));
+        assert!(run.mark_enemy_seen(EnemyType::GunDrone), "first sighting is new");
+        assert!(!run.mark_enemy_seen(EnemyType::GunDrone), "repeat sighting is not new");
+        assert!(run.seen_enemies.contains(EnemyType::GunDrone));
+    }
+
+    #[test]
+    fn bestiary_is_permanent_across_death() {
+        let mut run = RunState::new(Seed::new(42));
+        run.mark_enemy_seen(EnemyType::QuadShell);
+        run.apply_death_penalty();
+        assert!(run.seen_enemies.contains(EnemyType::QuadShell),
+            "the bestiary survives death, like organics");
     }
 
     #[test]

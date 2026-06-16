@@ -21,6 +21,7 @@ pub mod lore;
 pub mod weapon;
 pub mod enemy_ai;
 pub mod laser;
+pub mod bestiary;
 pub mod currency;
 pub mod debuff;
 pub mod difficulty;

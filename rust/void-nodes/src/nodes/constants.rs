@@ -70,6 +70,10 @@ pub mod methods {
     pub const ON_SHIP_COLOR_SELECTED: &str = "on_ship_color_selected";
     pub const ADVANCE_FROM_SHIP_SELECT: &str = "advance_from_ship_select";
     pub const SHOW_SHIP_SELECT: &str = "show_ship_select";
+    pub const SHOW_BESTIARY: &str = "show_bestiary";
+    pub const ADVANCE_FROM_BESTIARY: &str = "advance_from_bestiary";
+    pub const SHOW_ENTRY: &str = "show_entry";
+    pub const HIDE_DISPLAY: &str = "hide_display";
     pub const CONFIGURE_SHIP: &str = "configure_ship";
     pub const UPDATE_LASER: &str = "update_laser";
     pub const UPDATE_LEVEL: &str = "update_level";
@@ -149,6 +153,8 @@ pub mod nodes {
     pub const KILL_SUMMARY_UI: &str = "KillSummaryUI";
     pub const SHOP_UI: &str = "ShopUI";
     pub const SHIP_SELECT_UI: &str = "ShipSelectUI";
+    pub const BESTIARY_UI: &str = "BestiaryUI";
+    pub const BESTIARY_DISPLAY: &str = "BestiaryDisplay";
     pub const DEATH_SCREEN_UI: &str = "DeathScreenUI";
     pub const PAUSE_MENU_UI: &str = "PauseMenuUI";
     pub const STEREO_CANVAS: &str = "StereoCanvas";
@@ -182,6 +188,10 @@ pub mod scenes {
     /// Player ship model (CGTrader, installed via `make assets`).
     pub const SHIP_MODEL: &str = "res://addons/ships/Spacecraft_1.glb";
     pub const ENEMY_DRONE_FALLBACK: &str = "res://scenes/enemies/enemy_drone.tscn";
+    /// Bestiary pickup models — the same GLTFs the in-level pickups wear, spun
+    /// in the briefing room (without the pickups' collision/collect behavior).
+    pub const BARREL_MODEL: &str = "res://addons/quaternius/essentials/props/Prop_Barrel1.gltf";
+    pub const CRATE_MODEL: &str = "res://addons/quaternius/modularscifimegakit/props/Prop_Crate1.gltf";
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────

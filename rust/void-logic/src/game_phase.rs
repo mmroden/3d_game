@@ -10,6 +10,9 @@ pub enum GamePhase {
     Shop,
     /// Between-level (and new-game) screen to pick the ship color/loadout.
     ShipSelect,
+    /// Pre-level briefing: the bestiary of pickups and enemies seen so far,
+    /// shown in the loadout room while the next level is readied.
+    Bestiary,
     Death,
 }
 
@@ -25,6 +28,7 @@ impl GamePhase {
             "KillSummary" => Some(Self::KillSummary),
             "Shop" => Some(Self::Shop),
             "ShipSelect" => Some(Self::ShipSelect),
+            "Bestiary" => Some(Self::Bestiary),
             "Death" => Some(Self::Death),
             _ => None,
         }
@@ -46,7 +50,9 @@ impl GamePhase {
                 // Loadout / ship-color screen, reached on new game and between levels.
                 | (GamePhase::MainMenu, GamePhase::ShipSelect)
                 | (GamePhase::Shop, GamePhase::ShipSelect)
-                | (GamePhase::ShipSelect, GamePhase::Playing)
+                // Ship-select → bestiary briefing → into the level.
+                | (GamePhase::ShipSelect, GamePhase::Bestiary)
+                | (GamePhase::Bestiary, GamePhase::Playing)
                 | (GamePhase::Death, GamePhase::MainMenu)
         )
     }
@@ -90,10 +96,21 @@ mod tests {
     fn ship_select_flow() {
         assert!(GamePhase::MainMenu.can_transition_to(GamePhase::ShipSelect));
         assert!(GamePhase::Shop.can_transition_to(GamePhase::ShipSelect));
-        assert!(GamePhase::ShipSelect.can_transition_to(GamePhase::Playing));
+        // Ship-select hands off to the bestiary briefing, not straight to play.
+        assert!(!GamePhase::ShipSelect.can_transition_to(GamePhase::Playing));
         // Not a free-for-all.
         assert!(!GamePhase::ShipSelect.can_transition_to(GamePhase::Shop));
         assert!(!GamePhase::Playing.can_transition_to(GamePhase::ShipSelect));
+    }
+
+    #[test]
+    fn bestiary_briefing_sits_between_ship_select_and_play() {
+        assert!(GamePhase::ShipSelect.can_transition_to(GamePhase::Bestiary));
+        assert!(GamePhase::Bestiary.can_transition_to(GamePhase::Playing));
+        // The briefing is a one-way gate into the level, nothing else.
+        assert!(!GamePhase::Bestiary.can_transition_to(GamePhase::Shop));
+        assert!(!GamePhase::Bestiary.can_transition_to(GamePhase::ShipSelect));
+        assert!(!GamePhase::Playing.can_transition_to(GamePhase::Bestiary));
     }
 
     #[test]
@@ -134,7 +151,8 @@ mod tests {
         let all = [
             GamePhase::MainMenu, GamePhase::Playing, GamePhase::Paused,
             GamePhase::LevelComplete, GamePhase::KillSummary,
-            GamePhase::Shop, GamePhase::ShipSelect, GamePhase::Death,
+            GamePhase::Shop, GamePhase::ShipSelect, GamePhase::Bestiary,
+            GamePhase::Death,
         ];
         for phase in all {
             let name = format!("{phase:?}");

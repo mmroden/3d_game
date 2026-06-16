@@ -18,7 +18,8 @@ const SAVE_SECTION: &str = "run";
 use rand::RngExt;
 
 use super::constants::{actions, signals, methods, nodes, properties};
-use void_logic::enemy_type::EnemyType;
+use void_logic::bestiary::{self, BestiaryKind};
+use void_logic::enemy_type::{self, EnemyType};
 use void_logic::game_options::GameOptions;
 use void_logic::game_phase::GamePhase;
 use void_logic::generator::rooms_for_level;
@@ -43,6 +44,8 @@ pub struct GameManager {
     save_game: Option<SaveGame>,
     active_input: InputMethod,
     current_power_mode: i32,
+    /// Which bestiary entry the pre-level briefing is currently showing.
+    bestiary_index: usize,
 
     /// Pins the run seed for reproducible runs when nonzero (0 = random).
     /// Configuration, not build flavor: set it in the editor or a test
@@ -65,6 +68,7 @@ impl INode for GameManager {
             save_game: None,
             active_input: InputMethod::Keyboard,
             current_power_mode: 0,
+            bestiary_index: 0,
             fixed_seed: 0,
         }
     }
@@ -286,12 +290,67 @@ impl GameManager {
         }
     }
 
-    /// Called from the ship-select UI's Continue: start the level.
+    /// Called from the ship-select UI's Continue: into the pre-level briefing.
     #[func]
     pub fn advance_from_ship_select(&mut self) {
         if self.phase == GamePhase::ShipSelect {
             self.sync_player_state();
+            self.transition_to(GamePhase::Bestiary);
+        }
+    }
+
+    /// Called from the bestiary UI on each tap: step the briefing forward one
+    /// entry, or — once the catalog is exhausted — drop into the level.
+    #[func]
+    pub fn advance_from_bestiary(&mut self) {
+        if self.phase != GamePhase::Bestiary {
+            return;
+        }
+        let total = bestiary::entries(&self.run_state.seen_enemies).len();
+        if self.bestiary_index + 1 < total {
+            self.bestiary_index += 1;
+            self.refresh_bestiary();
+        } else {
             self.transition_to(GamePhase::Playing);
+        }
+    }
+
+    /// Reset the briefing to its first entry and show it.
+    fn enter_bestiary(&mut self) {
+        self.bestiary_index = 0;
+        self.refresh_bestiary();
+    }
+
+    /// Push the current briefing entry to the panel (name + lore) and to the
+    /// turntable (the model to spin). GameManager owns the paging so the UI and
+    /// the 3D display never drift apart.
+    fn refresh_bestiary(&self) {
+        let entries = bestiary::entries(&self.run_state.seen_enemies);
+        let Some(entry) = entries.get(self.bestiary_index) else { return };
+        let Some(parent) = self.base().get_parent() else { return };
+
+        let (kind_id, enemy_id): (i32, i32) = match entry.kind {
+            BestiaryKind::OrganicBarrel => (0, -1),
+            BestiaryKind::ComponentCache => (1, -1),
+            BestiaryKind::Enemy(t) => (2, t.id()),
+        };
+        if let Some(mut display) = parent.try_get_node_as::<Node>(nodes::BESTIARY_DISPLAY) {
+            display.call(
+                methods::SHOW_ENTRY,
+                &[Variant::from(kind_id), Variant::from(enemy_id)],
+            );
+        }
+
+        let last = self.bestiary_index + 1 >= entries.len();
+        let hint = if last { "Begin mission \u{25B6}" } else { "Next \u{25B6}" };
+        let position = format!("{} / {}", self.bestiary_index + 1, entries.len());
+        if let Some(mut ui) = Self::find_ui_node(&parent, nodes::BESTIARY_UI) {
+            ui.call(methods::SHOW_BESTIARY, &[
+                Variant::from(GString::from(entry.title)),
+                Variant::from(GString::from(entry.blurb)),
+                Variant::from(GString::from(position.as_str())),
+                Variant::from(GString::from(hint)),
+            ]);
         }
     }
 
@@ -593,10 +652,10 @@ impl GameManager {
         let prev = self.phase;
         self.phase = next;
 
-        // The loadout screen sits in a quiet one-room backdrop. Build it before
-        // show_phase so the showcase ship is placed in front of the camera the
-        // backdrop just parked in the room.
-        if next == GamePhase::ShipSelect {
+        // The loadout and briefing screens share one quiet backdrop room. Build
+        // it before show_phase so the showcase/turntable is placed in front of
+        // the camera the backdrop just parked in the room.
+        if next == GamePhase::ShipSelect || next == GamePhase::Bestiary {
             self.generate_backdrop();
         }
 
@@ -609,7 +668,29 @@ impl GameManager {
         // means a fresh level for the current RunState — except when
         // resuming from pause, which returns to the level in progress.
         if next == GamePhase::Playing && prev != GamePhase::Paused {
+            self.mark_level_enemies_seen();
             self.regenerate_level();
+        }
+
+        // Entering the briefing: catalog stands at whatever's been seen so far,
+        // start it at the first entry.
+        if next == GamePhase::Bestiary {
+            self.enter_bestiary();
+        }
+    }
+
+    /// Catalog every enemy type this level will contain, so the *next* briefing
+    /// lists them, and persist the bestiary if it grew (it is permanent).
+    fn mark_level_enemies_seen(&mut self) {
+        let mut grew = false;
+        for enemy in enemy_type::enemies_for_level(self.run_state.current_level) {
+            if self.run_state.mark_enemy_seen(enemy) {
+                grew = true;
+            }
+        }
+        if grew {
+            self.save_game = Some(SaveGame::from_run_state(&self.run_state));
+            self.save_run();
         }
     }
 
@@ -649,6 +730,7 @@ impl GameManager {
         let summary_vis = phase == GamePhase::KillSummary;
         let shop_vis = phase == GamePhase::Shop;
         let ship_select_vis = phase == GamePhase::ShipSelect;
+        let bestiary_vis = phase == GamePhase::Bestiary;
         let death_vis = phase == GamePhase::Death;
 
         Self::set_ui_visible(&parent, nodes::MAIN_MENU_UI, menu_vis);
@@ -657,13 +739,14 @@ impl GameManager {
         Self::set_ui_visible(&parent, nodes::KILL_SUMMARY_UI, summary_vis);
         Self::set_ui_visible(&parent, nodes::SHOP_UI, shop_vis);
         Self::set_ui_visible(&parent, nodes::SHIP_SELECT_UI, ship_select_vis);
+        Self::set_ui_visible(&parent, nodes::BESTIARY_UI, bestiary_vis);
         Self::set_ui_visible(&parent, nodes::DEATH_SCREEN_UI, death_vis);
 
         // Show/hide gameplay elements (keep visible when paused). The player's
-        // own ship stays hidden on the loadout screen (the showcase ship stands
-        // in for it), but the room is shown there as a backdrop.
+        // own ship stays hidden on the loadout/briefing screens (the showcase or
+        // the bestiary turntable stands in front), but the room is the backdrop.
         let gameplay_vis = phase == GamePhase::Playing || phase == GamePhase::Paused;
-        let level_vis = gameplay_vis || ship_select_vis;
+        let level_vis = gameplay_vis || ship_select_vis || bestiary_vis;
         if let Some(mut player) = parent.try_get_node_as::<Node3D>(nodes::PLAYER) {
             player.set_visible(gameplay_vis);
         }
@@ -671,27 +754,44 @@ impl GameManager {
             level.set_visible(level_vis);
         }
 
-        // Ship flies on the menu, the loadout screen, and end-of-level screens.
+        // Ship flies on the menu, the loadout screen, and end-of-level screens —
+        // but not the briefing, where the bestiary turntable takes its place.
         let showcase_vis = menu_vis || ship_select_vis || summary_vis || shop_vis || death_vis;
         if let Some(mut showcase) = parent.try_get_node_as::<Node>(nodes::SHIP_SHOWCASE) {
             if showcase_vis {
                 let c = self.run_state.ship_color.color();
                 let color = Color::from_rgba(c[0], c[1], c[2], c[3]);
                 showcase.call(methods::SHOW_SHOWCASE, &[Variant::from(color)]);
-
-                // Position showcase in front of camera
-                if let Some(camera) = parent.try_get_node_as::<Node3D>(nodes::PLAYER_CAMERA) {
-                    let cam_transform = camera.get_global_transform();
-                    let forward = -cam_transform.basis.col_c();
-                    let showcase_pos = cam_transform.origin + forward * 6.0;
+                if let Some(pos) = Self::camera_front_position(&parent, 6.0) {
                     if let Some(mut showcase_3d) = parent.try_get_node_as::<Node3D>(nodes::SHIP_SHOWCASE) {
-                        showcase_3d.set_global_position(showcase_pos);
+                        showcase_3d.set_global_position(pos);
                     }
                 }
             } else {
                 showcase.call(methods::HIDE_SHOWCASE, &[]);
             }
         }
+
+        // The bestiary turntable sits where the showcase would, on the briefing
+        // screen only. refresh_bestiary loads the model; here we just place it.
+        if let Some(mut display) = parent.try_get_node_as::<Node3D>(nodes::BESTIARY_DISPLAY) {
+            if bestiary_vis {
+                if let Some(pos) = Self::camera_front_position(&parent, 6.0) {
+                    display.set_global_position(pos);
+                }
+            } else {
+                display.call(methods::HIDE_DISPLAY, &[]);
+            }
+        }
+    }
+
+    /// World point `distance` metres straight ahead of the player camera, used
+    /// to park the showcase ship and the bestiary turntable in view.
+    fn camera_front_position(parent: &Gd<Node>, distance: f32) -> Option<Vector3> {
+        let camera = parent.try_get_node_as::<Node3D>(nodes::PLAYER_CAMERA)?;
+        let t = camera.get_global_transform();
+        let forward = -t.basis.col_c();
+        Some(t.origin + forward * distance)
     }
 
     /// Find a UI node by name. UI nodes are always direct children of Main
@@ -888,6 +988,15 @@ impl GameManager {
                 let mut ship_select = ship_select;
                 ship_select.connect(signals::SHIP_COLOR_SELECTED, &color_callable);
                 ship_select.connect(signals::CONTINUE_PRESSED, &continue_callable);
+            }
+        }
+
+        // Connect BestiaryUI: each tap advances the briefing / enters the level.
+        if let Some(bestiary) = Self::find_ui_node(&parent, nodes::BESTIARY_UI) {
+            let advance_callable = self.base().callable(methods::ADVANCE_FROM_BESTIARY);
+            if !bestiary.is_connected(signals::CONTINUE_PRESSED, &advance_callable) {
+                let mut bestiary = bestiary;
+                bestiary.connect(signals::CONTINUE_PRESSED, &advance_callable);
             }
         }
 

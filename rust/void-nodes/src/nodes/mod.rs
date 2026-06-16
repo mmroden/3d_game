@@ -13,4 +13,5 @@ pub(crate) mod views;
 mod portal;
 mod game_manager;
 mod ship_showcase;
+mod bestiary_display;
 pub mod ui;
