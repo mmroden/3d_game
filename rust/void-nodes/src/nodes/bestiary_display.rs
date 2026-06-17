@@ -39,12 +39,26 @@ impl INode3D for BestiaryDisplay {
         if Engine::singleton().is_editor_hint() {
             return;
         }
+        // Same neutral key light the ship showcase uses, so briefing subjects
+        // read against the dark backdrop instead of sitting near-black (the
+        // per-entry colored accent alone isn't enough). On the turntable's Y
+        // axis, so it stays put as the subject spins.
+        let mut base: Gd<Node3D> = self.base().clone();
+        godot_util::attach_key_light(&mut base, 4.0, 30.0);
         self.base_mut().set_visible(false);
     }
 
     fn process(&mut self, delta: f64) {
         if !self.base().is_visible() {
             return;
+        }
+        // Track the player camera each frame so the subject is always in view,
+        // regardless of where the parked camera ends up (same fix as the ship
+        // showcase — placing it once left it off-screen, reading as black).
+        if let Some(main) = self.base().get_parent() {
+            if let Some(pos) = godot_util::camera_front_position(&main, 6.0) {
+                self.base_mut().set_global_position(pos);
+            }
         }
         let angle = ROTATION_SPEED * delta as f32;
         self.base_mut().rotate_y(angle);

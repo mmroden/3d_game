@@ -81,6 +81,25 @@ func test_ui_plane_has_viewport_texture():
 		material = ui_plane.mesh.surface_get_material(0)
 	assert_not_null(material, "UIPlane must have a material")
 
+# --- mono UI is drawn by the fullscreen MonoUILayer (not the in-eye overlay) ---
+
+func test_mono_draws_ui_through_the_fullscreen_mono_layer():
+	# In mono, the HUD (health bars, center reticle) is drawn by the fullscreen
+	# MonoUILayer CanvasLayer. The in-eye LeftUIOverlay sits inside a
+	# SubViewportContainer and scales the tiny reticle away, so it must NOT be the
+	# mono UI path. Boot is mono.
+	var mono = _main.get_node_or_null("ViewManager/MonoUILayer")
+	assert_not_null(mono, "MonoUILayer must exist")
+	assert_true(mono.visible, "mono must draw the HUD/reticle via the fullscreen MonoUILayer")
+
+func test_sbs_hides_the_mono_ui_layer():
+	# In SBS the 3D UIPlane takes over, so the flat mono layer hides.
+	_main.get_node("GameManager").on_sbs_toggled()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var mono = _main.get_node("ViewManager/MonoUILayer")
+	assert_false(mono.visible, "MonoUILayer must hide in SBS")
+
 # --- helpers ---
 
 func _find_panel_container(node: Node) -> PanelContainer:

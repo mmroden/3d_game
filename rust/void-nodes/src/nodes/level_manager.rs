@@ -155,15 +155,32 @@ impl LevelManager {
         self.apply_measured_viewports(viewports);
     }
 
-    /// World-space center of room `i` (midpoint of its bounds). Used to park
-    /// the player inside the loadout backdrop and to drive room culling from a
-    /// known interior point. Returns `ZERO` for an out-of-range index.
+    /// World-space center of room `i` (midpoint of its bounds). Drives room
+    /// culling from a known interior point. Returns `ZERO` for an out-of-range
+    /// index. NOTE: the Y is the vertical *midpoint*, not the floor — use
+    /// [`room_floor_center`](Self::room_floor_center) to place a camera.
     #[func]
     pub fn room_center(&self, room: i64) -> Vector3 {
         match self.room_bounds.get(room as usize) {
             Some(b) => Vector3::new(
                 (b.min[0] + b.max[0]) * 0.5,
                 (b.min[1] + b.max[1]) * 0.5,
+                (b.min[2] + b.max[2]) * 0.5,
+            ),
+            None => Vector3::ZERO,
+        }
+    }
+
+    /// Horizontally-centered point at eye height above room `i`'s floor — where
+    /// to park the camera for the loadout/briefing backdrop. Uses the floor
+    /// (`min_y`), not the vertical midpoint, so the camera sits inside the room
+    /// rather than up at the ceiling. `ZERO` for an out-of-range index.
+    #[func]
+    pub fn room_floor_center(&self, room: i64) -> Vector3 {
+        match self.room_bounds.get(room as usize) {
+            Some(b) => Vector3::new(
+                (b.min[0] + b.max[0]) * 0.5,
+                b.min[1] + 1.5,
                 (b.min[2] + b.max[2]) * 0.5,
             ),
             None => Vector3::ZERO,

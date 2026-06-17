@@ -33,6 +33,8 @@ class UIStub:
 
 	@warning_ignore("unused_signal")
 	signal ship_color_selected(id: int)
+	@warning_ignore("unused_signal")
+	signal bestiary_paged(delta: int)
 
 	## Ship-select contract: GameManager calls this when entering ShipSelect.
 	func show_ship_select(_current_id: int) -> void:
@@ -40,6 +42,9 @@ class UIStub:
 
 	## Bestiary briefing contract: GameManager calls these on the Bestiary phase.
 	func show_bestiary(_title: String, _blurb: String, _position: String, _hint: String) -> void:
+		pass
+
+	func begin_briefing() -> void:
 		pass
 
 	func hide_bestiary() -> void:

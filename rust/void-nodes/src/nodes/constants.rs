@@ -31,6 +31,7 @@ pub mod signals {
     pub const UPGRADE_COLLECTED: &str = "upgrade_collected";
     pub const ORGANICS_COLLECTED: &str = "organics_collected";
     pub const SHIP_COLOR_SELECTED: &str = "ship_color_selected";
+    pub const BESTIARY_PAGED: &str = "bestiary_paged";
     pub const RENDER_VIEWPORTS_CHANGED: &str = "render_viewports_changed";
 }
 
@@ -72,16 +73,19 @@ pub mod methods {
     pub const SHOW_SHIP_SELECT: &str = "show_ship_select";
     pub const SHOW_BESTIARY: &str = "show_bestiary";
     pub const ADVANCE_FROM_BESTIARY: &str = "advance_from_bestiary";
+    pub const ON_BESTIARY_PAGED: &str = "on_bestiary_paged";
+    pub const BEGIN_BRIEFING: &str = "begin_briefing";
     pub const SHOW_ENTRY: &str = "show_entry";
     pub const HIDE_DISPLAY: &str = "hide_display";
     pub const CONFIGURE_SHIP: &str = "configure_ship";
+    pub const SET_CONTROLS_ENABLED: &str = "set_controls_enabled";
     pub const UPDATE_LASER: &str = "update_laser";
     pub const UPDATE_LEVEL: &str = "update_level";
     pub const UPDATE_SHIELD: &str = "update_shield";
     pub const UPDATE_POWER_MODE: &str = "update_power_mode";
     pub const GENERATE_LEVEL: &str = "generate_level";
     pub const GENERATE_BACKDROP: &str = "generate_backdrop";
-    pub const ROOM_CENTER: &str = "room_center";
+    pub const ROOM_FLOOR_CENTER: &str = "room_floor_center";
     pub const ON_PLAYER_DAMAGED: &str = "on_player_damaged";
     pub const ON_PLAYER_SLOWED: &str = "on_player_slowed";
     pub const APPLY_SLOW: &str = "apply_slow";
@@ -278,7 +282,7 @@ mod tests {
             methods::UPDATE_LEVEL,
             methods::GENERATE_LEVEL,
             methods::GENERATE_BACKDROP,
-            methods::ROOM_CENTER,
+            methods::ROOM_FLOOR_CENTER,
             methods::ON_PLAYER_DAMAGED,
             methods::ON_PLAYER_SLOWED,
             methods::APPLY_SLOW,

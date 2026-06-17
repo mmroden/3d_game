@@ -34,6 +34,13 @@ impl GamePhase {
         }
     }
 
+    /// Whether the player may pilot the ship in this phase. Only true while
+    /// actually flying — the menus and the loadout/briefing screens must not let
+    /// the stick move the camera around.
+    pub fn allows_piloting(&self) -> bool {
+        matches!(self, GamePhase::Playing)
+    }
+
     /// Returns whether transitioning from self to `next` is valid.
     pub fn can_transition_to(&self, next: GamePhase) -> bool {
         matches!(
@@ -168,6 +175,18 @@ mod tests {
     fn from_name_returns_none_for_garbage() {
         assert_eq!(GamePhase::from_name("Bogus"), None);
         assert_eq!(GamePhase::from_name(""), None);
+    }
+
+    #[test]
+    fn only_playing_allows_piloting() {
+        assert!(GamePhase::Playing.allows_piloting(), "flying is the one piloting phase");
+        for phase in [
+            GamePhase::MainMenu, GamePhase::Paused, GamePhase::LevelComplete,
+            GamePhase::KillSummary, GamePhase::Shop, GamePhase::ShipSelect,
+            GamePhase::Bestiary, GamePhase::Death,
+        ] {
+            assert!(!phase.allows_piloting(), "{phase:?} must not pilot the ship");
+        }
     }
 
     #[test]

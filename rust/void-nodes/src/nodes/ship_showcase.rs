@@ -1,11 +1,12 @@
 use godot::prelude::*;
 use godot::classes::{
-    Node3D, INode3D, MeshInstance3D, Engine, OmniLight3D, light_3d,
+    Node3D, INode3D, MeshInstance3D, Engine, OmniLight3D,
 };
 
 use super::constants::scenes;
 use super::godot_util;
 use super::live_handle::{LiveRef, LiveVec};
+use void_logic::ship::{self, ShipColor};
 
 /// Target length of the showcase ship (auto-scaled to fit the view).
 const SHOWCASE_SHIP_LENGTH: f32 = 2.5;
@@ -53,6 +54,15 @@ impl INode3D for ShipShowcase {
         }
         let delta = delta as f32;
 
+        // Track the player camera every frame so the ship is always in view —
+        // placing it once raced the camera's teleport (parking it in a backdrop
+        // room) and left the ship off-screen, which read as a black screen.
+        if let Some(main) = self.base().get_parent() {
+            if let Some(pos) = godot_util::camera_front_position(&main, 6.0) {
+                self.base_mut().set_global_position(pos);
+            }
+        }
+
         // Slow rotation
         let angle = self.rotation_speed * delta;
         self.base_mut().rotate_y(angle);
@@ -72,9 +82,16 @@ impl INode3D for ShipShowcase {
 #[godot_api]
 impl ShipShowcase {
     #[func]
-    pub fn show_showcase(&mut self, color: Color) {
-        self.accent_color = [color.r, color.g, color.b, color.a];
-        godot_util::recolor_glow(&self.model_glow, color);
+    pub fn show_showcase(&mut self, color_id: i32) {
+        let sc = ShipColor::from_id(color_id).unwrap_or_default();
+        self.accent_color = sc.color();
+        godot_util::recolor_glow(&self.model_glow, godot_util::to_color(sc.color()));
+        // Re-skin the painted hull to the variant's body style. apply_body_style
+        // walks our subtree, so the model child is found without a stored handle.
+        let style = sc.body_style();
+        let idx = ship::style_texture_index(ship::STYLED_BODY_PART, style);
+        let root: Gd<Node3D> = self.base().clone();
+        godot_util::apply_body_style(&root, style, idx);
         self.beam_timer = 0.0;
         self.base_mut().set_visible(true);
     }
@@ -100,17 +117,16 @@ impl ShipShowcase {
         };
 
         // Neutral key light so the showcase ship and the room around it are lit
-        // (a freshly-generated abandoned base is deliberately dim). On the
-        // y-axis at (0, h, 0) it stays put as the showcase spins.
-        let mut key = OmniLight3D::new_alloc();
-        key.set_color(Color::from_rgb(1.0, 1.0, 0.97));
-        key.set_param(light_3d::Param::ENERGY, 4.0);
-        key.set_param(light_3d::Param::RANGE, 30.0);
-        key.set_position(Vector3::new(0.0, 2.5, 0.0));
-        self.base_mut().add_child(&key);
+        // (a freshly-generated abandoned base is deliberately dim). Shared with
+        // the bestiary briefing so both screens read the same.
+        let mut base_for_key: Gd<Node3D> = self.base().clone();
+        godot_util::attach_key_light(&mut base_for_key, 4.0, 30.0);
 
         // Color accent light — recolored by show_showcase to the ship color.
         self.model_glow = Some(godot_util::attach_glow_light(&mut model, &self.accent_color, 3.0, 12.0));
+        // Default painted body style until show_showcase pushes the choice.
+        let style = ShipColor::default().body_style();
+        godot_util::apply_body_style(&model, style, ship::style_texture_index(ship::STYLED_BODY_PART, style));
     }
 
     fn fire_cosmetic_beams(&mut self) {

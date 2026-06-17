@@ -96,6 +96,28 @@ pub fn entries(seen: &SeenEnemies) -> Vec<BestiaryEntry> {
     out
 }
 
+/// Move a catalog cursor by `delta` (-1 prev, +1 next), clamped to
+/// `[0, total-1]` — no wrap. Drives the bestiary's left-stick browsing. A
+/// `total` of 0 leaves the cursor where it is.
+pub fn paged_index(current: usize, delta: i32, total: usize) -> usize {
+    if total == 0 {
+        return current;
+    }
+    let last = (total - 1) as i64;
+    (current as i64 + delta as i64).clamp(0, last) as usize
+}
+
+/// The call-to-action under the briefing panel. The Ⓧ marks the begin button
+/// (gamepad X / keyboard Enter). The left-stick next/prev hint only appears when
+/// there's more than one entry to move between.
+pub fn briefing_hint(total: usize) -> &'static str {
+    if total > 1 {
+        "\u{25C0} next \u{25B6}     \u{2022}     \u{24CD} Begin mission"
+    } else {
+        "\u{24CD} Begin mission"
+    }
+}
+
 /// Lore for a catalogued enemy. Every variant must return non-empty text.
 pub fn enemy_blurb(enemy: EnemyType) -> &'static str {
     match enemy {
@@ -162,6 +184,27 @@ mod tests {
                 BestiaryKind::Enemy(EnemyType::QuadShell),
             ]
         );
+    }
+
+    #[test]
+    fn briefing_hint_shows_next_only_with_more_than_one_entry() {
+        // Single subject: nothing to page to, just the begin prompt.
+        assert!(briefing_hint(1).contains("Begin mission"));
+        assert!(!briefing_hint(1).contains("next"), "one entry can't be paged");
+        // Multiple subjects: offer next/prev as well as begin.
+        let multi = briefing_hint(3);
+        assert!(multi.contains("next"), "multiple entries show the next/prev hint");
+        assert!(multi.contains("Begin mission"));
+    }
+
+    #[test]
+    fn paging_steps_and_clamps_without_wrapping() {
+        assert_eq!(paged_index(0, 1, 3), 1, "step forward");
+        assert_eq!(paged_index(2, -1, 3), 1, "step back");
+        assert_eq!(paged_index(0, -1, 3), 0, "clamp at the start — no wrap to the end");
+        assert_eq!(paged_index(2, 1, 3), 2, "clamp at the end — no wrap to the start");
+        assert_eq!(paged_index(0, 1, 0), 0, "empty catalog leaves the cursor put");
+        assert_eq!(paged_index(0, 1, 1), 0, "a single entry can't be paged off");
     }
 
     #[test]

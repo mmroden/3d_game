@@ -298,22 +298,25 @@ impl HUD {
         self.base_mut().add_child(&bottom_center);
 
         // === Center targeting reticle (dot + crosshair) ===
-        let reticle_color = Color::from_rgba(0.5, 1.0, 0.6, 0.85);
+        // Bold and fully opaque: thin, semi-transparent geometry survives the 1:1
+        // mono layer but gets sampled away on the per-eye SBS UI plane (half-res).
+        // These weights read in both paths.
+        let reticle_color = Color::from_rgba(0.5, 1.0, 0.6, 1.0);
         let mut reticle = Control::new_alloc();
         reticle.set_anchors_preset(LayoutPreset::CENTER);
 
         let mut dot = ColorRect::new_alloc();
         dot.set_color(reticle_color);
-        dot.set_size(Vector2::new(4.0, 4.0));
-        dot.set_position(Vector2::new(-2.0, -2.0));
+        dot.set_size(Vector2::new(6.0, 6.0));
+        dot.set_position(Vector2::new(-3.0, -3.0));
         reticle.add_child(&dot);
 
         // Four ticks around a center gap: (size, position) relative to center.
         let ticks = [
-            (Vector2::new(9.0, 2.0), Vector2::new(-18.0, -1.0)), // left
-            (Vector2::new(9.0, 2.0), Vector2::new(9.0, -1.0)),   // right
-            (Vector2::new(2.0, 9.0), Vector2::new(-1.0, -18.0)), // up
-            (Vector2::new(2.0, 9.0), Vector2::new(-1.0, 9.0)),   // down
+            (Vector2::new(14.0, 4.0), Vector2::new(-26.0, -2.0)), // left
+            (Vector2::new(14.0, 4.0), Vector2::new(12.0, -2.0)),  // right
+            (Vector2::new(4.0, 14.0), Vector2::new(-2.0, -26.0)), // up
+            (Vector2::new(4.0, 14.0), Vector2::new(-2.0, 12.0)),  // down
         ];
         for (size, posn) in ticks {
             let mut tick = ColorRect::new_alloc();

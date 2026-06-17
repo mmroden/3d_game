@@ -18,12 +18,16 @@ use void_logic::ui_style;
 #[class(base=CanvasLayer)]
 pub struct BestiaryUI {
     base: Base<CanvasLayer>,
+    /// Brief input lockout after the screen appears, so the same button press
+    /// that opened the briefing (ship-select's Continue) can't bleed through and
+    /// instantly start the mission.
+    input_cooldown: f32,
 }
 
 #[godot_api]
 impl ICanvasLayer for BestiaryUI {
     fn init(base: Base<CanvasLayer>) -> Self {
-        Self { base }
+        Self { base, input_cooldown: 0.0 }
     }
 
     fn ready(&mut self) {
@@ -33,14 +37,22 @@ impl ICanvasLayer for BestiaryUI {
         self.base_mut().set_visible(false);
     }
 
-    fn process(&mut self, _delta: f64) {
+    fn process(&mut self, delta: f64) {
         if !self.base().is_visible() {
             return;
         }
-        // A tap advances the catalog; GameManager decides "next entry" vs
-        // "into the level". Accept select or fire so it works on any pad.
+        if self.input_cooldown > 0.0 {
+            self.input_cooldown = (self.input_cooldown - delta as f32).max(0.0);
+            return;
+        }
         let input = Input::singleton();
-        if input.is_action_just_pressed(actions::MENU_SELECT)
+        // Left stick (or A/D) swaps between catalogued subjects; Select/Fire
+        // begins the mission. GameManager owns the index and clamps the ends.
+        if input.is_action_just_pressed(actions::MOVE_LEFT) {
+            self.base_mut().emit_signal(signals::BESTIARY_PAGED, &[Variant::from(-1_i32)]);
+        } else if input.is_action_just_pressed(actions::MOVE_RIGHT) {
+            self.base_mut().emit_signal(signals::BESTIARY_PAGED, &[Variant::from(1_i32)]);
+        } else if input.is_action_just_pressed(actions::MENU_SELECT)
             || input.is_action_just_pressed(actions::FIRE)
         {
             self.base_mut().emit_signal(signals::CONTINUE_PRESSED, &[]);
@@ -53,8 +65,27 @@ impl BestiaryUI {
     #[signal]
     fn continue_pressed();
 
+    #[signal]
+    fn bestiary_paged(delta: i32);
+
     /// Populate the panel for one entry and show the screen. `position` reads
     /// like "1 / 3"; `hint` is the call to action ("Next ▶" / "Begin mission ▶").
+    /// Lock input for a beat. Called by GameManager when the briefing is first
+    /// entered (NOT on page refresh), so the ship-select press that opened this
+    /// screen can't bleed through and instantly start the mission. Decoupled
+    /// from visibility because `show_phase` makes the layer visible before the
+    /// first `show_bestiary` runs, which would defeat a self-check.
+    #[func]
+    pub fn begin_briefing(&mut self) {
+        self.input_cooldown = 0.25;
+    }
+
+    /// Whether input is currently locked out (entry debounce in effect).
+    #[func]
+    pub fn input_locked(&self) -> bool {
+        self.input_cooldown > 0.0
+    }
+
     #[func]
     pub fn show_bestiary(&mut self, title: GString, blurb: GString, position: GString, hint: GString) {
         for mut child in self.base().get_children().iter_shared() {

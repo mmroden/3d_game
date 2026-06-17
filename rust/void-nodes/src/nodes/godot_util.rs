@@ -5,8 +5,9 @@ use godot::prelude::*;
 use godot::classes::{
     MeshInstance3D, BoxMesh, StandardMaterial3D, OmniLight3D,
     RigidBody3D, CollisionShape3D, PackedScene, ResourceLoader,
-    ParticleProcessMaterial,
+    ParticleProcessMaterial, BaseMaterial3D, Texture2D,
     particle_process_material::Parameter,
+    base_material_3d,
     light_3d,
 };
 
@@ -24,6 +25,18 @@ pub const SHIP_MODEL_YAW: f32 = std::f32::consts::PI;
 /// Usage: `scene_root(self.base().get_tree())`
 pub fn scene_root(tree: impl Into<Option<Gd<godot::classes::SceneTree>>>) -> Option<Gd<godot::classes::Node>> {
     tree.into().and_then(|t| t.get_root()).map(|r| r.upcast())
+}
+
+/// World point `distance` metres straight ahead of the player camera. `main` is
+/// the scene's Main node (the parent of the showcase/turntable and the Player).
+/// Used to keep the showcase ship and the bestiary turntable in view — they call
+/// this every frame so they track wherever the player camera lands, rather than
+/// being placed once against a camera that then teleports out from under them.
+pub fn camera_front_position(main: &Gd<godot::classes::Node>, distance: f32) -> Option<Vector3> {
+    let camera = main.try_get_node_as::<Node3D>(nodes::PLAYER_CAMERA)?;
+    let t = camera.get_global_transform();
+    let forward = -t.basis.col_c();
+    Some(t.origin + forward * distance)
 }
 
 /// Find the AudioManager node by navigating up to the scene root, then down to Main/AudioManager.
@@ -101,6 +114,74 @@ pub fn attach_glow_light(parent: &mut Gd<Node3D>, color: &[f32], energy: f32, ra
     light.set_param(light_3d::Param::ATTENUATION, 1.5);
     parent.add_child(&light);
     LiveRef::new(&light)
+}
+
+/// A neutral white key light so a turntable subject (and the dim room around it)
+/// reads against the dark backdrop a freshly-generated base spawns with. Placed
+/// on the Y axis at eye height so it stays put as the turntable spins. One key
+/// for both display screens: the ship showcase and the bestiary briefing.
+pub fn attach_key_light(parent: &mut Gd<Node3D>, energy: f32, range: f32) {
+    let mut key = OmniLight3D::new_alloc();
+    key.set_color(Color::from_rgb(1.0, 1.0, 0.97));
+    key.set_param(light_3d::Param::ENERGY, energy);
+    key.set_param(light_3d::Param::RANGE, range);
+    key.set_position(Vector3::new(0.0, 2.5, 0.0));
+    parent.add_child(&key);
+}
+
+/// Convert a void-logic `[R, G, B, A]` color into a Godot `Color`. The one place
+/// the boundary conversion lives.
+pub fn to_color(rgba: [f32; 4]) -> Color {
+    Color::from_rgba(rgba[0], rgba[1], rgba[2], rgba[3])
+}
+
+/// Re-skin the ship's painted hull to a body `style` (1/2/3) by swapping just
+/// the styled material's albedo + roughness textures. Only the `SPC_Asset_4`
+/// hull group varies between styles — the greeble/detail materials are identical
+/// across all three, so they're left untouched. One path, shared by the
+/// in-flight ship and the showcase so they always match the loadout.
+pub fn apply_body_style(model: &Gd<Node3D>, style: u8, tex_index: u32) {
+    let dir = format!("res://addons/ships/Spacecraft_1_styles/Style_{style}");
+    let base_path = format!("{dir}/TX_spacecraft_1_{tex_index}_Base_color.png");
+    let rough_path = format!("{dir}/TX_spacecraft_1_{tex_index}_Roughness.png");
+    let mut loader = ResourceLoader::singleton();
+    // Skip cleanly if the styles aren't imported yet (e.g. before `make assets`).
+    // Loading a missing res:// path emits an engine error, so guard with exists().
+    if !loader.exists(&base_path) || !loader.exists(&rough_path) {
+        return;
+    }
+    let (Some(base), Some(rough)) = (loader.load(&base_path), loader.load(&rough_path)) else {
+        return;
+    };
+    let base_tex: Gd<Texture2D> = base.cast();
+    let rough_tex: Gd<Texture2D> = rough.cast();
+
+    let mut restyled = 0;
+    let mut stack: Vec<Gd<Node>> = vec![model.clone().upcast()];
+    while let Some(node) = stack.pop() {
+        for child in node.get_children().iter_shared() {
+            stack.push(child);
+        }
+        // The painted-hull meshes are the SPC_Asset_4 group (styled material).
+        if !node.get_name().to_string().starts_with("SPC_Asset_4") {
+            continue;
+        }
+        let Ok(mut mesh) = node.try_cast::<MeshInstance3D>() else { continue };
+        let Some(geom) = mesh.get_mesh() else { continue };
+        for i in 0..geom.get_surface_count() {
+            let Some(mat) = mesh.get_active_material(i) else { continue };
+            // Duplicate so each instance owns its skin — the in-flight ship and
+            // the showcase can wear different styles from the same imported glb.
+            let Ok(mut bm) = mat.duplicate_resource().try_cast::<BaseMaterial3D>() else { continue };
+            bm.set_texture(base_material_3d::TextureParam::ALBEDO, &base_tex);
+            bm.set_texture(base_material_3d::TextureParam::ROUGHNESS, &rough_tex);
+            mesh.set_surface_override_material(i, &bm);
+            restyled += 1;
+        }
+    }
+    if restyled == 0 {
+        godot_warn!("body style {style}: no SPC_Asset_4 hull surfaces matched");
+    }
 }
 
 /// Recolor a glow light (e.g. when the player changes ship color). No-op if the

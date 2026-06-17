@@ -18,13 +18,11 @@ pub enum ShipColor {
 impl ShipColor {
     pub const ALL: &[ShipColor] = &[ShipColor::Standard, ShipColor::Armored, ShipColor::Swift];
 
-    /// Accent/identity color [R, G, B, A].
+    /// Accent/identity color [R, G, B, A] — derived from the variant's body
+    /// style so the accent light and the painted hull are always the same color
+    /// (one mapping, in `body_style`, that the two can't drift apart from).
     pub fn color(&self) -> [f32; 4] {
-        match self {
-            Self::Standard => [0.2, 0.6, 1.0, 1.0], // cyan-blue
-            Self::Armored => [1.0, 0.4, 0.15, 1.0], // red-orange
-            Self::Swift => [0.3, 0.95, 0.4, 1.0],   // green
-        }
+        STYLE_ACCENT[(self.body_style() - 1) as usize]
     }
 
     /// Shield-capacity multiplier over the base.
@@ -71,6 +69,17 @@ impl ShipColor {
         }
     }
 
+    /// Which packaged body style (1/2/3) this variant wears. The model ships
+    /// with three painted-hull styles — green (1), cyan (2), white (3) — and the
+    /// loadout color picks one. No red style exists, so Armored takes white.
+    pub fn body_style(&self) -> u8 {
+        match self {
+            Self::Swift => 1,    // green
+            Self::Standard => 2, // cyan
+            Self::Armored => 3,  // white
+        }
+    }
+
     pub fn from_id(id: i32) -> Option<ShipColor> {
         Self::ALL.get(id as usize).copied()
     }
@@ -79,6 +88,27 @@ impl ShipColor {
         Self::ALL.iter().position(|c| c == self)
             .expect("ShipColor::ALL must contain every variant") as i32
     }
+}
+
+/// Accent color for each painted body style (1/2/3), matching the hull texture:
+/// green, cyan, white. The single source for both the accent glow and the hull,
+/// indexed by `ShipColor::body_style()`.
+const STYLE_ACCENT: [[f32; 4]; 3] = [
+    [0.3, 0.95, 0.4, 1.0],  // Style_1 — green
+    [0.2, 0.6, 1.0, 1.0],   // Style_2 — cyan
+    [0.85, 0.83, 0.8, 1.0], // Style_3 — white
+];
+
+/// The one material whose textures change between body styles: the painted hull
+/// panels (`SPC_Asset_4`). Parts 1-3 and 5 are byte-identical across all three
+/// styles, so re-skinning only touches this material.
+pub const STYLED_BODY_PART: u32 = 4;
+
+/// The texture number for `part` (1-based) under body `style` (1-based). The
+/// pack lays styles out in blocks of five: Style_1 = parts 1..=5, Style_2 =
+/// 6..=10, Style_3 = 11..=15. So part 4 of Style_2 is `TX_spacecraft_1_9`.
+pub fn style_texture_index(part: u32, style: u8) -> u32 {
+    part + (style as u32 - 1) * 5
 }
 
 #[cfg(test)]
@@ -150,6 +180,43 @@ mod tests {
     fn from_id_rejects_out_of_range() {
         assert_eq!(ShipColor::from_id(-1), None);
         assert_eq!(ShipColor::from_id(99), None);
+    }
+
+    #[test]
+    fn body_style_maps_variants_to_the_three_styles() {
+        // Standard→cyan(2), Swift→green(1), Armored→white(3). Distinct styles.
+        assert_eq!(ShipColor::Swift.body_style(), 1);
+        assert_eq!(ShipColor::Standard.body_style(), 2);
+        assert_eq!(ShipColor::Armored.body_style(), 3);
+        let styles: std::collections::HashSet<u8> =
+            ShipColor::ALL.iter().map(|c| c.body_style()).collect();
+        assert_eq!(styles.len(), 3, "each variant wears a distinct style");
+    }
+
+    #[test]
+    fn accent_color_is_derived_from_the_body_style() {
+        // Derived, not a parallel mapping: each variant's accent is exactly its
+        // body style's palette color — they cannot drift apart.
+        for v in ShipColor::ALL {
+            assert_eq!(v.color(), STYLE_ACCENT[(v.body_style() - 1) as usize]);
+        }
+        // Swift→green, Standard→cyan, Armored→white, all distinct.
+        assert_eq!(ShipColor::Swift.color(), [0.3, 0.95, 0.4, 1.0]);
+        assert_eq!(ShipColor::Standard.color(), [0.2, 0.6, 1.0, 1.0]);
+        assert_eq!(ShipColor::Armored.color(), [0.85, 0.83, 0.8, 1.0]);
+    }
+
+    #[test]
+    fn style_texture_index_blocks_of_five() {
+        // The styled body part (4) across the three styles.
+        assert_eq!(style_texture_index(STYLED_BODY_PART, 1), 4);
+        assert_eq!(style_texture_index(STYLED_BODY_PART, 2), 9);
+        assert_eq!(style_texture_index(STYLED_BODY_PART, 3), 14);
+        // General formula on the block edges.
+        assert_eq!(style_texture_index(1, 1), 1);
+        assert_eq!(style_texture_index(5, 1), 5);
+        assert_eq!(style_texture_index(1, 2), 6);
+        assert_eq!(style_texture_index(5, 3), 15);
     }
 
     #[test]

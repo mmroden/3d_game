@@ -12,7 +12,7 @@ use super::live_handle::{LiveOpt, LiveRef, LiveVec};
 
 use void_logic::debuff::SlowDebuff;
 use void_logic::laser::LaserLevel;
-use void_logic::ship::ShipColor;
+use void_logic::ship::{self, ShipColor};
 use void_logic::loadout::Loadout;
 use void_logic::power_routing::PowerMode;
 use void_logic::upgrade::{Upgrade, UpgradeKind};
@@ -95,6 +95,10 @@ pub struct ShipController {
     color_glow: Option<LiveRef<OmniLight3D>>,
     /// Flight-speed multiplier from the chosen ship color.
     ship_thrust_mul: f32,
+    /// Pilot input (fly, fire, view toggle) is only live during gameplay. On
+    /// menu/showcase/bestiary screens the camera must NOT respond to the stick,
+    /// so GameManager flips this off there.
+    controls_enabled: bool,
 }
 
 #[godot_api]
@@ -117,6 +121,7 @@ impl IRigidBody3D for ShipController {
             ship_model: None,
             color_glow: None,
             ship_thrust_mul: 1.0,
+            controls_enabled: false,
         }
     }
 
@@ -151,7 +156,11 @@ impl IRigidBody3D for ShipController {
         let Some(mut state) = state else {
             return;
         };
-        self.fly(&mut state);
+        // Only fly when piloting is live — otherwise the stick must not rotate
+        // the camera on the menu/showcase/bestiary screens.
+        if self.controls_enabled {
+            self.fly(&mut state);
+        }
 
         // Heavy collision thud, on impact *onset* (resting against a wall is
         // silent) and throttled by the cooldown. Non-positional — positional
@@ -170,6 +179,11 @@ impl IRigidBody3D for ShipController {
     /// only true in `physics_process` — so it lives here, not in
     /// `integrate_forces`.
     fn physics_process(&mut self, delta: f64) {
+        // No piloting on non-gameplay screens: skip view-toggle, weapons, and
+        // power routing so the ship sits inert while menus drive the camera.
+        if !self.controls_enabled {
+            return;
+        }
         if Input::singleton().is_action_just_pressed(actions::TOGGLE_VIEW) {
             self.camera_mode = match self.camera_mode {
                 CameraMode::Cockpit => CameraMode::Chase,
@@ -220,12 +234,28 @@ impl ShipController {
         }
     }
 
-    /// Apply the player's chosen ship color (accent glow) and its flight-speed
-    /// multiplier. Called by GameManager when the ship color is chosen/synced.
+    /// Enable/disable pilot input. GameManager turns it on only for gameplay so
+    /// the camera doesn't fly around on the menu/showcase/bestiary screens.
     #[func]
-    pub fn configure_ship(&mut self, color: Color, thrust_mul: f32) {
+    pub fn set_controls_enabled(&mut self, enabled: bool) {
+        self.controls_enabled = enabled;
+    }
+
+    /// Apply the player's chosen ship color and its flight-speed multiplier.
+    /// Called by GameManager (passing the ShipColor id) when the color is
+    /// chosen/synced. The variant color now lives in the hull texture (the body
+    /// style); the accent glow just matches it.
+    #[func]
+    pub fn configure_ship(&mut self, color_id: i32, thrust_mul: f32) {
         self.ship_thrust_mul = thrust_mul;
-        godot_util::recolor_glow(&self.color_glow, color);
+        let sc = ShipColor::from_id(color_id).unwrap_or_default();
+        godot_util::recolor_glow(&self.color_glow, godot_util::to_color(sc.color()));
+        let style = sc.body_style();
+        let idx = ship::style_texture_index(ship::STYLED_BODY_PART, style);
+        self.ship_model.with(|model| {
+            let m: Gd<Node3D> = model.clone();
+            godot_util::apply_body_style(&m, style, idx);
+        });
     }
 
     /// Build the player ship: the shared model helper, a capsule collider, and
@@ -256,9 +286,13 @@ impl ShipController {
             shape_node.set_position(Vector3::ZERO);
         }
 
-        // Color accent light (Standard until GameManager pushes the choice).
-        let c = ShipColor::default().color();
+        // Color accent light + painted body style (Standard until GameManager
+        // pushes the choice). The body texture carries the color; the glow matches.
+        let default = ShipColor::default();
+        let c = default.color();
         self.color_glow = Some(godot_util::attach_glow_light(&mut model, &c, 2.0, 6.0));
+        let style = default.body_style();
+        godot_util::apply_body_style(&model, style, ship::style_texture_index(ship::STYLED_BODY_PART, style));
     }
 
     /// Place the camera for the current view mode, and show the ship model only

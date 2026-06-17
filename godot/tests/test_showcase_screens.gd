@@ -14,11 +14,18 @@ func before_each():
 	# current) settle.
 	await wait_process_frames(3)
 
-func test_player_camera_is_current_at_boot():
-	var cam = main.get_node_or_null("Player/Camera3D")
-	assert_not_null(cam, "player camera must exist")
-	assert_true(cam.current,
-		"the player camera must be current at boot, or every screen is black")
+func test_left_eye_camera_renders_at_boot():
+	# Mono draws through the left-eye sub-viewport's camera, NOT the player
+	# camera on the root viewport (that was the black-in-mono parallel pathway).
+	# The left eye camera must be current or every screen is black.
+	var left_cam = main.get_node_or_null(
+		"ViewManager/StereoCanvas/LeftContainer/LeftViewport/LeftCamera")
+	assert_not_null(left_cam, "the left-eye camera must exist")
+	assert_true(left_cam.current,
+		"the left-eye camera must render the world (mono draws through it)")
+	var player_cam = main.get_node_or_null("Player/Camera3D")
+	assert_false(player_cam.current,
+		"the player camera must NOT be current — it's the reference, the eye draws")
 
 func test_main_menu_shows_the_showcase_ship():
 	var showcase = main.get_node_or_null("ShipShowcase")
@@ -64,6 +71,20 @@ func test_ship_select_shows_the_showcase_in_a_backdrop_room():
 	assert_not_null(lm.get_node_or_null("Room0"),
 		"ship-select must build a backdrop room behind the ship")
 
+func test_selecting_each_ship_color_drives_the_showcase_without_error():
+	# on_ship_color_selected re-skins the showcase via show_showcase(id). This
+	# guards the dynamic call's signature (id, not Color) — a runtime-only
+	# mismatch the compiler can't catch. GUT fails on the engine error if it drifts.
+	var gm = main.get_node("GameManager")
+	gm.start_new_game()  # -> ShipSelect, showcase visible
+	await wait_process_frames(3)
+	var showcase = main.get_node("ShipShowcase")
+	for id in [0, 1, 2]:
+		gm.on_ship_color_selected(id)
+		await wait_process_frames(2)
+	assert_true(showcase.visible,
+		"showcase stays up through every color pick (no signature-mismatch crash)")
+
 func test_bestiary_shows_the_turntable_in_a_backdrop_room():
 	var gm = main.get_node("GameManager")
 	gm.start_new_game()           # -> ShipSelect
@@ -77,3 +98,15 @@ func test_bestiary_shows_the_turntable_in_a_backdrop_room():
 	var cam = main.get_node("Player/Camera3D")
 	var d = display.global_position.distance_to(cam.global_position)
 	assert_lt(d, 12.0, "the turntable must be in front of the camera")
+
+func test_bestiary_locks_input_briefly_on_entry():
+	# The button that opens the briefing (ship-select's Continue / Fire) must not
+	# bleed through and instantly begin the mission. Entering locks input briefly.
+	var gm = main.get_node("GameManager")
+	gm.start_new_game()           # -> ShipSelect
+	await wait_process_frames(2)
+	gm.advance_from_ship_select()  # -> Bestiary briefing
+	await wait_process_frames(1)
+	var ui = main.get_node("BestiaryUI")
+	assert_true(ui.input_locked(),
+		"entering the bestiary must lock input so the entry press can't begin the mission")
