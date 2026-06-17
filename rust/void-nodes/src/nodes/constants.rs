@@ -60,8 +60,7 @@ pub mod methods {
     pub const SHOW_SUMMARY: &str = "show_summary";
     pub const SHOW_DEATH: &str = "show_death";
     pub const SHOW_SHOP: &str = "show_shop";
-    pub const SHOW_SHOWCASE: &str = "show_showcase";
-    pub const HIDE_SHOWCASE: &str = "hide_showcase";
+    pub const SHOW_SHIP: &str = "show_ship";
     pub const RESET_LOADOUT: &str = "reset_loadout";
     pub const SET_LASER_LEVEL: &str = "set_laser_level";
     pub const UPDATE_HEALTH: &str = "update_health";
@@ -76,7 +75,7 @@ pub mod methods {
     pub const ON_BESTIARY_PAGED: &str = "on_bestiary_paged";
     pub const BEGIN_BRIEFING: &str = "begin_briefing";
     pub const SHOW_ENTRY: &str = "show_entry";
-    pub const HIDE_DISPLAY: &str = "hide_display";
+    pub const HIDE_TURNTABLE: &str = "hide_turntable";
     pub const CONFIGURE_SHIP: &str = "configure_ship";
     pub const SET_CONTROLS_ENABLED: &str = "set_controls_enabled";
     pub const UPDATE_LASER: &str = "update_laser";
@@ -152,14 +151,13 @@ pub mod nodes {
     pub const LEVEL_MANAGER: &str = "LevelManager";
     pub const PLAYER: &str = "Player";
     pub const PLAYER_CAMERA: &str = "Player/Camera3D";
-    pub const SHIP_SHOWCASE: &str = "ShipShowcase";
+    pub const TURNTABLE: &str = "Turntable";
     pub const MAIN_MENU_UI: &str = "MainMenuUI";
     pub const HUD: &str = "HUD";
     pub const KILL_SUMMARY_UI: &str = "KillSummaryUI";
     pub const SHOP_UI: &str = "ShopUI";
     pub const SHIP_SELECT_UI: &str = "ShipSelectUI";
     pub const BESTIARY_UI: &str = "BestiaryUI";
-    pub const BESTIARY_DISPLAY: &str = "BestiaryDisplay";
     pub const DEATH_SCREEN_UI: &str = "DeathScreenUI";
     pub const PAUSE_MENU_UI: &str = "PauseMenuUI";
     pub const STEREO_CANVAS: &str = "StereoCanvas";
@@ -267,8 +265,7 @@ mod tests {
             methods::SHOW_SUMMARY,
             methods::SHOW_DEATH,
             methods::SHOW_SHOP,
-            methods::SHOW_SHOWCASE,
-            methods::HIDE_SHOWCASE,
+            methods::SHOW_SHIP,
             methods::SET_LASER_LEVEL,
             methods::UPDATE_HEALTH,
             methods::UPDATE_COMPONENTS,
@@ -410,8 +407,8 @@ mod tests {
             methods::ON_WINDOW_SIZE_CHANGED,
             methods::TAKE_DAMAGE, methods::APPLY_UPGRADE,
             methods::SHOW_SUMMARY, methods::SHOW_DEATH,
-            methods::SHOW_SHOP, methods::SHOW_SHOWCASE,
-            methods::HIDE_SHOWCASE, methods::SET_LASER_LEVEL,
+            methods::SHOW_SHOP, methods::SHOW_SHIP,
+            methods::SET_LASER_LEVEL,
             methods::UPDATE_HEALTH, methods::UPDATE_COMPONENTS,
             methods::UPDATE_ORGANICS, methods::ON_ORGANICS_COLLECTED,
             methods::UPDATE_LASER, methods::UPDATE_LEVEL,
@@ -438,7 +435,7 @@ mod tests {
         let all_nodes = [
             nodes::GAME_MANAGER, nodes::LEVEL_MANAGER,
             nodes::PLAYER, nodes::PLAYER_CAMERA,
-            nodes::SHIP_SHOWCASE, nodes::MAIN_MENU_UI,
+            nodes::TURNTABLE, nodes::MAIN_MENU_UI,
             nodes::HUD, nodes::KILL_SUMMARY_UI,
             nodes::SHOP_UI, nodes::DEATH_SCREEN_UI,
             nodes::PAUSE_MENU_UI,

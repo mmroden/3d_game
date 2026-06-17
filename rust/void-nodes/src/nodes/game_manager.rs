@@ -293,8 +293,8 @@ impl GameManager {
         self.update_hud();
         // Re-skin the showcase ship behind the loadout screen to the new style.
         if let Some(parent) = self.base().get_parent() {
-            if let Some(mut showcase) = parent.try_get_node_as::<Node>(nodes::SHIP_SHOWCASE) {
-                showcase.call(methods::SHOW_SHOWCASE, &[Variant::from(color_id)]);
+            if let Some(mut turntable) = parent.try_get_node_as::<Node>(nodes::TURNTABLE) {
+                turntable.call(methods::SHOW_SHIP, &[Variant::from(color_id)]);
             }
         }
     }
@@ -355,8 +355,8 @@ impl GameManager {
             BestiaryKind::ComponentCache => (1, -1),
             BestiaryKind::Enemy(t) => (2, t.id()),
         };
-        if let Some(mut display) = parent.try_get_node_as::<Node>(nodes::BESTIARY_DISPLAY) {
-            display.call(
+        if let Some(mut turntable) = parent.try_get_node_as::<Node>(nodes::TURNTABLE) {
+            turntable.call(
                 methods::SHOW_ENTRY,
                 &[Variant::from(kind_id), Variant::from(enemy_id)],
             );
@@ -674,10 +674,13 @@ impl GameManager {
         let prev = self.phase;
         self.phase = next;
 
-        // The loadout and briefing screens share one quiet backdrop room. Build
-        // it before show_phase so the showcase/turntable is placed in front of
-        // the camera the backdrop just parked in the room.
-        if next == GamePhase::ShipSelect || next == GamePhase::Bestiary {
+        // The loadout and briefing screens SHARE one backdrop room. Build it
+        // once when entering that flow from outside it; flipping between
+        // ShipSelect and Bestiary keeps the same room (and the parked camera)
+        // and only swaps what the turntable shows — no teardown, no regenerate.
+        let entering_backdrop = next == GamePhase::ShipSelect || next == GamePhase::Bestiary;
+        let leaving_backdrop = prev == GamePhase::ShipSelect || prev == GamePhase::Bestiary;
+        if entering_backdrop && !leaving_backdrop {
             self.generate_backdrop();
         }
 
@@ -787,29 +790,20 @@ impl GameManager {
             level.set_visible(level_vis);
         }
 
-        // Ship flies on the menu, the loadout screen, and end-of-level screens —
-        // but not the briefing, where the bestiary turntable takes its place.
+        // One turntable serves both the ship "hero" shot (menu + loadout +
+        // end-of-level screens) and the bestiary briefing. It self-positions in
+        // front of the camera each frame, so we only choose its content here:
+        // ship mode on the showcase screens; on the briefing the bestiary drives
+        // show_entry itself (via refresh_bestiary); hidden everywhere else.
         let showcase_vis = menu_vis || ship_select_vis || summary_vis || shop_vis || death_vis;
-        if let Some(mut showcase) = parent.try_get_node_as::<Node>(nodes::SHIP_SHOWCASE) {
+        if let Some(mut turntable) = parent.try_get_node_as::<Node>(nodes::TURNTABLE) {
             if showcase_vis {
-                showcase.call(
-                    methods::SHOW_SHOWCASE,
+                turntable.call(
+                    methods::SHOW_SHIP,
                     &[Variant::from(self.run_state.ship_color.id())],
                 );
-                // The showcase self-positions in front of the camera each frame
-                // (it owns the tracking), so we don't place it here — placing it
-                // once raced the player-camera teleport and left it off-screen.
-            } else {
-                showcase.call(methods::HIDE_SHOWCASE, &[]);
-            }
-        }
-
-        // The bestiary turntable self-positions in front of the camera each
-        // frame while shown (it owns the tracking); here we only hide it when
-        // we're off the briefing screen.
-        if !bestiary_vis {
-            if let Some(mut display) = parent.try_get_node_as::<Node>(nodes::BESTIARY_DISPLAY) {
-                display.call(methods::HIDE_DISPLAY, &[]);
+            } else if !bestiary_vis {
+                turntable.call(methods::HIDE_TURNTABLE, &[]);
             }
         }
     }

@@ -45,8 +45,8 @@
   teaches the economy. Then it lists every enemy **seen so far**, in roster
   order. Enemies are marked on first encounter (level entry) and the seen-set is
   **permanent** across runs (`SeenEnemies` in `RunState`/`SaveGame`, like
-  organics). GameManager owns the paging; `BestiaryUI` is the panel and
-  `BestiaryDisplay` the turntable.
+  organics). GameManager owns the paging; `BestiaryUI` is the panel and the
+  shared `Turntable` spins the subject (the same node the ship showcase uses).
 
 ### Physics Architecture (Remediated)
 - Velocity readback after move_and_slide() on both player and enemies

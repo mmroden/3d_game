@@ -17,6 +17,7 @@ use rand::seq::IndexedRandom;
 
 use void_logic::generator::{generate, GeneratorConfig};
 use void_logic::level_assembly::{self, RoomBounds};
+use void_logic::level_graph::{LevelGraph, RENDER_ROOM_DEPTH};
 use void_logic::room_furnisher::LightState;
 use void_logic::room_assembler::Collision;
 use void_logic::portal as portal_sys;
@@ -53,9 +54,13 @@ pub struct LevelManager {
     /// a container's visibility culls that whole room — geometry and
     /// its lights — in one move.
     room_nodes: LiveVec<Node3D>,
-    /// Per-room world bounds + adjacency, parallel to `room_nodes`,
-    /// for deciding which rooms to draw.
+    /// Per-room world bounds, parallel to `room_nodes`, for resolving
+    /// which room a world point is in.
     room_bounds: Vec<RoomBounds>,
+    /// The level's topology graph, retained for the level's lifetime — the
+    /// authority for cull visibility (and, later, mapping and route
+    /// queries). Empty until the first `generate_level`.
+    level_graph: LevelGraph,
     /// The room the player currently occupies; culling only recomputes
     /// when this changes.
     current_room: Option<usize>,
@@ -81,6 +86,7 @@ impl INode3D for LevelManager {
             telemetry: Telemetry::new(),
             room_nodes: LiveVec::new(),
             room_bounds: Vec::new(),
+            level_graph: LevelGraph::default(),
             current_room: None,
             player: None,
             blinking_lights: LiveVec::new(),
@@ -431,6 +437,11 @@ impl LevelManager {
             }
         }
 
+        // Retain the graph for the level's lifetime: it's the authority for
+        // cull visibility, and later for mapping and route queries. Moved in
+        // last, after every generation step that borrowed it.
+        self.level_graph = graph;
+
         godot_print!(
             "Level generated: {} rooms, {} meshes, {} lights, {} enemies",
             target_rooms,
@@ -543,7 +554,17 @@ impl LevelManager {
             return;
         }
         self.current_room = Some(current);
-        let visible = level_assembly::visible_rooms(current, &self.room_bounds);
+        // The current room-list index maps to the graph node at that
+        // placement position; visibility is the graph's to decide.
+        let Some(current_node) = self.level_graph.room_indices().nth(current) else {
+            return;
+        };
+        let visible: std::collections::HashSet<usize> = self
+            .level_graph
+            .visible_from(current_node, RENDER_ROOM_DEPTH)
+            .into_iter()
+            .map(|n| n.index())
+            .collect();
         // `for_each_live` skips any room freed out from under us and keeps the
         // index aligned with room_bounds — a freed handle is structurally
         // unreachable, so this can't use-after-free.

@@ -11,7 +11,7 @@ use void_logic::ui_style;
 
 /// Pre-level bestiary briefing: a quiet loadout room with one subject — a
 /// currency pickup or a catalogued enemy — spinning in the middle (driven by
-/// GameManager via the BestiaryDisplay), and a low panel with its name and
+/// GameManager via the shared Turntable), and a low panel with its name and
 /// lore. The player taps to step through the catalog; the final tap drops them
 /// into the level. GameManager owns the paging; this is just the panel + input.
 #[derive(GodotClass)]
