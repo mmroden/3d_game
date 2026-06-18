@@ -5,20 +5,14 @@ use crate::seed::Seed;
 use crate::room_assembler::MeshPlacement;
 use crate::room_furnisher::{LightAccent, LightSource};
 
-/// Axis-aligned world bounds of a room plus its spatial adjacency —
-/// the minimal geometry the shell needs to decide which rooms to draw.
+/// Axis-aligned world bounds of a room — the minimal geometry the shell
+/// needs to resolve which room a point is in. Adjacency and cull
+/// visibility live in the [`LevelGraph`](crate::level_graph::LevelGraph),
+/// the single source of level topology.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RoomBounds {
     pub min: [f32; 3],
     pub max: [f32; 3],
-    /// Room-list indices of spatially-adjacent nodes: reachable by
-    /// flying through a portal, hence visible when this node is.
-    /// Teleporter links (spatially distant) are excluded.
-    pub neighbors: Vec<usize>,
-    /// Corridors are connective tissue — you see *through* them into the
-    /// rooms they join, so visibility passes through them rather than
-    /// stopping. Rooms are opaque: visible, but not seen past.
-    pub is_corridor: bool,
 }
 
 impl RoomBounds {
@@ -31,32 +25,6 @@ impl RoomBounds {
 /// Index of the room whose bounds contain `point`, if any.
 pub fn room_at(point: [f32; 3], rooms: &[RoomBounds]) -> Option<usize> {
     rooms.iter().position(|r| r.contains(point))
-}
-
-/// The nodes that should render while the player occupies `current`:
-/// the node itself, every node adjacent to it, and — since you see
-/// *through* corridors — every node reachable along a path whose
-/// interior is all corridors. Opaque rooms are lit but not seen past,
-/// so sight stops at the first room beyond any corridor.
-pub fn visible_rooms(current: usize, rooms: &[RoomBounds]) -> Vec<usize> {
-    let mut visible = vec![current];
-    let mut frontier = vec![current];
-    while let Some(node) = frontier.pop() {
-        let Some(bounds) = rooms.get(node) else { continue };
-        // Expand outward only from the current node and from corridors
-        // (transparent). A room reached by expansion is lit but opaque,
-        // so we never expand through it.
-        if node != current && !bounds.is_corridor {
-            continue;
-        }
-        for &neighbor in &bounds.neighbors {
-            if !visible.contains(&neighbor) {
-                visible.push(neighbor);
-                frontier.push(neighbor);
-            }
-        }
-    }
-    visible
 }
 
 /// All of one room's assembled content, grouped so the shell can parent
@@ -94,30 +62,9 @@ pub fn spawn_list_full(
     seed: Seed,
 ) -> Vec<RoomAssembly> {
     use crate::cell::CellGrid;
-    use crate::level_graph::EdgeKind;
+    use crate::level_graph::RENDER_ROOM_DEPTH;
     use crate::room_furnisher;
     use crate::room_theme;
-
-    // Spatial adjacency between rooms (room-list indices). Every edge
-    // except a teleporter is a portal you can see through, so it makes
-    // the two rooms mutual neighbors; teleporters span the map and are
-    // excluded.
-    let pos_of: std::collections::HashMap<_, usize> =
-        graph.room_indices().enumerate().map(|(i, n)| (n, i)).collect();
-    let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); pos_of.len()];
-    for (a, b, kind) in graph.edges() {
-        if matches!(kind, EdgeKind::Teleporter) {
-            continue;
-        }
-        if let (Some(&ai), Some(&bi)) = (pos_of.get(&a), pos_of.get(&b)) {
-            if !adjacency[ai].contains(&bi) {
-                adjacency[ai].push(bi);
-            }
-            if !adjacency[bi].contains(&ai) {
-                adjacency[bi].push(ai);
-            }
-        }
-    }
 
     let mut rooms = Vec::new();
 
@@ -183,12 +130,7 @@ pub fn spawn_list_full(
             meshes,
             lights,
             enemy_positions,
-            bounds: RoomBounds {
-                min,
-                max,
-                neighbors: std::mem::take(&mut adjacency[room_idx]),
-                is_corridor: room.template.kind == crate::room_template::TemplateKind::Corridor,
-            },
+            bounds: RoomBounds { min, max },
         });
     }
 
@@ -196,13 +138,17 @@ pub fn spawn_list_full(
     // parallel structure): the start chamber (first room) reads blue;
     // the exit chamber — the farthest room, where the portal sits — and
     // everything visible through corridors from it reads red.
-    let bounds: Vec<RoomBounds> = rooms.iter().map(|r| r.bounds.clone()).collect();
     let exit_red: std::collections::HashSet<usize> = graph
         .room_indices()
         .next()
         .and_then(|start| graph.farthest_room_from(start))
-        .and_then(|exit| pos_of.get(&exit).copied())
-        .map(|exit_pos| visible_rooms(exit_pos, &bounds).into_iter().collect())
+        .map(|exit| {
+            graph
+                .visible_from(exit, RENDER_ROOM_DEPTH)
+                .into_iter()
+                .map(|n| n.index())
+                .collect()
+        })
         .unwrap_or_default();
     for (pos, room) in rooms.iter_mut().enumerate() {
         let accent = if pos == 0 {
@@ -252,7 +198,7 @@ pub fn cell_centers(
 mod tests {
     use super::*;
     use crate::generator::{generate, GeneratorConfig};
-    use crate::level_graph::EdgeKind;
+    use crate::level_graph::{EdgeKind, RENDER_ROOM_DEPTH};
     use crate::room_template::ConnectorFacing;
     use crate::seed::Seed;
 
@@ -455,204 +401,6 @@ mod tests {
     }
 
     #[test]
-    fn neighbors_match_spatial_edges_and_exclude_teleporters() {
-        use std::collections::HashMap;
-        let mut adjacent_checked = 0u32;
-        for seed in 0..30u64 {
-            let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let rooms = spawn_list_full(&graph, 4.0, Seed::new(seed));
-            let pos_of: HashMap<_, usize> =
-                graph.room_indices().enumerate().map(|(i, n)| (n, i)).collect();
-            for (a, b, kind) in graph.edges() {
-                let (Some(&ai), Some(&bi)) = (pos_of.get(&a), pos_of.get(&b)) else {
-                    continue;
-                };
-                match kind {
-                    EdgeKind::Teleporter => {
-                        assert!(
-                            !rooms[ai].bounds.neighbors.contains(&bi)
-                                && !rooms[bi].bounds.neighbors.contains(&ai),
-                            "teleporter-linked rooms must not be visible neighbors (seed {seed})"
-                        );
-                    }
-                    _ => {
-                        adjacent_checked += 1;
-                        assert!(
-                            rooms[ai].bounds.neighbors.contains(&bi),
-                            "spatially adjacent rooms must be neighbors (seed {seed})"
-                        );
-                        assert!(
-                            rooms[bi].bounds.neighbors.contains(&ai),
-                            "adjacency must be symmetric (seed {seed})"
-                        );
-                    }
-                }
-            }
-        }
-        assert!(adjacent_checked > 0, "no adjacent edges across 30 seeds");
-    }
-
-    fn bounds_with(neighbors: Vec<usize>) -> RoomBounds {
-        RoomBounds {
-            min: [0.0; 3],
-            max: [1.0; 3],
-            neighbors,
-            is_corridor: false,
-        }
-    }
-
-    fn corridor_with(neighbors: Vec<usize>) -> RoomBounds {
-        RoomBounds {
-            min: [0.0; 3],
-            max: [1.0; 3],
-            neighbors,
-            is_corridor: true,
-        }
-    }
-
-    #[test]
-    fn culling_lights_the_current_room_and_immediate_neighbors_only() {
-        // Line graph 0—1—2—3—4. Standing in room 1 (joined to 0 and 2),
-        // rooms 3 and 4 are two-plus hops away and must stay dark — the
-        // defining behavior of "current + immediate neighbors".
-        let rooms = vec![
-            bounds_with(vec![1]),    // 0
-            bounds_with(vec![0, 2]), // 1
-            bounds_with(vec![1, 3]), // 2
-            bounds_with(vec![2, 4]), // 3
-            bounds_with(vec![3]),    // 4
-        ];
-        let mut visible = visible_rooms(1, &rooms);
-        visible.sort_unstable();
-        assert_eq!(visible, vec![0, 1, 2], "room 1 lights itself, 0, and 2");
-        assert!(!visible.contains(&3), "room two hops away must stay dark");
-        assert!(!visible.contains(&4), "room three hops away must stay dark");
-    }
-
-    #[test]
-    fn culling_sees_through_a_corridor_into_the_room_beyond() {
-        // Room 0 —[corridor 1]— Room 2. Standing in room 0 you look
-        // down the corridor into room 2, so all three are lit. With
-        // 1-deep neighbors, room 2 (two hops) would wrongly stay dark.
-        let nodes = vec![
-            bounds_with(vec![1]),    // 0: room
-            corridor_with(vec![0, 2]), // 1: corridor between 0 and 2
-            bounds_with(vec![1]),    // 2: room
-        ];
-        let mut visible = visible_rooms(0, &nodes);
-        visible.sort_unstable();
-        assert_eq!(
-            visible,
-            vec![0, 1, 2],
-            "you see through a corridor into the room beyond it"
-        );
-    }
-
-    #[test]
-    fn culling_does_not_see_through_an_opaque_room() {
-        // Room 0 —[corridor 1]— Room 2 —[corridor 3]— Room 4. From room
-        // 0 you see through corridor 1 into room 2, but room 2 is opaque:
-        // corridor 3 and room 4 behind it stay dark.
-        let nodes = vec![
-            bounds_with(vec![1]),       // 0: room
-            corridor_with(vec![0, 2]),  // 1: corridor
-            bounds_with(vec![1, 3]),    // 2: room (opaque)
-            corridor_with(vec![2, 4]),  // 3: corridor beyond room 2
-            bounds_with(vec![3]),       // 4: room
-        ];
-        let mut visible = visible_rooms(0, &nodes);
-        visible.sort_unstable();
-        assert_eq!(visible, vec![0, 1, 2], "sight stops at the opaque room 2");
-    }
-
-    #[test]
-    fn visibility_is_transparent_through_corridors_for_every_room() {
-        use std::collections::HashSet;
-        // Integration over real generated graphs: place the player in
-        // every node and assert that whenever a corridor is lit, every
-        // room it opens onto is lit too — i.e. you always see through a
-        // hallway into the room at its far end (never a black doorway).
-        let mut corridors_checked = 0u32;
-        for seed in 0..30u64 {
-            let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let rooms = spawn_list_full(&graph, 4.0, Seed::new(seed));
-            let bounds: Vec<_> = rooms.iter().map(|r| r.bounds.clone()).collect();
-
-            for current in 0..bounds.len() {
-                let visible: HashSet<usize> =
-                    visible_rooms(current, &bounds).into_iter().collect();
-                assert!(visible.contains(&current), "the player's own node is lit");
-                for &node in &visible {
-                    if bounds[node].is_corridor {
-                        for &beyond in &bounds[node].neighbors {
-                            assert!(
-                                visible.contains(&beyond),
-                                "seed {seed} in node {current}: corridor {node} is lit \
-                                 but node {beyond} beyond it is dark"
-                            );
-                            corridors_checked += 1;
-                        }
-                    }
-                }
-            }
-        }
-        assert!(corridors_checked > 0, "no corridors exercised across 30 seeds");
-    }
-
-    #[test]
-    fn visibility_does_not_spill_past_opaque_rooms() {
-        use std::collections::HashSet;
-        // Exclusion bound: a lit node (other than the player's own) must
-        // be adjacent to the current node or to a lit corridor — sight
-        // only ever extends *through corridors*, never through a room.
-        for seed in 0..30u64 {
-            let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let rooms = spawn_list_full(&graph, 4.0, Seed::new(seed));
-            let bounds: Vec<_> = rooms.iter().map(|r| r.bounds.clone()).collect();
-
-            for current in 0..bounds.len() {
-                let visible: HashSet<usize> =
-                    visible_rooms(current, &bounds).into_iter().collect();
-                for &node in &visible {
-                    if node == current {
-                        continue;
-                    }
-                    let adjacent_to_current = bounds[current].neighbors.contains(&node);
-                    let adjacent_to_lit_corridor = visible.iter().any(|&v| {
-                        bounds[v].is_corridor && bounds[v].neighbors.contains(&node)
-                    });
-                    assert!(
-                        adjacent_to_current || adjacent_to_lit_corridor,
-                        "seed {seed} in node {current}: node {node} is lit but not \
-                         reachable through a corridor — sight spilled through a room"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn culling_keeps_the_current_room_and_tolerates_malformed_adjacency() {
-        // Dangling index, self-reference, isolated room.
-        let rooms = vec![
-            bounds_with(vec![99]), // 0: neighbor out of range
-            bounds_with(vec![1]),  // 1: references itself
-            bounds_with(vec![]),   // 2: isolated
-        ];
-        for current in 0..rooms.len() {
-            assert!(
-                visible_rooms(current, &rooms).contains(&current),
-                "the player's own room is always visible"
-            );
-        }
-        // A dangling neighbor is passed through (harmless downstream — no
-        // node carries that index) but must not panic or be dropped.
-        assert!(visible_rooms(0, &rooms).contains(&99));
-        // An out-of-range current room yields just itself, no panic.
-        assert_eq!(visible_rooms(7, &rooms), vec![7]);
-    }
-
-    #[test]
     fn integration_seed_to_lit_lights_for_a_player_in_a_room() {
         use std::collections::HashSet;
         // The whole pipeline, end to end: a seed generates the graph,
@@ -682,8 +430,15 @@ mod tests {
                 "seed {seed}: room_at must return a room containing the player"
             );
 
-            let visible: HashSet<usize> =
-                visible_rooms(current, &bounds).into_iter().collect();
+            // room_at returns a room-list index; the matching graph node is
+            // the one at that placement position. Visibility is the graph's.
+            let current_node =
+                graph.room_indices().nth(current).expect("current room node exists");
+            let visible: HashSet<usize> = graph
+                .visible_from(current_node, RENDER_ROOM_DEPTH)
+                .into_iter()
+                .map(|n| n.index())
+                .collect();
             assert!(visible.contains(&current), "the player's room is lit");
 
             // Partition every generated light by whether its room renders.

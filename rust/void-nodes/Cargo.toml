@@ -11,3 +11,9 @@ crate-type = ["cdylib"]
 godot = { version = "0.5", features = ["api-4-6"] }
 rand = "0.10"
 void_logic = { path = "../void-logic" }
+
+[dev-dependencies]
+# Used only by the `no_raw_gd_node_fields` lint test, which parses the source to
+# forbid cached `Gd<Node>` struct fields (they must go through live_handle).
+syn = { version = "2", features = ["full", "visit"] }
+quote = "1"

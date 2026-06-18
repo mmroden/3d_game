@@ -1,4 +1,5 @@
-use crate::credits::CreditAccount;
+use crate::bestiary::SeenEnemies;
+use crate::currency::{ComponentAccount, OrganicAccount};
 use crate::enemy_type::EnemyType;
 use crate::kill_tracker::KillTracker;
 use crate::laser::LaserLevel;
@@ -6,6 +7,7 @@ use crate::loadout::Loadout;
 use crate::newtypes::{Health, Damage, Shield};
 use crate::seed::Seed;
 use crate::shield::ShieldState;
+use crate::ship::ShipColor;
 
 /// Tracks the state of a single roguelike run.
 #[derive(Debug)]
@@ -17,31 +19,47 @@ pub struct RunState {
     pub shield: ShieldState,
     pub score: u32,
     pub run_seed: Seed,
-    pub credits: CreditAccount,
+    /// In-run currency from mechanical kills; lost on death.
+    pub components: ComponentAccount,
+    /// Permanent currency from barrels; survives death.
+    pub organics: OrganicAccount,
     pub kills: KillTracker,
     pub laser_level: LaserLevel,
     pub current_level: u32,
+    /// Chosen ship color — a loadout tradeoff that shapes shields and thrust.
+    pub ship_color: ShipColor,
+    /// Enemy types catalogued in the bestiary. Permanent: an enemy is marked on
+    /// first sighting and survives death, like organics.
+    pub seen_enemies: SeenEnemies,
 }
 
 impl RunState {
     /// Default shield: 50 capacity, 2/sec regen, 3s delay after hit.
     const DEFAULT_SHIELD_CAPACITY: f32 = 50.0;
-    const DEFAULT_SHIELD_REGEN: f32 = 2.0;
-    const DEFAULT_SHIELD_DELAY: f32 = 3.0;
+    // Slower regen and a longer post-hit delay so sustained fire actually
+    // wears the player down instead of the shield topping back up between shots.
+    const DEFAULT_SHIELD_REGEN: f32 = 1.5;
+    const DEFAULT_SHIELD_DELAY: f32 = 5.0;
 
     /// Derive the seed for the current level from the run seed.
     pub fn level_seed(&self) -> Seed {
         self.run_seed.for_level(self.current_level)
     }
 
+    /// Build a shield sized and tuned for the given ship color.
+    fn shield_for(color: ShipColor) -> ShieldState {
+        ShieldState::new(
+            Shield::new(Self::DEFAULT_SHIELD_CAPACITY * color.shield_capacity_mul()),
+            Self::DEFAULT_SHIELD_REGEN * color.shield_regen_mul(),
+            Self::DEFAULT_SHIELD_DELAY,
+        )
+    }
+
     pub fn new(seed: Seed) -> Self {
         let loadout = Loadout::new();
         let health = loadout.max_health();
-        let shield = ShieldState::new(
-            Shield::new(Self::DEFAULT_SHIELD_CAPACITY),
-            Self::DEFAULT_SHIELD_REGEN,
-            Self::DEFAULT_SHIELD_DELAY,
-        );
+        let ship_color = ShipColor::default();
+        let shield = Self::shield_for(ship_color);
         Self {
             loadout,
             current_room: 0,
@@ -50,11 +68,20 @@ impl RunState {
             shield,
             score: 0,
             run_seed: seed,
-            credits: CreditAccount::new(),
+            components: ComponentAccount::new(),
+            organics: OrganicAccount::new(),
             kills: KillTracker::new(),
             laser_level: LaserLevel::Red,
             current_level: 1,
+            ship_color,
+            seen_enemies: SeenEnemies::new(),
         }
+    }
+
+    /// Choose a ship color, rebuilding the shield to its capacity/regen.
+    pub fn set_ship_color(&mut self, color: ShipColor) {
+        self.ship_color = color;
+        self.shield = Self::shield_for(color);
     }
 
     pub fn is_alive(&self) -> bool {
@@ -77,11 +104,22 @@ impl RunState {
         }
     }
 
-    /// Record an enemy kill: track it and earn credits.
+    /// Record an enemy kill: track it and earn components (all enemies are mechanical).
     pub fn record_kill(&mut self, enemy_type: EnemyType) {
-        let credits = enemy_type.stats().credits;
+        let reward = enemy_type.stats().reward;
         self.kills.record_kill(enemy_type);
-        self.credits.earn(credits);
+        self.components.earn(reward);
+    }
+
+    /// Collect organics from a barrel pickup. Permanent currency.
+    pub fn collect_organics(&mut self, amount: u32) {
+        self.organics.earn(amount);
+    }
+
+    /// Catalogue an enemy on sighting. Returns `true` the first time this type
+    /// is seen, so the caller can persist the freshly-grown bestiary.
+    pub fn mark_enemy_seen(&mut self, enemy_type: EnemyType) -> bool {
+        self.seen_enemies.mark(enemy_type)
     }
 
     /// Current laser damage per beam.
@@ -89,10 +127,11 @@ impl RunState {
         Damage::new(self.laser_level.damage())
     }
 
-    /// Apply death penalty: halve laser level, reset credits and kills.
+    /// Apply death penalty: halve laser level, reset components and kills.
+    /// Organics are permanent and deliberately preserved.
     pub fn apply_death_penalty(&mut self) {
         self.laser_level = self.laser_level.downgrade();
-        self.credits = CreditAccount::new();
+        self.components = ComponentAccount::new();
         self.kills.reset();
         self.current_level = 1;
         self.rooms_cleared.clear();
@@ -166,16 +205,17 @@ mod tests {
     }
 
     #[test]
-    fn starts_with_zero_credits() {
+    fn starts_with_zero_components_and_organics() {
         let run = RunState::new(Seed::new(42));
-        assert_eq!(run.credits.balance, 0);
+        assert_eq!(run.components.balance, 0);
+        assert_eq!(run.organics.balance, 0);
     }
 
     #[test]
-    fn record_kill_earns_credits() {
+    fn record_kill_earns_components() {
         let mut run = RunState::new(Seed::new(42));
         run.record_kill(EnemyType::GunDrone);
-        assert_eq!(run.credits.balance, 1_000);
+        assert_eq!(run.components.balance, 1_000);
         assert_eq!(run.kills.count(EnemyType::GunDrone), 1);
     }
 
@@ -184,23 +224,82 @@ mod tests {
         let mut run = RunState::new(Seed::new(42));
         run.record_kill(EnemyType::GunDrone);
         run.record_kill(EnemyType::GunDrone);
-        run.record_kill(EnemyType::Dragon);
-        assert_eq!(run.credits.balance, 3_000);
+        run.record_kill(EnemyType::QuadShell);
+        assert_eq!(run.components.balance, 3_000);
         assert_eq!(run.kills.total_kills(), 3);
+    }
+
+    #[test]
+    fn new_run_is_standard_ship() {
+        let run = RunState::new(Seed::new(42));
+        assert_eq!(run.ship_color, ShipColor::Standard);
+        assert_eq!(run.shield.max_capacity, Shield::new(50.0));
+    }
+
+    #[test]
+    fn armored_ship_has_a_bigger_shield() {
+        let mut run = RunState::new(Seed::new(42));
+        run.set_ship_color(ShipColor::Armored);
+        assert_eq!(run.ship_color, ShipColor::Armored);
+        assert_eq!(run.shield.max_capacity, Shield::new(50.0 * 1.4));
+        assert_eq!(run.shield.current, Shield::new(50.0 * 1.4), "rebuilt shield starts full");
+    }
+
+    #[test]
+    fn death_keeps_the_chosen_ship_color() {
+        let mut run = RunState::new(Seed::new(42));
+        run.set_ship_color(ShipColor::Swift);
+        run.apply_death_penalty();
+        assert_eq!(run.ship_color, ShipColor::Swift);
+    }
+
+    #[test]
+    fn marking_an_enemy_seen_reports_first_sighting() {
+        let mut run = RunState::new(Seed::new(42));
+        assert!(run.mark_enemy_seen(EnemyType::GunDrone), "first sighting is new");
+        assert!(!run.mark_enemy_seen(EnemyType::GunDrone), "repeat sighting is not new");
+        assert!(run.seen_enemies.contains(EnemyType::GunDrone));
+    }
+
+    #[test]
+    fn bestiary_is_permanent_across_death() {
+        let mut run = RunState::new(Seed::new(42));
+        run.mark_enemy_seen(EnemyType::QuadShell);
+        run.apply_death_penalty();
+        assert!(run.seen_enemies.contains(EnemyType::QuadShell),
+            "the bestiary survives death, like organics");
+    }
+
+    #[test]
+    fn collect_organics_accumulates() {
+        let mut run = RunState::new(Seed::new(42));
+        run.collect_organics(50);
+        run.collect_organics(25);
+        assert_eq!(run.organics.balance, 75);
+    }
+
+    #[test]
+    fn death_preserves_organics_but_clears_components() {
+        let mut run = RunState::new(Seed::new(42));
+        run.record_kill(EnemyType::GunDrone); // components
+        run.collect_organics(40); // organics
+        run.apply_death_penalty();
+        assert_eq!(run.components.balance, 0, "components are lost on death");
+        assert_eq!(run.organics.balance, 40, "organics are permanent");
     }
 
     #[test]
     fn death_penalty_halves_laser() {
         let mut run = RunState::new(Seed::new(42));
         run.laser_level = LaserLevel::Green; // level 4
-        run.credits.earn(50_000);
+        run.components.earn(50_000);
         run.record_kill(EnemyType::GunDrone);
         run.current_level = 5;
 
         run.apply_death_penalty();
 
         assert_eq!(run.laser_level, LaserLevel::Orange); // 4/2=2
-        assert_eq!(run.credits.balance, 0);
+        assert_eq!(run.components.balance, 0);
         assert_eq!(run.kills.total_kills(), 0);
         assert_eq!(run.current_level, 1);
     }

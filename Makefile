@@ -1,4 +1,4 @@
-.PHONY: deps deps-gut check test-rust test-godot demo edit clean run build build-release assets assets-materials
+.PHONY: deps deps-rust deps-godot deps-gut require-rust check test-rust test-godot demo edit clean run build build-release assets assets-materials
 
 # Project-local tool paths
 TOOLS_DIR := $(CURDIR)/tools
@@ -25,20 +25,33 @@ RUST_LIB := $(RUST_DIR)/target/debug/libvoid_scavenger.dylib
 
 # --- Targets ---
 
+# One-time / occasional setup: installs the toolchains and tools. NOT a
+# prerequisite of build/run/check — those just use what's already installed
+# (see require-rust). Re-run after a machine setup or to update the toolchain.
 deps: deps-rust deps-godot deps-gut
 	@echo "All dependencies ready."
 
+# Bootstrap + update the Rust toolchain (network). Explicit only — kept out of
+# the build/run hot path so a flaky download can't break every command. The
+# whole body runs in one shell with ~/.cargo/bin on PATH, so the rustup check
+# actually sees an existing install instead of trying to reinstall it.
 deps-rust:
-	@echo "==> Checking Rust toolchain..."
-	@if ! command -v rustup >/dev/null 2>&1; then \
-		echo "Installing rustup..."; \
-		curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path; \
-	fi
+	@echo "==> Setting up Rust toolchain..."
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
+		if ! command -v rustup >/dev/null 2>&1; then \
+			echo "Installing rustup..."; \
+			curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path; \
+		fi && \
 		rustup default stable && \
 		rustup update stable && \
-		rustup component add clippy 2>/dev/null || true && \
+		(rustup component add clippy 2>/dev/null || true) && \
 		echo "Rust $$(rustc --version) ready."
+
+# Cheap guard for the build hot path: just confirm cargo exists (no network,
+# no install). Points at `make deps` if the toolchain isn't set up yet.
+require-rust:
+	@export PATH="$$HOME/.cargo/bin:$$PATH" && command -v cargo >/dev/null 2>&1 || { \
+		echo "ERROR: Rust toolchain not found. Run 'make deps' once to install it."; exit 1; }
 
 deps-godot:
 	@if [ -x "$(GODOT)" ] && $(GODOT) --version 2>/dev/null | grep -q "^$(GODOT_VERSION)\."; then \
@@ -53,7 +66,7 @@ deps-godot:
 		echo "Godot $(GODOT_VERSION) installed to $(GODOT_APP)"; \
 	fi
 
-assets: build
+assets: build deps-godot
 	@test -d $(ASSETS_DIR)/quaternius-megakit || { echo "ERROR: assets/ not found. Download paid assets manually into assets/."; exit 1; }
 	@echo "==> Installing Godot addons from asset packs..."
 	@./scripts/install-addons.sh $(ASSETS_DIR) $(GODOT_DIR)
@@ -92,7 +105,7 @@ deps-gut:
 		echo "GUT $(GUT_VERSION) installed to $(GUT_DIR)"; \
 	fi
 
-check: build
+check: build deps-godot deps-gut
 	@echo "==> Running Rust checks..."
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && \
@@ -116,36 +129,36 @@ test-rust:
 		cd $(RUST_DIR) && $(CARGO) test $(FILTER) -- --nocapture
 
 # Runs GUT against the currently installed dylib (no rebuild).
-test-godot:
+test-godot: deps-godot deps-gut
 	@echo "==> Running Godot tests (GUT)..."
 	@GODOT_DISABLE_LEAK_CHECKS=1 $(GODOT) --headless --path $(GODOT_DIR) \
 		-s res://addons/gut/gut_cmdln.gd \
 		-gdir=res://tests -ginclude_subdirs -gexit
 
-build: deps
+build: require-rust
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && $(CARGO) build
 	@rm -f $(GODOT_DIR)/libvoid_scavenger.debug.dylib $(GODOT_DIR)/libvoid_scavenger.dylib
 	@cp $(RUST_DIR)/target/debug/libvoid_scavenger.dylib $(GODOT_DIR)/libvoid_scavenger.dylib
 	@echo "Build complete (debug)."
 
-build-release: deps
+build-release: require-rust
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && $(CARGO) build --release
 	@rm -f $(GODOT_DIR)/libvoid_scavenger.debug.dylib $(GODOT_DIR)/libvoid_scavenger.dylib
 	@cp $(RUST_DIR)/target/release/libvoid_scavenger.dylib $(GODOT_DIR)/libvoid_scavenger.dylib
 	@echo "Build complete (release)."
 
-run: build-release
+run: build-release deps-godot
 	@echo "==> Launching game (release)..."
 	@$(GODOT) --path $(GODOT_DIR)
 
-demo: build
+demo: build deps-godot
 	@echo "==> Launching game (debug)..."
 	@$(GODOT) --path $(GODOT_DIR)
 
 # Godot editor: Debugger -> Monitors graphs the kinetics/* counters live.
-edit: build
+edit: build deps-godot
 	@echo "==> Opening Godot editor..."
 	@$(GODOT) --editor --path $(GODOT_DIR)
 

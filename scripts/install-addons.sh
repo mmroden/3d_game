@@ -198,6 +198,40 @@ fi
 echo "  Quaternius addon ready at: $ADDON_DIR"
 du -sh "$ADDON_DIR"
 
+# ========== Player ship models (CGTrader, royalty-free, not redistributable) ==========
+# Source .glb files under assets/cgtrader_ships/ are deliberately git-tracked:
+# this is a private, non-open-source repo, so the convenience of a self-contained
+# checkout outweighs keeping third-party binaries out of history.
+
+SHIPS_SRC="$ASSETS_DIR/cgtrader_ships"
+
+if [ -d "$SHIPS_SRC" ]; then
+    echo "  Installing player ship models..."
+    SHIPS_DIR="$GODOT_DIR/addons/ships"
+    mkdir -p "$SHIPS_DIR"
+    # Self-contained .glb (mesh + embedded PBR textures) — Godot imports natively.
+    find "$SHIPS_SRC" -maxdepth 1 -name "*.glb" -exec cp {} "$SHIPS_DIR/" \;
+
+    # Spaceship_1 is the player ship, packaged with three swappable color styles
+    # (Style_1/2/3). The .glb bakes in Style_1; we install the external PBR maps
+    # for all three styles alongside so the loadout variants can re-skin the hull
+    # at runtime. Style N, part P → TX_spacecraft_1_<P + (N-1)*5>_<Map>.png.
+    SPACESHIP1_SRC="$SHIPS_SRC/Spaceship_1"
+    if [ -d "$SPACESHIP1_SRC" ]; then
+        cp "$SPACESHIP1_SRC/Spacecraft_1.glb" "$SHIPS_DIR/"
+        STYLES_DST="$SHIPS_DIR/Spacecraft_1_styles"
+        rm -rf "$STYLES_DST"
+        mkdir -p "$STYLES_DST"
+        # Flatten Texture_Base/Style_N → Spacecraft_1_styles/Style_N.
+        cp -R "$SPACESHIP1_SRC/Texture_Base/"Style_* "$STYLES_DST/"
+        echo "  Spaceship_1 color styles installed ($(ls -d "$STYLES_DST"/Style_* 2>/dev/null | wc -l | tr -d ' ') styles)."
+    fi
+    chmod -R u+w "$SHIPS_DIR"
+    echo "  Player ship models installed ($(ls "$SHIPS_DIR"/*.glb 2>/dev/null | wc -l | tr -d ' ') models)."
+else
+    echo "  cgtrader_ships not found, skipping player ships."
+fi
+
 # ========== Audio assets (music + SFX) ==========
 
 AUDIO_DIR="$GODOT_DIR/addons/audio"

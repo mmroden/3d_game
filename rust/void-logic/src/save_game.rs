@@ -1,10 +1,12 @@
-use crate::credits::CreditAccount;
+use crate::bestiary::SeenEnemies;
+use crate::currency::{ComponentAccount, OrganicAccount};
 use crate::laser::LaserLevel;
 use crate::loadout::Loadout;
 use crate::newtypes::Health;
 use crate::run_state::RunState;
 use crate::seed::Seed;
 use crate::shield::ShieldState;
+use crate::ship::ShipColor;
 use serde::{Deserialize, Serialize};
 
 /// A snapshot of game state, saved at end-of-level and on death.
@@ -15,9 +17,13 @@ pub struct SaveGame {
     pub score: u32,
     pub current_level: u32,
     pub run_seed: Seed,
-    pub credits: CreditAccount,
+    pub components: ComponentAccount,
+    pub organics: OrganicAccount,
     pub health: Health,
     pub shield: ShieldState,
+    pub ship_color: ShipColor,
+    /// Permanent bestiary: every enemy type sighted across all runs.
+    pub seen_enemies: SeenEnemies,
 }
 
 impl SaveGame {
@@ -39,9 +45,12 @@ impl SaveGame {
             score: run.score,
             current_level: run.current_level,
             run_seed: run.run_seed,
-            credits: run.credits,
+            components: run.components,
+            organics: run.organics,
             health: run.health,
             shield: run.shield.clone(),
+            ship_color: run.ship_color,
+            seen_enemies: run.seen_enemies.clone(),
         }
     }
 
@@ -51,9 +60,12 @@ impl SaveGame {
         run.score = self.score;
         run.current_level = self.current_level;
         run.run_seed = self.run_seed;
-        run.credits = self.credits;
+        run.components = self.components;
+        run.organics = self.organics;
         run.health = self.health;
         run.shield = self.shield.clone();
+        run.ship_color = self.ship_color;
+        run.seen_enemies = self.seen_enemies.clone(); // permanent, like organics
         // Reset ephemeral state
         run.kills.reset();
         run.rooms_cleared.clear();
@@ -81,11 +93,13 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_captures_credits() {
+    fn snapshot_captures_components_and_organics() {
         let mut run = RunState::new(Seed::new(42));
-        run.credits.earn(5_000);
+        run.components.earn(5_000);
+        run.collect_organics(120);
         let save = SaveGame::from_run_state(&run);
-        assert_eq!(save.credits.balance, 5_000);
+        assert_eq!(save.components.balance, 5_000);
+        assert_eq!(save.organics.balance, 120);
     }
 
     #[test]
@@ -128,14 +142,69 @@ mod tests {
     }
 
     #[test]
-    fn apply_restores_credits() {
+    fn apply_restores_components() {
         let mut run = RunState::new(Seed::new(42));
-        run.credits.earn(5_000);
+        run.components.earn(5_000);
         let save = SaveGame::from_run_state(&run);
 
         let mut fresh = RunState::new(Seed::new(99));
         save.apply_to(&mut fresh);
-        assert_eq!(fresh.credits.balance, 5_000);
+        assert_eq!(fresh.components.balance, 5_000);
+    }
+
+    #[test]
+    fn ship_color_persists_through_a_save() {
+        let mut run = RunState::new(Seed::new(42));
+        run.set_ship_color(ShipColor::Armored);
+        let save = SaveGame::from_run_state(&run);
+
+        let mut fresh = RunState::new(Seed::new(99));
+        save.apply_to(&mut fresh);
+        assert_eq!(fresh.ship_color, ShipColor::Armored);
+        assert_eq!(fresh.shield.max_capacity, run.shield.max_capacity,
+            "restored shield matches the saved ship");
+    }
+
+    #[test]
+    fn bestiary_persists_through_a_save() {
+        use crate::enemy_type::EnemyType;
+        let mut run = RunState::new(Seed::new(42));
+        run.mark_enemy_seen(EnemyType::GunDrone);
+        run.mark_enemy_seen(EnemyType::QuadShell);
+        let save = SaveGame::from_run_state(&run);
+
+        let mut fresh = RunState::new(Seed::new(99));
+        save.apply_to(&mut fresh);
+        assert!(fresh.seen_enemies.contains(EnemyType::GunDrone));
+        assert!(fresh.seen_enemies.contains(EnemyType::QuadShell));
+        assert_eq!(fresh.seen_enemies.count(), 2);
+    }
+
+    #[test]
+    fn bestiary_survives_a_death_save() {
+        use crate::enemy_type::EnemyType;
+        let mut run = RunState::new(Seed::new(42));
+        run.mark_enemy_seen(EnemyType::Bomber);
+        run.apply_death_penalty(); // bestiary is permanent
+        let save = SaveGame::from_run_state(&run);
+
+        let mut fresh = RunState::new(Seed::new(99));
+        save.apply_to(&mut fresh);
+        assert!(fresh.seen_enemies.contains(EnemyType::Bomber));
+    }
+
+    #[test]
+    fn organics_survive_a_death_save() {
+        let mut run = RunState::new(Seed::new(42));
+        run.components.earn(10_000);
+        run.collect_organics(250);
+        run.apply_death_penalty(); // components lost, organics kept
+        let save = SaveGame::from_run_state(&run);
+
+        let mut fresh = RunState::new(Seed::new(99));
+        save.apply_to(&mut fresh);
+        assert_eq!(fresh.components.balance, 0);
+        assert_eq!(fresh.organics.balance, 250);
     }
 
     #[test]
@@ -147,7 +216,7 @@ mod tests {
         let save = SaveGame::from_run_state(&run);
 
         let mut fresh = RunState::new(Seed::new(99));
-        fresh.record_kill(crate::enemy_type::EnemyType::Bat);
+        fresh.record_kill(crate::enemy_type::EnemyType::QuadOrb);
         fresh.clear_room(1);
         save.apply_to(&mut fresh);
 
@@ -161,7 +230,7 @@ mod tests {
         let mut run = RunState::new(Seed::new(42));
         run.laser_level = LaserLevel::Green;
         run.current_level = 4;
-        run.credits.earn(5_000);
+        run.components.earn(5_000);
         let save = SaveGame::from_run_state(&run);
 
         let mut fresh = RunState::new(Seed::new(99));
@@ -169,7 +238,7 @@ mod tests {
 
         assert_eq!(fresh.current_level, 4);
         assert_eq!(fresh.laser_level, LaserLevel::Green);
-        assert_eq!(fresh.credits.balance, 5_000);
+        assert_eq!(fresh.components.balance, 5_000);
     }
 
     #[test]
@@ -177,7 +246,7 @@ mod tests {
         let mut run = RunState::new(Seed::new(42));
         run.laser_level = LaserLevel::Green; // level 4
         run.current_level = 4;
-        run.credits.earn(10_000);
+        run.components.earn(10_000);
         run.apply_death_penalty();
         let save = SaveGame::from_run_state(&run);
 
@@ -186,7 +255,7 @@ mod tests {
 
         assert_eq!(fresh.current_level, 1);
         assert_eq!(fresh.laser_level, LaserLevel::Orange); // Green(4) halved = 2 = Orange
-        assert_eq!(fresh.credits.balance, 0);
+        assert_eq!(fresh.components.balance, 0);
     }
 
     #[test]
@@ -196,7 +265,7 @@ mod tests {
         let mut run = RunState::new(Seed::new(42));
         run.laser_level = LaserLevel::Green;
         run.current_level = 4;
-        run.credits.earn(5_000);
+        run.components.earn(5_000);
         let save = SaveGame::from_run_state(&run);
 
         let restored = SaveGame::from_json(&save.to_json())

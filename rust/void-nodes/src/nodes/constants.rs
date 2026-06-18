@@ -26,8 +26,12 @@ pub mod signals {
     pub const BODY_ENTERED: &str = "body_entered";
     pub const SIZE_CHANGED: &str = "size_changed";
     pub const PLAYER_DAMAGED: &str = "player_damaged";
+    pub const PLAYER_SLOWED: &str = "player_slowed";
     pub const POWER_MODE_CHANGED: &str = "power_mode_changed";
     pub const UPGRADE_COLLECTED: &str = "upgrade_collected";
+    pub const ORGANICS_COLLECTED: &str = "organics_collected";
+    pub const SHIP_COLOR_SELECTED: &str = "ship_color_selected";
+    pub const BESTIARY_PAGED: &str = "bestiary_paged";
     pub const RENDER_VIEWPORTS_CHANGED: &str = "render_viewports_changed";
 }
 
@@ -56,20 +60,38 @@ pub mod methods {
     pub const SHOW_SUMMARY: &str = "show_summary";
     pub const SHOW_DEATH: &str = "show_death";
     pub const SHOW_SHOP: &str = "show_shop";
-    pub const SHOW_SHOWCASE: &str = "show_showcase";
-    pub const HIDE_SHOWCASE: &str = "hide_showcase";
+    pub const SHOW_SHIP: &str = "show_ship";
     pub const RESET_LOADOUT: &str = "reset_loadout";
     pub const SET_LASER_LEVEL: &str = "set_laser_level";
     pub const UPDATE_HEALTH: &str = "update_health";
-    pub const UPDATE_CREDITS: &str = "update_credits";
+    pub const UPDATE_COMPONENTS: &str = "update_components";
+    pub const UPDATE_ORGANICS: &str = "update_organics";
+    pub const ON_ORGANICS_COLLECTED: &str = "on_organics_collected";
+    pub const ON_SHIP_COLOR_SELECTED: &str = "on_ship_color_selected";
+    pub const ADVANCE_FROM_SHIP_SELECT: &str = "advance_from_ship_select";
+    pub const SHOW_SHIP_SELECT: &str = "show_ship_select";
+    pub const SHOW_BESTIARY: &str = "show_bestiary";
+    pub const ADVANCE_FROM_BESTIARY: &str = "advance_from_bestiary";
+    pub const ON_BESTIARY_PAGED: &str = "on_bestiary_paged";
+    pub const BEGIN_BRIEFING: &str = "begin_briefing";
+    pub const SHOW_ENTRY: &str = "show_entry";
+    pub const HIDE_TURNTABLE: &str = "hide_turntable";
+    pub const CONFIGURE_SHIP: &str = "configure_ship";
+    pub const SET_CONTROLS_ENABLED: &str = "set_controls_enabled";
     pub const UPDATE_LASER: &str = "update_laser";
     pub const UPDATE_LEVEL: &str = "update_level";
     pub const UPDATE_SHIELD: &str = "update_shield";
     pub const UPDATE_POWER_MODE: &str = "update_power_mode";
     pub const GENERATE_LEVEL: &str = "generate_level";
+    pub const GENERATE_BACKDROP: &str = "generate_backdrop";
+    pub const ROOM_FLOOR_CENTER: &str = "room_floor_center";
     pub const ON_PLAYER_DAMAGED: &str = "on_player_damaged";
+    pub const ON_PLAYER_SLOWED: &str = "on_player_slowed";
+    pub const APPLY_SLOW: &str = "apply_slow";
+    pub const UPDATE_SLOW: &str = "update_slow";
     pub const ON_POWER_MODE_CHANGED: &str = "on_power_mode_changed";
     pub const ON_UPGRADE_COLLECTED: &str = "on_upgrade_collected";
+    pub const ENTER_INITIAL_PHASE: &str = "enter_initial_phase";
     pub const ON_PHASE_CHANGED_AUDIO: &str = "on_phase_changed_audio";
     pub const ON_MUSIC_FINISHED: &str = "on_music_finished";
     pub const ON_SFX_FINISHED: &str = "on_sfx_finished";
@@ -99,6 +121,7 @@ pub mod actions {
     pub const ROUTE_SHIELDS: &str = "route_shields";
     pub const ROUTE_WEAPONS: &str = "route_weapons";
     pub const STABILIZE: &str = "stabilize";
+    pub const TOGGLE_VIEW: &str = "toggle_view";
 }
 
 // ── Group names ───────────────────────────────────────────────────────
@@ -128,11 +151,13 @@ pub mod nodes {
     pub const LEVEL_MANAGER: &str = "LevelManager";
     pub const PLAYER: &str = "Player";
     pub const PLAYER_CAMERA: &str = "Player/Camera3D";
-    pub const SHIP_SHOWCASE: &str = "ShipShowcase";
+    pub const TURNTABLE: &str = "Turntable";
     pub const MAIN_MENU_UI: &str = "MainMenuUI";
     pub const HUD: &str = "HUD";
     pub const KILL_SUMMARY_UI: &str = "KillSummaryUI";
     pub const SHOP_UI: &str = "ShopUI";
+    pub const SHIP_SELECT_UI: &str = "ShipSelectUI";
+    pub const BESTIARY_UI: &str = "BestiaryUI";
     pub const DEATH_SCREEN_UI: &str = "DeathScreenUI";
     pub const PAUSE_MENU_UI: &str = "PauseMenuUI";
     pub const STEREO_CANVAS: &str = "StereoCanvas";
@@ -161,8 +186,14 @@ pub mod properties {
 
 pub mod scenes {
     pub const LOOTBOX: &str = "res://scenes/items/lootbox.tscn";
+    pub const ORGANIC_BARREL: &str = "res://scenes/items/organic_barrel.tscn";
     pub const PORTAL: &str = "res://scenes/items/portal.tscn";
+    /// Player ship model (CGTrader, installed via `make assets`).
+    pub const SHIP_MODEL: &str = "res://addons/ships/Spacecraft_1.glb";
     pub const ENEMY_DRONE_FALLBACK: &str = "res://scenes/enemies/enemy_drone.tscn";
+    /// Bestiary pickup models — the same GLTFs the in-level pickups wear, spun
+    /// in the briefing room (without the pickups' collision/collect behavior).
+    pub const BARREL_MODEL: &str = "res://addons/quaternius/essentials/props/Prop_Barrel1.gltf";
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────
@@ -193,8 +224,11 @@ mod tests {
             signals::BODY_ENTERED,
             signals::SIZE_CHANGED,
             signals::PLAYER_DAMAGED,
+            signals::PLAYER_SLOWED,
             signals::POWER_MODE_CHANGED,
             signals::UPGRADE_COLLECTED,
+            signals::ORGANICS_COLLECTED,
+            signals::SHIP_COLOR_SELECTED,
             signals::RENDER_VIEWPORTS_CHANGED,
         ];
         for sig in &all_signals {
@@ -230,15 +264,25 @@ mod tests {
             methods::SHOW_SUMMARY,
             methods::SHOW_DEATH,
             methods::SHOW_SHOP,
-            methods::SHOW_SHOWCASE,
-            methods::HIDE_SHOWCASE,
+            methods::SHOW_SHIP,
             methods::SET_LASER_LEVEL,
             methods::UPDATE_HEALTH,
-            methods::UPDATE_CREDITS,
+            methods::UPDATE_COMPONENTS,
+            methods::UPDATE_ORGANICS,
+            methods::ON_ORGANICS_COLLECTED,
+            methods::ON_SHIP_COLOR_SELECTED,
+            methods::ADVANCE_FROM_SHIP_SELECT,
+            methods::SHOW_SHIP_SELECT,
+            methods::CONFIGURE_SHIP,
             methods::UPDATE_LASER,
             methods::UPDATE_LEVEL,
             methods::GENERATE_LEVEL,
+            methods::GENERATE_BACKDROP,
+            methods::ROOM_FLOOR_CENTER,
             methods::ON_PLAYER_DAMAGED,
+            methods::ON_PLAYER_SLOWED,
+            methods::APPLY_SLOW,
+            methods::UPDATE_SLOW,
             methods::UPDATE_SHIELD,
             methods::ON_POWER_MODE_CHANGED,
             methods::ON_UPGRADE_COLLECTED,
@@ -280,6 +324,7 @@ mod tests {
             actions::ROUTE_SHIELDS,
             actions::ROUTE_WEAPONS,
             actions::STABILIZE,
+            actions::TOGGLE_VIEW,
         ];
         for action in &all_actions {
             assert!(!action.is_empty());
@@ -296,8 +341,10 @@ mod tests {
     fn scene_paths_are_valid_godot_paths() {
         let all_scenes = [
             scenes::LOOTBOX,
+            scenes::ORGANIC_BARREL,
             scenes::PORTAL,
             scenes::ENEMY_DRONE_FALLBACK,
+            scenes::SHIP_MODEL,
         ];
         for path in &all_scenes {
             assert!(
@@ -327,8 +374,11 @@ mod tests {
             signals::BODY_ENTERED,
             signals::SIZE_CHANGED,
             signals::PLAYER_DAMAGED,
+            signals::PLAYER_SLOWED,
             signals::POWER_MODE_CHANGED,
             signals::UPGRADE_COLLECTED,
+            signals::ORGANICS_COLLECTED,
+            signals::SHIP_COLOR_SELECTED,
             signals::RENDER_VIEWPORTS_CHANGED,
         ];
         for (i, a) in all.iter().enumerate() {
@@ -356,11 +406,13 @@ mod tests {
             methods::ON_WINDOW_SIZE_CHANGED,
             methods::TAKE_DAMAGE, methods::APPLY_UPGRADE,
             methods::SHOW_SUMMARY, methods::SHOW_DEATH,
-            methods::SHOW_SHOP, methods::SHOW_SHOWCASE,
-            methods::HIDE_SHOWCASE, methods::SET_LASER_LEVEL,
-            methods::UPDATE_HEALTH, methods::UPDATE_CREDITS,
+            methods::SHOW_SHOP, methods::SHOW_SHIP,
+            methods::SET_LASER_LEVEL,
+            methods::UPDATE_HEALTH, methods::UPDATE_COMPONENTS,
+            methods::UPDATE_ORGANICS, methods::ON_ORGANICS_COLLECTED,
             methods::UPDATE_LASER, methods::UPDATE_LEVEL,
             methods::GENERATE_LEVEL, methods::ON_PLAYER_DAMAGED,
+            methods::ON_PLAYER_SLOWED, methods::APPLY_SLOW, methods::UPDATE_SLOW,
             methods::UPDATE_SHIELD, methods::ON_POWER_MODE_CHANGED,
             methods::ON_UPGRADE_COLLECTED, methods::UPDATE_POWER_MODE,
             methods::ON_PHASE_CHANGED_AUDIO, methods::ON_MUSIC_FINISHED,
@@ -382,7 +434,7 @@ mod tests {
         let all_nodes = [
             nodes::GAME_MANAGER, nodes::LEVEL_MANAGER,
             nodes::PLAYER, nodes::PLAYER_CAMERA,
-            nodes::SHIP_SHOWCASE, nodes::MAIN_MENU_UI,
+            nodes::TURNTABLE, nodes::MAIN_MENU_UI,
             nodes::HUD, nodes::KILL_SUMMARY_UI,
             nodes::SHOP_UI, nodes::DEATH_SCREEN_UI,
             nodes::PAUSE_MENU_UI,

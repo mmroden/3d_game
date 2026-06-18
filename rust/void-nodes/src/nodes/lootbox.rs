@@ -18,6 +18,7 @@ pub struct Lootbox {
 
     time: f32,
     origin_y: f32,
+    origin_captured: bool,
     collected: bool,
 }
 
@@ -30,13 +31,12 @@ impl IArea3D for Lootbox {
             bob_amplitude: 0.3,
             time: 0.0,
             origin_y: 0.0,
+            origin_captured: false,
             collected: false,
         }
     }
 
     fn ready(&mut self) {
-        self.origin_y = self.base().get_global_position().y;
-
         // Monitor for bodies entering (player collision)
         self.base_mut().set_monitoring(true);
         self.base_mut().set_collision_mask(1); // Detect layer 1 (player)
@@ -45,11 +45,23 @@ impl IArea3D for Lootbox {
         // Connect body_entered signal
         let callable = self.base().callable(methods::ON_BODY_ENTERED);
         self.base_mut().connect(signals::BODY_ENTERED, &callable);
+
+        // Soft blue glow distinguishes the upgrade lootbox from green organics.
+        let mut node: Gd<Node3D> = self.base().clone().upcast();
+        godot_util::attach_glow_light(&mut node, &[0.2, 0.5, 1.0], 4.0, 5.0);
     }
 
     fn process(&mut self, delta: f64) {
         if self.collected {
             return;
+        }
+
+        // Capture the bob origin lazily on the first frame so it is correct
+        // regardless of whether position was set before or after entering the
+        // tree (a spawner that adds-then-positions would otherwise bob at ~0).
+        if !self.origin_captured {
+            self.origin_y = self.base().get_global_position().y;
+            self.origin_captured = true;
         }
 
         // Gentle bobbing animation

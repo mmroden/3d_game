@@ -1,63 +1,40 @@
-//! Enemy type taxonomy with stats, display names, and scene paths.
+//! Enemy type taxonomy with stats, behavioural archetype, display names, and scene paths.
 
-use crate::enemy_category::EnemyCategory;
-use crate::newtypes::{Health, Damage};
+use crate::enemy_ai::{Archetype, DroneConfig};
+use crate::newtypes::{Damage, Health, Shield};
 
-/// All enemy types in the game, ordered by difficulty tier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// All enemy types in the game, ordered by difficulty tier. Every enemy is a
+/// mechanical defense system; their behaviour is set by [`Archetype`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum EnemyType {
-    Slime,
     GunDrone,
-    Bat,
-    EyeDrone,
     QuadOrb,
-    Shark,
+    Bomber,
+    EyeDrone,
     QuadShell,
-    Raptor,
-    Skeleton,
-    Trilobite,
-    Dragon,
 }
 
 impl EnemyType {
     pub const ALL: &[EnemyType] = &[
-        EnemyType::Slime,
         EnemyType::GunDrone,
-        EnemyType::Bat,
-        EnemyType::EyeDrone,
         EnemyType::QuadOrb,
-        EnemyType::Shark,
+        EnemyType::Bomber,
+        EnemyType::EyeDrone,
         EnemyType::QuadShell,
-        EnemyType::Raptor,
-        EnemyType::Skeleton,
-        EnemyType::Trilobite,
-        EnemyType::Dragon,
     ];
 
     /// Compile-time stat table indexed by variant order in `ALL`.
     const STATS: &[EnemyStats] = &[
-        // Slime
-        EnemyStats { hp: Health::new(2.0),  speed: 4.0,  damage: Damage::new(2.0),  detection_range: 20.0, attack_range: 4.0,  attack_cooldown: 1.5, credits: 1_000 },
-        // GunDrone
-        EnemyStats { hp: Health::new(3.0),  speed: 8.0,  damage: Damage::new(3.0),  detection_range: 25.0, attack_range: 5.0,  attack_cooldown: 1.0, credits: 1_000 },
-        // Bat
-        EnemyStats { hp: Health::new(3.0),  speed: 10.0, damage: Damage::new(2.0),  detection_range: 22.0, attack_range: 3.0,  attack_cooldown: 0.8, credits: 1_000 },
-        // EyeDrone
-        EnemyStats { hp: Health::new(5.0),  speed: 7.0,  damage: Damage::new(4.0),  detection_range: 30.0, attack_range: 8.0,  attack_cooldown: 1.2, credits: 1_000 },
-        // QuadOrb
-        EnemyStats { hp: Health::new(8.0),  speed: 6.0,  damage: Damage::new(5.0),  detection_range: 25.0, attack_range: 6.0,  attack_cooldown: 1.0, credits: 1_000 },
-        // Shark
-        EnemyStats { hp: Health::new(10.0), speed: 9.0,  damage: Damage::new(6.0),  detection_range: 28.0, attack_range: 4.0,  attack_cooldown: 0.7, credits: 1_000 },
-        // QuadShell
-        EnemyStats { hp: Health::new(12.0), speed: 6.0,  damage: Damage::new(5.0),  detection_range: 25.0, attack_range: 6.0,  attack_cooldown: 1.0, credits: 1_000 },
-        // Raptor
-        EnemyStats { hp: Health::new(18.0), speed: 11.0, damage: Damage::new(7.0),  detection_range: 30.0, attack_range: 5.0,  attack_cooldown: 0.6, credits: 1_000 },
-        // Skeleton
-        EnemyStats { hp: Health::new(22.0), speed: 7.0,  damage: Damage::new(8.0),  detection_range: 28.0, attack_range: 7.0,  attack_cooldown: 0.9, credits: 1_000 },
-        // Trilobite
-        EnemyStats { hp: Health::new(30.0), speed: 5.0,  damage: Damage::new(10.0), detection_range: 20.0, attack_range: 5.0,  attack_cooldown: 1.2, credits: 1_000 },
-        // Dragon
-        EnemyStats { hp: Health::new(50.0), speed: 8.0,  damage: Damage::new(15.0), detection_range: 35.0, attack_range: 10.0, attack_cooldown: 0.5, credits: 1_000 },
+        // GunDrone — ranged kiter: holds distance and fires.
+        EnemyStats { hp: Health::new(3.0),  speed: 8.0,  damage: Damage::new(5.0),  detection_range: 25.0, attack_range: 10.0, attack_cooldown: 1.0, archetype: Archetype::Kiter,   reward: 1_000 },
+        // QuadOrb — swarmer: fast, fragile, four-legged; slows the player on contact.
+        EnemyStats { hp: Health::new(3.0),  speed: 12.0, damage: Damage::new(4.0),  detection_range: 25.0, attack_range: 3.0,  attack_cooldown: 1.0, archetype: Archetype::Swarmer, reward: 1_000 },
+        // Bomber — suicide: charges, fuses, then detonates for area damage.
+        EnemyStats { hp: Health::new(4.0),  speed: 9.0,  damage: Damage::new(16.0), detection_range: 25.0, attack_range: 5.0,  attack_cooldown: 1.0, archetype: Archetype::Bomber,  reward: 1_000 },
+        // EyeDrone — ranged kiter that spawns a GunDrone on death.
+        EnemyStats { hp: Health::new(5.0),  speed: 7.0,  damage: Damage::new(6.0),  detection_range: 30.0, attack_range: 10.0, attack_cooldown: 1.2, archetype: Archetype::Kiter,   reward: 1_000 },
+        // QuadShell — shielded tank: slow, durable, fires.
+        EnemyStats { hp: Health::new(12.0), speed: 6.0,  damage: Damage::new(7.0),  detection_range: 25.0, attack_range: 6.0,  attack_cooldown: 1.0, archetype: Archetype::Tank,    reward: 1_000 },
     ];
 
     pub fn stats(&self) -> EnemyStats {
@@ -65,48 +42,70 @@ impl EnemyType {
             .expect("EnemyType::ALL must contain every variant")]
     }
 
+    /// Build the AI configuration for this enemy: shared ranges from `stats()`
+    /// plus archetype-specific parameters (kiter stand-off, bomber fuse/blast,
+    /// tank shield). Single source of truth for enemy behaviour tuning.
+    pub fn ai_config(&self) -> DroneConfig {
+        let s = self.stats();
+        let mut config = DroneConfig {
+            archetype: s.archetype,
+            detection_range: s.detection_range,
+            attack_range: s.attack_range,
+            disengage_range: s.detection_range * 1.2,
+            health: s.hp,
+            attack_cooldown: s.attack_cooldown,
+            ..DroneConfig::default()
+        };
+        match s.archetype {
+            Archetype::Kiter => config.standoff_range = s.attack_range * 0.6,
+            Archetype::Bomber => {
+                config.fuse_seconds = 1.0;
+                config.blast_radius = s.attack_range * 1.5;
+            }
+            Archetype::Tank => config.shield = Some(Shield::new(s.hp.as_f32() * 0.5)),
+            Archetype::Shooter | Archetype::Swarmer => {}
+        }
+        config
+    }
+
+    /// Enemies this type spawns when it dies (the "subsidiary drone" mechanic).
+    pub fn death_spawn(&self) -> Option<(EnemyType, u8)> {
+        match self {
+            Self::EyeDrone => Some((Self::GunDrone, 1)),
+            Self::GunDrone | Self::QuadOrb | Self::Bomber | Self::QuadShell => None,
+        }
+    }
+
     pub fn display_name(&self) -> &'static str {
         match self {
-            Self::Slime => "Slime",
             Self::GunDrone => "Gun Drone",
-            Self::Bat => "Bat",
-            Self::EyeDrone => "Eye Drone",
             Self::QuadOrb => "Quad Orb",
-            Self::Shark => "Shark",
+            Self::Bomber => "Bomber",
+            Self::EyeDrone => "Eye Drone",
             Self::QuadShell => "Quad Shell",
-            Self::Raptor => "Raptor",
-            Self::Skeleton => "Skeleton",
-            Self::Trilobite => "Trilobite",
-            Self::Dragon => "Dragon",
         }
     }
 
     pub fn scene_path(&self) -> &'static str {
         match self {
-            Self::Slime =>     "res://scenes/enemies/enemy_slime.tscn",
             Self::GunDrone =>  "res://scenes/enemies/enemy_drone.tscn",
-            Self::Bat =>       "res://scenes/enemies/enemy_bat.tscn",
-            Self::EyeDrone =>  "res://scenes/enemies/enemy_eye_drone.tscn",
             Self::QuadOrb =>   "res://scenes/enemies/enemy_quad_orb.tscn",
-            Self::Shark =>     "res://scenes/enemies/enemy_shark.tscn",
+            Self::Bomber =>    "res://scenes/enemies/enemy_bomber.tscn",
+            Self::EyeDrone =>  "res://scenes/enemies/enemy_eye_drone.tscn",
             Self::QuadShell => "res://scenes/enemies/enemy_quad_shell.tscn",
-            Self::Raptor =>    "res://scenes/enemies/enemy_raptor.tscn",
-            Self::Skeleton =>  "res://scenes/enemies/enemy_skeleton.tscn",
-            Self::Trilobite => "res://scenes/enemies/enemy_trilobite.tscn",
-            Self::Dragon =>    "res://scenes/enemies/enemy_dragon.tscn",
         }
     }
 
-    /// Whether this enemy is a mechanical defense system or a biological creature.
-    pub fn category(&self) -> EnemyCategory {
+    /// The bare visual model (no AI/collision) each enemy wears — for the
+    /// bestiary briefing, which spins the model without the gameplay node.
+    /// The Bomber reuses the QuadOrb model (a placeholder until it has its own).
+    pub fn model_path(&self) -> &'static str {
         match self {
-            Self::GunDrone | Self::EyeDrone | Self::QuadOrb | Self::QuadShell => {
-                EnemyCategory::Mechanical
-            }
-            Self::Slime | Self::Bat | Self::Shark | Self::Raptor
-            | Self::Skeleton | Self::Trilobite | Self::Dragon => {
-                EnemyCategory::Biological
-            }
+            Self::GunDrone =>  "res://addons/quaternius/essentials/enemies/Enemy_GunDrone.gltf",
+            Self::QuadOrb =>   "res://addons/quaternius/essentials/enemies/Enemy_QuadOrb.gltf",
+            Self::Bomber =>    "res://addons/quaternius/essentials/enemies/Enemy_QuadOrb.gltf",
+            Self::EyeDrone =>  "res://addons/quaternius/essentials/enemies/Enemy_EyeDrone.gltf",
+            Self::QuadShell => "res://addons/quaternius/essentials/enemies/Enemy_QuadShell.gltf",
         }
     }
 
@@ -120,16 +119,13 @@ impl EnemyType {
     }
 
     /// Minimum level at which this enemy type first appears.
+    /// Level 1 is shooters only (GunDrone); level 2 introduces the QuadOrb
+    /// grabbers that slow the player so the shooters can land hits.
     pub fn min_level(&self) -> u32 {
         match self {
-            Self::Slime | Self::GunDrone => 1,
-            Self::Bat | Self::EyeDrone => 2,
-            Self::QuadOrb | Self::Shark => 3,
+            Self::GunDrone => 1,
+            Self::QuadOrb | Self::Bomber | Self::EyeDrone => 2,
             Self::QuadShell => 4,
-            Self::Raptor => 5,
-            Self::Skeleton => 6,
-            Self::Trilobite => 7,
-            Self::Dragon => 8,
         }
     }
 }
@@ -151,13 +147,13 @@ pub struct EnemyStats {
     pub detection_range: f32,
     pub attack_range: f32,
     pub attack_cooldown: f32,
-    pub(crate) credits: u32,
+    pub archetype: Archetype,
+    pub(crate) reward: u32,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::enemy_category::EnemyCategory;
     use crate::newtypes::Health;
 
     #[test]
@@ -177,9 +173,9 @@ mod tests {
     }
 
     #[test]
-    fn all_enemies_award_1000_credits() {
+    fn all_enemies_award_1000_reward() {
         for enemy in EnemyType::ALL {
-            assert_eq!(enemy.stats().credits, 1_000, "{:?} doesn't award 1000 credits", enemy);
+            assert_eq!(enemy.stats().reward, 1_000, "{:?} doesn't award 1000 components", enemy);
         }
     }
 
@@ -189,19 +185,18 @@ mod tests {
     }
 
     #[test]
-    fn slime_is_weakest() {
-        assert_eq!(EnemyType::Slime.stats().hp, Health::new(2.0));
+    fn gun_drone_is_weakest() {
+        assert_eq!(EnemyType::GunDrone.stats().hp, Health::new(3.0));
     }
 
     #[test]
-    fn dragon_is_strongest() {
-        assert_eq!(EnemyType::Dragon.stats().hp, Health::new(50.0));
+    fn quad_shell_is_strongest() {
+        assert_eq!(EnemyType::QuadShell.stats().hp, Health::new(12.0));
     }
 
     #[test]
     fn hp_scales_with_tier() {
         let hps: Vec<f32> = EnemyType::ALL.iter().map(|e| e.stats().hp.as_f32()).collect();
-        // Each enemy should have HP >= the previous one (monotonically non-decreasing)
         for w in hps.windows(2) {
             assert!(w[1] >= w[0], "hp should scale: {} >= {}", w[1], w[0]);
         }
@@ -222,6 +217,15 @@ mod tests {
     }
 
     #[test]
+    fn model_paths_are_gltf_resources() {
+        for enemy in EnemyType::ALL {
+            let path = enemy.model_path();
+            assert!(path.starts_with("res://"), "{:?} bad model path", enemy);
+            assert!(path.ends_with(".gltf"), "{:?} model should be a gltf", enemy);
+        }
+    }
+
+    #[test]
     fn from_id_roundtrip() {
         for enemy in EnemyType::ALL {
             let id = enemy.id();
@@ -236,16 +240,22 @@ mod tests {
     }
 
     #[test]
-    fn enemies_for_level_1() {
+    fn level_1_is_shooters_only() {
         let enemies = enemies_for_level(1);
-        assert!(enemies.contains(&EnemyType::Slime));
-        assert!(enemies.contains(&EnemyType::GunDrone));
-        assert!(!enemies.contains(&EnemyType::Dragon));
-        assert_eq!(enemies.len(), 2);
+        assert_eq!(enemies, vec![EnemyType::GunDrone],
+            "level 1 should spawn only the GunDrone shooter");
     }
 
     #[test]
-    fn enemies_for_level_8_includes_all() {
+    fn level_2_introduces_the_grabber() {
+        let enemies = enemies_for_level(2);
+        assert!(enemies.contains(&EnemyType::GunDrone));
+        assert!(enemies.contains(&EnemyType::QuadOrb), "grabbers arrive at level 2");
+        assert!(!enemies.contains(&EnemyType::QuadShell));
+    }
+
+    #[test]
+    fn enemies_for_level_high_includes_all() {
         let enemies = enemies_for_level(8);
         assert_eq!(enemies.len(), EnemyType::ALL.len());
     }
@@ -260,47 +270,8 @@ mod tests {
     }
 
     #[test]
-    fn mechanical_enemies_are_drones_and_orbs() {
-        let mechanical = [
-            EnemyType::GunDrone,
-            EnemyType::EyeDrone,
-            EnemyType::QuadOrb,
-            EnemyType::QuadShell,
-        ];
-        for enemy in mechanical {
-            assert_eq!(enemy.category(), EnemyCategory::Mechanical,
-                "{:?} should be Mechanical", enemy);
-        }
-    }
-
-    #[test]
-    fn biological_enemies_are_creatures() {
-        let biological = [
-            EnemyType::Slime,
-            EnemyType::Bat,
-            EnemyType::Shark,
-            EnemyType::Raptor,
-            EnemyType::Skeleton,
-            EnemyType::Trilobite,
-            EnemyType::Dragon,
-        ];
-        for enemy in biological {
-            assert_eq!(enemy.category(), EnemyCategory::Biological,
-                "{:?} should be Biological", enemy);
-        }
-    }
-
-    #[test]
-    fn category_counts_are_correct() {
-        let mech_count = EnemyType::ALL.iter()
-            .filter(|e| e.category() == EnemyCategory::Mechanical)
-            .count();
-        let bio_count = EnemyType::ALL.iter()
-            .filter(|e| e.category() == EnemyCategory::Biological)
-            .count();
-        assert_eq!(mech_count, 4, "Should have 4 mechanical enemies");
-        assert_eq!(bio_count, 7, "Should have 7 biological enemies");
-        assert_eq!(mech_count + bio_count, EnemyType::ALL.len());
+    fn roster_is_the_five_mechanical_enemies() {
+        assert_eq!(EnemyType::ALL.len(), 5, "the roster is five enemies");
     }
 
     #[test]
@@ -309,5 +280,53 @@ mod tests {
         for w in levels.windows(2) {
             assert!(w[1] >= w[0], "min_level should be non-decreasing: {} >= {}", w[1], w[0]);
         }
+    }
+
+    // --- Archetype + behaviour config ---
+
+    #[test]
+    fn archetypes_match_roster() {
+        assert_eq!(EnemyType::GunDrone.stats().archetype, Archetype::Kiter);
+        assert_eq!(EnemyType::QuadOrb.stats().archetype, Archetype::Swarmer);
+        assert_eq!(EnemyType::Bomber.stats().archetype, Archetype::Bomber);
+        assert_eq!(EnemyType::EyeDrone.stats().archetype, Archetype::Kiter);
+        assert_eq!(EnemyType::QuadShell.stats().archetype, Archetype::Tank);
+    }
+
+    #[test]
+    fn kiter_config_has_standoff() {
+        let config = EnemyType::GunDrone.ai_config();
+        assert_eq!(config.archetype, Archetype::Kiter);
+        assert!(config.standoff_range > 0.0);
+        assert!(config.standoff_range < config.attack_range);
+    }
+
+    #[test]
+    fn bomber_config_has_fuse_and_blast() {
+        let config = EnemyType::Bomber.ai_config();
+        assert!(config.fuse_seconds > 0.0);
+        assert!(config.blast_radius > 0.0);
+    }
+
+    #[test]
+    fn tank_config_has_shield() {
+        let config = EnemyType::QuadShell.ai_config();
+        assert!(config.shield.is_some());
+    }
+
+    #[test]
+    fn non_tank_has_no_shield() {
+        assert!(EnemyType::GunDrone.ai_config().shield.is_none());
+    }
+
+    #[test]
+    fn eye_drone_spawns_gun_drone_on_death() {
+        assert_eq!(EnemyType::EyeDrone.death_spawn(), Some((EnemyType::GunDrone, 1)));
+    }
+
+    #[test]
+    fn most_enemies_have_no_death_spawn() {
+        assert_eq!(EnemyType::GunDrone.death_spawn(), None);
+        assert_eq!(EnemyType::QuadShell.death_spawn(), None);
     }
 }

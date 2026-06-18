@@ -1,8 +1,14 @@
 //! Pure-data enemy AI state machine. No Godot dependency.
+//!
+//! All enemies share one [`DroneState`] FSM (Idle → Chasing → Attacking → Dead)
+//! but their *behaviour* — how they move and how they attack — is selected by an
+//! [`Archetype`]. Each tick the logic returns an [`AiTick`] describing the
+//! intent (move toward / away / strafe, and fire / ram / detonate); the node
+//! layer turns that intent into forces and projectiles.
 
-use crate::newtypes::{Health, Damage};
+use crate::newtypes::{Damage, Health, Shield};
 
-/// Possible states for a drone enemy.
+/// Possible states for an enemy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DroneState {
     Idle,
@@ -11,97 +17,277 @@ pub enum DroneState {
     Dead,
 }
 
-/// Configuration for drone behavior thresholds.
+/// Behavioural archetype. Selects how an enemy moves and attacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Archetype {
+    /// Chase to attack range and fire (the original behaviour).
+    Shooter,
+    /// Hold a stand-off range, retreat if the player closes, strafe, and fire.
+    Kiter,
+    /// No projectile: charge and ram for collision damage.
+    Swarmer,
+    /// Shooter with a damage-absorbing shield. Slow and durable.
+    Tank,
+    /// Charge to detonation range, burn a fuse, then AoE-detonate and die.
+    Bomber,
+}
+
+/// How the enemy wants to move this tick. `speed_mul` scales its base speed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Movement {
+    /// Stay put.
+    Hold,
+    /// Move toward the player.
+    Chase { speed_mul: f32 },
+    /// Move away from the player.
+    Retreat { speed_mul: f32 },
+    /// Orbit the player (perpendicular movement; node picks handedness).
+    Strafe { speed_mul: f32 },
+}
+
+/// Desired strafe velocity for a kiting drone, in world units/sec. `tangent`
+/// drives the orbit (applied along the perpendicular-to-player unit vector);
+/// `radial` is signed and applied along the toward-player unit vector —
+/// positive pulls inward when the drone has drifted past `standoff`, negative
+/// pushes it back out when the player crowds it. All orbit geometry lives here;
+/// the node only multiplies these scalars by its two unit vectors and adds them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StrafeVelocity {
+    pub tangent: f32,
+    pub radial: f32,
+}
+
+/// Resolve a `Movement::Strafe` intent into concrete velocity components for a
+/// drone cruising at `speed`, currently `distance` from the player, that wants
+/// to orbit at `standoff`. `speed_mul` scales the tangential orbit speed. The
+/// radial pull is capped at the drone's cruise speed so a far-off kiter doesn't
+/// lunge, then halved so the orbit dominates the correction.
+pub fn strafe_velocity(speed_mul: f32, distance: f32, standoff: f32, speed: f32) -> StrafeVelocity {
+    let tangent = speed * speed_mul;
+    let radius_error = distance - standoff;
+    let radial = radius_error.clamp(-speed, speed) * 0.5;
+    StrafeVelocity { tangent, radial }
+}
+
+/// What the enemy wants to do offensively this tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Attack {
+    /// No attack this tick.
+    None,
+    /// Fire a projectile at the player.
+    Fire,
+    /// Deal contact (ram) damage — resolved by physics collision.
+    Ram,
+    /// Detonate, dealing area damage within `radius`. The enemy dies.
+    Detonate { radius: f32 },
+    /// Spawn `count` subsidiary drones. Reserved for the future boss.
+    SpawnDrones { count: u8 },
+}
+
+/// The intent produced by [`DroneAi::update`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AiTick {
+    pub movement: Movement,
+    pub attack: Attack,
+}
+
+/// Configuration for enemy behaviour thresholds.
 #[derive(Debug, Clone)]
 pub struct DroneConfig {
+    pub archetype: Archetype,
     pub detection_range: f32,
     pub attack_range: f32,
     pub disengage_range: f32,
     pub health: Health,
     pub attack_cooldown: f32,
+    /// Kiter: preferred minimum distance; closer than this it retreats.
+    pub standoff_range: f32,
+    /// Bomber: seconds the fuse burns once in detonation range.
+    pub fuse_seconds: f32,
+    /// Bomber: area-damage radius on detonation.
+    pub blast_radius: f32,
+    /// Tank: optional shield that absorbs damage before health.
+    pub shield: Option<Shield>,
 }
 
 impl Default for DroneConfig {
     fn default() -> Self {
         Self {
+            archetype: Archetype::Shooter,
             detection_range: 25.0,
             attack_range: 5.0,
             disengage_range: 30.0, // detection_range * 1.2
             health: Health::new(3.0),
             attack_cooldown: 1.0,
+            standoff_range: 0.0,
+            fuse_seconds: 0.0,
+            blast_radius: 0.0,
+            shield: None,
         }
     }
 }
 
-/// Pure state machine for drone AI.
+/// State machine for enemy AI.
 #[derive(Debug, Clone)]
 pub struct DroneAi {
     pub state: DroneState,
     pub health: Health,
+    pub shield: Option<Shield>,
     pub attack_timer: f32,
+    pub fuse_timer: f32,
     pub config: DroneConfig,
 }
 
 impl DroneAi {
     pub fn new(config: DroneConfig) -> Self {
         let health = config.health;
+        let shield = config.shield;
         Self {
             state: DroneState::Idle,
             health,
+            shield,
             attack_timer: 0.0,
+            fuse_timer: 0.0,
             config,
         }
     }
 
-    /// Update state based on distance to player and whether the drone
-    /// can actually see them. Returns whether the drone should fire.
-    pub fn update(&mut self, distance_to_player: f32, has_line_of_sight: bool, delta: f32) -> bool {
+    /// Update state from the player's distance and visibility, returning the
+    /// movement + attack intent for this tick.
+    pub fn update(&mut self, distance_to_player: f32, has_line_of_sight: bool, delta: f32) -> AiTick {
         if self.state == DroneState::Dead {
-            return false;
+            return AiTick { movement: Movement::Hold, attack: Attack::None };
         }
 
         self.attack_timer = (self.attack_timer - delta).max(0.0);
 
-        // State transitions
+        self.advance_state(distance_to_player);
+
+        match self.config.archetype {
+            Archetype::Shooter | Archetype::Tank => self.shooter_tick(has_line_of_sight),
+            Archetype::Kiter => self.kiter_tick(distance_to_player, has_line_of_sight),
+            Archetype::Swarmer => self.swarmer_tick(),
+            Archetype::Bomber => self.bomber_tick(delta),
+        }
+    }
+
+    /// Shared Idle/Chasing/Attacking/Dead transitions with hysteresis.
+    fn advance_state(&mut self, distance: f32) {
         match self.state {
             DroneState::Idle => {
-                if distance_to_player <= self.config.detection_range {
+                if distance <= self.config.detection_range {
                     self.state = DroneState::Chasing;
                 }
             }
             DroneState::Chasing => {
-                if distance_to_player <= self.config.attack_range {
+                if distance <= self.config.attack_range {
                     self.state = DroneState::Attacking;
                     self.attack_timer = 0.0;
-                } else if distance_to_player > self.config.disengage_range {
+                } else if distance > self.config.disengage_range {
                     self.state = DroneState::Idle;
                 }
             }
             DroneState::Attacking => {
-                if distance_to_player > self.config.attack_range {
+                if distance > self.config.attack_range {
                     self.state = DroneState::Chasing;
                 }
             }
             DroneState::Dead => {}
         }
-
-        // Fire check: attacking, off cooldown, and actually able to
-        // see the player — no blind fire through walls. A blocked shot
-        // does not consume the cooldown; it fires when sight returns.
-        if self.state == DroneState::Attacking && self.attack_timer <= 0.0 && has_line_of_sight {
-            self.attack_timer = self.config.attack_cooldown;
-            return true;
-        }
-
-        false
     }
 
-    /// Apply damage. Returns true if the drone just died.
+    /// Fire if attacking, off cooldown, and able to see the player. A blocked
+    /// shot does not consume the cooldown; it fires when sight returns.
+    fn try_fire(&mut self, has_line_of_sight: bool) -> Attack {
+        if self.state == DroneState::Attacking && self.attack_timer <= 0.0 && has_line_of_sight {
+            self.attack_timer = self.config.attack_cooldown;
+            Attack::Fire
+        } else {
+            Attack::None
+        }
+    }
+
+    fn shooter_tick(&mut self, has_line_of_sight: bool) -> AiTick {
+        let attack = self.try_fire(has_line_of_sight);
+        let movement = match self.state {
+            DroneState::Chasing => Movement::Chase { speed_mul: 1.0 },
+            // Close slowly while attacking so it does not overrun the player.
+            DroneState::Attacking => Movement::Chase { speed_mul: 0.3 },
+            DroneState::Idle | DroneState::Dead => Movement::Hold,
+        };
+        AiTick { movement, attack }
+    }
+
+    fn kiter_tick(&mut self, distance: f32, has_line_of_sight: bool) -> AiTick {
+        let attack = self.try_fire(has_line_of_sight);
+        let movement = match self.state {
+            DroneState::Idle | DroneState::Dead => Movement::Hold,
+            DroneState::Chasing => Movement::Chase { speed_mul: 1.0 },
+            DroneState::Attacking => {
+                if distance < self.config.standoff_range {
+                    Movement::Retreat { speed_mul: 1.0 }
+                } else {
+                    Movement::Strafe { speed_mul: 0.7 }
+                }
+            }
+        };
+        AiTick { movement, attack }
+    }
+
+    fn swarmer_tick(&mut self) -> AiTick {
+        let movement = match self.state {
+            DroneState::Idle | DroneState::Dead => Movement::Hold,
+            DroneState::Chasing | DroneState::Attacking => Movement::Chase { speed_mul: 1.0 },
+        };
+        let attack = if self.state == DroneState::Attacking {
+            Attack::Ram
+        } else {
+            Attack::None
+        };
+        AiTick { movement, attack }
+    }
+
+    fn bomber_tick(&mut self, delta: f32) -> AiTick {
+        match self.state {
+            DroneState::Idle | DroneState::Dead => {
+                AiTick { movement: Movement::Hold, attack: Attack::None }
+            }
+            DroneState::Chasing => {
+                // Arm the fuse so it is full when detonation range is reached.
+                self.fuse_timer = self.config.fuse_seconds;
+                AiTick { movement: Movement::Chase { speed_mul: 1.0 }, attack: Attack::None }
+            }
+            DroneState::Attacking => {
+                self.fuse_timer = (self.fuse_timer - delta).max(0.0);
+                if self.fuse_timer <= 0.0 {
+                    self.state = DroneState::Dead;
+                    AiTick {
+                        movement: Movement::Hold,
+                        attack: Attack::Detonate { radius: self.config.blast_radius },
+                    }
+                } else {
+                    // Keep charging while the fuse burns to guarantee contact.
+                    AiTick { movement: Movement::Chase { speed_mul: 1.0 }, attack: Attack::None }
+                }
+            }
+        }
+    }
+
+    /// Apply damage through the optional shield, then health. Returns true if
+    /// the enemy just died.
     pub fn take_damage(&mut self, amount: Damage) -> bool {
         if self.state == DroneState::Dead {
             return false;
         }
-        self.health = self.health.take(amount);
+        let overflow = match self.shield {
+            Some(shield) => {
+                let (remaining, overflow) = shield.absorb(amount);
+                self.shield = Some(remaining);
+                overflow
+            }
+            None => amount,
+        };
+        self.health = self.health.take(overflow);
         if !self.health.is_alive() {
             self.state = DroneState::Dead;
             true
@@ -123,10 +309,21 @@ mod tests {
         DroneAi::new(DroneConfig::default())
     }
 
+    fn config_with(archetype: Archetype) -> DroneConfig {
+        DroneConfig { archetype, ..DroneConfig::default() }
+    }
+
+    /// Drive an AI into the Attacking state at the given distance.
+    fn engage(ai: &mut DroneAi, distance: f32) {
+        ai.update(20.0, true, 0.016); // → Chasing
+        ai.update(distance, true, 0.016); // → Attacking
+    }
+
+    // --- Shared FSM (Shooter is the regression anchor for original behaviour) ---
+
     #[test]
     fn starts_idle() {
-        let ai = default_ai();
-        assert_eq!(ai.state, DroneState::Idle);
+        assert_eq!(default_ai().state, DroneState::Idle);
     }
 
     #[test]
@@ -146,8 +343,7 @@ mod tests {
     #[test]
     fn transitions_to_attacking_when_close() {
         let mut ai = default_ai();
-        ai.update(20.0, true, 0.016); // → Chasing
-        ai.update(4.0, true, 0.016);  // → Attacking
+        engage(&mut ai, 4.0);
         assert_eq!(ai.state, DroneState::Attacking);
     }
 
@@ -155,34 +351,31 @@ mod tests {
     fn fires_on_entering_attack_range() {
         let mut ai = default_ai();
         ai.update(20.0, true, 0.016); // → Chasing
-        let should_fire = ai.update(4.0, true, 0.016); // → Attacking, fire immediately
-        assert!(should_fire);
+        let tick = ai.update(4.0, true, 0.016); // → Attacking, fire immediately
+        assert_eq!(tick.attack, Attack::Fire);
     }
 
     #[test]
     fn does_not_fire_during_cooldown() {
         let mut ai = default_ai();
-        ai.update(20.0, true, 0.016);
-        ai.update(4.0, true, 0.016); // Fires, cooldown starts
-        let should_fire = ai.update(4.0, true, 0.5); // 0.5s into 1.0s cooldown
-        assert!(!should_fire);
+        engage(&mut ai, 4.0); // fires, cooldown starts
+        let tick = ai.update(4.0, true, 0.5); // 0.5s into 1.0s cooldown
+        assert_eq!(tick.attack, Attack::None);
     }
 
     #[test]
     fn fires_again_after_cooldown() {
         let mut ai = default_ai();
-        ai.update(20.0, true, 0.016);
-        ai.update(4.0, true, 0.016); // First fire
-        ai.update(4.0, true, 0.5);   // Still cooling
-        let should_fire = ai.update(4.0, true, 0.6); // Cooldown expired
-        assert!(should_fire);
+        engage(&mut ai, 4.0); // first fire
+        ai.update(4.0, true, 0.5); // still cooling
+        let tick = ai.update(4.0, true, 0.6); // cooldown expired
+        assert_eq!(tick.attack, Attack::Fire);
     }
 
     #[test]
     fn returns_to_chasing_when_player_leaves_attack_range() {
         let mut ai = default_ai();
-        ai.update(20.0, true, 0.016); // → Chasing
-        ai.update(4.0, true, 0.016);  // → Attacking
+        engage(&mut ai, 4.0);
         ai.update(10.0, true, 0.016); // → Chasing (out of attack range)
         assert_eq!(ai.state, DroneState::Chasing);
     }
@@ -199,17 +392,61 @@ mod tests {
     fn hysteresis_prevents_flicker_at_detection_boundary() {
         let mut ai = default_ai();
         ai.update(20.0, true, 0.016); // → Chasing
-        // Just outside detection_range but inside disengage_range
-        ai.update(27.0, true, 0.016);
-        assert_eq!(ai.state, DroneState::Chasing); // Still chasing
+        ai.update(27.0, true, 0.016); // outside detection, inside disengage
+        assert_eq!(ai.state, DroneState::Chasing);
     }
+
+    #[test]
+    fn exact_boundary_detection_triggers_chase() {
+        let mut ai = default_ai();
+        ai.update(25.0, true, 0.016); // exactly at detection_range
+        assert_eq!(ai.state, DroneState::Chasing);
+    }
+
+    #[test]
+    fn exact_boundary_attack_triggers_attack() {
+        let mut ai = default_ai();
+        ai.update(20.0, true, 0.016); // → Chasing
+        ai.update(5.0, true, 0.016); // exactly at attack_range
+        assert_eq!(ai.state, DroneState::Attacking);
+    }
+
+    #[test]
+    fn shooter_chases_then_closes_slowly() {
+        let mut ai = default_ai();
+        let chasing = ai.update(20.0, true, 0.016);
+        assert_eq!(chasing.movement, Movement::Chase { speed_mul: 1.0 });
+        let attacking = ai.update(4.0, true, 0.016);
+        assert_eq!(attacking.movement, Movement::Chase { speed_mul: 0.3 });
+    }
+
+    // --- Line of sight ---
+
+    #[test]
+    fn does_not_fire_without_line_of_sight() {
+        let mut ai = default_ai();
+        engage(&mut ai, 4.0); // fires, cooldown starts
+        let tick = ai.update(4.0, false, 1.1); // cooldown expires but blind
+        assert_eq!(tick.attack, Attack::None);
+    }
+
+    #[test]
+    fn fires_immediately_when_sight_is_restored() {
+        let mut ai = default_ai();
+        engage(&mut ai, 4.0); // fires, cooldown starts
+        ai.update(4.0, false, 1.1); // cooldown expires, sight blocked: held
+        let tick = ai.update(4.0, true, 0.016);
+        assert_eq!(tick.attack, Attack::Fire);
+    }
+
+    // --- Damage / death ---
 
     #[test]
     fn damage_reduces_health() {
         let mut ai = default_ai();
         ai.take_damage(Damage::new(1.0));
         assert_eq!(ai.health, Health::new(2.0));
-        assert_eq!(ai.state, DroneState::Idle); // Not dead yet
+        assert_eq!(ai.state, DroneState::Idle);
     }
 
     #[test]
@@ -218,23 +455,21 @@ mod tests {
         let died = ai.take_damage(Damage::new(3.0));
         assert!(died);
         assert!(ai.is_dead());
-        assert_eq!(ai.state, DroneState::Dead);
     }
 
     #[test]
     fn overkill_damage_kills() {
         let mut ai = default_ai();
-        let died = ai.take_damage(Damage::new(99.0));
-        assert!(died);
-        assert!(ai.is_dead());
+        assert!(ai.take_damage(Damage::new(99.0)));
     }
 
     #[test]
     fn dead_drone_does_not_update() {
         let mut ai = default_ai();
         ai.take_damage(Damage::new(30.0));
-        let should_fire = ai.update(1.0, true, 0.016);
-        assert!(!should_fire);
+        let tick = ai.update(1.0, true, 0.016);
+        assert_eq!(tick.attack, Attack::None);
+        assert_eq!(tick.movement, Movement::Hold);
         assert_eq!(ai.state, DroneState::Dead);
     }
 
@@ -242,62 +477,186 @@ mod tests {
     fn dead_drone_ignores_further_damage() {
         let mut ai = default_ai();
         ai.take_damage(Damage::new(3.0));
-        let died_again = ai.take_damage(Damage::new(1.0));
-        assert!(!died_again);
-    }
-
-    #[test]
-    fn exact_boundary_detection_triggers_chase() {
-        let mut ai = default_ai();
-        ai.update(25.0, true, 0.016); // Exactly at detection_range
-        assert_eq!(ai.state, DroneState::Chasing);
+        assert!(!ai.take_damage(Damage::new(1.0)));
     }
 
     #[test]
     fn dead_state_stable_across_repeated_updates() {
         let mut ai = default_ai();
         ai.take_damage(Damage::new(99.0));
-        assert!(ai.is_dead());
         for _ in 0..100 {
             assert!(ai.is_dead());
-            assert!(!ai.update(1.0, true, 0.016));
+            let tick = ai.update(1.0, true, 0.016);
+            assert_eq!(tick.attack, Attack::None);
         }
     }
 
+    // --- Tank: shield absorbs before health ---
+
     #[test]
-    fn does_not_fire_without_line_of_sight() {
-        // A wall between drone and player: in range, but blind fire
-        // from embedded/occluded positions is forbidden.
-        let mut ai = default_ai();
-        ai.update(20.0, true, 0.016); // → Chasing
-        ai.update(4.0, true, 0.016); // → Attacking, fires, cooldown starts
-        // Cooldown expires on this tick, but sight is blocked:
-        let should_fire = ai.update(4.0, false, 1.1);
-        assert!(
-            !should_fire,
-            "a drone must not fire without line of sight to the player"
-        );
+    fn tank_shield_absorbs_before_health() {
+        let mut config = config_with(Archetype::Tank);
+        config.health = Health::new(10.0);
+        config.shield = Some(Shield::new(5.0));
+        let mut ai = DroneAi::new(config);
+        let died = ai.take_damage(Damage::new(4.0));
+        assert!(!died);
+        assert_eq!(ai.shield, Some(Shield::new(1.0)));
+        assert_eq!(ai.health, Health::new(10.0)); // health untouched
     }
 
     #[test]
-    fn fires_immediately_when_sight_is_restored() {
-        // A blocked shot must not consume the cooldown.
-        let mut ai = default_ai();
-        ai.update(20.0, true, 0.016); // → Chasing
-        ai.update(4.0, true, 0.016); // → Attacking, fires, cooldown starts
-        ai.update(4.0, false, 1.1); // cooldown expires, sight blocked: held
-        let should_fire = ai.update(4.0, true, 0.016);
-        assert!(
-            should_fire,
-            "the withheld shot fires as soon as sight is restored"
-        );
+    fn tank_overflow_passes_to_health() {
+        let mut config = config_with(Archetype::Tank);
+        config.health = Health::new(10.0);
+        config.shield = Some(Shield::new(5.0));
+        let mut ai = DroneAi::new(config);
+        ai.take_damage(Damage::new(8.0)); // 5 to shield, 3 to health
+        assert_eq!(ai.shield, Some(Shield::new(0.0)));
+        assert_eq!(ai.health, Health::new(7.0));
     }
 
     #[test]
-    fn exact_boundary_attack_triggers_attack() {
-        let mut ai = default_ai();
+    fn tank_still_fires_like_a_shooter() {
+        let mut config = config_with(Archetype::Tank);
+        config.shield = Some(Shield::new(5.0));
+        let mut ai = DroneAi::new(config);
         ai.update(20.0, true, 0.016); // → Chasing
-        ai.update(5.0, true, 0.016);  // Exactly at attack_range
-        assert_eq!(ai.state, DroneState::Attacking);
+        let tick = ai.update(4.0, true, 0.016); // → Attacking
+        assert_eq!(tick.attack, Attack::Fire);
+    }
+
+    // --- Kiter: stand off, strafe, retreat ---
+
+    #[test]
+    fn kiter_strafes_inside_attack_range() {
+        let mut config = config_with(Archetype::Kiter);
+        config.standoff_range = 3.0;
+        let mut ai = DroneAi::new(config);
+        engage(&mut ai, 4.0); // inside attack (5) but beyond standoff (3)
+        let tick = ai.update(4.0, true, 0.016);
+        assert_eq!(tick.movement, Movement::Strafe { speed_mul: 0.7 });
+    }
+
+    #[test]
+    fn kiter_retreats_when_player_too_close() {
+        let mut config = config_with(Archetype::Kiter);
+        config.standoff_range = 3.0;
+        let mut ai = DroneAi::new(config);
+        engage(&mut ai, 2.0); // closer than standoff
+        let tick = ai.update(2.0, true, 0.016);
+        assert_eq!(tick.movement, Movement::Retreat { speed_mul: 1.0 });
+    }
+
+    #[test]
+    fn kiter_fires_while_kiting() {
+        let mut config = config_with(Archetype::Kiter);
+        config.standoff_range = 3.0;
+        let mut ai = DroneAi::new(config);
+        ai.update(20.0, true, 0.016); // → Chasing
+        let tick = ai.update(4.0, true, 0.016); // → Attacking
+        assert_eq!(tick.attack, Attack::Fire);
+    }
+
+    #[test]
+    fn kiter_chases_when_out_of_attack_range() {
+        let mut ai = DroneAi::new(config_with(Archetype::Kiter));
+        let tick = ai.update(20.0, true, 0.016);
+        assert_eq!(tick.movement, Movement::Chase { speed_mul: 1.0 });
+    }
+
+    // --- Kiter orbit geometry: strafe_velocity (owned by void-logic) ---
+
+    #[test]
+    fn strafe_tangent_scales_with_speed_and_mul() {
+        // At the standoff radius there is no radius error, so all motion is
+        // tangential: speed (10) * speed_mul (0.7).
+        let v = strafe_velocity(0.7, 5.0, 5.0, 10.0);
+        assert_eq!(v.tangent, 7.0);
+        assert_eq!(v.radial, 0.0);
+    }
+
+    #[test]
+    fn strafe_pulls_inward_when_beyond_standoff() {
+        // distance 8, standoff 5 → radius_error +3, within ±speed → +3 * 0.5.
+        // Positive radial is applied along the toward-player vector: close in.
+        let v = strafe_velocity(0.7, 8.0, 5.0, 10.0);
+        assert_eq!(v.radial, 1.5);
+    }
+
+    #[test]
+    fn strafe_pushes_outward_when_inside_standoff() {
+        // distance 3, standoff 5 → radius_error −2 → −1.0: back away from player.
+        let v = strafe_velocity(0.7, 3.0, 5.0, 10.0);
+        assert_eq!(v.radial, -1.0);
+    }
+
+    #[test]
+    fn strafe_radial_is_clamped_to_cruise_speed() {
+        // A far-off kiter shouldn't lunge: radius_error 100 clamps to speed (4),
+        // then halves → 2.0, never the full 50.
+        let v = strafe_velocity(1.0, 104.0, 4.0, 4.0);
+        assert_eq!(v.radial, 2.0);
+    }
+
+    // --- Swarmer: rams, no projectile ---
+
+    #[test]
+    fn swarmer_rams_in_attack_range() {
+        let mut ai = DroneAi::new(config_with(Archetype::Swarmer));
+        engage(&mut ai, 4.0);
+        let tick = ai.update(4.0, true, 0.016);
+        assert_eq!(tick.attack, Attack::Ram);
+        assert_eq!(tick.movement, Movement::Chase { speed_mul: 1.0 });
+    }
+
+    #[test]
+    fn swarmer_never_fires() {
+        let mut ai = DroneAi::new(config_with(Archetype::Swarmer));
+        engage(&mut ai, 4.0);
+        for _ in 0..10 {
+            let tick = ai.update(4.0, true, 0.2);
+            assert_ne!(tick.attack, Attack::Fire);
+        }
+    }
+
+    // --- Bomber: fuse then detonate ---
+
+    #[test]
+    fn bomber_burns_fuse_before_detonating() {
+        let mut config = config_with(Archetype::Bomber);
+        config.fuse_seconds = 1.0;
+        config.blast_radius = 6.0;
+        let mut ai = DroneAi::new(config);
+        engage(&mut ai, 4.0); // arms + enters Attacking
+        let mid = ai.update(4.0, true, 0.5); // fuse partway
+        assert_eq!(mid.attack, Attack::None);
+        assert!(!ai.is_dead());
+    }
+
+    #[test]
+    fn bomber_detonates_when_fuse_expires() {
+        let mut config = config_with(Archetype::Bomber);
+        config.fuse_seconds = 1.0;
+        config.blast_radius = 6.0;
+        let mut ai = DroneAi::new(config);
+        engage(&mut ai, 4.0);
+        ai.update(4.0, true, 0.6);
+        let boom = ai.update(4.0, true, 0.6); // fuse exhausted
+        assert_eq!(boom.attack, Attack::Detonate { radius: 6.0 });
+        assert!(ai.is_dead());
+    }
+
+    #[test]
+    fn bomber_resets_fuse_if_player_escapes() {
+        let mut config = config_with(Archetype::Bomber);
+        config.fuse_seconds = 1.0;
+        let mut ai = DroneAi::new(config);
+        engage(&mut ai, 4.0);
+        ai.update(4.0, true, 0.9); // almost detonates
+        ai.update(10.0, true, 0.016); // player escapes → Chasing, fuse re-armed
+        let tick = ai.update(4.0, true, 0.5); // back in range, fuse full again
+        assert_eq!(tick.attack, Attack::None);
+        assert!(!ai.is_dead());
     }
 }

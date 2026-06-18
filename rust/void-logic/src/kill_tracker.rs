@@ -25,8 +25,8 @@ impl KillTracker {
         self.kills.values().sum()
     }
 
-    /// Total credits earned (1,000 per kill).
-    pub fn total_credits(&self) -> u32 {
+    /// Total component reward earned (1,000 per kill).
+    pub fn total_reward(&self) -> u32 {
         self.total_kills() * 1_000
     }
 
@@ -60,7 +60,7 @@ mod tests {
     fn starts_empty() {
         let tracker = KillTracker::new();
         assert_eq!(tracker.total_kills(), 0);
-        assert_eq!(tracker.total_credits(), 0);
+        assert_eq!(tracker.total_reward(), 0);
         assert!(tracker.summary().is_empty());
     }
 
@@ -69,10 +69,10 @@ mod tests {
         let mut tracker = KillTracker::new();
         tracker.record_kill(EnemyType::GunDrone);
         tracker.record_kill(EnemyType::GunDrone);
-        tracker.record_kill(EnemyType::Dragon);
+        tracker.record_kill(EnemyType::QuadShell);
         assert_eq!(tracker.count(EnemyType::GunDrone), 2);
-        assert_eq!(tracker.count(EnemyType::Dragon), 1);
-        assert_eq!(tracker.count(EnemyType::Slime), 0);
+        assert_eq!(tracker.count(EnemyType::QuadShell), 1);
+        assert_eq!(tracker.count(EnemyType::QuadOrb), 0);
     }
 
     #[test]
@@ -80,38 +80,38 @@ mod tests {
         let mut tracker = KillTracker::new();
         tracker.record_kill(EnemyType::GunDrone);
         tracker.record_kill(EnemyType::GunDrone);
-        tracker.record_kill(EnemyType::Bat);
+        tracker.record_kill(EnemyType::QuadOrb);
         assert_eq!(tracker.total_kills(), 3);
     }
 
     #[test]
-    fn total_credits_1000_per_kill() {
+    fn total_reward_1000_per_kill() {
         let mut tracker = KillTracker::new();
-        tracker.record_kill(EnemyType::Slime);
-        tracker.record_kill(EnemyType::Dragon);
-        assert_eq!(tracker.total_credits(), 2_000);
+        tracker.record_kill(EnemyType::GunDrone);
+        tracker.record_kill(EnemyType::QuadShell);
+        assert_eq!(tracker.total_reward(), 2_000);
     }
 
     #[test]
     fn summary_skips_zeros() {
         let mut tracker = KillTracker::new();
-        tracker.record_kill(EnemyType::Dragon);
-        tracker.record_kill(EnemyType::Dragon);
+        tracker.record_kill(EnemyType::QuadShell);
+        tracker.record_kill(EnemyType::QuadShell);
         let summary = tracker.summary();
         assert_eq!(summary.len(), 1);
-        assert_eq!(summary[0], (EnemyType::Dragon, 2));
+        assert_eq!(summary[0], (EnemyType::QuadShell, 2));
     }
 
     #[test]
     fn summary_ordered_by_enemy_type() {
         let mut tracker = KillTracker::new();
-        tracker.record_kill(EnemyType::Dragon);
-        tracker.record_kill(EnemyType::Slime);
+        tracker.record_kill(EnemyType::QuadShell);
         tracker.record_kill(EnemyType::GunDrone);
+        tracker.record_kill(EnemyType::Bomber);
         let summary = tracker.summary();
-        assert_eq!(summary[0].0, EnemyType::Slime);
-        assert_eq!(summary[1].0, EnemyType::GunDrone);
-        assert_eq!(summary[2].0, EnemyType::Dragon);
+        assert_eq!(summary[0].0, EnemyType::GunDrone);
+        assert_eq!(summary[1].0, EnemyType::Bomber);
+        assert_eq!(summary[2].0, EnemyType::QuadShell);
     }
 
     #[test]

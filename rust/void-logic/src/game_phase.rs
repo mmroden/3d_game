@@ -8,6 +8,11 @@ pub enum GamePhase {
     LevelComplete,
     KillSummary,
     Shop,
+    /// Between-level (and new-game) screen to pick the ship color/loadout.
+    ShipSelect,
+    /// Pre-level briefing: the bestiary of pickups and enemies seen so far,
+    /// shown in the loadout room while the next level is readied.
+    Bestiary,
     Death,
 }
 
@@ -22,9 +27,18 @@ impl GamePhase {
             "LevelComplete" => Some(Self::LevelComplete),
             "KillSummary" => Some(Self::KillSummary),
             "Shop" => Some(Self::Shop),
+            "ShipSelect" => Some(Self::ShipSelect),
+            "Bestiary" => Some(Self::Bestiary),
             "Death" => Some(Self::Death),
             _ => None,
         }
+    }
+
+    /// Whether the player may pilot the ship in this phase. Only true while
+    /// actually flying — the menus and the loadout/briefing screens must not let
+    /// the stick move the camera around.
+    pub fn allows_piloting(&self) -> bool {
+        matches!(self, GamePhase::Playing)
     }
 
     /// Returns whether transitioning from self to `next` is valid.
@@ -40,6 +54,12 @@ impl GamePhase {
                 | (GamePhase::LevelComplete, GamePhase::KillSummary)
                 | (GamePhase::KillSummary, GamePhase::Shop)
                 | (GamePhase::Shop, GamePhase::Playing)
+                // Loadout / ship-color screen, reached on new game and between levels.
+                | (GamePhase::MainMenu, GamePhase::ShipSelect)
+                | (GamePhase::Shop, GamePhase::ShipSelect)
+                // Ship-select → bestiary briefing → into the level.
+                | (GamePhase::ShipSelect, GamePhase::Bestiary)
+                | (GamePhase::Bestiary, GamePhase::Playing)
                 | (GamePhase::Death, GamePhase::MainMenu)
         )
     }
@@ -80,6 +100,27 @@ mod tests {
     }
 
     #[test]
+    fn ship_select_flow() {
+        assert!(GamePhase::MainMenu.can_transition_to(GamePhase::ShipSelect));
+        assert!(GamePhase::Shop.can_transition_to(GamePhase::ShipSelect));
+        // Ship-select hands off to the bestiary briefing, not straight to play.
+        assert!(!GamePhase::ShipSelect.can_transition_to(GamePhase::Playing));
+        // Not a free-for-all.
+        assert!(!GamePhase::ShipSelect.can_transition_to(GamePhase::Shop));
+        assert!(!GamePhase::Playing.can_transition_to(GamePhase::ShipSelect));
+    }
+
+    #[test]
+    fn bestiary_briefing_sits_between_ship_select_and_play() {
+        assert!(GamePhase::ShipSelect.can_transition_to(GamePhase::Bestiary));
+        assert!(GamePhase::Bestiary.can_transition_to(GamePhase::Playing));
+        // The briefing is a one-way gate into the level, nothing else.
+        assert!(!GamePhase::Bestiary.can_transition_to(GamePhase::Shop));
+        assert!(!GamePhase::Bestiary.can_transition_to(GamePhase::ShipSelect));
+        assert!(!GamePhase::Playing.can_transition_to(GamePhase::Bestiary));
+    }
+
+    #[test]
     fn death_to_main_menu() {
         assert!(GamePhase::Death.can_transition_to(GamePhase::MainMenu));
     }
@@ -117,7 +158,8 @@ mod tests {
         let all = [
             GamePhase::MainMenu, GamePhase::Playing, GamePhase::Paused,
             GamePhase::LevelComplete, GamePhase::KillSummary,
-            GamePhase::Shop, GamePhase::Death,
+            GamePhase::Shop, GamePhase::ShipSelect, GamePhase::Bestiary,
+            GamePhase::Death,
         ];
         for phase in all {
             let name = format!("{phase:?}");
@@ -133,6 +175,18 @@ mod tests {
     fn from_name_returns_none_for_garbage() {
         assert_eq!(GamePhase::from_name("Bogus"), None);
         assert_eq!(GamePhase::from_name(""), None);
+    }
+
+    #[test]
+    fn only_playing_allows_piloting() {
+        assert!(GamePhase::Playing.allows_piloting(), "flying is the one piloting phase");
+        for phase in [
+            GamePhase::MainMenu, GamePhase::Paused, GamePhase::LevelComplete,
+            GamePhase::KillSummary, GamePhase::Shop, GamePhase::ShipSelect,
+            GamePhase::Bestiary, GamePhase::Death,
+        ] {
+            assert!(!phase.allows_piloting(), "{phase:?} must not pilot the ship");
+        }
     }
 
     #[test]

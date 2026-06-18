@@ -5,6 +5,8 @@ use godot::classes::{
 };
 
 use super::constants::{methods, nodes, scenes, signals};
+use super::godot_util;
+use super::live_handle::{LiveRef, LiveVec, LiveOpt};
 use super::enemy_drone::EnemyDrone;
 use super::ship_controller::ShipController;
 use super::telemetry::Telemetry;
@@ -15,6 +17,7 @@ use rand::seq::IndexedRandom;
 
 use void_logic::generator::{generate, GeneratorConfig};
 use void_logic::level_assembly::{self, RoomBounds};
+use void_logic::level_graph::{LevelGraph, RENDER_ROOM_DEPTH};
 use void_logic::room_furnisher::LightState;
 use void_logic::room_assembler::Collision;
 use void_logic::portal as portal_sys;
@@ -50,18 +53,22 @@ pub struct LevelManager {
     /// One container node per room (index = room-list order). Toggling
     /// a container's visibility culls that whole room — geometry and
     /// its lights — in one move.
-    room_nodes: Vec<Gd<Node3D>>,
-    /// Per-room world bounds + adjacency, parallel to `room_nodes`,
-    /// for deciding which rooms to draw.
+    room_nodes: LiveVec<Node3D>,
+    /// Per-room world bounds, parallel to `room_nodes`, for resolving
+    /// which room a world point is in.
     room_bounds: Vec<RoomBounds>,
+    /// The level's topology graph, retained for the level's lifetime — the
+    /// authority for cull visibility (and, later, mapping and route
+    /// queries). Empty until the first `generate_level`.
+    level_graph: LevelGraph,
     /// The room the player currently occupies; culling only recomputes
     /// when this changes.
     current_room: Option<usize>,
     /// Cached player node, for reading position each tick.
-    player: Option<Gd<Node3D>>,
+    player: Option<LiveRef<Node3D>>,
     /// Blinking light fixtures and their full ("on") energy, modulated
     /// each frame so a flickering abandoned base reads as alive.
-    blinking_lights: Vec<(Gd<OmniLight3D>, f32)>,
+    blinking_lights: LiveVec<OmniLight3D, f32>,
     /// Accumulated time driving the blink phase.
     blink_time: f32,
 }
@@ -77,11 +84,12 @@ impl INode3D for LevelManager {
             grid_cell_size: 4.0,
             current_level: 1_i32,
             telemetry: Telemetry::new(),
-            room_nodes: Vec::new(),
+            room_nodes: LiveVec::new(),
             room_bounds: Vec::new(),
+            level_graph: LevelGraph::default(),
             current_room: None,
             player: None,
-            blinking_lights: Vec::new(),
+            blinking_lights: LiveVec::new(),
             blink_time: 0.0,
         }
     }
@@ -105,7 +113,7 @@ impl INode3D for LevelManager {
         // player's current location (cheap point-in-AABB; only re-toggles
         // visibility when the player changes rooms) — and times that work.
         let started = std::time::Instant::now();
-        let player_pos = self.player.as_ref().map(|p| arr(p.get_global_position()));
+        let player_pos = self.player.with(|p| arr(p.get_global_position()));
         if let Some(pos) = player_pos {
             self.update_room_culling(pos);
         }
@@ -153,8 +161,10 @@ impl LevelManager {
         self.apply_measured_viewports(viewports);
     }
 
-    /// Test seam: world-space center of room `i` (midpoint of its
-    /// bounds), for driving culling from a known interior point.
+    /// World-space center of room `i` (midpoint of its bounds). Drives room
+    /// culling from a known interior point. Returns `ZERO` for an out-of-range
+    /// index. NOTE: the Y is the vertical *midpoint*, not the floor — use
+    /// [`room_floor_center`](Self::room_floor_center) to place a camera.
     #[func]
     pub fn room_center(&self, room: i64) -> Vector3 {
         match self.room_bounds.get(room as usize) {
@@ -167,10 +177,50 @@ impl LevelManager {
         }
     }
 
+    /// Horizontally-centered point at eye height above room `i`'s floor — where
+    /// to park the camera for the loadout/briefing backdrop. Uses the floor
+    /// (`min_y`), not the vertical midpoint, so the camera sits inside the room
+    /// rather than up at the ceiling. `ZERO` for an out-of-range index.
+    #[func]
+    pub fn room_floor_center(&self, room: i64) -> Vector3 {
+        match self.room_bounds.get(room as usize) {
+            Some(b) => Vector3::new(
+                (b.min[0] + b.max[0]) * 0.5,
+                b.min[1] + 1.5,
+                (b.min[2] + b.max[2]) * 0.5,
+            ),
+            None => Vector3::ZERO,
+        }
+    }
+
     /// Test seam: run room culling as if the player were at `point`.
     #[func]
     pub fn cull_for_position(&mut self, point: Vector3) {
         self.update_room_culling(arr(point));
+    }
+
+    /// Test seam: how many blinking light fixtures the host is tracking. Lets a
+    /// test confirm there are handles to strand before exercising the per-frame
+    /// flicker against freed lights.
+    #[func]
+    pub fn blinking_light_count(&self) -> i64 {
+        self.blinking_lights.live_count() as i64
+    }
+
+    /// Build a single room for use as a menu/loadout backdrop: run the real
+    /// generator for one room, then strip everything that isn't room geometry
+    /// (enemies, loot, portal) so only the quiet room remains. The generation
+    /// pipeline itself is untouched — this only prunes its output.
+    #[func]
+    pub fn generate_backdrop(&mut self, seed: i64) {
+        self.generate_level(seed, 1);
+        let children: Vec<Gd<Node>> = self.base().get_children().iter_shared().collect();
+        for mut child in children {
+            // Room containers are named "Room{n}"; everything else is populace.
+            if !child.get_name().to_string().starts_with("Room") {
+                child.queue_free();
+            }
+        }
     }
 
     #[func]
@@ -198,9 +248,8 @@ impl LevelManager {
         let rooms = level_assembly::spawn_list_full(&graph, self.grid_cell_size, seed);
 
         // Drop any room nodes from a previous level before rebuilding.
-        for mut node in std::mem::take(&mut self.room_nodes) {
-            node.queue_free();
-        }
+        self.room_nodes.for_each_live(|_, node, _| node.queue_free());
+        self.room_nodes.clear();
         self.room_bounds.clear();
         self.current_room = None;
         // Blinking lights are children of the freed room nodes.
@@ -263,7 +312,7 @@ impl LevelManager {
                         // mesh-derived collider — Jolt allows concave trimesh
                         // only on static bodies.
                         let node_xform = node.get_transform();
-                        Self::build_dynamic_collision(&mut body, &node, node_xform);
+                        godot_util::add_convex_collision(&mut body, &node, node_xform);
                         room_node.add_child(&body);
                         // Placed, not flown here: clear interpolation so it
                         // doesn't streak from the origin on the first frame.
@@ -317,13 +366,13 @@ impl LevelManager {
                 light.set_color(Color::from_rgb(ls.color[0], ls.color[1], ls.color[2]));
                 room_node.add_child(&light);
                 if ls.state == LightState::Blinking {
-                    self.blinking_lights.push((light.clone(), energy));
+                    self.blinking_lights.push(&light, energy);
                 }
                 light_count += 1;
             }
 
             self.room_bounds.push(room.bounds.clone());
-            self.room_nodes.push(room_node);
+            self.room_nodes.push(&room_node, ());
         }
 
         let enemy_positions: Vec<[f32; 3]> = rooms
@@ -343,6 +392,17 @@ impl LevelManager {
                 || self.spawn_enemy(&mut loader, scenes::ENEMY_DRONE_FALLBACK, *pos);
             if spawned {
                 enemy_count += 1;
+            }
+        }
+
+        // Scatter organics barrels (permanent currency) through the level.
+        if !enemy_positions.is_empty() {
+            let barrel_count = (enemy_positions.len() / 4).clamp(1, 6);
+            let mut barrel_rng = SmallRng::seed_from_u64(seed.value() ^ 0xBA22E1);
+            for _ in 0..barrel_count {
+                if let Some(pos) = enemy_positions.choose(&mut barrel_rng).copied() {
+                    self.spawn_organic_barrel(&mut loader, pos);
+                }
             }
         }
 
@@ -371,11 +431,16 @@ impl LevelManager {
                     let mut player_node = player.clone();
                     player_node.set_position(vec3(spawn));
                     player_node.reset_physics_interpolation();
-                    self.player = Some(player_node.upcast::<Node3D>());
+                    self.player = Some(LiveRef::new(&player_node.upcast::<Node3D>()));
                     godot_print!("Player spawned at ({}, {}, {})", spawn[0], spawn[1], spawn[2]);
                 }
             }
         }
+
+        // Retain the graph for the level's lifetime: it's the authority for
+        // cull visibility, and later for mapping and route queries. Moved in
+        // last, after every generation step that borrowed it.
+        self.level_graph = graph;
 
         godot_print!(
             "Level generated: {} rooms, {} meshes, {} lights, {} enemies",
@@ -453,25 +518,6 @@ impl LevelManager {
     /// `node`, each placed at the mesh's transform relative to the body so the
     /// hull hugs the rendered geometry. Convex (not trimesh) because Jolt
     /// allows concave shapes only on static bodies — one source: the mesh.
-    fn build_dynamic_collision(body: &mut Gd<RigidBody3D>, node: &Gd<Node3D>, xform: Transform3D) {
-        if let Ok(mesh_inst) = node.clone().try_cast::<MeshInstance3D>() {
-            if let Some(mesh) = mesh_inst.get_mesh() {
-                if let Some(shape) = mesh.create_convex_shape() {
-                    let mut col = CollisionShape3D::new_alloc();
-                    col.set_shape(&shape);
-                    col.set_transform(xform);
-                    body.add_child(&col);
-                }
-            }
-        }
-        for child in node.get_children().iter_shared() {
-            if let Ok(child3d) = child.try_cast::<Node3D>() {
-                let child_xform = xform * child3d.get_transform();
-                Self::build_dynamic_collision(body, &child3d, child_xform);
-            }
-        }
-    }
-
     /// Subscribe to ViewManager's active-viewport publication (so
     /// render measurement follows mode changes) and seed the current
     /// set immediately — ViewManager is the sole authority on which
@@ -508,10 +554,23 @@ impl LevelManager {
             return;
         }
         self.current_room = Some(current);
-        let visible = level_assembly::visible_rooms(current, &self.room_bounds);
-        for (i, node) in self.room_nodes.iter().enumerate() {
-            node.clone().set_visible(visible.contains(&i));
-        }
+        // The current room-list index maps to the graph node at that
+        // placement position; visibility is the graph's to decide.
+        let Some(current_node) = self.level_graph.room_indices().nth(current) else {
+            return;
+        };
+        let visible: std::collections::HashSet<usize> = self
+            .level_graph
+            .visible_from(current_node, RENDER_ROOM_DEPTH)
+            .into_iter()
+            .map(|n| n.index())
+            .collect();
+        // `for_each_live` skips any room freed out from under us and keeps the
+        // index aligned with room_bounds — a freed handle is structurally
+        // unreachable, so this can't use-after-free.
+        self.room_nodes.for_each_live(|i, node, _| {
+            node.set_visible(visible.contains(&i));
+        });
     }
 
     /// Flicker blinking fixtures: each toggles between its full energy
@@ -520,13 +579,15 @@ impl LevelManager {
     fn update_blinking_lights(&mut self, delta: f32) {
         self.blink_time += delta;
         let t = self.blink_time;
-        for (i, (light, base)) in self.blinking_lights.iter().enumerate() {
+        // `for_each_live` resolves each light by id and skips freed ones, so a
+        // fixture freed out from under us (a regen, or GameManager clearing our
+        // children) is a no-op rather than the use-after-free that panicked here
+        // every frame.
+        self.blinking_lights.for_each_live(|i, light, base| {
             let phase = i as f32 * 0.7;
             let lit = (t * 1.7 + phase).sin() > -0.55;
-            light
-                .clone()
-                .set_param(godot::classes::light_3d::Param::ENERGY, if lit { *base } else { 0.0 });
-        }
+            light.set_param(godot::classes::light_3d::Param::ENERGY, if lit { *base } else { 0.0 });
+        });
     }
 
     /// Instantiate an enemy scene and position it. It self-drives as a
@@ -547,9 +608,28 @@ impl LevelManager {
         let Ok(mut enemy) = instance.try_cast::<EnemyDrone>() else {
             return false;
         };
+        // Set the level before entering the tree so ready() scales the enemy.
+        enemy.bind_mut().set_spawn_level(self.current_level);
         enemy.set_position(vec3(pos));
         self.base_mut().add_child(&enemy);
         enemy.reset_physics_interpolation();
+        true
+    }
+
+    /// Instantiate an organics barrel at `pos` as a LevelManager child so the
+    /// GameManager's spawned-entity scan connects its `organics_collected` signal.
+    fn spawn_organic_barrel(&mut self, loader: &mut Gd<ResourceLoader>, pos: [f32; 3]) -> bool {
+        let Some(scene_res) = loader.load(scenes::ORGANIC_BARREL) else {
+            return false;
+        };
+        let packed: Gd<PackedScene> = scene_res.cast();
+        let Some(instance) = packed.instantiate() else {
+            return false;
+        };
+        let mut node: Gd<Node3D> = instance.cast();
+        node.set_position(vec3(pos));
+        self.base_mut().add_child(&node);
+        node.reset_physics_interpolation();
         true
     }
 }

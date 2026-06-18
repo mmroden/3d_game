@@ -14,7 +14,7 @@ sky_material = SubResource("sky_mat")
 [sub_resource type="Environment" id="env"]
 background_mode = 2
 sky = SubResource("sky")
-ambient_light_source = 1
+ambient_light_source = 2
 ambient_light_color = Color(0.15, 0.15, 0.2, 1)
 ambient_light_energy = 0.6
 fog_enabled = true
@@ -58,7 +58,7 @@ shadow_enabled = false
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("env")
 
-[node name="ShipShowcase" type="ShipShowcase" parent="."]
+[node name="Turntable" type="Turntable" parent="."]
 
 [node name="MainMenuUI" type="MainMenuUI" parent="."]
 
@@ -67,6 +67,10 @@ environment = SubResource("env")
 [node name="KillSummaryUI" type="KillSummaryUI" parent="."]
 
 [node name="ShopUI" type="ShopUI" parent="."]
+
+[node name="ShipSelectUI" type="ShipSelectUI" parent="."]
+
+[node name="BestiaryUI" type="BestiaryUI" parent="."]
 
 [node name="DeathScreenUI" type="DeathScreenUI" parent="."]
 

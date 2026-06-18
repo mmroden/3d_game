@@ -1,15 +1,17 @@
 pub mod constants;
 pub mod godot_util;
+pub mod live_handle;
 pub mod audio_manager;
 mod ship_controller;
 mod telemetry;
 mod enemy_drone;
 mod enemy_bolt;
 mod lootbox;
+mod organic_barrel;
 mod level_manager;
 mod persistence;
 pub(crate) mod views;
 mod portal;
 mod game_manager;
-mod ship_showcase;
+mod turntable;
 pub mod ui;

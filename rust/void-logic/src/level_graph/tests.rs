@@ -588,3 +588,92 @@ fn farthest_room_from_linear_chain() {
     let farthest = graph.farthest_room_from(r0);
     assert_eq!(farthest, Some(r3), "farthest room from r0 should be r3");
 }
+
+
+// --- Cull visibility (visible_from) ---
+
+/// r0 —c0— r1 —c1— r2 —c2— r3, alternating room/corridor. Node indices
+/// follow placement order: r0=0 c0=1 r1=2 c1=3 r2=4 c2=5 r3=6.
+fn linear_chain() -> (LevelGraph, [NodeIndex; 7]) {
+    let mut graph = LevelGraph::new();
+    let r0 = graph.place_room(room_1x1_east_west(), [0, 0, 0]).unwrap();
+    let c0 = graph.place_room(corridor_1x1_east_west(), [1, 0, 0]).unwrap();
+    graph.connect_adjacent(r0, c0).unwrap();
+    let r1 = graph.place_room(room_1x1_east_west(), [2, 0, 0]).unwrap();
+    graph.connect_adjacent(c0, r1).unwrap();
+    let c1 = graph.place_room(corridor_1x1_east_west(), [3, 0, 0]).unwrap();
+    graph.connect_adjacent(r1, c1).unwrap();
+    let r2 = graph.place_room(room_1x1_east_west(), [4, 0, 0]).unwrap();
+    graph.connect_adjacent(c1, r2).unwrap();
+    let c2 = graph.place_room(corridor_1x1_east_west(), [5, 0, 0]).unwrap();
+    graph.connect_adjacent(r2, c2).unwrap();
+    let r3 = graph.place_room(room_1x1_east_west(), [6, 0, 0]).unwrap();
+    graph.connect_adjacent(c2, r3).unwrap();
+    (graph, [r0, c0, r1, c1, r2, c2, r3])
+}
+
+fn visible_indices(graph: &LevelGraph, start: NodeIndex, budget: usize) -> Vec<usize> {
+    let mut v: Vec<usize> = graph
+        .visible_from(start, budget)
+        .into_iter()
+        .map(|n| n.index())
+        .collect();
+    v.sort_unstable();
+    v
+}
+
+#[test]
+fn visible_from_reaches_two_rooms_deep_through_corridors() {
+    let (graph, n) = linear_chain();
+    // From r0 at the shipped depth (2), sight passes through r1 and on to
+    // r2 but stops before r3: r0, c0, r1, c1, r2 plus the corridor c2
+    // leaving r2 (cost 2) are lit; r3 (cost 3) stays dark.
+    assert_eq!(
+        visible_indices(&graph, n[0], 2),
+        vec![0, 1, 2, 3, 4, 5],
+        "two rooms deep: current + r1 + r2 and their corridors"
+    );
+}
+
+#[test]
+fn visible_from_lights_one_more_room_per_budget_unit() {
+    let (graph, n) = linear_chain();
+    assert_eq!(
+        visible_indices(&graph, n[0], 1),
+        vec![0, 1, 2, 3],
+        "budget 1: current room + the room one corridor away"
+    );
+    assert_eq!(
+        visible_indices(&graph, n[0], 2),
+        vec![0, 1, 2, 3, 4, 5],
+        "budget 2: one room further"
+    );
+    assert_eq!(
+        visible_indices(&graph, n[0], 3),
+        vec![0, 1, 2, 3, 4, 5, 6],
+        "budget 3: reaches r3 at the end of the chain"
+    );
+}
+
+#[test]
+fn visible_from_never_crosses_a_teleporter() {
+    let mut graph = LevelGraph::new();
+    let r0 = graph.place_room(room_1x1_east_west(), [0, 0, 0]).unwrap();
+    let c0 = graph.place_room(corridor_1x1_east_west(), [1, 0, 0]).unwrap();
+    graph.connect_adjacent(r0, c0).unwrap();
+    let r1 = graph.place_room(room_1x1_east_west(), [2, 0, 0]).unwrap();
+    graph.connect_adjacent(c0, r1).unwrap();
+    // A teleporter to a room far across the map (not spatially adjacent).
+    let far = graph.place_room(room_1x1_east_west(), [20, 0, 0]).unwrap();
+    graph.connect_teleporter(r0, far).unwrap();
+
+    let visible = visible_indices(&graph, r0, 9);
+    assert!(
+        !visible.contains(&far.index()),
+        "the room on the far side of a teleporter is not in view"
+    );
+    assert!(
+        visible.contains(&r1.index()),
+        "rooms reachable by flying through corridors stay in view"
+    );
+}

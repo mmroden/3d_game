@@ -46,7 +46,7 @@ impl KillSummaryUI {
 
     /// Populate and show the summary screen.
     #[func]
-    pub fn show_summary(&mut self, kill_data: Dictionary<GString, i32>, total_credits: i64, level: i32) {
+    pub fn show_summary(&mut self, kill_data: Dictionary<GString, i32>, total_components: i64, level: i32) {
         for mut child in self.base().get_children().iter_shared() {
             child.queue_free();
         }
@@ -90,12 +90,12 @@ impl KillSummaryUI {
         spacer2.set_custom_minimum_size(Vector2::new(0.0, 20.0));
         vbox.add_child(&spacer2);
 
-        // Credits
-        let mut credits_label = Label::new_alloc();
-        credits_label.set_text(&format!("TOTAL CREDITS: {}", total_credits));
-        credits_label.add_theme_font_size_override(theme::FONT_SIZE, 32);
-        credits_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_CREDITS));
-        vbox.add_child(&credits_label);
+        // Components earned
+        let mut components_label = Label::new_alloc();
+        components_label.set_text(&format!("TOTAL COMPONENTS: {}", total_components));
+        components_label.add_theme_font_size_override(theme::FONT_SIZE, 32);
+        components_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_COMPONENTS));
+        vbox.add_child(&components_label);
 
         // Spacer
         let mut spacer3 = Control::new_alloc();

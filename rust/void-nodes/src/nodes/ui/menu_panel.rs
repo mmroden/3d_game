@@ -46,6 +46,16 @@ pub fn create_menu_panel() -> (Gd<PanelContainer>, Gd<VBoxContainer>) {
     (panel, vbox)
 }
 
+/// Re-seat a panel low on the screen (bottom-centered) so the 3D "action"
+/// behind it — the showcase ship, the bestiary turntable — stays visible in the
+/// upper-middle instead of being covered by a centered panel. The one place this
+/// framing lives; every screen that shows action behind the menu calls it.
+pub fn seat_panel_low(panel: &mut Gd<PanelContainer>) {
+    panel.set_anchors_preset(LayoutPreset::CENTER_BOTTOM);
+    panel.set_v_grow_direction(godot::classes::control::GrowDirection::BEGIN);
+    panel.set_offset(godot::builtin::Side::BOTTOM, -50.0);
+}
+
 /// Creates a semi-transparent dark overlay behind a menu panel.
 /// Used for screens that show the ship showcase in the background.
 pub fn create_showcase_overlay() -> Gd<godot::classes::ColorRect> {

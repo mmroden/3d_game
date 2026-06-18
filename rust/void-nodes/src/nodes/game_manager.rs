@@ -18,7 +18,8 @@ const SAVE_SECTION: &str = "run";
 use rand::RngExt;
 
 use super::constants::{actions, signals, methods, nodes, properties};
-use void_logic::enemy_type::EnemyType;
+use void_logic::bestiary::{self, BestiaryKind};
+use void_logic::enemy_type::{self, EnemyType};
 use void_logic::game_options::GameOptions;
 use void_logic::game_phase::GamePhase;
 use void_logic::generator::rooms_for_level;
@@ -28,6 +29,7 @@ use void_logic::power_routing::PowerMode;
 use void_logic::run_state::RunState;
 use void_logic::save_game::SaveGame;
 use void_logic::seed::Seed;
+use void_logic::ship::ShipColor;
 use void_logic::upgrade::{Upgrade, UpgradeKind};
 
 /// Central orchestrator: owns RunState, manages game phase transitions,
@@ -42,6 +44,8 @@ pub struct GameManager {
     save_game: Option<SaveGame>,
     active_input: InputMethod,
     current_power_mode: i32,
+    /// Which bestiary entry the pre-level briefing is currently showing.
+    bestiary_index: usize,
 
     /// Pins the run seed for reproducible runs when nonzero (0 = random).
     /// Configuration, not build flavor: set it in the editor or a test
@@ -64,6 +68,7 @@ impl INode for GameManager {
             save_game: None,
             active_input: InputMethod::Keyboard,
             current_power_mode: 0,
+            bestiary_index: 0,
             fixed_seed: 0,
         }
     }
@@ -93,7 +98,12 @@ impl INode for GameManager {
         // authoritative GameOptions. Deferred so it fires after all
         // sibling nodes have run ready() and connected their listeners.
         self.base_mut().call_deferred(methods::BROADCAST_OPTIONS, &[]);
-        self.show_phase(GamePhase::MainMenu);
+        // Apply the opening screen deferred, NOT inline: sibling nodes (the
+        // showcase, player, UI) run their own ready() after ours, and a node
+        // that defaults itself hidden in ready() would clobber an inline
+        // show_phase — that was the black-menu regression. Deferred runs once
+        // every sibling is ready, so GameManager's visibility wins.
+        self.base_mut().call_deferred(methods::ENTER_INITIAL_PHASE, &[]);
     }
 
     fn input(&mut self, event: Gd<InputEvent>) {
@@ -142,6 +152,14 @@ impl GameManager {
     #[signal]
     fn options_changed(sbs_enabled: bool, msaa_enabled: bool);
 
+    /// Deferred from `ready()`: show the opening screen once every sibling node
+    /// has finished its own `ready()`. See the call site for why it can't be
+    /// inline.
+    #[func]
+    fn enter_initial_phase(&mut self) {
+        self.show_phase(self.phase);
+    }
+
     /// Called from UI: start a fresh new game.
     #[func]
     pub fn start_new_game(&mut self) {
@@ -150,14 +168,15 @@ impl GameManager {
             self.set_scene_paused(false);
             self.transition_to(GamePhase::MainMenu);
         }
-        // Don't touch the run unless the phase machine can enter Playing.
-        if !self.phase.can_transition_to(GamePhase::Playing) {
+        // New game starts at the loadout (ship-color) screen.
+        if !self.phase.can_transition_to(GamePhase::ShipSelect) {
             return;
         }
         self.run_state = RunState::new(self.fresh_run_seed());
         self.save_game = None;
         self.sync_player_state();
-        self.transition_to(GamePhase::Playing);
+        self.transition_to(GamePhase::ShipSelect);
+        self.show_ship_select_ui();
     }
 
     /// Called from UI: continue from saved game.
@@ -184,9 +203,9 @@ impl GameManager {
         if let Some(enemy_type) = EnemyType::from_id(type_id) {
             self.run_state.record_kill(enemy_type);
             godot_print!(
-                "Kill: {} | Credits: {}",
+                "Kill: {} | Components: {}",
                 enemy_type.display_name(),
-                self.run_state.credits.balance,
+                self.run_state.components.balance,
             );
         }
     }
@@ -205,7 +224,7 @@ impl GameManager {
                 let kill_data = self.get_kill_summary();
                 summary.call(methods::SHOW_SUMMARY, &[
                     Variant::from(kill_data),
-                    Variant::from(self.run_state.credits.balance as i64),
+                    Variant::from(self.run_state.components.balance as i64),
                     Variant::from(self.run_state.current_level as i32),
                 ]);
             }
@@ -236,7 +255,7 @@ impl GameManager {
             Some(c) => c,
             None => return false,
         };
-        if self.run_state.credits.spend(cost).is_ok() {
+        if self.run_state.components.spend(cost).is_ok() {
             self.run_state.laser_level = next;
             godot_print!(
                 "Laser upgraded to {} (damage: {})",
@@ -252,7 +271,7 @@ impl GameManager {
         }
     }
 
-    /// Called from shop UI: proceed to next level.
+    /// Called from shop UI: proceed to the loadout screen, then the next level.
     #[func]
     pub fn advance_to_next_level(&mut self) {
         if self.phase == GamePhase::Shop {
@@ -260,7 +279,108 @@ impl GameManager {
             self.run_state.kills.reset();
             self.run_state.health = self.run_state.loadout.max_health();
             self.run_state.shield.reset();
+            self.transition_to(GamePhase::ShipSelect);
+            self.show_ship_select_ui();
+        }
+    }
+
+    /// Called from the ship-select UI: a color was chosen — apply it live.
+    #[func]
+    pub fn on_ship_color_selected(&mut self, color_id: i32) {
+        let Some(color) = ShipColor::from_id(color_id) else { return };
+        self.run_state.set_ship_color(color);
+        self.sync_player_state();
+        self.update_hud();
+        // Re-skin the showcase ship behind the loadout screen to the new style.
+        if let Some(parent) = self.base().get_parent() {
+            if let Some(mut turntable) = parent.try_get_node_as::<Node>(nodes::TURNTABLE) {
+                turntable.call(methods::SHOW_SHIP, &[Variant::from(color_id)]);
+            }
+        }
+    }
+
+    /// Called from the ship-select UI's Continue: into the pre-level briefing.
+    #[func]
+    pub fn advance_from_ship_select(&mut self) {
+        if self.phase == GamePhase::ShipSelect {
+            self.sync_player_state();
+            self.transition_to(GamePhase::Bestiary);
+        }
+    }
+
+    /// Called from the bestiary UI's Select/Fire: begin the mission. Browsing is
+    /// separate (see `on_bestiary_paged`), so this always drops into the level.
+    #[func]
+    pub fn advance_from_bestiary(&mut self) {
+        if self.phase == GamePhase::Bestiary {
             self.transition_to(GamePhase::Playing);
+        }
+    }
+
+    /// Called from the bestiary UI's left stick: browse the catalog by `delta`
+    /// (-1 prev, +1 next), clamped to the ends — no wrap, no auto-begin.
+    #[func]
+    pub fn on_bestiary_paged(&mut self, delta: i32) {
+        if self.phase != GamePhase::Bestiary {
+            return;
+        }
+        let total = bestiary::entries(&self.run_state.seen_enemies).len();
+        self.bestiary_index = bestiary::paged_index(self.bestiary_index, delta, total);
+        self.refresh_bestiary();
+    }
+
+    /// Reset the briefing to its first entry and show it, then lock the UI's
+    /// input for a beat so the ship-select press that opened this screen can't
+    /// bleed through and instantly begin the mission.
+    fn enter_bestiary(&mut self) {
+        self.bestiary_index = 0;
+        self.refresh_bestiary();
+        if let Some(parent) = self.base().get_parent() {
+            if let Some(mut ui) = Self::find_ui_node(&parent, nodes::BESTIARY_UI) {
+                ui.call(methods::BEGIN_BRIEFING, &[]);
+            }
+        }
+    }
+
+    /// Push the current briefing entry to the panel (name + lore) and to the
+    /// turntable (the model to spin). GameManager owns the paging so the UI and
+    /// the 3D display never drift apart.
+    fn refresh_bestiary(&self) {
+        let entries = bestiary::entries(&self.run_state.seen_enemies);
+        let Some(entry) = entries.get(self.bestiary_index) else { return };
+        let Some(parent) = self.base().get_parent() else { return };
+
+        let (kind_id, enemy_id): (i32, i32) = match entry.kind {
+            BestiaryKind::OrganicBarrel => (0, -1),
+            BestiaryKind::ComponentCache => (1, -1),
+            BestiaryKind::Enemy(t) => (2, t.id()),
+        };
+        if let Some(mut turntable) = parent.try_get_node_as::<Node>(nodes::TURNTABLE) {
+            turntable.call(
+                methods::SHOW_ENTRY,
+                &[Variant::from(kind_id), Variant::from(enemy_id)],
+            );
+        }
+
+        // Left stick browses; Ⓧ begins. The hint (and whether it offers next/prev)
+        // is owned by void-logic.
+        let hint = bestiary::briefing_hint(entries.len());
+        let position = format!("{} / {}", self.bestiary_index + 1, entries.len());
+        if let Some(mut ui) = Self::find_ui_node(&parent, nodes::BESTIARY_UI) {
+            ui.call(methods::SHOW_BESTIARY, &[
+                Variant::from(GString::from(entry.title)),
+                Variant::from(GString::from(entry.blurb)),
+                Variant::from(GString::from(position.as_str())),
+                Variant::from(GString::from(hint)),
+            ]);
+        }
+    }
+
+    /// Populate and show the ship-select UI with the current color marked.
+    fn show_ship_select_ui(&self) {
+        let Some(parent) = self.base().get_parent() else { return };
+        if let Some(mut ui) = Self::find_ui_node(&parent, nodes::SHIP_SELECT_UI) {
+            ui.call(methods::SHOW_SHIP_SELECT, &[Variant::from(self.run_state.ship_color.id())]);
         }
     }
 
@@ -369,6 +489,15 @@ impl GameManager {
         }
     }
 
+    /// Relay the player's slow state to the HUD indicator.
+    #[func]
+    pub fn on_player_slowed(&mut self, active: bool) {
+        let Some(parent) = self.base().get_parent() else { return };
+        if let Some(mut hud) = Self::find_ui_node(&parent, nodes::HUD) {
+            hud.call(methods::UPDATE_SLOW, &[Variant::from(active)]);
+        }
+    }
+
     /// Called when a lootbox is collected — update RunState then push to ShipController.
     #[func]
     pub fn on_upgrade_collected(&mut self, name: GString, kind_id: i32, multiplier: f32) {
@@ -401,6 +530,14 @@ impl GameManager {
         }
     }
 
+    /// Called when an organics barrel is collected — adds to the permanent
+    /// organics account and refreshes the HUD.
+    #[func]
+    pub fn on_organics_collected(&mut self, amount: i32) {
+        self.run_state.collect_organics(amount.max(0) as u32);
+        self.update_hud();
+    }
+
     /// Called when the player changes power routing mode.
     #[func]
     pub fn on_power_mode_changed(&mut self, mode: i32) {
@@ -426,8 +563,13 @@ impl GameManager {
     // --- Getters for UI ---
 
     #[func]
-    pub fn get_credits(&self) -> i64 {
-        self.run_state.credits.balance as i64
+    pub fn get_components(&self) -> i64 {
+        self.run_state.components.balance as i64
+    }
+
+    #[func]
+    pub fn get_organics(&self) -> i64 {
+        self.run_state.organics.balance as i64
     }
 
     #[func]
@@ -496,7 +638,7 @@ impl GameManager {
     pub fn can_afford_upgrade(&self) -> bool {
         if let Some(next) = self.run_state.laser_level.next() {
             if let Some(cost) = next.upgrade_cost() {
-                return self.run_state.credits.can_afford(cost);
+                return self.run_state.components.can_afford(cost);
             }
         }
         false
@@ -531,6 +673,17 @@ impl GameManager {
         }
         let prev = self.phase;
         self.phase = next;
+
+        // The loadout and briefing screens SHARE one backdrop room. Build it
+        // once when entering that flow from outside it; flipping between
+        // ShipSelect and Bestiary keeps the same room (and the parked camera)
+        // and only swaps what the turntable shows — no teardown, no regenerate.
+        let entering_backdrop = next == GamePhase::ShipSelect || next == GamePhase::Bestiary;
+        let leaving_backdrop = prev == GamePhase::ShipSelect || prev == GamePhase::Bestiary;
+        if entering_backdrop && !leaving_backdrop {
+            self.generate_backdrop();
+        }
+
         self.show_phase(next);
 
         let phase_name: GString = GString::from(format!("{:?}", next).as_str());
@@ -540,7 +693,55 @@ impl GameManager {
         // means a fresh level for the current RunState — except when
         // resuming from pause, which returns to the level in progress.
         if next == GamePhase::Playing && prev != GamePhase::Paused {
+            self.mark_level_enemies_seen();
             self.regenerate_level();
+        }
+
+        // Entering the briefing: catalog stands at whatever's been seen so far,
+        // start it at the first entry.
+        if next == GamePhase::Bestiary {
+            self.enter_bestiary();
+        }
+    }
+
+    /// Catalog every enemy type this level will contain, so the *next* briefing
+    /// lists them, and persist the bestiary if it grew (it is permanent).
+    fn mark_level_enemies_seen(&mut self) {
+        let mut grew = false;
+        for enemy in enemy_type::enemies_for_level(self.run_state.current_level) {
+            if self.run_state.mark_enemy_seen(enemy) {
+                grew = true;
+            }
+        }
+        if grew {
+            self.save_game = Some(SaveGame::from_run_state(&self.run_state));
+            self.save_run();
+        }
+    }
+
+    /// Build the quiet one-room backdrop shown behind the loadout screen.
+    fn generate_backdrop(&self) {
+        let Some(parent) = self.base().get_parent() else { return };
+        if let Some(mut level_mgr) = parent.try_get_node_as::<Node>(nodes::LEVEL_MANAGER) {
+            for mut child in level_mgr.get_children().iter_shared() {
+                child.queue_free();
+            }
+            level_mgr.set(properties::CURRENT_LEVEL, &Variant::from(self.run_state.current_level as i32));
+            let seed = self.run_state.level_seed();
+            level_mgr.call(methods::GENERATE_BACKDROP, &[Variant::from(seed.as_i64())]);
+            // Park the player (and its camera) on the room FLOOR at eye height,
+            // centered — not at room_center, whose Y is the vertical midpoint and
+            // left the camera up by the ceiling looking out into the void (black).
+            let spawn = level_mgr
+                .call(methods::ROOM_FLOOR_CENTER, &[Variant::from(0_i64)])
+                .to::<Vector3>();
+            if let Some(mut player) = parent.try_get_node_as::<Node3D>(nodes::PLAYER) {
+                // Reset orientation too, not just position: the player is a
+                // RigidBody that keeps whatever rotation it tumbled into, so
+                // without this the camera faces a random direction.
+                player.set_global_transform(Transform3D::new(Basis::IDENTITY, spawn));
+                player.reset_physics_interpolation();
+            }
         }
     }
 
@@ -557,6 +758,8 @@ impl GameManager {
         let pause_vis = phase == GamePhase::Paused;
         let summary_vis = phase == GamePhase::KillSummary;
         let shop_vis = phase == GamePhase::Shop;
+        let ship_select_vis = phase == GamePhase::ShipSelect;
+        let bestiary_vis = phase == GamePhase::Bestiary;
         let death_vis = phase == GamePhase::Death;
 
         Self::set_ui_visible(&parent, nodes::MAIN_MENU_UI, menu_vis);
@@ -564,36 +767,43 @@ impl GameManager {
         Self::set_ui_visible(&parent, nodes::PAUSE_MENU_UI, pause_vis);
         Self::set_ui_visible(&parent, nodes::KILL_SUMMARY_UI, summary_vis);
         Self::set_ui_visible(&parent, nodes::SHOP_UI, shop_vis);
+        Self::set_ui_visible(&parent, nodes::SHIP_SELECT_UI, ship_select_vis);
+        Self::set_ui_visible(&parent, nodes::BESTIARY_UI, bestiary_vis);
         Self::set_ui_visible(&parent, nodes::DEATH_SCREEN_UI, death_vis);
 
-        // Show/hide gameplay elements (keep visible when paused)
+        // Show/hide gameplay elements (keep visible when paused). The player's
+        // own ship stays hidden on the loadout/briefing screens (the showcase or
+        // the bestiary turntable stands in front), but the room is the backdrop.
         let gameplay_vis = phase == GamePhase::Playing || phase == GamePhase::Paused;
+        let level_vis = gameplay_vis || ship_select_vis || bestiary_vis;
         if let Some(mut player) = parent.try_get_node_as::<Node3D>(nodes::PLAYER) {
             player.set_visible(gameplay_vis);
+            // Pilot input is live only in the flying phase (the policy lives in
+            // void-logic) — otherwise the stick would rotate the camera on the
+            // menu/showcase/bestiary screens.
+            player.call(
+                methods::SET_CONTROLS_ENABLED,
+                &[Variant::from(phase.allows_piloting())],
+            );
         }
         if let Some(mut level) = parent.try_get_node_as::<Node3D>(nodes::LEVEL_MANAGER) {
-            level.set_visible(gameplay_vis);
+            level.set_visible(level_vis);
         }
 
-        // Show/hide ship showcase for end-of-level screens
-        let showcase_vis = summary_vis || shop_vis || death_vis;
-        if let Some(mut showcase) = parent.try_get_node_as::<Node>(nodes::SHIP_SHOWCASE) {
+        // One turntable serves both the ship "hero" shot (menu + loadout +
+        // end-of-level screens) and the bestiary briefing. It self-positions in
+        // front of the camera each frame, so we only choose its content here:
+        // ship mode on the showcase screens; on the briefing the bestiary drives
+        // show_entry itself (via refresh_bestiary); hidden everywhere else.
+        let showcase_vis = menu_vis || ship_select_vis || summary_vis || shop_vis || death_vis;
+        if let Some(mut turntable) = parent.try_get_node_as::<Node>(nodes::TURNTABLE) {
             if showcase_vis {
-                let c = self.run_state.laser_level.color();
-                let color = Color::from_rgba(c[0], c[1], c[2], c[3]);
-                showcase.call(methods::SHOW_SHOWCASE, &[Variant::from(color)]);
-
-                // Position showcase in front of camera
-                if let Some(camera) = parent.try_get_node_as::<Node3D>(nodes::PLAYER_CAMERA) {
-                    let cam_transform = camera.get_global_transform();
-                    let forward = -cam_transform.basis.col_c();
-                    let showcase_pos = cam_transform.origin + forward * 3.0;
-                    if let Some(mut showcase_3d) = parent.try_get_node_as::<Node3D>(nodes::SHIP_SHOWCASE) {
-                        showcase_3d.set_global_position(showcase_pos);
-                    }
-                }
-            } else {
-                showcase.call(methods::HIDE_SHOWCASE, &[]);
+                turntable.call(
+                    methods::SHOW_SHIP,
+                    &[Variant::from(self.run_state.ship_color.id())],
+                );
+            } else if !bestiary_vis {
+                turntable.call(methods::HIDE_TURNTABLE, &[]);
             }
         }
     }
@@ -637,6 +847,12 @@ impl GameManager {
                     Variant::from(upgrade.multiplier),
                 ]);
             }
+            // Push the chosen ship color (drives body-style texture + accent) and
+            // its thrust tradeoff.
+            player.call(methods::CONFIGURE_SHIP, &[
+                Variant::from(self.run_state.ship_color.id()),
+                Variant::from(self.run_state.ship_color.thrust_mul()),
+            ]);
         }
     }
 
@@ -654,7 +870,7 @@ impl GameManager {
             let c = self.run_state.laser_level.color();
             let color = Color::from_rgba(c[0], c[1], c[2], c[3]);
             shop.call(methods::SHOW_SHOP, &[
-                Variant::from(self.run_state.credits.balance as i64),
+                Variant::from(self.run_state.components.balance as i64),
                 Variant::from(GString::from(self.run_state.laser_level.display_name())),
                 Variant::from(color),
                 Variant::from(self.run_state.laser_damage().as_f32()),
@@ -778,6 +994,28 @@ impl GameManager {
             }
         }
 
+        // Connect ShipSelectUI
+        if let Some(ship_select) = Self::find_ui_node(&parent, nodes::SHIP_SELECT_UI) {
+            let color_callable = self.base().callable(methods::ON_SHIP_COLOR_SELECTED);
+            let continue_callable = self.base().callable(methods::ADVANCE_FROM_SHIP_SELECT);
+            if !ship_select.is_connected(signals::SHIP_COLOR_SELECTED, &color_callable) {
+                let mut ship_select = ship_select;
+                ship_select.connect(signals::SHIP_COLOR_SELECTED, &color_callable);
+                ship_select.connect(signals::CONTINUE_PRESSED, &continue_callable);
+            }
+        }
+
+        // Connect BestiaryUI: left stick browses the catalog, Select begins.
+        if let Some(bestiary) = Self::find_ui_node(&parent, nodes::BESTIARY_UI) {
+            let begin_callable = self.base().callable(methods::ADVANCE_FROM_BESTIARY);
+            if !bestiary.is_connected(signals::CONTINUE_PRESSED, &begin_callable) {
+                let mut bestiary = bestiary;
+                bestiary.connect(signals::CONTINUE_PRESSED, &begin_callable);
+                let paged_callable = self.base().callable(methods::ON_BESTIARY_PAGED);
+                bestiary.connect(signals::BESTIARY_PAGED, &paged_callable);
+            }
+        }
+
         // Connect Player signals
         if let Some(player) = parent.try_get_node_as::<Node>(nodes::PLAYER) {
             let damage_callable = self.base().callable(methods::ON_PLAYER_DAMAGED);
@@ -786,6 +1024,8 @@ impl GameManager {
                 player.connect(signals::PLAYER_DAMAGED, &damage_callable);
                 let power_callable = self.base().callable(methods::ON_POWER_MODE_CHANGED);
                 player.connect(signals::POWER_MODE_CHANGED, &power_callable);
+                let slow_callable = self.base().callable(methods::ON_PLAYER_SLOWED);
+                player.connect(signals::PLAYER_SLOWED, &slow_callable);
             }
         }
 
@@ -806,16 +1046,21 @@ impl GameManager {
         let kill_callable = self.base().callable(methods::ON_ENEMY_KILLED);
         let portal_callable = self.base().callable(methods::ON_PORTAL_ENTERED);
         let upgrade_callable = self.base().callable(methods::ON_UPGRADE_COLLECTED);
+        let organics_callable = self.base().callable(methods::ON_ORGANICS_COLLECTED);
 
-        // Scan LevelManager children (enemies, portals)
+        // Scan LevelManager children (enemies, portals, organics barrels)
         for child in level_mgr.get_children().iter_shared() {
             if child.has_signal(signals::ENEMY_KILLED) && !child.is_connected(signals::ENEMY_KILLED, &kill_callable) {
                 let mut c = child.clone();
                 c.connect(signals::ENEMY_KILLED, &kill_callable);
             }
             if child.has_signal(signals::PORTAL_ENTERED) && !child.is_connected(signals::PORTAL_ENTERED, &portal_callable) {
-                let mut c = child;
+                let mut c = child.clone();
                 c.connect(signals::PORTAL_ENTERED, &portal_callable);
+            }
+            if child.has_signal(signals::ORGANICS_COLLECTED) && !child.is_connected(signals::ORGANICS_COLLECTED, &organics_callable) {
+                let mut c = child;
+                c.connect(signals::ORGANICS_COLLECTED, &organics_callable);
             }
         }
 
@@ -846,8 +1091,11 @@ impl GameManager {
             hud.call(methods::UPDATE_POWER_MODE, &[
                 Variant::from(self.current_power_mode),
             ]);
-            hud.call(methods::UPDATE_CREDITS, &[
-                Variant::from(self.run_state.credits.balance as i64),
+            hud.call(methods::UPDATE_COMPONENTS, &[
+                Variant::from(self.run_state.components.balance as i64),
+            ]);
+            hud.call(methods::UPDATE_ORGANICS, &[
+                Variant::from(self.run_state.organics.balance as i64),
             ]);
             hud.call(methods::UPDATE_LASER, &[
                 Variant::from(GString::from(self.run_state.laser_level.display_name())),

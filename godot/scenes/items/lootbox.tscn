@@ -1,6 +1,6 @@
 [gd_scene load_steps=3 format=3]
 
-[ext_resource type="PackedScene" path="res://addons/quaternius/modularscifimegakit/props/Prop_Crate1.gltf" id="1"]
+[ext_resource type="PackedScene" path="res://addons/quaternius/essentials/props/Prop_Barrel1.gltf" id="1"]
 
 [sub_resource type="SphereShape3D" id="loot_shape"]
 radius = 1.0

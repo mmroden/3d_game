@@ -10,7 +10,7 @@ enemy_type_id = 3
 speed = 7.0
 health = 5.0
 detection_range = 30.0
-attack_range = 8.0
+attack_range = 10.0
 damage = 4.0
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="."]

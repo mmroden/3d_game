@@ -128,6 +128,8 @@ pub const UI_NODE_NAMES: &[&str] = &[
     "KillSummaryUI",
     "ShopUI",
     "DeathScreenUI",
+    "ShipSelectUI",
+    "BestiaryUI",
 ];
 
 #[cfg(test)]
@@ -264,6 +266,19 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for name in UI_NODE_NAMES {
             assert!(seen.insert(name), "duplicate UI node name: {name}");
+        }
+    }
+
+    #[test]
+    fn every_screen_filling_ui_routes_through_the_ui_viewport() {
+        // Each full-screen UI must render into the UIViewport so SBS shows it in
+        // BOTH eyes (not once across the seam). The loadout and briefing screens
+        // were the regression — they painted to the root viewport.
+        for required in ["MainMenuUI", "HUD", "ShipSelectUI", "BestiaryUI"] {
+            assert!(
+                UI_NODE_NAMES.contains(&required),
+                "{required} must route through the UIViewport for per-eye SBS"
+            );
         }
     }
 

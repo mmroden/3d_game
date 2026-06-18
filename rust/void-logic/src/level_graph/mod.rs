@@ -11,6 +11,12 @@ pub use types::*;
 #[cfg(test)]
 mod tests;
 
+/// How many opaque rooms deep cull visibility reaches from the player's
+/// room: 2 lights the current room, the room through a corridor, and the
+/// room one corridor past that. Corridors between them are transparent and
+/// don't count. See [`LevelGraph::visible_from`].
+pub const RENDER_ROOM_DEPTH: usize = 2;
+
 /// The full level layout as a graph of flyable spaces connected by edges.
 /// Backed by petgraph for correct, battle-tested graph algorithms.
 /// Generated in pure Rust, then handed to LevelManager (Godot node)
@@ -200,6 +206,39 @@ impl LevelGraph {
         }
 
         farthest
+    }
+
+    /// Room nodes visible from `start` for rendering: the node itself plus
+    /// every node reachable without entering more than `budget` opaque
+    /// rooms. Corridors are transparent (free to pass — they have exactly
+    /// two opposite connectors, so sight flows straight through); entering
+    /// a room costs one unit of `budget`. Teleporter edges are never
+    /// traversed — they span the map, so the room on the far side isn't in
+    /// view. This is the single authority for cull visibility; the shell
+    /// resolves the player's current node and calls it.
+    pub fn visible_from(&self, start: NodeIndex, budget: usize) -> Vec<NodeIndex> {
+        use petgraph::algo::dijkstra;
+        use petgraph::visit::EdgeFiltered;
+        use crate::room_template::TemplateKind;
+
+        // Teleporters span the map — you don't see the room on the far
+        // side, so they aren't traversable for visibility.
+        let by_flight =
+            EdgeFiltered::from_fn(&self.graph, |e| !matches!(e.weight(), EdgeKind::Teleporter));
+        // Cost to step onto a node: a room spends one unit of budget, a
+        // corridor none. dijkstra advances to `e.target()`, so costing the
+        // target is exactly the cost of entering that node.
+        let costs = dijkstra(&by_flight, start, None, |e| {
+            match self.graph.node_weight(e.target()) {
+                Some(room) if room.template.kind == TemplateKind::Room => 1usize,
+                _ => 0usize,
+            }
+        });
+        costs
+            .into_iter()
+            .filter(|&(_, cost)| cost <= budget)
+            .map(|(node, _)| node)
+            .collect()
     }
 
     /// Iterate over all room node indices.
