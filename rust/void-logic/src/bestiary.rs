@@ -131,6 +131,8 @@ trading itself for a hole in your shields. Kill it early or get clear.",
 other machines and herd them onto you — death by overwhelming odds.",
         EnemyType::QuadShell => "A shielded tank. Its plating soaks damage before its hull ever feels it; \
 patient fire, or a flank while it's busy, is the only way through.",
+        EnemyType::SpawnDrone => "A scrap-built picket an EyeDrone ejects as it dies. Lighter and quicker \
+than a gun drone but flimsy — it buys the swarm a few more seconds of fire.",
     }
 }
 

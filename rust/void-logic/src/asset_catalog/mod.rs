@@ -375,15 +375,17 @@ mod tests {
     }
 
     #[test]
-    fn is_loose_prop_identifies_floating_debris() {
-        // Loose: crates, barrels, chests
-        assert!(is_loose_prop("res://props/Prop_Crate1.gltf"));
-        assert!(is_loose_prop("res://props/Prop_Barrel_Large.gltf"));
-        assert!(is_loose_prop("res://props/Prop_Chest.gltf"));
-        // Anchored: columns, computers, vents, teleporters
-        assert!(!is_loose_prop("res://columns/Column_Astra.gltf"));
-        assert!(!is_loose_prop("res://props/Prop_Computer.gltf"));
-        assert!(!is_loose_prop("res://props/Prop_Teleporter.gltf"));
-        assert!(!is_loose_prop("res://props/Prop_Vent_Big.gltf"));
+    fn is_surface_mounted_identifies_anchored_props() {
+        // Surface-mounted (Static): wall/ceiling equipment, structural columns,
+        // the teleporter pad, cables, holograms.
+        assert!(is_surface_mounted("res://columns/Column_Astra.gltf"));
+        assert!(is_surface_mounted("res://props/Prop_Computer.gltf"));
+        assert!(is_surface_mounted("res://props/Prop_Teleporter.gltf"));
+        assert!(is_surface_mounted("res://props/Prop_Vent_Big.gltf"));
+        // Floating (Dynamic): debris AND free-standing furniture all tumble.
+        assert!(!is_surface_mounted("res://props/Prop_Crate1.gltf"));
+        assert!(!is_surface_mounted("res://props/Prop_Barrel_Large.gltf"));
+        assert!(!is_surface_mounted("res://props/Prop_Desk_Large.gltf"));
+        assert!(!is_surface_mounted("res://props/Prop_Pod.gltf"));
     }
 }

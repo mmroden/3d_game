@@ -74,7 +74,7 @@ pub struct LevelManager {
 }
 
 /// Dim fixtures emit a fraction of their rated energy — a weak glow.
-const DIM_ENERGY_FACTOR: f32 = 0.3;
+const DIM_ENERGY_FACTOR: f32 = 0.5;
 
 #[godot_api]
 impl INode3D for LevelManager {
@@ -388,9 +388,7 @@ impl LevelManager {
         for pos in &enemy_positions {
             let etype = *available_enemies.choose(&mut enemy_rng)
                 .expect("available_enemies is non-empty for any valid level");
-            let spawned = self.spawn_enemy(&mut loader, etype.scene_path(), *pos)
-                || self.spawn_enemy(&mut loader, scenes::ENEMY_DRONE_FALLBACK, *pos);
-            if spawned {
+            if self.spawn_enemy(&mut loader, etype, *pos) {
                 enemy_count += 1;
             }
         }
@@ -595,10 +593,10 @@ impl LevelManager {
     fn spawn_enemy(
         &mut self,
         loader: &mut Gd<ResourceLoader>,
-        scene_path: &str,
+        etype: enemy_type::EnemyType,
         pos: [f32; 3],
     ) -> bool {
-        let Some(scene_res) = loader.load(scene_path) else {
+        let Some(scene_res) = loader.load(etype.scene_path()) else {
             return false;
         };
         let packed: Gd<PackedScene> = scene_res.cast();
@@ -608,8 +606,12 @@ impl LevelManager {
         let Ok(mut enemy) = instance.try_cast::<EnemyDrone>() else {
             return false;
         };
-        // Set the level before entering the tree so ready() scales the enemy.
-        enemy.bind_mut().set_spawn_level(self.current_level);
+        // Stamp type + level before entering the tree so ready() configures it.
+        {
+            let mut g = enemy.bind_mut();
+            g.set_spawn_type(etype.id());
+            g.set_spawn_level(self.current_level);
+        }
         enemy.set_position(vec3(pos));
         self.base_mut().add_child(&enemy);
         enemy.reset_physics_interpolation();

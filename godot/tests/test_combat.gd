@@ -48,7 +48,7 @@ func test_enemy_in_range_fires_and_damages_player():
 	# bolts self-detonating on the firing enemy (shared collision layer).
 	var player = _spawn_player(Vector3.ZERO)
 	watch_signals(player)
-	var enemy_scene = load("res://scenes/enemies/enemy_drone.tscn")
+	var enemy_scene = load("res://scenes/enemies/enemy.tscn")
 	if enemy_scene == null:
 		pass_test("skipped — scene not available")
 		return
@@ -59,21 +59,50 @@ func test_enemy_in_range_fires_and_damages_player():
 	assert_signal_emitted(player, "player_damaged",
 		"an enemy within range must fire a bolt that damages the player")
 
-func test_swarmer_contact_slows_player_instead_of_damaging():
-	# The four-legged QuadOrb (swarmer) bogs the player down on contact rather
-	# than dealing ram damage. Contact should raise player_slowed, not damage.
+func test_swarmer_proximity_slows_player_instead_of_damaging():
+	# The four-legged QuadOrb (swarmer) bogs the player down while latched rather
+	# than dealing ram damage: sitting within latch range re-tags a compounding
+	# slow every tick (raising player_slowed), it doesn't ram. The compounding
+	# itself is unit-tested in void-logic's SlowDebuff.
 	var player = _spawn_player(Vector3.ZERO)
 	watch_signals(player)
-	var enemy_scene = load("res://scenes/enemies/enemy_quad_orb.tscn")
+	var enemy_scene = load("res://scenes/enemies/enemy.tscn")
 	if enemy_scene == null:
 		pass_test("skipped — scene not available")
 		return
 	var enemy = enemy_scene.instantiate()
+	enemy.enemy_type_id = 1 # QuadOrb (swarmer)
 	add_child_autofree(enemy)
-	await get_tree().physics_frame # let ready() load the Swarmer archetype
-	enemy.call("on_body_entered", player)
+	enemy.global_position = Vector3(1.5, 0, 0) # within SWARM_LATCH_RANGE (2.0)
+	await wait_physics_frames(4, "swarmer should bog the player down while latched")
 	assert_signal_emitted(player, "player_slowed",
-		"swarmer contact must slow the player")
+		"a swarmer latched onto the player must slow them, not ram")
+
+# --- Health bar reflects damage ---
+
+func test_health_bar_fill_shrinks_as_enemy_takes_damage():
+	# The floating bar must visibly deplete, not just recolor: its fill width
+	# tracks remaining HP. Regression for the per-frame billboard clobbering the
+	# width so the bar stayed full and only changed color.
+	var player := _spawn_player(Vector3(5, 0, 0))
+	var enemy = load("res://scenes/enemies/enemy.tscn").instantiate()
+	add_child_autofree(enemy)
+	enemy.global_position = Vector3.ZERO
+	await wait_physics_frames(2, "let the bar billboard at full health")
+
+	var fill = enemy.get_node_or_null("HealthBarFill")
+	assert_not_null(fill, "enemy must have a named HealthBarFill bar")
+	if fill == null:
+		return
+	var full_width: float = fill.global_transform.basis.x.length()
+
+	enemy.take_damage(1.5) # GunDrone has 3 HP — knock it to half
+	await wait_physics_frames(2, "let the bar re-render at half health")
+	var half_width: float = fill.global_transform.basis.x.length()
+
+	assert_lt(half_width, full_width * 0.75,
+		"fill bar should shrink toward half width after losing half its HP (was %f, now %f)"
+		% [full_width, half_width])
 
 # --- GameManager damage handler ---
 # Note: GameManager.ready() warns about missing UI nodes when not in the
@@ -92,7 +121,7 @@ func test_game_manager_class_exists():
 
 func test_enemy_death_spawns_one_lootbox():
 	var player = _spawn_player(Vector3(0, 0, 0))
-	var enemy_scene = load("res://scenes/enemies/enemy_drone.tscn")
+	var enemy_scene = load("res://scenes/enemies/enemy.tscn")
 	if enemy_scene == null:
 		pass_test("skipped — scene not available")
 		return

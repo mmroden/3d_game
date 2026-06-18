@@ -47,14 +47,14 @@ pub enum Collision {
 }
 
 impl Collision {
-    /// Classify a furnished prop: loose debris tumbles (`Dynamic`);
-    /// everything else the furnisher places is anchored equipment fixed
-    /// in place (`Static`).
+    /// Classify a furnished prop: in zero-g everything floats and tumbles
+    /// (`Dynamic`) unless it is anchored to a surface — wall/ceiling equipment,
+    /// columns, the teleporter pad, cables, holograms — which stays `Static`.
     pub fn for_prop(scene: &str) -> Collision {
-        if asset_catalog::is_loose_prop(scene) {
-            Collision::Dynamic
-        } else {
+        if asset_catalog::is_surface_mounted(scene) {
             Collision::Static
+        } else {
+            Collision::Dynamic
         }
     }
 }

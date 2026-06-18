@@ -420,6 +420,57 @@ fn populate_uses_themed_props() {
     }
 }
 
+/// A center prop on an upper story has no floor under it, so it's floating —
+/// and a floating prop must be Dynamic, never a frozen platform in mid-air.
+/// (On the ground story it rests on the floor and keeps its type classification.)
+#[test]
+fn floating_upper_story_center_props_are_dynamic() {
+    use crate::room_theme::{RoomTheme, PALETTE_GENERIC};
+    use crate::room_furnisher::RoomDensity;
+    use crate::asset_catalog::WALL_SET_ASTRA;
+    use crate::room_assembler::Collision;
+
+    // 3 stories so the middle/top interior cells float (no floor under them).
+    // The generic center palette includes the teleporter — a normally-Static
+    // prop — so the rule, not just the type, is what's under test.
+    let tall = RoomTemplate {
+        kind: TemplateKind::Room,
+        connectors: vec![],
+        enemy_spawns: vec![],
+        loot_spawns: vec![],
+        extents: [3, 3, 3],
+    };
+    let theme = RoomTheme {
+        name: "test_dense_generic",
+        wall_set: &WALL_SET_ASTRA,
+        palette: &PALETTE_GENERIC,
+        density: RoomDensity::Dense,
+    };
+
+    let mut checked = 0;
+    for seed in 0..60 {
+        let mut grid = CellGrid::new(&tall, &[], [0.0, 0.0, 0.0], 4.0);
+        grid.populate(&theme, seed);
+        for cell in grid.cells() {
+            if cell.kind != CellKind::Interior || cell.grid_pos[1] == 0 {
+                continue;
+            }
+            if let CellOccupant::Props(props) = &cell.occupant {
+                for p in props {
+                    assert_eq!(
+                        p.collision,
+                        Collision::Dynamic,
+                        "floating center prop '{}' at story {} must be Dynamic",
+                        p.scene, cell.grid_pos[1]
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(checked > 0, "no upper-story center prop was placed — test is vacuous");
+}
+
 /// Column props in multi-story rooms must be stacked at each story level.
 #[test]
 fn columns_stacked_in_multi_story_room() {

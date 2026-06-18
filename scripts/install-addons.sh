@@ -232,6 +232,41 @@ else
     echo "  cgtrader_ships not found, skipping player ships."
 fi
 
+# ========== Enemy models (CGTrader evil-mechs: decimated FBX -> glB) ==========
+# The raw mechs are 21-26k tris each — far too heavy to render 29 of them twice
+# (SBS) and to build convex hulls from. Blender (installed by `make deps`)
+# collapses each to a game-weight budget and writes a self-contained .glb.
+
+EVIL_MECHS_SRC="$SHIPS_SRC/evil_mechs"
+BLENDER="${BLENDER:-/Applications/Blender.app/Contents/MacOS/Blender}"
+DECIMATE_TARGET=2000
+
+if [ -d "$EVIL_MECHS_SRC" ]; then
+    ENEMIES_DIR="$GODOT_DIR/addons/enemies"
+    mkdir -p "$ENEMIES_DIR"
+    if [ ! -x "$BLENDER" ]; then
+        echo "  WARNING: Blender not found at $BLENDER — run 'make deps'. Skipping enemy mechs."
+    else
+        echo "  Decimating enemy mech models (target ${DECIMATE_TARGET} tris)..."
+        # Drop any stale raw-FBX install from before decimation existed.
+        rm -f "$ENEMIES_DIR"/*.fbx "$ENEMIES_DIR"/*.png "$ENEMIES_DIR"/*.jpg 2>/dev/null
+        for n in 01 03; do
+            src="$(find "$EVIL_MECHS_SRC" -maxdepth 1 -iname "*Evil_mech_${n}*.fbx" | head -1)"
+            [ -n "$src" ] || continue
+            # The mech's PBR maps ship loose in a sibling "(Textures)" folder the
+            # FBX doesn't reference; pass it so decimate.py rebuilds the material.
+            tex="$(find "$EVIL_MECHS_SRC" -maxdepth 1 -type d -iname "*Evil_mech_${n}*Textures*" | head -1)"
+            "$BLENDER" --background --python "$(dirname "$0")/decimate.py" -- \
+                "$src" "$ENEMIES_DIR/evil_mech_${n}.glb" "$DECIMATE_TARGET" "$tex" 2>&1 \
+                | grep -i "decimate:" || echo "  (mech ${n}: no decimation summary — check Blender output)"
+        done
+        chmod -R u+w "$ENEMIES_DIR"
+        echo "  Enemy mech models installed ($(ls "$ENEMIES_DIR"/*.glb 2>/dev/null | wc -l | tr -d ' ') mechs)."
+    fi
+else
+    echo "  evil_mechs not found, skipping enemy mechs."
+fi
+
 # ========== Audio assets (music + SFX) ==========
 
 AUDIO_DIR="$GODOT_DIR/addons/audio"

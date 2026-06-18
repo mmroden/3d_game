@@ -152,6 +152,15 @@ fn for_prop_classifies_loose_as_dynamic_and_anchored_as_static() {
         Collision::for_prop("res://props/Prop_Barrel_Large.gltf"),
         Collision::Dynamic,
     );
+    // Free-standing furniture and installations float too, not just debris.
+    assert_eq!(
+        Collision::for_prop("res://props/Prop_Desk_Large.gltf"),
+        Collision::Dynamic,
+    );
+    assert_eq!(
+        Collision::for_prop("res://props/Prop_Pod.gltf"),
+        Collision::Dynamic,
+    );
     assert_eq!(
         Collision::for_prop("res://columns/Column_Astra.gltf"),
         Collision::Static,

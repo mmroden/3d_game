@@ -1,0 +1,4 @@
+[gd_scene format=3]
+
+[node name="EnemyDrone" type="EnemyDrone"]
+enemy_type_id = 0

@@ -192,7 +192,6 @@ pub mod scenes {
     pub const PORTAL: &str = "res://scenes/items/portal.tscn";
     /// Player ship model (CGTrader, installed via `make assets`).
     pub const SHIP_MODEL: &str = "res://addons/ships/Spacecraft_1.glb";
-    pub const ENEMY_DRONE_FALLBACK: &str = "res://scenes/enemies/enemy_drone.tscn";
     /// Bestiary pickup models — the same GLTFs the in-level pickups wear, spun
     /// in the briefing room (without the pickups' collision/collect behavior).
     pub const BARREL_MODEL: &str = "res://addons/quaternius/essentials/props/Prop_Barrel1.gltf";
@@ -345,7 +344,6 @@ mod tests {
             scenes::LOOTBOX,
             scenes::ORGANIC_BARREL,
             scenes::PORTAL,
-            scenes::ENEMY_DRONE_FALLBACK,
             scenes::SHIP_MODEL,
         ];
         for path in &all_scenes {

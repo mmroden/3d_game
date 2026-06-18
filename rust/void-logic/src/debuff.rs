@@ -1,8 +1,13 @@
 //! Timed movement debuffs applied to the player.
 
+/// The hardest the player can be slowed. Repeated hits compound toward this
+/// floor but never fully freeze movement, so the player can always crawl free.
+const MIN_FACTOR: f32 = 0.1;
+
 /// A timed movement slow. While active it yields a movement multiplier < 1.0;
-/// when it expires it returns to 1.0. Re-applying takes the *stronger* slow
-/// (smaller multiplier) and refreshes the duration.
+/// when it expires it returns to 1.0. Re-applying *compounds*: each hit
+/// multiplies the current slow, so a swarmer that keeps tagging the player
+/// drives speed down toward [`MIN_FACTOR`] until the player breaks contact.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SlowDebuff {
     factor: f32,
@@ -23,11 +28,14 @@ impl SlowDebuff {
         if self.is_active() { self.factor } else { 1.0 }
     }
 
-    /// Apply a slow of `factor` (0..1) for `duration` seconds. Stacking takes
-    /// the stronger factor and extends to the longer remaining duration.
-    pub fn apply(&mut self, factor: f32, duration: f32) {
-        let factor = factor.clamp(0.0, 1.0);
-        self.factor = if self.is_active() { self.factor.min(factor) } else { factor };
+    /// Apply one slow "hit": `per_hit` (0..1) compounds onto the current slow
+    /// (multiplying it, floored at [`MIN_FACTOR`]) and refreshes the window to at
+    /// least `duration` seconds. A fresh hit on an inactive debuff starts from
+    /// full speed, so the first tag is just `per_hit`; subsequent tags stack.
+    pub fn apply(&mut self, per_hit: f32, duration: f32) {
+        let per_hit = per_hit.clamp(0.0, 1.0);
+        let base = if self.is_active() { self.factor } else { 1.0 };
+        self.factor = (base * per_hit).max(MIN_FACTOR);
         self.timer = self.timer.max(duration);
     }
 
@@ -72,6 +80,37 @@ mod tests {
     }
 
     #[test]
+    fn repeated_hits_compound_the_slow() {
+        let mut d = SlowDebuff::new();
+        d.apply(0.7, 2.0);
+        assert!((d.multiplier() - 0.7).abs() < 1e-6, "first tag is just per_hit");
+        d.apply(0.7, 2.0);
+        assert!((d.multiplier() - 0.49).abs() < 1e-6, "second tag compounds: 0.7*0.7");
+        d.apply(0.7, 2.0);
+        assert!((d.multiplier() - 0.343).abs() < 1e-6, "third tag: 0.7^3");
+    }
+
+    #[test]
+    fn compounding_is_clamped_to_a_floor() {
+        let mut d = SlowDebuff::new();
+        for _ in 0..50 {
+            d.apply(0.7, 2.0);
+        }
+        assert_eq!(d.multiplier(), 0.1, "never slower than the floor, never frozen");
+    }
+
+    #[test]
+    fn expiry_resets_so_the_next_grab_starts_fresh() {
+        let mut d = SlowDebuff::new();
+        d.apply(0.7, 1.0);
+        d.apply(0.7, 1.0); // compounded to 0.49
+        d.tick(1.1); // expire
+        assert_eq!(d.multiplier(), 1.0);
+        d.apply(0.7, 1.0); // a brand-new grab starts from full speed
+        assert!((d.multiplier() - 0.7).abs() < 1e-6, "stacks don't survive expiry");
+    }
+
+    #[test]
     fn expires_after_duration() {
         let mut d = SlowDebuff::new();
         d.apply(0.5, 1.0);
@@ -80,22 +119,6 @@ mod tests {
         d.tick(0.6); // total 1.2 > 1.0
         assert!(!d.is_active());
         assert_eq!(d.multiplier(), 1.0);
-    }
-
-    #[test]
-    fn stronger_slow_wins_while_active() {
-        let mut d = SlowDebuff::new();
-        d.apply(0.6, 2.0);
-        d.apply(0.3, 1.0); // stronger (smaller) factor
-        assert_eq!(d.multiplier(), 0.3);
-    }
-
-    #[test]
-    fn weaker_slow_does_not_weaken_active_one() {
-        let mut d = SlowDebuff::new();
-        d.apply(0.3, 2.0);
-        d.apply(0.8, 2.0); // weaker — must not raise the multiplier
-        assert_eq!(d.multiplier(), 0.3);
     }
 
     #[test]

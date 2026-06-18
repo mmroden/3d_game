@@ -131,10 +131,10 @@ fn auto_enemy_spawns(ex: u32, ey: u32, ez: u32, rng: &mut SmallRng) -> Vec<Spawn
 }
 
 /// Compute the target room count for a given level number.
-/// Level 1 starts at 15 rooms, each subsequent level adds 5.
+/// Level 1 starts at 8 rooms, each subsequent level adds 2 (8, 10, 12, 14, …).
 pub fn rooms_for_level(level: u32) -> usize {
     let level = level.max(1);
-    10 + level as usize * 5
+    6 + level as usize * 2
 }
 
 /// Generate a level using the sweep pipeline:
@@ -303,20 +303,20 @@ mod tests {
     // --- rooms_for_level tests ---
 
     #[test]
-    fn rooms_for_level_starts_at_15() {
-        assert_eq!(rooms_for_level(1), 15);
+    fn rooms_for_level_starts_at_8() {
+        assert_eq!(rooms_for_level(1), 8);
     }
 
     #[test]
-    fn rooms_for_level_increases_by_5() {
-        assert_eq!(rooms_for_level(2), 20);
-        assert_eq!(rooms_for_level(3), 25);
-        assert_eq!(rooms_for_level(4), 30);
+    fn rooms_for_level_increases_by_2() {
+        assert_eq!(rooms_for_level(2), 10);
+        assert_eq!(rooms_for_level(3), 12);
+        assert_eq!(rooms_for_level(4), 14);
     }
 
     #[test]
     fn rooms_for_level_zero_clamps_to_one() {
-        assert_eq!(rooms_for_level(0), 15);
+        assert_eq!(rooms_for_level(0), 8);
     }
 
     // --- Level generation tests ---

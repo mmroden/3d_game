@@ -24,9 +24,14 @@ const MUZZLE_CLEARANCE: f32 = 0.6;
 /// it so terminal cruise speed equals the AI's desired speed
 /// (`v* = force / (mass · damp)`).
 const ENEMY_LINEAR_DAMP: f32 = 3.0;
-/// Swarmer contact slow: thrust multiplier applied to the player, and how long.
-const SWARM_SLOW_FACTOR: f32 = 0.45;
+/// Swarmer slow. Each tag compounds `SWARM_SLOW_FACTOR` onto the player's speed
+/// (see `SlowDebuff`) for `SWARM_SLOW_DURATION` seconds; while a swarmer stays
+/// within `SWARM_LATCH_RANGE` it re-tags every `SWARM_SLOW_INTERVAL`, so a
+/// sustained latch drives the player toward a crawl until they break free.
+const SWARM_SLOW_FACTOR: f32 = 0.7;
 const SWARM_SLOW_DURATION: f32 = 2.0;
+const SWARM_SLOW_INTERVAL: f32 = 0.5;
+const SWARM_LATCH_RANGE: f32 = 2.0;
 
 /// A hostile drone that chases and attacks the player. Motion and
 /// collision are Godot/Jolt's (docs/architecture/physics_ownership.md):
@@ -55,6 +60,15 @@ pub struct EnemyDrone {
 
     ai: DroneAi,
     player: Option<LiveRef<Node3D>>,
+    /// The visual model hangs off this pivot, not the body directly: the body
+    /// is rotation-locked (impacts mustn't tumble it), so the pivot is what
+    /// yaws each frame to keep the model's nose on the player.
+    model_pivot: Option<LiveRef<Node3D>>,
+    /// Per-type correction (radians) for the model's imported front axis,
+    /// applied on top of facing the player. Cached from `EnemyType` in `ready`.
+    model_yaw_offset: f32,
+    /// Countdown between swarmer slow re-tags while latched onto the player.
+    swarm_reapply_timer: f32,
     health_bar_bg: Option<LiveRef<MeshInstance3D>>,
     health_bar_fill: Option<LiveRef<MeshInstance3D>>,
     /// Chase force decided in `physics_process` (where the LOS ray query is
@@ -79,6 +93,9 @@ impl IRigidBody3D for EnemyDrone {
             level: 1,
             ai,
             player: None,
+            model_pivot: None,
+            model_yaw_offset: 0.0,
+            swarm_reapply_timer: 0.0,
             health_bar_bg: None,
             health_bar_fill: None,
             chase_force: Vector3::ZERO,
@@ -96,6 +113,33 @@ impl IRigidBody3D for EnemyDrone {
             self.attack_range = stats.attack_range;
             // EnemyType owns behaviour tuning (archetype + ranges + shield/fuse).
             self.ai = DroneAi::new(enemy_type.ai_config());
+            // Build the visual model from the type's model_path, fit-scaled to
+            // its target size. Models live in the catalog, not baked per-.tscn,
+            // so a model swap is one string change and every drone re-fits the
+            // mesh to size regardless of its native units.
+            // The model hangs off a pivot rather than the body directly: the
+            // body's rotation is locked (below), so the pivot is what we yaw to
+            // face the player. The pivot sits at the body origin with identity
+            // rotation, so at spawn the model's transform is still body-relative
+            // — the convex hull builds in the same frame as before.
+            self.model_yaw_offset = enemy_type.model_yaw_offset();
+            let mut pivot = Node3D::new_alloc();
+            pivot.set_name("ModelPivot");
+            self.base_mut().add_child(&pivot);
+            if let Some(model) = godot_util::spawn_model_fitted(
+                &mut pivot,
+                enemy_type.model_path(),
+                enemy_type.model_size(),
+            ) {
+                // Mesh-hugging convex colliders (one per part), like the loose
+                // props — far better than a sphere wrapping a mech-shaped hull.
+                // Built on the body (which never rotates), so it stays put while
+                // the pivot yaws the visual — fine for a roughly radial drone.
+                let xform = model.get_transform();
+                let mut body: Gd<RigidBody3D> = self.base().clone();
+                godot_util::add_convex_collision(&mut body, &model, xform);
+            }
+            self.model_pivot = Some(LiveRef::new(&pivot));
         } else {
             self.ai = DroneAi::new(DroneConfig {
                 detection_range: self.detection_range,
@@ -168,8 +212,15 @@ impl IRigidBody3D for EnemyDrone {
             // Ram is resolved by physics contact; SpawnDrones is a boss stub.
             Attack::None | Attack::Ram | Attack::SpawnDrones { .. } => {}
         }
-        // Health-bar billboard is a transform write, so it belongs in the
-        // physics tick (engine interpolation smooths it between frames).
+        // Swarmers bog the player down while latched — re-tag periodically so the
+        // slow compounds toward a crawl (see SWARM_* constants and SlowDebuff).
+        if self.ai.config.archetype == Archetype::Swarmer {
+            self.tick_swarm_slow(delta as f32, my_pos, player_pos);
+        }
+        // Turn the model to face the player, and billboard the health bar.
+        // Both are transform writes, so they belong in the physics tick (engine
+        // interpolation smooths them between frames).
+        self.face_player(player_pos);
         self.update_health_bar(player_pos);
     }
 
@@ -200,6 +251,13 @@ impl EnemyDrone {
         self.level = level;
     }
 
+    /// Set the enemy type before the node enters the tree, so `ready()` builds
+    /// the right stats, model, and collider. The scene is generic; spawners
+    /// stamp the type here.
+    pub fn set_spawn_type(&mut self, type_id: i32) {
+        self.enemy_type_id = type_id;
+    }
+
     pub fn apply_damage(&mut self, damage: Damage) {
         let died = self.ai.take_damage(damage);
         self.update_health_bar_fill();
@@ -221,15 +279,10 @@ impl EnemyDrone {
         }
         let mut body = body;
 
-        // Swarmers (the four-legged QuadOrb) don't ram for damage — they bog
-        // the player down with a movement slow instead.
+        // Swarmers (the four-legged QuadOrb) don't ram for damage — they bog the
+        // player down with a movement slow, applied continuously from
+        // `tick_swarm_slow` while latched (not one-shot here, or it never builds).
         if self.ai.config.archetype == Archetype::Swarmer {
-            if body.has_method(methods::APPLY_SLOW) {
-                body.call(
-                    methods::APPLY_SLOW,
-                    &[Variant::from(SWARM_SLOW_FACTOR), Variant::from(SWARM_SLOW_DURATION)],
-                );
-            }
             return;
         }
 
@@ -413,23 +466,30 @@ impl EnemyDrone {
             if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
                 audio.bind_mut().play_event_at(SfxEvent::DroneSpawn, pos);
             }
+            let level = self.level;
             for _ in 0..count {
-                Self::spawn_death_minion(&root, spawn_type, pos);
+                Self::spawn_death_minion(&root, spawn_type, pos, level);
             }
         }
 
         self.base_mut().queue_free();
     }
 
-    /// Instantiate an enemy scene at `pos` (used for death-spawned minions).
-    fn spawn_death_minion(root: &Gd<Node>, enemy_type: EnemyType, pos: Vector3) {
+    /// Instantiate an enemy at `pos` (used for death-spawned minions). Stamps
+    /// the type and level, since the scene itself is generic.
+    fn spawn_death_minion(root: &Gd<Node>, enemy_type: EnemyType, pos: Vector3, level: i32) {
         let Some(scene) = ResourceLoader::singleton().load(enemy_type.scene_path()) else { return };
         let packed = scene.cast::<PackedScene>();
         let Some(instance) = packed.instantiate() else { return };
-        let mut node: Gd<Node3D> = instance.cast();
-        node.set_position(pos);
-        root.clone().add_child(&node);
-        node.reset_physics_interpolation();
+        let Ok(mut enemy) = instance.try_cast::<EnemyDrone>() else { return };
+        {
+            let mut g = enemy.bind_mut();
+            g.set_spawn_type(enemy_type.id());
+            g.set_spawn_level(level);
+        }
+        enemy.set_position(pos);
+        root.clone().add_child(&enemy);
+        enemy.reset_physics_interpolation();
     }
 
     fn spawn_explosion(root: &Gd<Node>, pos: Vector3) {
@@ -508,6 +568,7 @@ impl EnemyDrone {
         bg_mat.set_transparency(godot::classes::base_material_3d::Transparency::ALPHA);
         bg.set_surface_override_material(0, &bg_mat);
         bg.set_position(Vector3::new(0.0, 1.0, 0.0));
+        bg.set_name("HealthBarBg");
         self.base_mut().add_child(&bg);
         self.health_bar_bg = Some(LiveRef::new(&bg));
 
@@ -524,8 +585,49 @@ impl EnemyDrone {
         fill_mat.set_transparency(godot::classes::base_material_3d::Transparency::ALPHA);
         fill.set_surface_override_material(0, &fill_mat);
         fill.set_position(Vector3::new(0.0, 1.0, 0.005));
+        fill.set_name("HealthBarFill");
         self.base_mut().add_child(&fill);
         self.health_bar_fill = Some(LiveRef::new(&fill));
+    }
+
+    /// Yaw the model pivot to put the model's nose on the player. The body is
+    /// rotation-locked, so this pivot is the only thing that turns the visual.
+    /// Yaw-only (we level the target to our own height) so a player above or
+    /// below can't pitch the drone onto its face.
+    fn face_player(&mut self, player_pos: Vector3) {
+        let my_pos = self.base().get_global_position();
+        let mut target = player_pos;
+        target.y = my_pos.y; // level look — yaw only, no pitch
+        if my_pos.distance_squared_to(target) < 0.01 {
+            return; // player directly above/below: no horizontal facing to compute
+        }
+        let offset = self.model_yaw_offset;
+        self.model_pivot.with(|pivot| {
+            // look_at points the pivot's -Z at the player; the per-type offset
+            // then rotates that to the model's actual front axis.
+            pivot.look_at(target);
+            pivot.rotate_object_local(Vector3::UP, offset);
+        });
+    }
+
+    /// While a swarmer sits within `SWARM_LATCH_RANGE` of the player, re-tag the
+    /// player's slow every `SWARM_SLOW_INTERVAL`. Each tag compounds (the ship's
+    /// `SlowDebuff` multiplies), so a sustained latch ramps from a noticeable
+    /// drag to a crawl; the ship plays the latch sound/shake on the fresh grab.
+    fn tick_swarm_slow(&mut self, delta: f32, my_pos: Vector3, player_pos: Vector3) {
+        self.swarm_reapply_timer -= delta;
+        if self.swarm_reapply_timer > 0.0 || my_pos.distance_to(player_pos) > SWARM_LATCH_RANGE {
+            return;
+        }
+        self.swarm_reapply_timer = SWARM_SLOW_INTERVAL;
+        self.player.with(|p| {
+            if p.has_method(methods::APPLY_SLOW) {
+                p.call(
+                    methods::APPLY_SLOW,
+                    &[Variant::from(SWARM_SLOW_FACTOR), Variant::from(SWARM_SLOW_DURATION)],
+                );
+            }
+        });
     }
 
     fn update_health_bar(&mut self, player_pos: Vector3) {
@@ -549,9 +651,20 @@ impl EnemyDrone {
         let billboard_basis = Basis::from_cols(right, actual_up, forward);
 
         let bg_transform = Transform3D::new(billboard_basis, bar_pos);
-        let fill_transform = Transform3D::new(billboard_basis, bar_pos + dir * -0.005);
-
         self.health_bar_bg.with(|bg| bg.set_global_transform(bg_transform));
+
+        // The fill's width tracks remaining health and must be re-applied here,
+        // every frame: the billboard rewrites the fill transform each tick, so
+        // scaling it only on the damage tick gets clobbered the next frame (the
+        // bug where bars recolored but never shrank). Anchor the left edge so it
+        // depletes from one side rather than collapsing toward its center.
+        const HALF_WIDTH: f32 = 0.38; // fill mesh is 0.76 wide
+        let fraction = self.ai.health.fraction(self.ai.config.health).clamp(0.01, 1.0);
+        // Post-multiply (local scale): scales the fill's own X axis — its width —
+        // not the world rows. `Basis::scaled` would scale rows and skew the bar.
+        let fill_basis = billboard_basis * Basis::from_scale(Vector3::new(fraction, 1.0, 1.0));
+        let anchor = right * (-(1.0 - fraction) * HALF_WIDTH);
+        let fill_transform = Transform3D::new(fill_basis, bar_pos + dir * -0.005 + anchor);
         self.health_bar_fill.with(|fill| fill.set_global_transform(fill_transform));
     }
 
@@ -567,12 +680,10 @@ impl EnemyDrone {
             Color::from_rgba(0.9, t * 0.9, 0.0, 0.9)
         };
 
+        // Width is owned by the per-frame billboard (update_health_bar); here we
+        // only recolor on the damage tick. (Writing width here too would fight
+        // the billboard and get overwritten next frame.)
         self.health_bar_fill.with(|fill| {
-            // Scale X to represent remaining health
-            let mut transform = fill.get_transform();
-            transform.basis = transform.basis.scaled(Vector3::new(fraction.max(0.01), 1.0, 1.0));
-            fill.set_transform(transform);
-
             if let Some(mat) = fill.get_surface_override_material(0) {
                 let mut std_mat = mat.cast::<StandardMaterial3D>();
                 std_mat.set_albedo(color);
