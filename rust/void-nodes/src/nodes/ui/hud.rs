@@ -1,21 +1,29 @@
 use godot::prelude::*;
 use godot::classes::{
-    CanvasLayer, ICanvasLayer, Label, ColorRect, HBoxContainer, VBoxContainer, Control,
+    CanvasLayer, ICanvasLayer, Label, ColorRect, HBoxContainer, VBoxContainer, Control, Node,
     Engine,
     control::LayoutPreset,
 };
 
-use crate::nodes::constants::theme;
+use crate::nodes::constants::{theme, signals, methods, nodes};
 use crate::nodes::live_handle::{LiveOpt, LiveRef};
 use void_logic::ui_style;
 
 /// Health/shield bar dimensions. Shared by `build_hud` (background + fill) and
 /// the `update_*` resizers so the two can't drift out of sync.
-const BAR_WIDTH: f32 = 360.0;
-const HEALTH_BAR_HEIGHT: f32 = 30.0;
-const SHIELD_BAR_HEIGHT: f32 = 22.0;
+const BAR_WIDTH: f32 = 500.0;
+const HEALTH_BAR_HEIGHT: f32 = 42.0;
+const SHIELD_BAR_HEIGHT: f32 = 32.0;
 /// Top-left inset for the absolutely-positioned bar fills.
 const BAR_INSET: f32 = 20.0;
+
+/// In SBS, the fraction of the full window to inset the HUD on each side. Each
+/// eye sees the central ~50%, but its extreme edges are where an element is at
+/// very different eccentricity per eye (one eye "reaching" across the nose),
+/// which fights fusion and reads as blur. Insetting further than 0.25 pulls the
+/// HUD into the comfortable central fusion zone. Tune toward 0.25 for more
+/// spread, toward 0.4 for more central.
+const SBS_SAFE_AREA_MARGIN: f32 = 0.33;
 
 /// In-game HUD: health bar, credits, laser level, level number.
 #[derive(GodotClass)]
@@ -23,6 +31,10 @@ const BAR_INSET: f32 = 20.0;
 #[allow(clippy::upper_case_acronyms)]
 pub struct HUD {
     base: Base<CanvasLayer>,
+    /// All HUD content lives under this. In SBS it shrinks to the central band
+    /// each eye sees (controls anchor to the full 2x-wide window, so corner
+    /// content would otherwise fall outside each eye); in mono it's full-bleed.
+    safe_area: Option<LiveRef<Control>>,
     health_fill: Option<LiveRef<ColorRect>>,
     health_label: Option<LiveRef<Label>>,
     shield_fill: Option<LiveRef<ColorRect>>,
@@ -42,6 +54,7 @@ impl ICanvasLayer for HUD {
     fn init(base: Base<CanvasLayer>) -> Self {
         Self {
             base,
+            safe_area: None,
             health_fill: None,
             health_label: None,
             shield_fill: None,
@@ -62,12 +75,20 @@ impl ICanvasLayer for HUD {
             return;
         }
         self.build_hud();
+        self.connect_options();
         self.base_mut().set_visible(false);
     }
 }
 
 #[godot_api]
 impl HUD {
+    /// React to GameManager's options broadcast: confine the HUD to the central
+    /// band each eye sees in SBS, or full-bleed in mono.
+    #[func]
+    fn on_options_changed(&mut self, sbs_enabled: bool, _msaa_enabled: bool) {
+        self.apply_safe_area(sbs_enabled);
+    }
+
     #[func]
     pub fn update_health(&mut self, current: f32, max: f32) {
         let fraction = (current / max).clamp(0.0, 1.0);
@@ -153,7 +174,50 @@ impl HUD {
 }
 
 impl HUD {
+    /// Listen to GameManager's options broadcast so the HUD learns when SBS is
+    /// on. GameManager is a sibling under Main; its deferred startup broadcast
+    /// seeds the initial state after every node is ready.
+    fn connect_options(&mut self) {
+        let Some(parent) = self.base().get_parent() else { return };
+        if let Some(mut gm) = parent.try_get_node_as::<Node>(nodes::GAME_MANAGER) {
+            let callable = self.base().callable(methods::ON_OPTIONS_CHANGED);
+            if !gm.is_connected(signals::OPTIONS_CHANGED, &callable) {
+                gm.connect(signals::OPTIONS_CHANGED, &callable);
+            }
+        }
+    }
+
+    /// SBS: shrink the HUD wrapper to the central 50% of the full (2x-wide)
+    /// window — the band each eye actually sees — so corner bars land in view
+    /// instead of off the side, and each eye's HUD matches the mono screen.
+    /// Mono: full-bleed. Controls anchor to the full window regardless
+    /// (custom_viewport redirects rendering, not layout), so this re-anchors the
+    /// single wrapper everything hangs off rather than each element.
+    fn apply_safe_area(&self, sbs: bool) {
+        use godot::builtin::Side;
+        self.safe_area.with(|sa| {
+            if sbs {
+                sa.set_anchor(Side::LEFT, SBS_SAFE_AREA_MARGIN);
+                sa.set_anchor(Side::TOP, 0.0);
+                sa.set_anchor(Side::RIGHT, 1.0 - SBS_SAFE_AREA_MARGIN);
+                sa.set_anchor(Side::BOTTOM, 1.0);
+                for side in [Side::LEFT, Side::TOP, Side::RIGHT, Side::BOTTOM] {
+                    sa.set_offset(side, 0.0);
+                }
+            } else {
+                sa.set_anchors_preset(LayoutPreset::FULL_RECT);
+            }
+        });
+    }
+
     fn build_hud(&mut self) {
+        // Everything hangs off this so SBS can pull the whole HUD into the
+        // central band each eye sees (see `apply_safe_area`). Full-bleed here;
+        // the OPTIONS_CHANGED broadcast narrows it when SBS is on.
+        let mut safe_area = Control::new_alloc();
+        safe_area.set_anchors_preset(LayoutPreset::FULL_RECT);
+        safe_area.set_mouse_filter(godot::classes::control::MouseFilter::IGNORE);
+
         // === Top-left: Health + Credits ===
         let mut top_left = VBoxContainer::new_alloc();
         top_left.set_anchors_preset(LayoutPreset::TOP_LEFT);
@@ -171,14 +235,18 @@ impl HUD {
         // Health fill overlaid on top of bg (we'll position it absolutely)
         // For simplicity, use a separate ColorRect that gets resized
         let mut health_fill = ColorRect::new_alloc();
-        health_fill.set_custom_minimum_size(Vector2::new(BAR_WIDTH, HEALTH_BAR_HEIGHT));
+        // set_size, NOT custom_minimum_size: the fill is a free (non-container)
+        // child, and a minimum size would floor it so update_health's
+        // set_size(width * fraction) could never shrink it — the bar would
+        // recolor on damage but never shorten.
+        health_fill.set_size(Vector2::new(BAR_WIDTH, HEALTH_BAR_HEIGHT));
         health_fill.set_color(Color::from_rgb(0.2, 0.9, 0.2));
         // Place fill at same position as bg (overlapping)
         health_fill.set_position(Vector2::new(0.0, 0.0));
 
         let mut health_label = Label::new_alloc();
         health_label.set_text("100/100");
-        health_label.add_theme_font_size_override(theme::FONT_SIZE, 22);
+        health_label.add_theme_font_size_override(theme::FONT_SIZE, 30);
         health_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.9, 0.9, 0.9));
         health_row.add_child(&health_label);
 
@@ -198,13 +266,14 @@ impl HUD {
         shield_row.add_child(&shield_bg);
 
         let mut shield_fill = ColorRect::new_alloc();
-        shield_fill.set_custom_minimum_size(Vector2::new(BAR_WIDTH, SHIELD_BAR_HEIGHT));
+        // set_size, not custom_minimum_size — see health_fill above.
+        shield_fill.set_size(Vector2::new(BAR_WIDTH, SHIELD_BAR_HEIGHT));
         shield_fill.set_color(Color::from_rgb(0.2, 0.4, 1.0));
         shield_fill.set_position(Vector2::new(0.0, 0.0));
 
         let mut shield_label = Label::new_alloc();
         shield_label.set_text("50/50");
-        shield_label.add_theme_font_size_override(theme::FONT_SIZE, 18);
+        shield_label.add_theme_font_size_override(theme::FONT_SIZE, 26);
         shield_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.5, 0.7, 1.0));
         shield_row.add_child(&shield_label);
 
@@ -216,7 +285,7 @@ impl HUD {
         // Power mode indicator (below shield bar)
         let mut power_mode_label = Label::new_alloc();
         power_mode_label.set_text("");
-        power_mode_label.add_theme_font_size_override(theme::FONT_SIZE, 16);
+        power_mode_label.add_theme_font_size_override(theme::FONT_SIZE, 22);
         power_mode_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgba(0.5, 0.5, 0.5, 0.5));
         top_left.add_child(&power_mode_label);
         self.power_mode_label = Some(LiveRef::new(&power_mode_label));
@@ -224,7 +293,7 @@ impl HUD {
         // Components (in-run currency)
         let mut components_label = Label::new_alloc();
         components_label.set_text("Components: 0");
-        components_label.add_theme_font_size_override(theme::FONT_SIZE, 18);
+        components_label.add_theme_font_size_override(theme::FONT_SIZE, 26);
         components_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_COMPONENTS));
         top_left.add_child(&components_label);
         self.components_label = Some(LiveRef::new(&components_label));
@@ -232,18 +301,18 @@ impl HUD {
         // Organics (permanent currency)
         let mut organics_label = Label::new_alloc();
         organics_label.set_text("Organics: 0");
-        organics_label.add_theme_font_size_override(theme::FONT_SIZE, 18);
+        organics_label.add_theme_font_size_override(theme::FONT_SIZE, 26);
         organics_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_ORGANICS));
         top_left.add_child(&organics_label);
         self.organics_label = Some(LiveRef::new(&organics_label));
 
-        self.base_mut().add_child(&top_left);
+        safe_area.add_child(&top_left);
         // Add health fill as overlay on CanvasLayer, positioned at top-left
         health_fill.set_position(Vector2::new(BAR_INSET, BAR_INSET));
-        self.base_mut().add_child(&health_fill);
+        safe_area.add_child(&health_fill);
         // Shield fill overlay just below the (now taller) health bar.
         shield_fill.set_position(Vector2::new(BAR_INSET, BAR_INSET + HEALTH_BAR_HEIGHT + 4.0));
-        self.base_mut().add_child(&shield_fill);
+        safe_area.add_child(&shield_fill);
 
         // === Top-right: Laser info + Level ===
         let mut top_right = VBoxContainer::new_alloc();
@@ -263,7 +332,7 @@ impl HUD {
 
         let mut laser_label = Label::new_alloc();
         laser_label.set_text("Laser: Red");
-        laser_label.add_theme_font_size_override(theme::FONT_SIZE, 18);
+        laser_label.add_theme_font_size_override(theme::FONT_SIZE, 26);
         laser_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(1.0, 0.2, 0.2));
         laser_row.add_child(&laser_label);
         self.laser_label = Some(LiveRef::new(&laser_label));
@@ -273,12 +342,12 @@ impl HUD {
         // Level
         let mut level_label = Label::new_alloc();
         level_label.set_text("Level 1");
-        level_label.add_theme_font_size_override(theme::FONT_SIZE, 18);
+        level_label.add_theme_font_size_override(theme::FONT_SIZE, 26);
         level_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_SECONDARY));
         top_right.add_child(&level_label);
         self.level_label = Some(LiveRef::new(&level_label));
 
-        self.base_mut().add_child(&top_right);
+        safe_area.add_child(&top_right);
 
         // === Bottom center: Controls reminder ===
         let mut bottom_center = Control::new_alloc();
@@ -289,13 +358,13 @@ impl HUD {
 
         let mut controls = Label::new_alloc();
         controls.set_text("WASD: Move | Arrows: Look | Space: Fire | R/F: Up/Down");
-        controls.add_theme_font_size_override(theme::FONT_SIZE, 16);
+        controls.add_theme_font_size_override(theme::FONT_SIZE, 22);
         controls.add_theme_color_override(theme::FONT_COLOR, Color::from_rgba(
             ui_style::TEXT_UNSELECTED[0], ui_style::TEXT_UNSELECTED[1], ui_style::TEXT_UNSELECTED[2], 0.7,
         ));
         bottom_center.add_child(&controls);
 
-        self.base_mut().add_child(&bottom_center);
+        safe_area.add_child(&bottom_center);
 
         // === Center targeting reticle (dot + crosshair) ===
         // Bold and fully opaque: thin, semi-transparent geometry survives the 1:1
@@ -325,14 +394,14 @@ impl HUD {
             tick.set_position(posn);
             reticle.add_child(&tick);
         }
-        self.base_mut().add_child(&reticle);
+        safe_area.add_child(&reticle);
 
         // === Slow debuff indicator (hidden until a swarmer slows the player) ===
         let mut slow_overlay = ColorRect::new_alloc();
         slow_overlay.set_anchors_preset(LayoutPreset::FULL_RECT);
         slow_overlay.set_color(Color::from_rgba(0.7, 0.1, 0.1, 0.16));
         slow_overlay.set_visible(false);
-        self.base_mut().add_child(&slow_overlay);
+        safe_area.add_child(&slow_overlay);
         self.slow_overlay = Some(LiveRef::new(&slow_overlay));
 
         let mut slow_label = Label::new_alloc();
@@ -342,7 +411,10 @@ impl HUD {
         slow_label.add_theme_font_size_override(theme::FONT_SIZE, 30);
         slow_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(1.0, 0.4, 0.4));
         slow_label.set_visible(false);
-        self.base_mut().add_child(&slow_label);
+        safe_area.add_child(&slow_label);
         self.slow_label = Some(LiveRef::new(&slow_label));
+
+        self.base_mut().add_child(&safe_area);
+        self.safe_area = Some(LiveRef::new(&safe_area));
     }
 }

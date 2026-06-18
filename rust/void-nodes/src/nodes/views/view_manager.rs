@@ -3,7 +3,7 @@ use godot::builtin::Signal;
 use godot::classes::{
     Camera3D, CanvasLayer, DisplayServer, INode3D, MeshInstance3D, Node, Node3D,
     QuadMesh, StandardMaterial3D, SubViewport, SubViewportContainer, TextureRect,
-    base_material_3d::{ShadingMode, Transparency, CullMode},
+    base_material_3d::{ShadingMode, Transparency, CullMode, Flags},
     display_server::WindowMode,
     texture_rect::StretchMode,
     sub_viewport::UpdateMode,
@@ -18,7 +18,14 @@ use void_logic::stereo::{
 };
 
 /// Default distance (meters) from camera to the floating UI plane in SBS mode.
-const DEFAULT_UI_PLANE_DISTANCE: f32 = 2.0;
+/// A moderate in-scene depth: close enough (2 m) forces hard convergence and
+/// reads as nausea; this sits the HUD comfortably out in the scene. Comfort/
+/// readability is governed more by keeping the HUD *inboard* (see the HUD's
+/// safe-area band) than by this distance — disparity on a flat plane is uniform,
+/// so distance doesn't fix the "off-center element, one eye reaching" blur. The
+/// quad scales with distance, so on-screen size is unchanged. The material
+/// disables depth test (`setup_ui_plane`) so this depth isn't occluded by walls.
+const DEFAULT_UI_PLANE_DISTANCE: f32 = 10.0;
 
 /// First-class view manager: owns the display pipeline (mono or SBS stereo).
 ///
@@ -114,8 +121,8 @@ impl ViewManager {
             self.resize_window(sbs);
             self.current_mode = target;
             self.resize_viewports();
-            // Rebuild the UI plane to the new (full-window) aspect on the same
-            // frame as the toggle, rather than waiting on the OS resize event.
+            // Rebuild the UI plane to the new per-eye aspect on the same frame
+            // as the toggle, rather than waiting on the OS resize event.
             self.resize_ui_plane();
             self.apply_visibility(sbs);
             self.park_player_camera();
@@ -385,6 +392,11 @@ impl ViewManager {
         material.set_shading_mode(ShadingMode::UNSHADED);
         material.set_transparency(Transparency::ALPHA);
         material.set_cull_mode(CullMode::DISABLED);
+        // The plane floats deep in the scene for stereo comfort; without this it
+        // would be occluded by any nearer wall. Draw it on top regardless — its
+        // stereo depth still comes from its 3D distance, so the HUD reads deep
+        // and stays visible.
+        material.set_flag(Flags::DISABLE_DEPTH_TEST, true);
         // Upcast ViewportTexture → Texture2D for set_texture
         let texture_2d: Gd<godot::classes::Texture2D> = ui_texture.upcast();
         material.set_texture(
@@ -403,9 +415,9 @@ impl ViewManager {
     }
 
     /// FOV from the player camera, and the aspect of the UI plane. The plane
-    /// shows the UIViewport texture, which now spans the FULL window, so its
-    /// aspect must be the full-window aspect (not per-eye) — otherwise a wide
-    /// texture is crushed onto a narrow quad and the UI reads squished.
+    /// shows the UIViewport texture, which spans the FULL window, so its aspect
+    /// must be the full-window aspect (not per-eye) — otherwise a wide texture
+    /// is crushed onto a narrow quad and the UI reads squished.
     fn camera_fov_and_aspect(&self) -> (f32, f32) {
         let Some(main_scene) = self.base().get_parent() else {
             return (75.0, 16.0 / 9.0);

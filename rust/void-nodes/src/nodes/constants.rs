@@ -194,7 +194,6 @@ pub mod scenes {
     /// Bestiary pickup models — the same GLTFs the in-level pickups wear, spun
     /// in the briefing room (without the pickups' collision/collect behavior).
     pub const BARREL_MODEL: &str = "res://addons/quaternius/essentials/props/Prop_Barrel1.gltf";
-    pub const CRATE_MODEL: &str = "res://addons/quaternius/modularscifimegakit/props/Prop_Crate1.gltf";
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────

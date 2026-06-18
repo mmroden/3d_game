@@ -128,7 +128,7 @@ impl Turntable {
         self.beams_enabled = false;
         let (path, glow): (Option<&str>, [f32; 4]) = match kind {
             KIND_ORGANIC_BARREL => (Some(scenes::BARREL_MODEL), [0.2, 0.9, 0.2, 1.0]),
-            KIND_COMPONENT_CACHE => (Some(scenes::CRATE_MODEL), [0.2, 0.5, 1.0, 1.0]),
+            KIND_COMPONENT_CACHE => (Some(scenes::BARREL_MODEL), [0.2, 0.5, 1.0, 1.0]),
             KIND_ENEMY => (
                 EnemyType::from_id(enemy_type_id).map(|t| t.model_path()),
                 // Neutral glow so the unlit enemy reads in the dark room.
