@@ -34,6 +34,10 @@ const WING_OFFSET: f32 = 0.3;
 const LASER_AIM_RADIUS: f32 = 0.7;
 /// Minimum gap between collision sounds (so a wall scrape doesn't machine-gun).
 const IMPACT_SOUND_COOLDOWN: f32 = 0.4;
+/// How far off the hull (m) the hit sound is placed, toward whatever struck us.
+/// Small on purpose: the cue sits right on the ship but still points at the
+/// threat, so you can turn toward the shooter.
+const HIT_SFX_OFFSET: f32 = 2.0;
 
 /// Camera-shake burst when a grabber latches on: how long and how hard
 /// (Camera3D frustum-offset units).
@@ -162,15 +166,15 @@ impl IRigidBody3D for ShipController {
             self.fly(&mut state);
         }
 
-        // Heavy collision thud, on impact *onset* (resting against a wall is
-        // silent) and throttled by the cooldown. Non-positional — positional
-        // audio is currently inaudible in this project.
+        // Collision clang on impact *onset* (resting against a wall is silent),
+        // throttled by the cooldown. Whether it sounds shielded or bare-hull
+        // depends on the shield, which only GameManager knows — so we just
+        // report the collision and let it pick the sound, mirroring the
+        // player_damaged path.
         let in_contact = state.get_contact_count() > 0;
         if in_contact && !self.was_in_contact && self.impact_cooldown <= 0.0 {
             self.impact_cooldown = IMPACT_SOUND_COOLDOWN;
-            if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
-                audio.bind_mut().play_event(SfxEvent::ImpactHeavy);
-            }
+            self.base_mut().emit_signal(signals::PLAYER_COLLIDED, &[]);
         }
         self.was_in_contact = in_contact;
     }
@@ -205,8 +209,15 @@ impl IRigidBody3D for ShipController {
 
 #[godot_api]
 impl ShipController {
+    /// The ship took a hit. `hit_position` is a point just off the hull toward
+    /// the source, so GameManager can play the hit sound directionally.
     #[signal]
-    fn player_damaged(amount: f32);
+    fn player_damaged(amount: f32, hit_position: Vector3);
+
+    /// Ship hit static geometry (onset, throttled). Carries no shield state —
+    /// GameManager owns that and picks the shielded/bare collision sound.
+    #[signal]
+    fn player_collided();
 
     #[signal]
     fn power_mode_changed(mode: i32);
@@ -227,7 +238,7 @@ impl ShipController {
             self.shake_timer = SHAKE_DURATION;
             let pos = self.base().get_global_position();
             if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
-                audio.bind_mut().play_event_at(SfxEvent::ImpactMetal, pos);
+                audio.bind_mut().play_event_at(SfxEvent::SwarmerLatch, pos);
             }
             self.base_mut()
                 .emit_signal(signals::PLAYER_SLOWED, &[Variant::from(true)]);
@@ -447,19 +458,28 @@ impl ShipController {
     /// GDScript and `Object::call` dispatch. Rust callers use
     /// `apply_damage`.
     #[func]
-    pub fn take_damage(&mut self, amount: f32) {
-        self.apply_damage(void_logic::newtypes::Damage::new(amount));
+    pub fn take_damage(&mut self, amount: f32, from_position: Vector3) {
+        self.apply_damage(void_logic::newtypes::Damage::new(amount), from_position);
     }
 
-    /// Called when a projectile or enemy hits this ship.
-    pub fn apply_damage(&mut self, damage: void_logic::newtypes::Damage) {
-        // The hit sound (shield zap vs. hull clang) is chosen by GameManager,
-        // the only place that knows whether the shield held — see
-        // `on_player_damaged`. The node just reports the hit.
-        // Signals are Variant territory: convert at the boundary.
+    /// Called when a projectile or enemy hits this ship. `from_position` points
+    /// at the source so the hit sound can be localized directionally.
+    pub fn apply_damage(&mut self, damage: void_logic::newtypes::Damage, from_position: Vector3) {
+        // Localize the hit just off the hull, toward whatever struck us — close
+        // enough to read as "on the ship" but offset so it points at the threat.
+        let self_pos = self.base().get_global_position();
+        let to_source = from_position - self_pos;
+        let hit_position = if to_source.length() > 0.01 {
+            self_pos + to_source.normalized() * HIT_SFX_OFFSET
+        } else {
+            self_pos
+        };
+        // The hit sound (shielded vs. hull) is chosen by GameManager, the only
+        // place that knows whether the shield held — see `on_player_damaged`.
+        // The node just reports the hit and where it came from.
         self.base_mut().emit_signal(
             signals::PLAYER_DAMAGED,
-            &[Variant::from(damage.as_f32())],
+            &[Variant::from(damage.as_f32()), Variant::from(hit_position)],
         );
     }
 

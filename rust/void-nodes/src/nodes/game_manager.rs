@@ -481,22 +481,40 @@ impl GameManager {
 
     /// Called when the player takes damage (from projectile hit).
     #[func]
-    pub fn on_player_damaged(&mut self, amount: f32) {
+    pub fn on_player_damaged(&mut self, amount: f32, hit_position: Vector3) {
         if self.phase != GamePhase::Playing {
             return;
         }
         let outcome = self.run_state.take_damage(Damage::new(amount));
-        // Pick the hit sound from the layer that actually took it: a held shield
-        // gives an energy zap, a hull breach a heavy metal clang.
+        // Pick the hit sound from the layer that took it: a held shield gives a
+        // light deflection, a hull breach a full explosion. Play it at the
+        // ship-localized source point so it points at the attacker.
         let event = match outcome {
-            DamageOutcome::ShieldHeld => SfxEvent::ImpactShield,
-            DamageOutcome::HullHit => SfxEvent::ImpactMetal,
+            DamageOutcome::ShieldHeld => SfxEvent::HitShielded,
+            DamageOutcome::HullHit => SfxEvent::Explosion,
         };
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
-            audio.bind_mut().play_event(event);
+            audio.bind_mut().play_event_at(event, hit_position);
         }
         if !self.run_state.is_alive() {
             self.on_player_death();
+        }
+    }
+
+    /// The player's ship rammed static geometry. Pick the collision sound from
+    /// the shield: a cushioned clang while it holds, bare metal once it's down.
+    #[func]
+    pub fn on_player_collided(&mut self) {
+        if self.phase != GamePhase::Playing {
+            return;
+        }
+        let event = if self.run_state.shield.is_up() {
+            SfxEvent::CollisionShielded
+        } else {
+            SfxEvent::CollisionBare
+        };
+        if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+            audio.bind_mut().play_event(event);
         }
     }
 
@@ -1037,6 +1055,8 @@ impl GameManager {
                 player.connect(signals::POWER_MODE_CHANGED, &power_callable);
                 let slow_callable = self.base().callable(methods::ON_PLAYER_SLOWED);
                 player.connect(signals::PLAYER_SLOWED, &slow_callable);
+                let collide_callable = self.base().callable(methods::ON_PLAYER_COLLIDED);
+                player.connect(signals::PLAYER_COLLIDED, &collide_callable);
             }
         }
 

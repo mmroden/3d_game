@@ -35,6 +35,12 @@ impl ShieldState {
         overflow
     }
 
+    /// True while the shield still holds charge (mirrors `Health::is_alive`).
+    /// Drives whether a collision or hit plays the shielded or bare-hull sound.
+    pub fn is_up(&self) -> bool {
+        self.current.as_f32() > 0.0
+    }
+
     /// Advance regen timer. Regenerates shield after delay expires.
     pub fn tick(&mut self, delta: f32) {
         if self.delay_timer > 0.0 {
@@ -76,6 +82,14 @@ mod tests {
     fn starts_at_full_capacity() {
         let state = default_shield();
         assert_eq!(state.current, Shield::new(50.0));
+    }
+
+    #[test]
+    fn is_up_until_drained() {
+        let mut state = default_shield();
+        assert!(state.is_up());
+        state.take_hit(Damage::new(50.0)); // drains to exactly zero
+        assert!(!state.is_up());
     }
 
     #[test]

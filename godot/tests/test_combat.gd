@@ -31,7 +31,7 @@ func test_player_emits_damaged_signal():
 func test_take_damage_emits_signal_with_amount():
 	var player = _spawn_player(Vector3.ZERO)
 	watch_signals(player)
-	player.take_damage(25.0)
+	player.take_damage(25.0, Vector3(10, 0, 0))
 	assert_signal_emitted(player, "player_damaged",
 		"take_damage should emit player_damaged signal")
 

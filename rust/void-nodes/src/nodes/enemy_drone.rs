@@ -243,7 +243,11 @@ impl EnemyDrone {
         let impact_speed = (my_vel - player_vel).length();
         let dmg = ram_damage(impact_speed).as_f32() * PLAYER_RAM_FRACTION;
         if dmg > 0.0 && body.has_method(methods::TAKE_DAMAGE) {
-            body.call(methods::TAKE_DAMAGE, &[Variant::from(dmg)]);
+            let source = self.base().get_global_position();
+            body.call(
+                methods::TAKE_DAMAGE,
+                &[Variant::from(dmg), Variant::from(source)],
+            );
         }
     }
 
@@ -254,7 +258,10 @@ impl EnemyDrone {
             let damage = self.damage;
             self.player.with(|player| {
                 if player.has_method(methods::TAKE_DAMAGE) {
-                    player.call(methods::TAKE_DAMAGE, &[Variant::from(damage)]);
+                    player.call(
+                        methods::TAKE_DAMAGE,
+                        &[Variant::from(damage), Variant::from(my_pos)],
+                    );
                 }
             });
         }
@@ -398,10 +405,14 @@ impl EnemyDrone {
             }
         }
 
-        // Subsidiary-drone spawn on death (e.g. EyeDrone → GunDrone).
+        // Subsidiary-drone spawn on death (e.g. EyeDrone → GunDrone): the new
+        // drone arms up from the corpse, over the parent's death explosion.
         if let Some((spawn_type, count)) =
             EnemyType::from_id(self.enemy_type_id).and_then(|t| t.death_spawn())
         {
+            if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+                audio.bind_mut().play_event_at(SfxEvent::DroneSpawn, pos);
+            }
             for _ in 0..count {
                 Self::spawn_death_minion(&root, spawn_type, pos);
             }

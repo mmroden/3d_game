@@ -26,6 +26,7 @@ pub mod signals {
     pub const BODY_ENTERED: &str = "body_entered";
     pub const SIZE_CHANGED: &str = "size_changed";
     pub const PLAYER_DAMAGED: &str = "player_damaged";
+    pub const PLAYER_COLLIDED: &str = "player_collided";
     pub const PLAYER_SLOWED: &str = "player_slowed";
     pub const POWER_MODE_CHANGED: &str = "power_mode_changed";
     pub const UPGRADE_COLLECTED: &str = "upgrade_collected";
@@ -86,6 +87,7 @@ pub mod methods {
     pub const GENERATE_BACKDROP: &str = "generate_backdrop";
     pub const ROOM_FLOOR_CENTER: &str = "room_floor_center";
     pub const ON_PLAYER_DAMAGED: &str = "on_player_damaged";
+    pub const ON_PLAYER_COLLIDED: &str = "on_player_collided";
     pub const ON_PLAYER_SLOWED: &str = "on_player_slowed";
     pub const APPLY_SLOW: &str = "apply_slow";
     pub const UPDATE_SLOW: &str = "update_slow";

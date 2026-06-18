@@ -98,7 +98,14 @@ impl EnemyBolt {
         }
         let mut body = body;
         if body.is_in_group(groups::PLAYER) && body.has_method(methods::TAKE_DAMAGE) {
-            body.call(methods::TAKE_DAMAGE, &[Variant::from(self.damage)]);
+            // The bolt is on top of the ship at impact, so its own position gives
+            // no direction. Point back along its travel — that's where the
+            // shooter is — so the hit sound localizes toward the threat.
+            let source = self.base().get_global_position() - self.velocity.normalized() * 5.0;
+            body.call(
+                methods::TAKE_DAMAGE,
+                &[Variant::from(self.damage), Variant::from(source)],
+            );
         }
         // Detonate on the player or solid world geometry.
         self.base_mut().queue_free();

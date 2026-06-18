@@ -115,7 +115,7 @@ func test_level_generation_is_owned_by_the_phase_machine():
 	assert_gt(lm.get_child_count(), 0,
 		"entering Playing through the FSM must generate a level")
 
-	gm.on_player_damaged(1000000.0)  # lethal: Playing -> Death
+	gm.on_player_damaged(1000000.0, Vector3.ZERO)  # lethal: Playing -> Death
 	for child in lm.get_children():
 		child.free()
 	gm.continue_game()
