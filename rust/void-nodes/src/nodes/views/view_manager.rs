@@ -2,7 +2,7 @@ use godot::prelude::*;
 use godot::builtin::Signal;
 use godot::classes::{
     Camera3D, CanvasLayer, DisplayServer, INode3D, MeshInstance3D, Node, Node3D,
-    QuadMesh, StandardMaterial3D, SubViewport, SubViewportContainer, TextureRect,
+    AudioListener3D, QuadMesh, StandardMaterial3D, SubViewport, SubViewportContainer, TextureRect,
     base_material_3d::{ShadingMode, Transparency, CullMode, Flags},
     display_server::WindowMode,
     texture_rect::StretchMode,
@@ -73,6 +73,7 @@ impl INode3D for ViewManager {
     fn ready(&mut self) {
         self.setup_viewports();
         self.set_ui_viewport_once();
+        self.attach_audio_listener();
         self.connect_to_game_manager();
         self.connect_to_window_resize();
         godot_print!("ViewManager ready — {}", self.current_mode.label());
@@ -654,5 +655,32 @@ impl ViewManager {
         if let Some(mut camera) = main_scene.try_get_node_as::<Camera3D>(nodes::PLAYER_CAMERA) {
             camera.set_current(false);
         }
+    }
+
+    /// The world is drawn by the eye SubViewport cameras, and the player's own
+    /// camera is parked non-current — so the *root* window viewport (where the
+    /// positional SFX players live) has no current Camera3D and its 3D audio
+    /// listener would default to the world origin, leaving enemy fire and
+    /// impacts inaudible. Anchor an `AudioListener3D` to the parked player
+    /// camera (the reference head transform the eye cameras track) and make it
+    /// current, so 3D audio is heard from the player's point of view. The
+    /// listener is audio-only and never renders, so it can't reintroduce the
+    /// black-in-mono bug that parking the camera fixed.
+    fn attach_audio_listener(&self) {
+        let Some(main_scene) = self.base().get_parent() else {
+            return;
+        };
+        let Some(mut camera) = main_scene.try_get_node_as::<Camera3D>(nodes::PLAYER_CAMERA) else {
+            godot_warn!("ViewManager: player camera not found; 3D audio listener not attached");
+            return;
+        };
+        // Idempotent: never stack a second listener if setup re-runs.
+        if camera.try_get_node_as::<AudioListener3D>("AudioListener3D").is_some() {
+            return;
+        }
+        let mut listener = AudioListener3D::new_alloc();
+        listener.set_name("AudioListener3D");
+        camera.add_child(&listener);
+        listener.make_current();
     }
 }

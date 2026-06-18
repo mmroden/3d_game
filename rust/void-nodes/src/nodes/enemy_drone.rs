@@ -369,7 +369,7 @@ impl EnemyDrone {
 
         // Death explosion SFX
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
-            audio.bind_mut().play_event_at(SfxEvent::ImpactHeavy, pos);
+            audio.bind_mut().play_event_at(SfxEvent::Explosion, pos);
         }
 
         let Some(root) = godot_util::scene_root(self.base().get_tree()) else {

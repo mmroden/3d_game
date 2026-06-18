@@ -9,6 +9,16 @@ use crate::seed::Seed;
 use crate::shield::ShieldState;
 use crate::ship::ShipColor;
 
+/// Which defensive layer absorbed a hit. Drives impact SFX: a held shield
+/// plays the energy zap, a hull hit plays the heavy metal clang.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DamageOutcome {
+    /// The shield absorbed the whole hit; the hull was untouched.
+    ShieldHeld,
+    /// Damage overflowed the shield and reached the hull.
+    HullHit,
+}
+
 /// Tracks the state of a single roguelike run.
 #[derive(Debug)]
 pub struct RunState {
@@ -88,9 +98,16 @@ impl RunState {
         self.health.is_alive()
     }
 
-    pub fn take_damage(&mut self, amount: Damage) {
+    /// Apply damage: the shield absorbs first, any overflow hits health.
+    /// Returns which layer took the hit so the caller picks the right impact SFX.
+    pub fn take_damage(&mut self, amount: Damage) -> DamageOutcome {
         let overflow = self.shield.take_hit(amount);
         self.health = self.health.take(overflow);
+        if overflow > Damage::new(0.0) {
+            DamageOutcome::HullHit
+        } else {
+            DamageOutcome::ShieldHeld
+        }
     }
 
     pub fn tick_shield(&mut self, delta: f32) {
@@ -156,8 +173,9 @@ mod tests {
     #[test]
     fn damage_hits_shield_first() {
         let mut run = RunState::new(Seed::new(42));
-        run.take_damage(Damage::new(30.0));
+        let outcome = run.take_damage(Damage::new(30.0));
         // Shield absorbs 30 of 50, health untouched
+        assert_eq!(outcome, DamageOutcome::ShieldHeld);
         assert_eq!(run.shield.current, Shield::new(20.0));
         assert_eq!(run.health, Health::new(100.0));
         assert!(run.is_alive());
@@ -166,11 +184,23 @@ mod tests {
     #[test]
     fn damage_overflows_shield_to_health() {
         let mut run = RunState::new(Seed::new(42));
-        run.take_damage(Damage::new(70.0));
+        let outcome = run.take_damage(Damage::new(70.0));
         // Shield absorbs 50, health takes 20
+        assert_eq!(outcome, DamageOutcome::HullHit);
         assert_eq!(run.shield.current, Shield::new(0.0));
         assert_eq!(run.health, Health::new(80.0));
         assert!(run.is_alive());
+    }
+
+    #[test]
+    fn exact_shield_depletion_still_holds_the_hull() {
+        // Draining the shield to exactly zero with no overflow is a held shield,
+        // not a hull hit — the boundary that picks zap vs clang.
+        let mut run = RunState::new(Seed::new(42));
+        let outcome = run.take_damage(Damage::new(50.0));
+        assert_eq!(outcome, DamageOutcome::ShieldHeld);
+        assert_eq!(run.shield.current, Shield::new(0.0));
+        assert_eq!(run.health, Health::new(100.0));
     }
 
     #[test]

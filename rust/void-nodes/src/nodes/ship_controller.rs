@@ -453,10 +453,9 @@ impl ShipController {
 
     /// Called when a projectile or enemy hits this ship.
     pub fn apply_damage(&mut self, damage: void_logic::newtypes::Damage) {
-        // Energy-hit sound — distinct from the heavy collision thud.
-        if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
-            audio.bind_mut().play_event(SfxEvent::ImpactShield);
-        }
+        // The hit sound (shield zap vs. hull clang) is chosen by GameManager,
+        // the only place that knows whether the shield held — see
+        // `on_player_damaged`. The node just reports the hit.
         // Signals are Variant territory: convert at the boundary.
         self.base_mut().emit_signal(
             signals::PLAYER_DAMAGED,

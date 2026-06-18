@@ -10,7 +10,7 @@ use super::live_handle::{LiveOpt, LiveRef};
 use void_logic::audio_catalog::{
     MusicContext, SfxEvent,
     CROSSFADE_SECS, GAMEPLAY_MUSIC_VOL, MENU_MUSIC_VOL, TRANSITION_MUSIC_VOL,
-    DEATH_MUSIC_VOL, MAX_SFX_POLYPHONY, COLLISION_SFX_COOLDOWN,
+    DEATH_MUSIC_VOL, MAX_SFX_POLYPHONY, COLLISION_SFX_COOLDOWN, SFX_3D_UNIT_SIZE,
 };
 use void_logic::game_phase::GamePhase;
 
@@ -350,6 +350,11 @@ impl AudioManager {
         player.set_bus("SFX");
         player.set_stream(&stream);
         player.set_position(position);
+        // Carry combat SFX across the room: the default unit_size attenuates
+        // too aggressively for gameplay feedback. Spatialization is correct now
+        // that a player-anchored AudioListener3D drives the root viewport (see
+        // ViewManager::attach_audio_listener).
+        player.set_unit_size(SFX_3D_UNIT_SIZE);
 
         // Add to scene root so position is in world space
         if let Some(mut root) = super::godot_util::scene_root(self.base().get_tree()) {

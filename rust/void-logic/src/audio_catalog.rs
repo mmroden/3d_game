@@ -69,12 +69,15 @@ pub enum SfxEvent {
     LaserFire,
     /// Enemy blaster fire.
     EnemyFire,
-    /// Laser hits wall or enemy hull.
+    /// A hit lands on the bare hull (shield down), or a swarmer latches on —
+    /// a heavy metal clang.
     ImpactMetal,
-    /// Laser hits shield.
+    /// A hit the shield absorbs — an energy zap.
     ImpactShield,
-    /// Ram collision or enemy death explosion.
+    /// Heavy physical collision: ramming a wall or piece of furniture.
     ImpactHeavy,
+    /// Enemy death or bomber detonation — a full explosion.
+    Explosion,
     /// Player enters portal.
     PortalEnter,
     /// Lootbox collected.
@@ -92,6 +95,7 @@ const ALL_SFX_EVENTS: &[SfxEvent] = &[
     SfxEvent::ImpactMetal,
     SfxEvent::ImpactShield,
     SfxEvent::ImpactHeavy,
+    SfxEvent::Explosion,
     SfxEvent::PortalEnter,
     SfxEvent::LootPickup,
     SfxEvent::LowHealthAlert,
@@ -113,9 +117,9 @@ impl SfxEvent {
                 sfx!("Gunshots/Blaster/blaster_shoot_03.wav"),
             ],
             Self::ImpactMetal => &[
-                sfx!("Impacts/impact_kinetic_light_metal_01.wav"),
-                sfx!("Impacts/impact_kinetic_light_metal_02.wav"),
-                sfx!("Impacts/impact_kinetic_light_metal_03.wav"),
+                sfx!("Impacts/impact_metal_01.wav"),
+                sfx!("Impacts/impact_metal_02.wav"),
+                sfx!("Impacts/impact_metal_03.wav"),
             ],
             Self::ImpactShield => &[
                 sfx!("Impacts/impact_kinetic_heavy_shield_01.wav"),
@@ -123,9 +127,16 @@ impl SfxEvent {
                 sfx!("Impacts/impact_kinetic_heavy_shield_03.wav"),
             ],
             Self::ImpactHeavy => &[
-                sfx!("Impacts/impact_kinematic_heavy_metal_01.wav"),
-                sfx!("Impacts/impact_kinematic_heavy_metal_02.wav"),
-                sfx!("Impacts/impact_kinematic_heavy_metal_03.wav"),
+                sfx!("Impacts/impact_metal_heavy_01.wav"),
+                sfx!("Impacts/impact_metal_heavy_02.wav"),
+            ],
+            Self::Explosion => &[
+                sfx!("Impacts/explosion_01.wav"),
+                sfx!("Impacts/explosion_02.wav"),
+                sfx!("Impacts/explosion_03.wav"),
+                sfx!("Impacts/explosion_04.wav"),
+                sfx!("Impacts/explosion_05.wav"),
+                sfx!("Impacts/explosion_06.wav"),
             ],
             Self::PortalEnter => &[
                 sfx!("WeaponSystems/system_cooling_vent.wav"),
@@ -174,6 +185,10 @@ pub const MAX_SFX_POLYPHONY: u32 = 8;
 pub const COLLISION_SFX_COOLDOWN: f32 = 0.3;
 /// Minimum speed (m/s) for a physical collision to trigger SFX.
 pub const COLLISION_SFX_MIN_SPEED: f32 = 3.0;
+/// Near-field radius (m) over which a positional SFX stays near full volume
+/// before distance attenuation kicks in. Larger = combat sounds carry further
+/// across a room. (Godot's `AudioStreamPlayer3D.unit_size` default is 10.)
+pub const SFX_3D_UNIT_SIZE: f32 = 18.0;
 
 // ── Validation helper ────────────────────────────────────────────────
 

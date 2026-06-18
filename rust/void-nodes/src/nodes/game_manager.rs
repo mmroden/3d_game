@@ -18,6 +18,8 @@ const SAVE_SECTION: &str = "run";
 use rand::RngExt;
 
 use super::constants::{actions, signals, methods, nodes, properties};
+use super::godot_util;
+use void_logic::audio_catalog::SfxEvent;
 use void_logic::bestiary::{self, BestiaryKind};
 use void_logic::enemy_type::{self, EnemyType};
 use void_logic::game_options::GameOptions;
@@ -26,7 +28,7 @@ use void_logic::generator::rooms_for_level;
 use void_logic::input_method::InputMethod;
 use void_logic::newtypes::Damage;
 use void_logic::power_routing::PowerMode;
-use void_logic::run_state::RunState;
+use void_logic::run_state::{RunState, DamageOutcome};
 use void_logic::save_game::SaveGame;
 use void_logic::seed::Seed;
 use void_logic::ship::ShipColor;
@@ -483,7 +485,16 @@ impl GameManager {
         if self.phase != GamePhase::Playing {
             return;
         }
-        self.run_state.take_damage(Damage::new(amount));
+        let outcome = self.run_state.take_damage(Damage::new(amount));
+        // Pick the hit sound from the layer that actually took it: a held shield
+        // gives an energy zap, a hull breach a heavy metal clang.
+        let event = match outcome {
+            DamageOutcome::ShieldHeld => SfxEvent::ImpactShield,
+            DamageOutcome::HullHit => SfxEvent::ImpactMetal,
+        };
+        if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+            audio.bind_mut().play_event(event);
+        }
         if !self.run_state.is_alive() {
             self.on_player_death();
         }
