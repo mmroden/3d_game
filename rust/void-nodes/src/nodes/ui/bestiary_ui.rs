@@ -46,11 +46,13 @@ impl ICanvasLayer for BestiaryUI {
             return;
         }
         let input = Input::singleton();
-        // Left stick (or A/D) swaps between catalogued subjects; Select/Fire
-        // begins the mission. GameManager owns the index and clamps the ends.
-        if input.is_action_just_pressed(actions::MOVE_LEFT) {
+        // The menu buttons (leftmost d-pad / arrows) step between catalogued
+        // subjects — the same navigation every other menu uses, never the left
+        // stick; Select/Fire begins the mission. GameManager owns the index and
+        // clamps the ends.
+        if input.is_action_just_pressed(actions::MENU_UP) {
             self.base_mut().emit_signal(signals::BESTIARY_PAGED, &[Variant::from(-1_i32)]);
-        } else if input.is_action_just_pressed(actions::MOVE_RIGHT) {
+        } else if input.is_action_just_pressed(actions::MENU_DOWN) {
             self.base_mut().emit_signal(signals::BESTIARY_PAGED, &[Variant::from(1_i32)]);
         } else if input.is_action_just_pressed(actions::MENU_SELECT)
             || input.is_action_just_pressed(actions::FIRE)
@@ -69,7 +71,7 @@ impl BestiaryUI {
     fn bestiary_paged(delta: i32);
 
     /// Populate the panel for one entry and show the screen. `position` reads
-    /// like "1 / 3"; `hint` is the call to action ("Next ▶" / "Begin mission ▶").
+    /// like "1 / 3"; `hint` is the call to action ("▲ next ▼" / "Begin mission").
     /// Lock input for a beat. Called by GameManager when the briefing is first
     /// entered (NOT on page refresh), so the ship-select press that opened this
     /// screen can't bleed through and instantly start the mission. Decoupled

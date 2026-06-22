@@ -19,7 +19,7 @@ use void_logic::generator::{generate, GeneratorConfig};
 use void_logic::level_assembly::{self, RoomBounds};
 use void_logic::level_graph::{LevelGraph, RENDER_ROOM_DEPTH};
 use void_logic::room_furnisher::LightState;
-use void_logic::room_assembler::Collision;
+use void_logic::room_assembler::{Collision, MeshPlacement};
 use void_logic::portal as portal_sys;
 use void_logic::enemy_type;
 use void_logic::seed::Seed;
@@ -207,24 +207,30 @@ impl LevelManager {
         self.blinking_lights.live_count() as i64
     }
 
-    /// Build a single room for use as a menu/loadout backdrop: run the real
-    /// generator for one room, then strip everything that isn't room geometry
-    /// (enemies, loot, portal) so only the quiet room remains. The generation
-    /// pipeline itself is untouched — this only prunes its output.
+    /// Build the quiet one-room backdrop shown behind the loadout/briefing
+    /// screens. Structure-only: the same generator with populace (props, loot,
+    /// enemies, and the exit portal) skipped, so no live enemy fires at the
+    /// parked player and no exit gate floats in the loadout room.
     #[func]
     pub fn generate_backdrop(&mut self, seed: i64) {
-        self.generate_level(seed, 1);
-        let children: Vec<Gd<Node>> = self.base().get_children().iter_shared().collect();
-        for mut child in children {
-            // Room containers are named "Room{n}"; everything else is populace.
-            if !child.get_name().to_string().starts_with("Room") {
-                child.queue_free();
-            }
-        }
+        self.build_level(seed, 1, true);
     }
 
     #[func]
     pub fn generate_level(&mut self, seed: i64, target_rooms: u32) {
+        self.build_level(seed, target_rooms, false);
+    }
+}
+
+impl LevelManager {
+    /// The single level-build pathway. `structure_only` builds just the room
+    /// shells + lights — used for the loadout/briefing backdrop, where populace
+    /// would mean a live enemy firing at the parked player and the exit gate
+    /// floating in the menu. The full build additionally furnishes props and
+    /// containers, spawns enemies, and places the exit portal. Both drive the
+    /// same per-room steps, so the backdrop room is identical to the one the
+    /// player would fly through.
+    fn build_level(&mut self, seed: i64, target_rooms: u32, structure_only: bool) {
         let seed = Seed::from_i64(seed);
         let config = GeneratorConfig {
             seed,
@@ -243,8 +249,9 @@ impl LevelManager {
             }
         };
 
-        // Assemble all room geometry, furniture, light fixtures, and
-        // enemy positions, grouped per room.
+        // Assemble each room's content, grouped into the three build steps the
+        // shell mirrors: structure, then non-enemy inhabitants (props +
+        // containers), then enemies.
         let rooms = level_assembly::spawn_list_full(&graph, self.grid_cell_size, seed);
 
         // Drop any room nodes from a previous level before rebuilding.
@@ -259,97 +266,35 @@ impl LevelManager {
         let mut loose_rng = SmallRng::seed_from_u64(seed.value());
         let mut mesh_count = 0;
         let mut light_count = 0;
+        let mut enemy_count = 0;
 
-        // One container Node3D per room (identity transform; children
-        // keep world positions). Hiding a container culls that room's
-        // geometry AND its lights in a single visibility toggle.
+        // Enemy type selection scales with the level; one stream for the whole
+        // level so the mix is deterministic per seed.
+        let level = self.current_level;
+        let available_enemies = enemy_type::enemies_for_level(level as u32);
+        let mut enemy_rng = SmallRng::seed_from_u64(seed.value());
+
+        // One container Node3D per room (identity transform; children keep world
+        // positions). Hiding a container culls that room's geometry, lights, AND
+        // inhabitants in a single visibility toggle.
         for room in &rooms {
             let mut room_node = Node3D::new_alloc();
             room_node.set_name(&format!("Room{}", self.room_nodes.len()));
             self.base_mut().add_child(&room_node);
 
-            // Structural meshes collected here, then fused into ONE static
-            // collider for the whole room (see below) instead of one body
-            // per tile — keeps Jolt's broadphase and gen time sane.
+            // --- Step 1: structure — the room's shell. Static pieces are
+            // collected and fused into ONE merged collider per room instead of
+            // a body per tile (keeps Jolt's broadphase and gen time sane).
             let mut static_meshes: Vec<Gd<Node3D>> = Vec::new();
-
-            for entry in &room.meshes {
-                let Some(resource) = loader.load(entry.scene) else {
-                    godot_warn!("Could not load: {}", entry.scene);
-                    continue;
-                };
-                let packed: Gd<PackedScene> = resource.cast();
-                let Some(instance) = packed.instantiate() else {
-                    godot_warn!("Could not instantiate: {}", entry.scene);
-                    continue;
-                };
-                let mut node: Gd<Node3D> = instance.cast();
-                // The asset pack bakes its own collision via `_convcolonly`
-                // node suffixes (one StaticBody3D per tile). Strip it so our
-                // build owns collision as the single source — merged per room
-                // for static, convex for dynamic, none for passable.
-                Self::strip_baked_colliders(&node);
-
-                match entry.collision {
-                    Collision::Dynamic => {
-                        // Loose prop: a RigidBody3D Jolt simulates, with a
-                        // mesh-hugging convex hull per part (built below) so
-                        // it collides like its silhouette, not a loose sphere.
-                        node.set_position(Vector3::ZERO);
-                        use rand::RngExt;
-                        let rx: f32 = loose_rng.random_range(0.0..std::f32::consts::TAU);
-                        let ry: f32 = loose_rng.random_range(0.0..std::f32::consts::TAU);
-                        let rz: f32 = loose_rng.random_range(0.0..std::f32::consts::TAU);
-
-                        let mut body = RigidBody3D::new_alloc();
-                        body.set_position(vec3(entry.position));
-                        body.set_rotation(Vector3::new(rx, ry, rz));
-                        body.set_gravity_scale(0.0);
-
-                        body.add_child(&node);
-                        // Convex hull per mesh part hugs the geometry (boxy
-                        // crates, round barrels). It's the dynamic-safe
-                        // mesh-derived collider — Jolt allows concave trimesh
-                        // only on static bodies.
-                        let node_xform = node.get_transform();
-                        godot_util::add_convex_collision(&mut body, &node, node_xform);
-                        room_node.add_child(&body);
-                        // Placed, not flown here: clear interpolation so it
-                        // doesn't streak from the origin on the first frame.
-                        body.reset_physics_interpolation();
-                    }
-                    Collision::Static => {
-                        // Fixed structure: render it now, collect it for the
-                        // room's single merged trimesh collider (built after
-                        // the loop) so collision still hugs the geometry
-                        // without a body per tile.
-                        node.set_position(vec3(entry.position));
-                        if entry.rotation_x.abs() > 0.001 || entry.rotation_y.abs() > 0.001 {
-                            node.set_rotation(Vector3::new(entry.rotation_x, entry.rotation_y, 0.0));
-                        }
-                        room_node.add_child(&node);
-                        static_meshes.push(node);
-                    }
-                    Collision::Passable => {
-                        // Decorative only: rendered, never collided.
-                        node.set_position(vec3(entry.position));
-                        if entry.rotation_x.abs() > 0.001 || entry.rotation_y.abs() > 0.001 {
-                            node.set_rotation(Vector3::new(entry.rotation_x, entry.rotation_y, 0.0));
-                        }
-                        room_node.add_child(&node);
-                    }
+            for entry in &room.structure {
+                if Self::place_mesh(&mut loader, &mut room_node, entry, &mut static_meshes, &mut loose_rng) {
+                    mesh_count += 1;
                 }
-                mesh_count += 1;
             }
-
-            // Fuse all of this room's structure into one static body — same
-            // triangles, ~1/300th the bodies. One source: the meshes.
             Self::build_merged_collision(&mut room_node, &static_meshes);
-
-            // Light fixtures. Most are dead in an abandoned base, so an
-            // Off fixture gets no light node at all (the mesh stays, dark)
-            // — that absence is the real GPU saving. Hidden with their
-            // room when culled.
+            // Light fixtures. Most are dead in an abandoned base, so an Off
+            // fixture gets no light node at all (the mesh stays, dark) — that
+            // absence is the real GPU saving. Hidden with their room when culled.
             for ls in &room.lights {
                 if ls.state == LightState::Off {
                     continue;
@@ -371,51 +316,55 @@ impl LevelManager {
                 light_count += 1;
             }
 
+            // Populace — props, loot containers, and enemies. Skipped entirely
+            // for the structure-only backdrop so the loadout room stays quiet.
+            if !structure_only {
+                // --- Step 2: non-enemy inhabitants — furnished props (cell-rolled)
+                // and organics containers (template loot spawns).
+                for entry in &room.props {
+                    if Self::place_mesh(&mut loader, &mut room_node, entry, &mut static_meshes, &mut loose_rng) {
+                        mesh_count += 1;
+                    }
+                }
+                for pos in &room.containers {
+                    Self::spawn_organic_barrel(&mut loader, &mut room_node, *pos);
+                }
+
+                // --- Step 3: enemies — each a self-driving RigidBody3D parented
+                // under the room so it culls/hides with it.
+                for pos in &room.enemies {
+                    let etype = *available_enemies.choose(&mut enemy_rng)
+                        .expect("available_enemies is non-empty for any valid level");
+                    if Self::spawn_enemy(&mut loader, &mut room_node, etype, level, *pos) {
+                        enemy_count += 1;
+                    }
+                }
+            }
+
             self.room_bounds.push(room.bounds.clone());
             self.room_nodes.push(&room_node, ());
         }
 
-        let enemy_positions: Vec<[f32; 3]> = rooms
-            .iter()
-            .flat_map(|r| r.enemy_positions.iter().copied())
-            .collect();
-
-        // Spawn varied enemies based on current level. Each is a
-        // self-driving RigidBody3D; Godot/Jolt owns its motion.
-        let mut enemy_count = 0;
-        let available_enemies = enemy_type::enemies_for_level(self.current_level as u32);
-        let mut enemy_rng = SmallRng::seed_from_u64(seed.value());
-        for pos in &enemy_positions {
-            let etype = *available_enemies.choose(&mut enemy_rng)
-                .expect("available_enemies is non-empty for any valid level");
-            if self.spawn_enemy(&mut loader, etype, *pos) {
-                enemy_count += 1;
-            }
-        }
-
-        // Scatter organics barrels (permanent currency) through the level.
-        if !enemy_positions.is_empty() {
-            let barrel_count = (enemy_positions.len() / 4).clamp(1, 6);
-            let mut barrel_rng = SmallRng::seed_from_u64(seed.value() ^ 0xBA22E1);
-            for _ in 0..barrel_count {
-                if let Some(pos) = enemy_positions.choose(&mut barrel_rng).copied() {
-                    self.spawn_organic_barrel(&mut loader, pos);
+        // End-of-level portal: parent it under the room that contains it so it
+        // culls and hides with that room like every other inhabitant. Skipped
+        // for the structure-only backdrop (no exit gate behind the loadout).
+        if !structure_only {
+            if let Some(portal_pos) = portal_sys::portal_position(&graph, self.grid_cell_size) {
+                if let Some(portal_scene) = loader.load(scenes::PORTAL) {
+                    let packed: Gd<PackedScene> = portal_scene.cast();
+                    if let Some(instance) = packed.instantiate() {
+                        let mut node: Gd<Node3D> = instance.cast();
+                        node.set_position(vec3(portal_pos));
+                        let room_idx = self.room_bounds.iter().position(|b| b.contains(portal_pos));
+                        match room_idx.and_then(|i| self.room_nodes.get_live(i)) {
+                            Some(mut room_node) => room_node.add_child(&node),
+                            None => self.base_mut().add_child(&node),
+                        }
+                        godot_print!("Portal spawned at ({}, {}, {})", portal_pos[0], portal_pos[1], portal_pos[2]);
+                    }
+                } else {
+                    godot_warn!("Could not load portal.tscn");
                 }
-            }
-        }
-
-        // Spawn end-of-level portal in the last room
-        if let Some(portal_pos) = portal_sys::portal_position(&graph, self.grid_cell_size) {
-            if let Some(portal_scene) = loader.load(scenes::PORTAL) {
-                let packed: Gd<PackedScene> = portal_scene.cast();
-                if let Some(instance) = packed.instantiate() {
-                    let mut node: Gd<Node3D> = instance.cast();
-                    node.set_position(vec3(portal_pos));
-                    self.base_mut().add_child(&node);
-                    godot_print!("Portal spawned at ({}, {}, {})", portal_pos[0], portal_pos[1], portal_pos[2]);
-                }
-            } else {
-                godot_warn!("Could not load portal.tscn");
             }
         }
 
@@ -441,16 +390,15 @@ impl LevelManager {
         self.level_graph = graph;
 
         godot_print!(
-            "Level generated: {} rooms, {} meshes, {} lights, {} enemies",
+            "Level generated: {} rooms, {} meshes, {} lights, {} enemies{}",
             target_rooms,
             mesh_count,
             light_count,
             enemy_count,
+            if structure_only { " (structure-only)" } else { "" },
         );
     }
-}
 
-impl LevelManager {
     /// Free the collision bodies the glTF importer baked from `_col`/
     /// `_convcolonly` node suffixes, leaving a pure visual subtree. Our build
     /// is the single source of collision; freeing the body also frees its
@@ -591,9 +539,10 @@ impl LevelManager {
     /// Instantiate an enemy scene and position it. It self-drives as a
     /// RigidBody3D; the engine owns its motion.
     fn spawn_enemy(
-        &mut self,
         loader: &mut Gd<ResourceLoader>,
+        parent: &mut Gd<Node3D>,
         etype: enemy_type::EnemyType,
+        level: i32,
         pos: [f32; 3],
     ) -> bool {
         let Some(scene_res) = loader.load(etype.scene_path()) else {
@@ -610,17 +559,20 @@ impl LevelManager {
         {
             let mut g = enemy.bind_mut();
             g.set_spawn_type(etype.id());
-            g.set_spawn_level(self.current_level);
+            g.set_spawn_level(level);
         }
         enemy.set_position(vec3(pos));
-        self.base_mut().add_child(&enemy);
+        // Parented under the room container (a cell inhabitant), so hiding or
+        // culling the room takes its enemies with it.
+        parent.add_child(&enemy);
         enemy.reset_physics_interpolation();
         true
     }
 
-    /// Instantiate an organics barrel at `pos` as a LevelManager child so the
-    /// GameManager's spawned-entity scan connects its `organics_collected` signal.
-    fn spawn_organic_barrel(&mut self, loader: &mut Gd<ResourceLoader>, pos: [f32; 3]) -> bool {
+    /// Instantiate an organics barrel at `pos` under the given room container (a
+    /// cell inhabitant). GameManager's spawned-entity scan recurses into room
+    /// containers to connect its `organics_collected` signal.
+    fn spawn_organic_barrel(loader: &mut Gd<ResourceLoader>, parent: &mut Gd<Node3D>, pos: [f32; 3]) -> bool {
         let Some(scene_res) = loader.load(scenes::ORGANIC_BARREL) else {
             return false;
         };
@@ -630,8 +582,72 @@ impl LevelManager {
         };
         let mut node: Gd<Node3D> = instance.cast();
         node.set_position(vec3(pos));
-        self.base_mut().add_child(&node);
+        parent.add_child(&node);
         node.reset_physics_interpolation();
+        true
+    }
+
+    /// Instantiate one placed mesh under `room_node`, applying its collision
+    /// intent: Static renders and is collected into `statics` for the room's
+    /// merged collider; Dynamic becomes a tumbling RigidBody3D with a convex
+    /// hull; Passable just renders. Shared by the structure and inhabitant
+    /// (prop) build steps so both honor the same collision contract.
+    fn place_mesh(
+        loader: &mut Gd<ResourceLoader>,
+        room_node: &mut Gd<Node3D>,
+        entry: &MeshPlacement,
+        statics: &mut Vec<Gd<Node3D>>,
+        loose_rng: &mut SmallRng,
+    ) -> bool {
+        let Some(resource) = loader.load(entry.scene) else {
+            godot_warn!("Could not load: {}", entry.scene);
+            return false;
+        };
+        let packed: Gd<PackedScene> = resource.cast();
+        let Some(instance) = packed.instantiate() else {
+            godot_warn!("Could not instantiate: {}", entry.scene);
+            return false;
+        };
+        let mut node: Gd<Node3D> = instance.cast();
+        // The asset pack bakes its own collision via `_convcolonly` node
+        // suffixes; strip it so our build owns collision as the single source.
+        Self::strip_baked_colliders(&node);
+
+        match entry.collision {
+            Collision::Dynamic => {
+                node.set_position(Vector3::ZERO);
+                use rand::RngExt;
+                let rx: f32 = loose_rng.random_range(0.0..std::f32::consts::TAU);
+                let ry: f32 = loose_rng.random_range(0.0..std::f32::consts::TAU);
+                let rz: f32 = loose_rng.random_range(0.0..std::f32::consts::TAU);
+
+                let mut body = RigidBody3D::new_alloc();
+                body.set_position(vec3(entry.position));
+                body.set_rotation(Vector3::new(rx, ry, rz));
+                body.set_gravity_scale(0.0);
+
+                body.add_child(&node);
+                let node_xform = node.get_transform();
+                godot_util::add_convex_collision(&mut body, &node, node_xform);
+                room_node.add_child(&body);
+                body.reset_physics_interpolation();
+            }
+            Collision::Static => {
+                node.set_position(vec3(entry.position));
+                if entry.rotation_x.abs() > 0.001 || entry.rotation_y.abs() > 0.001 {
+                    node.set_rotation(Vector3::new(entry.rotation_x, entry.rotation_y, 0.0));
+                }
+                room_node.add_child(&node);
+                statics.push(node);
+            }
+            Collision::Passable => {
+                node.set_position(vec3(entry.position));
+                if entry.rotation_x.abs() > 0.001 || entry.rotation_y.abs() > 0.001 {
+                    node.set_rotation(Vector3::new(entry.rotation_x, entry.rotation_y, 0.0));
+                }
+                room_node.add_child(&node);
+            }
+        }
         true
     }
 }

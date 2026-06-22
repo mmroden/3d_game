@@ -138,12 +138,18 @@ test-rust:
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && $(CARGO) test $(FILTER) -- --nocapture
 
-# Runs GUT against the currently installed dylib (no rebuild).
+# Runs GUT against the currently installed dylib (no rebuild). Optional filters
+# for the fast inner loop (skip the full suite): F selects scripts by filename
+# substring, T narrows to a single test by name. With neither set, runs all:
+#   make test-godot
+#   make test-godot F=test_ship_select_backdrop
+#   make test-godot F=test_ship_select_backdrop T=test_backdrop_is_structure_only
 test-godot: deps-godot deps-gut
-	@echo "==> Running Godot tests (GUT)..."
+	@echo "==> Running Godot tests (GUT)$(if $(F), [F=$(F) T=$(T)])..."
 	@GODOT_DISABLE_LEAK_CHECKS=1 $(GODOT) --headless --path $(GODOT_DIR) \
 		-s res://addons/gut/gut_cmdln.gd \
-		-gdir=res://tests -ginclude_subdirs -gexit
+		-gdir=res://tests -ginclude_subdirs \
+		$(if $(F),-gselect=$(F)) $(if $(T),-gunit_test_name=$(T)) -gexit
 
 build: require-rust
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \

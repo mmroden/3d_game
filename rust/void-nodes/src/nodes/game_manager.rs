@@ -319,7 +319,7 @@ impl GameManager {
         }
     }
 
-    /// Called from the bestiary UI's left stick: browse the catalog by `delta`
+    /// Called from the bestiary UI's menu up/down: browse the catalog by `delta`
     /// (-1 prev, +1 next), clamped to the ends — no wrap, no auto-begin.
     #[func]
     pub fn on_bestiary_paged(&mut self, delta: i32) {
@@ -501,20 +501,25 @@ impl GameManager {
         }
     }
 
-    /// The player's ship rammed static geometry. Pick the collision sound from
-    /// the shield: a cushioned clang while it holds, bare metal once it's down.
+    /// The player's ship rammed static geometry. Costs a flat point off the top
+    /// (shield, then hull) so careless careening isn't consequence-free, and the
+    /// layer that took it picks the sound: a cushioned clang while the shield
+    /// holds, bare metal once it's down.
     #[func]
     pub fn on_player_collided(&mut self) {
         if self.phase != GamePhase::Playing {
             return;
         }
-        let event = if self.run_state.shield.is_up() {
-            SfxEvent::CollisionShielded
-        } else {
-            SfxEvent::CollisionBare
+        let outcome = self.run_state.take_collision_damage();
+        let event = match outcome {
+            DamageOutcome::ShieldHeld => SfxEvent::CollisionShielded,
+            DamageOutcome::HullHit => SfxEvent::CollisionBare,
         };
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
             audio.bind_mut().play_event(event);
+        }
+        if !self.run_state.is_alive() {
+            self.on_player_death();
         }
     }
 
@@ -1034,7 +1039,7 @@ impl GameManager {
             }
         }
 
-        // Connect BestiaryUI: left stick browses the catalog, Select begins.
+        // Connect BestiaryUI: menu up/down browses the catalog, Select begins.
         if let Some(bestiary) = Self::find_ui_node(&parent, nodes::BESTIARY_UI) {
             let begin_callable = self.base().callable(methods::ADVANCE_FROM_BESTIARY);
             if !bestiary.is_connected(signals::CONTINUE_PRESSED, &begin_callable) {
@@ -1070,6 +1075,28 @@ impl GameManager {
         }
     }
 
+    /// Connect a single spawned entity's gameplay signals to the matching
+    /// GameManager handlers, idempotently (skips if already wired). A node only
+    /// reacts to the signals it actually has — a barrel has organics_collected,
+    /// an enemy has enemy_killed — so this is safe to call on every node,
+    /// including room-geometry meshes that carry none.
+    fn connect_entity_signals(
+        node: &Gd<Node>,
+        kill: &Callable,
+        portal: &Callable,
+        organics: &Callable,
+    ) {
+        if node.has_signal(signals::ENEMY_KILLED) && !node.is_connected(signals::ENEMY_KILLED, kill) {
+            node.clone().connect(signals::ENEMY_KILLED, kill);
+        }
+        if node.has_signal(signals::PORTAL_ENTERED) && !node.is_connected(signals::PORTAL_ENTERED, portal) {
+            node.clone().connect(signals::PORTAL_ENTERED, portal);
+        }
+        if node.has_signal(signals::ORGANICS_COLLECTED) && !node.is_connected(signals::ORGANICS_COLLECTED, organics) {
+            node.clone().connect(signals::ORGANICS_COLLECTED, organics);
+        }
+    }
+
     fn connect_spawned_entities(&mut self) {
         let Some(parent) = self.base().get_parent() else { return };
         let Some(level_mgr) = parent.try_get_node_as::<Node>(nodes::LEVEL_MANAGER) else { return };
@@ -1079,19 +1106,13 @@ impl GameManager {
         let upgrade_callable = self.base().callable(methods::ON_UPGRADE_COLLECTED);
         let organics_callable = self.base().callable(methods::ON_ORGANICS_COLLECTED);
 
-        // Scan LevelManager children (enemies, portals, organics barrels)
+        // Enemies, portals, and organics barrels now live under per-room
+        // containers (cell inhabitants), so scan each room container's children
+        // as well as LevelManager's direct children.
         for child in level_mgr.get_children().iter_shared() {
-            if child.has_signal(signals::ENEMY_KILLED) && !child.is_connected(signals::ENEMY_KILLED, &kill_callable) {
-                let mut c = child.clone();
-                c.connect(signals::ENEMY_KILLED, &kill_callable);
-            }
-            if child.has_signal(signals::PORTAL_ENTERED) && !child.is_connected(signals::PORTAL_ENTERED, &portal_callable) {
-                let mut c = child.clone();
-                c.connect(signals::PORTAL_ENTERED, &portal_callable);
-            }
-            if child.has_signal(signals::ORGANICS_COLLECTED) && !child.is_connected(signals::ORGANICS_COLLECTED, &organics_callable) {
-                let mut c = child;
-                c.connect(signals::ORGANICS_COLLECTED, &organics_callable);
+            Self::connect_entity_signals(&child, &kill_callable, &portal_callable, &organics_callable);
+            for grandchild in child.get_children().iter_shared() {
+                Self::connect_entity_signals(&grandchild, &kill_callable, &portal_callable, &organics_callable);
             }
         }
 

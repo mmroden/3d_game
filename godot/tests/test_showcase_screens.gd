@@ -106,6 +106,36 @@ func test_bestiary_shows_the_turntable_in_a_backdrop_room():
 	assert_not_null(room, "the bestiary briefing must show the shared backdrop room")
 	assert_true(room.visible, "the backdrop room must render behind the turntable, not be culled")
 
+func test_bestiary_pages_with_menu_buttons_not_left_stick():
+	# Every menu navigates with the leftmost menu buttons (d-pad / arrows), not
+	# the left analog stick. The bestiary briefing must follow suit: the stick
+	# (move_*) must not page it; the menu buttons (menu_up/menu_down) must.
+	var gm = main.get_node("GameManager")
+	gm.start_new_game()            # -> ShipSelect
+	await wait_process_frames(2)
+	gm.advance_from_ship_select()  # -> Bestiary briefing
+	# Wait out the entry input lockout (0.25s) so presses are honored.
+	await wait_seconds(0.4)
+	var ui = main.get_node("BestiaryUI")
+	assert_false(ui.input_locked(), "the entry lockout must expire before testing input")
+	watch_signals(ui)
+
+	# The left analog stick must no longer page the bestiary.
+	Input.action_press("move_right")
+	await wait_process_frames(2)
+	Input.action_release("move_right")
+	await wait_process_frames(1)
+	assert_signal_not_emitted(ui, "bestiary_paged",
+		"the left stick must not page the bestiary")
+
+	# The menu buttons (leftmost d-pad / arrows) must page it, like every menu.
+	Input.action_press("menu_down")
+	await wait_process_frames(2)
+	Input.action_release("menu_down")
+	await wait_process_frames(1)
+	assert_signal_emitted(ui, "bestiary_paged",
+		"the menu buttons must page the bestiary")
+
 func test_bestiary_locks_input_briefly_on_entry():
 	# The button that opens the briefing (ship-select's Continue / Fire) must not
 	# bleed through and instantly begin the mission. Entering locks input briefly.

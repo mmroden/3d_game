@@ -37,12 +37,13 @@ pub(crate) fn generate_room(rng: &mut SmallRng, config: &GeneratorConfig) -> Roo
 
     let connectors = auto_connectors(ex, ey, ez, rng);
     let enemy_spawns = auto_enemy_spawns(ex, ey, ez, rng);
+    let loot_spawns = auto_loot_spawns(ex, ez, rng);
 
     RoomTemplate {
         kind: TemplateKind::Room,
         connectors,
         enemy_spawns,
-        loot_spawns: vec![],
+        loot_spawns,
         extents: [ex, ey, ez],
     }
 }
@@ -125,6 +126,23 @@ fn auto_enemy_spawns(ex: u32, ey: u32, ez: u32, rng: &mut SmallRng) -> Vec<Spawn
     (0..count).map(|_| {
         let x = rng.random_range(1.0..(ex as f32 - 1.0).max(1.5)) * cell_size;
         let y = rng.random_range(0.5..max_y);
+        let z = rng.random_range(1.0..(ez as f32 - 1.0).max(1.5)) * cell_size;
+        SpawnPoint { position: [x, y, z] }
+    }).collect()
+}
+
+/// Generate organics-container (green pickup) spawn points at random floor-level
+/// interior positions. Sparser than enemies — a level should reward exploration
+/// without carpeting every room in loot. Lives near the floor so the barrel
+/// rests in view rather than floating mid-air.
+fn auto_loot_spawns(ex: u32, ez: u32, rng: &mut SmallRng) -> Vec<SpawnPoint> {
+    use rand::RngExt;
+
+    let cell_size = 4.0_f32;
+    let count = rng.random_range(0..=2u32);
+    (0..count).map(|_| {
+        let x = rng.random_range(1.0..(ex as f32 - 1.0).max(1.5)) * cell_size;
+        let y = rng.random_range(0.5..2.0);
         let z = rng.random_range(1.0..(ez as f32 - 1.0).max(1.5)) * cell_size;
         SpawnPoint { position: [x, y, z] }
     }).collect()
@@ -290,6 +308,28 @@ mod tests {
             let room = generate_room(&mut rng, &config);
             assert!(!room.enemy_spawns.is_empty());
         }
+    }
+
+    #[test]
+    fn generated_rooms_carry_loot_spawns() {
+        // Loot spawns are revived (were always empty): across many rooms some
+        // must carry containers, and every spawn sits near the floor so the
+        // barrel rests in view rather than floating.
+        let mut rng = SmallRng::seed_from_u64(42);
+        let config = test_config(42);
+        let mut any_loot = false;
+        for _ in 0..50 {
+            let room = generate_room(&mut rng, &config);
+            for sp in &room.loot_spawns {
+                any_loot = true;
+                assert!(
+                    sp.position[1] < 2.0,
+                    "loot should spawn near the floor, got y={}",
+                    sp.position[1]
+                );
+            }
+        }
+        assert!(any_loot, "no room across 50 carried any loot spawn");
     }
 
     #[test]

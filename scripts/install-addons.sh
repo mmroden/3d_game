@@ -267,6 +267,37 @@ else
     echo "  evil_mechs not found, skipping enemy mechs."
 fi
 
+# ========== Jump gate (CGTrader OBJ -> decimated glB) ==========
+# The end-of-level exit portal model. Ships as a ~78k-tri OBJ + .mtl + loose PBR
+# maps; the same headless Blender pass that decimates the enemy mechs collapses
+# it to a game-weight glb (textures embedded) under godot/addons/props/. The
+# .mtl references its textures, so the OBJ importer materials need no rebuild —
+# decimate.py keeps them and ignores the trailing tex_dir arg.
+
+# A single static prop — keep full detail (0 = no decimation). Decimating it
+# would collapse the gate's tiny energy-field plane; the tri budget only matters
+# for the many-instances enemy mechs.
+JUMP_GATE_SRC="$SHIPS_SRC/jump_gate/JumpGate.obj"
+JUMP_GATE_TARGET=0
+
+if [ -f "$JUMP_GATE_SRC" ]; then
+    PROPS_DIR="$GODOT_DIR/addons/props"
+    mkdir -p "$PROPS_DIR"
+    if [ ! -x "$BLENDER" ]; then
+        echo "  WARNING: Blender not found at $BLENDER — run 'make deps'. Skipping jump gate."
+    else
+        echo "  Converting jump gate (target ${JUMP_GATE_TARGET} tris)..."
+        "$BLENDER" --background --python "$(dirname "$0")/decimate.py" -- \
+            "$JUMP_GATE_SRC" "$PROPS_DIR/jump_gate.glb" "$JUMP_GATE_TARGET" \
+            "$(dirname "$JUMP_GATE_SRC")" 2>&1 \
+            | grep -i "decimate:" || echo "  (jump gate: no decimation summary — check Blender output)"
+        chmod -R u+w "$PROPS_DIR"
+        echo "  Jump gate installed."
+    fi
+else
+    echo "  jump_gate OBJ not found, skipping."
+fi
+
 # ========== Audio assets (music + SFX) ==========
 
 AUDIO_DIR="$GODOT_DIR/addons/audio"

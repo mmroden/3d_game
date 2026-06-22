@@ -27,13 +27,24 @@ pub fn room_at(point: [f32; 3], rooms: &[RoomBounds]) -> Option<usize> {
     rooms.iter().position(|r| r.contains(point))
 }
 
-/// All of one room's assembled content, grouped so the shell can parent
-/// it under a single node and cull the whole room at once.
+/// All of one room's assembled content, grouped so the shell can parent it
+/// under a single node and cull the whole room at once — and split into the
+/// three load steps the shell builds a room in: structure, then non-enemy
+/// inhabitants (props + containers), then enemies.
 #[derive(Debug, Clone)]
 pub struct RoomAssembly {
-    pub meshes: Vec<MeshPlacement>,
+    /// The room's shell: walls/floors/ceilings plus light-fixture meshes. The
+    /// Static pieces fuse into the room's one merged collider.
+    pub structure: Vec<MeshPlacement>,
     pub lights: Vec<LightSource>,
-    pub enemy_positions: Vec<[f32; 3]>,
+    /// Furnished fixtures (cell-rolled props). Decorative/dynamic, never the
+    /// shell — built in the inhabitants step alongside containers.
+    pub props: Vec<MeshPlacement>,
+    /// Organics container (green pickup) spawn positions, from the template's
+    /// loot spawns.
+    pub containers: Vec<[f32; 3]>,
+    /// Enemy spawn positions, from the template's enemy spawns.
+    pub enemies: Vec<[f32; 3]>,
     pub bounds: RoomBounds,
 }
 
@@ -47,7 +58,8 @@ pub fn spawn_list(
     let mut meshes = Vec::new();
     let mut lights = Vec::new();
     for room in spawn_list_full(graph, cell_size, seed) {
-        meshes.extend(room.meshes);
+        meshes.extend(room.structure);
+        meshes.extend(room.props);
         lights.extend(room.lights);
     }
     (meshes, lights)
@@ -76,7 +88,8 @@ pub fn spawn_list_full(
         let origin = room.world_position(cell_size, story_height);
 
         let mut grid = CellGrid::new(&room.template, &active, origin, cell_size);
-        let mut meshes = crate::room_assembler::assemble_from_grid(
+        // Step 1 data — the room's shell.
+        let mut structure = crate::room_assembler::assemble_from_grid(
             &grid,
             &room.template,
             &active,
@@ -85,18 +98,37 @@ pub fn spawn_list_full(
 
         let room_seed = seed.value().wrapping_add(room_idx as u64).wrapping_mul(2654435761);
         grid.populate(theme, room_seed);
-        meshes.extend(grid.prop_placements());
+        // Step 2 data — furnished fixtures (cell-rolled).
+        let props = grid.prop_placements();
 
         let mut lights = Vec::new();
         for (mesh, light) in room_furnisher::light_fixtures(&room.template, &active, origin, cell_size, room_seed) {
-            meshes.push(mesh);
+            // Light fixtures are part of the shell: they render in the structure
+            // step and are passable, so they never join the merged collider.
+            structure.push(mesh);
             lights.push(light);
         }
 
-        let mut enemy_positions = Vec::new();
+        // Step 2 data — organics containers, authored per template via loot
+        // spawns (replaces the shell's old ad-hoc scatter).
+        let containers: Vec<[f32; 3]> = room
+            .template
+            .loot_spawns
+            .iter()
+            .map(|sp| [
+                origin[0] + sp.position[0],
+                origin[1] + sp.position[1],
+                origin[2] + sp.position[2],
+            ])
+            .collect();
+
+        // Step 3 data — enemies, authored per template via enemy spawns. The
+        // start room (room_idx 0) stays clear so the player isn't ambushed on
+        // spawn.
+        let mut enemies = Vec::new();
         if room_idx > 0 {
             for sp in &room.template.enemy_spawns {
-                enemy_positions.push([
+                enemies.push([
                     origin[0] + sp.position[0],
                     origin[1] + sp.position[1] + 1.5,
                     origin[2] + sp.position[2],
@@ -127,9 +159,11 @@ pub fn spawn_list_full(
         }
 
         rooms.push(RoomAssembly {
-            meshes,
+            structure,
             lights,
-            enemy_positions,
+            props,
+            containers,
+            enemies,
             bounds: RoomBounds { min, max },
         });
     }
@@ -238,11 +272,11 @@ mod tests {
                 let asm = &assemblies[i];
                 // Square: a shaft emits straight walls and no rounded corners.
                 assert_eq!(
-                    asm.meshes.iter().filter(|m| m.scene.contains("Corner_Round")).count(),
+                    asm.structure.iter().filter(|m| m.scene.contains("Corner_Round")).count(),
                     0,
                     "seed {seed}: vertical shaft still has rounded corner pieces"
                 );
-                if asm.meshes.iter().any(|m| m.scene.contains("_Straight")) {
+                if asm.structure.iter().any(|m| m.scene.contains("_Straight")) {
                     square_shaft_seen = true;
                 }
                 // Rim-lit: all ceilings are open, so any light is a rim light.
@@ -354,6 +388,43 @@ mod tests {
         let graph = generate(&test_config(7)).expect("generation");
         let rooms = spawn_list_full(&graph, 4.0, Seed::new(7));
         assert_eq!(rooms.len(), graph.room_count());
+    }
+
+    #[test]
+    fn rooms_split_into_the_three_load_groups() {
+        // Every room carries a non-empty structure (its shell); across a span of
+        // seeds, props and containers both appear — proving inhabitants flow
+        // through their own groups (containers via the revived loot spawns), kept
+        // separate from structure for per-room, per-step loading.
+        let mut any_container = false;
+        let mut any_prop = false;
+        let mut any_enemy = false;
+        for seed in 0..30u64 {
+            let Ok(graph) = generate(&test_config(seed)) else { continue };
+            let rooms = spawn_list_full(&graph, 4.0, Seed::new(seed));
+            for room in &rooms {
+                assert!(!room.structure.is_empty(), "seed {seed}: a room had no structure");
+                any_container |= !room.containers.is_empty();
+                any_prop |= !room.props.is_empty();
+                any_enemy |= !room.enemies.is_empty();
+            }
+        }
+        assert!(any_container, "no container appeared across 30 seeds");
+        assert!(any_prop, "no prop appeared across 30 seeds");
+        assert!(any_enemy, "no enemy appeared across 30 seeds");
+    }
+
+    #[test]
+    fn start_room_stays_clear_of_enemies() {
+        // The first room (player spawn) must never carry enemies — no ambush on
+        // spawn — even though its template may define enemy spawns.
+        for seed in 0..30u64 {
+            let Ok(graph) = generate(&test_config(seed)) else { continue };
+            let rooms = spawn_list_full(&graph, 4.0, Seed::new(seed));
+            if let Some(start) = rooms.first() {
+                assert!(start.enemies.is_empty(), "seed {seed}: start room has enemies");
+            }
+        }
     }
 
     #[test]

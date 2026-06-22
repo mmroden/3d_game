@@ -192,6 +192,9 @@ pub mod scenes {
     pub const PORTAL: &str = "res://scenes/items/portal.tscn";
     /// Player ship model (CGTrader, installed via `make assets`).
     pub const SHIP_MODEL: &str = "res://addons/ships/Spacecraft_1.glb";
+    /// End-of-level exit portal model (CGTrader jump gate, OBJ decimated to a
+    /// self-contained glb by `make assets` — see scripts/decimate.py).
+    pub const JUMP_GATE_MODEL: &str = "res://addons/props/jump_gate.glb";
     /// Bestiary pickup models — the same GLTFs the in-level pickups wear, spun
     /// in the briefing room (without the pickups' collision/collect behavior).
     pub const BARREL_MODEL: &str = "res://addons/quaternius/essentials/props/Prop_Barrel1.gltf";
@@ -345,6 +348,7 @@ mod tests {
             scenes::ORGANIC_BARREL,
             scenes::PORTAL,
             scenes::SHIP_MODEL,
+            scenes::JUMP_GATE_MODEL,
         ];
         for path in &all_scenes {
             assert!(

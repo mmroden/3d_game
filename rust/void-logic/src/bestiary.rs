@@ -108,11 +108,12 @@ pub fn paged_index(current: usize, delta: i32, total: usize) -> usize {
 }
 
 /// The call-to-action under the briefing panel. The Ⓧ marks the begin button
-/// (gamepad X / keyboard Enter). The left-stick next/prev hint only appears when
-/// there's more than one entry to move between.
+/// (gamepad X / keyboard Enter). The next/prev hint only appears when there's
+/// more than one entry to move between; its up/down arrows match the menu_up /
+/// menu_down paging input (the same navigation every other menu uses).
 pub fn briefing_hint(total: usize) -> &'static str {
     if total > 1 {
-        "\u{25C0} next \u{25B6}     \u{2022}     \u{24CD} Begin mission"
+        "\u{25B2} next \u{25BC}     \u{2022}     \u{24CD} Begin mission"
     } else {
         "\u{24CD} Begin mission"
     }
@@ -197,6 +198,12 @@ mod tests {
         let multi = briefing_hint(3);
         assert!(multi.contains("next"), "multiple entries show the next/prev hint");
         assert!(multi.contains("Begin mission"));
+        // Paging is bound to menu up/down, so the glyphs must read up/down —
+        // not the left/right arrows that imply a horizontal control.
+        assert!(multi.contains('\u{25B2}'), "up arrow ▲ matches the menu_up paging input");
+        assert!(multi.contains('\u{25BC}'), "down arrow ▼ matches the menu_down paging input");
+        assert!(!multi.contains('\u{25C0}'), "no left arrow ◀ — paging isn't horizontal");
+        assert!(!multi.contains('\u{25B6}'), "no right arrow ▶ — paging isn't horizontal");
     }
 
     #[test]

@@ -1,13 +1,17 @@
 use godot::prelude::*;
 use godot::classes::{
     Area3D, IArea3D, CollisionShape3D, SphereShape3D,
-    MeshInstance3D, TorusMesh, StandardMaterial3D,
-    GpuParticles3D, SphereMesh,
+    StandardMaterial3D, GpuParticles3D, SphereMesh, Node3D,
 };
 
-use super::constants::{groups, methods, signals};
+use super::constants::{groups, methods, scenes, signals};
 use super::godot_util;
 use void_logic::audio_catalog::SfxEvent;
+
+/// Diameter (m) the imported gate model is fit-scaled to. Matches the radius-2
+/// collision sphere so the ring the player flies through lines up with the
+/// trigger volume.
+const GATE_SIZE: f32 = 4.0;
 
 /// End-of-level portal. Player touches it to complete the level.
 #[derive(GodotClass)]
@@ -31,21 +35,11 @@ impl IArea3D for Portal {
         shape.set_shape(&sphere);
         self.base_mut().add_child(&shape);
 
-        // Visual: glowing torus
-        let mut mesh_instance = MeshInstance3D::new_alloc();
-        let mut torus = TorusMesh::new_gd();
-        torus.set_inner_radius(0.8);
-        torus.set_outer_radius(1.5);
-        mesh_instance.set_mesh(&torus);
-
-        let mut mat = StandardMaterial3D::new_gd();
-        mat.set_albedo(Color::from_rgba(0.2, 0.8, 1.0, 0.8));
-        mat.set_feature(godot::classes::base_material_3d::Feature::EMISSION, true);
-        mat.set_emission(Color::from_rgba(0.3, 0.7, 1.0, 1.0));
-        mat.set_emission_energy_multiplier(8.0);
-        mat.set_transparency(godot::classes::base_material_3d::Transparency::ALPHA);
-        mesh_instance.set_surface_override_material(0, &mat);
-        self.base_mut().add_child(&mesh_instance);
+        // Visual: the jump-gate model (installed by `make assets`; see
+        // scenes::JUMP_GATE_MODEL), fit to the trigger diameter. Loaded through
+        // the shared model helper like the ship and enemies — no procedural mesh.
+        let mut gate_parent: Gd<Node3D> = self.base().clone().upcast();
+        godot_util::spawn_model_fitted(&mut gate_parent, scenes::JUMP_GATE_MODEL, GATE_SIZE);
 
         // Particle effect: orbiting sparkles
         let mut particles = GpuParticles3D::new_alloc();

@@ -50,6 +50,8 @@ impl RunState {
     // wears the player down instead of the shield topping back up between shots.
     const DEFAULT_SHIELD_REGEN: f32 = 1.5;
     const DEFAULT_SHIELD_DELAY: f32 = 5.0;
+    /// Flat tax for ramming geometry, paid by shield-then-hull like any hit.
+    const COLLISION_DAMAGE: f32 = 1.0;
 
     /// Derive the seed for the current level from the run seed.
     pub fn level_seed(&self) -> Seed {
@@ -108,6 +110,13 @@ impl RunState {
         } else {
             DamageOutcome::ShieldHeld
         }
+    }
+
+    /// Ramming any geometry costs a flat point off the top — the shield while
+    /// it holds, the hull once it's down. Careening carelessly down a hallway
+    /// should hurt, not be consequence-free.
+    pub fn take_collision_damage(&mut self) -> DamageOutcome {
+        self.take_damage(Damage::new(Self::COLLISION_DAMAGE))
     }
 
     pub fn tick_shield(&mut self, delta: f32) {
@@ -210,6 +219,26 @@ mod tests {
         run.take_damage(Damage::new(200.0));
         assert_eq!(run.health, Health::new(0.0));
         assert!(!run.is_alive());
+    }
+
+    #[test]
+    fn collision_costs_one_shield_point() {
+        // A careless clang against a wall taxes one point off the shield.
+        let mut run = RunState::new(Seed::new(42));
+        let outcome = run.take_collision_damage();
+        assert_eq!(outcome, DamageOutcome::ShieldHeld);
+        assert_eq!(run.shield.current, Shield::new(49.0));
+        assert_eq!(run.health, Health::new(100.0));
+    }
+
+    #[test]
+    fn collision_bites_the_hull_once_the_shield_is_down() {
+        // Shield drained to zero, the next collision costs a hull point.
+        let mut run = RunState::new(Seed::new(42));
+        run.take_damage(Damage::new(50.0)); // drain the shield exactly
+        let outcome = run.take_collision_damage();
+        assert_eq!(outcome, DamageOutcome::HullHit);
+        assert_eq!(run.health, Health::new(99.0));
     }
 
     #[test]
