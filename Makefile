@@ -36,7 +36,7 @@ deps: deps-rust deps-godot deps-gut
 	@if [ -x "$(BLENDER)" ]; then \
 		echo "Blender already installed ($$($(BLENDER) --version 2>/dev/null | head -1))."; \
 	else \
-		echo "==> Installing Blender (headless mesh decimation for `make assets`)..."; \
+		echo "==> Installing Blender (headless mesh decimation for 'make assets')..."; \
 		brew install --cask blender; \
 	fi
 	@echo "All dependencies ready."

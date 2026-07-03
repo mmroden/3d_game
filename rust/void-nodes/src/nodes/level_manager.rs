@@ -282,16 +282,16 @@ impl LevelManager {
             room_node.set_name(&format!("Room{}", self.room_nodes.len()));
             self.base_mut().add_child(&room_node);
 
-            // --- Step 1: structure — the room's shell. Static pieces are
-            // collected and fused into ONE merged collider per room instead of
-            // a body per tile (keeps Jolt's broadphase and gen time sane).
+            // --- Step 1: structure — the room's shell. Static pieces (here
+            // and step 2's surface-mounted props) are collected and fused into
+            // ONE merged collider per room instead of a body per tile (keeps
+            // Jolt's broadphase and gen time sane).
             let mut static_meshes: Vec<Gd<Node3D>> = Vec::new();
             for entry in &room.structure {
                 if Self::place_mesh(&mut loader, &mut room_node, entry, &mut static_meshes, &mut loose_rng) {
                     mesh_count += 1;
                 }
             }
-            Self::build_merged_collision(&mut room_node, &static_meshes);
             // Light fixtures. Most are dead in an abandoned base, so an Off
             // fixture gets no light node at all (the mesh stays, dark) — that
             // absence is the real GPU saving. Hidden with their room when culled.
@@ -340,6 +340,10 @@ impl LevelManager {
                     }
                 }
             }
+
+            // Fuse the room's statics — structure AND surface-mounted props —
+            // now that every Static placement has been collected.
+            Self::build_merged_collision(&mut room_node, &static_meshes);
 
             self.room_bounds.push(room.bounds.clone());
             self.room_nodes.push(&room_node, ());
