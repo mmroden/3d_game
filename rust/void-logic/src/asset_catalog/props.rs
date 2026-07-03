@@ -22,17 +22,24 @@ pub struct PropEntry {
     pub blocks_flight: bool,
 }
 
-/// Whether a prop scene is loose debris that floats in zero-g.
-/// Columns, cables, wall-mounted equipment, and large installations stay fixed.
-/// Crates, barrels, and chests tumble freely.
-pub fn is_loose_prop(scene: &str) -> bool {
-    scene.contains("Crate")
-        || scene.contains("Barrel")
-        || scene.contains("Chest")
-        || scene.contains("Shelves")
-        || scene.contains("Locker")
-        || scene.contains("GunRack")
-        || scene.contains("Desk")
+/// Whether a prop is anchored to a surface and therefore stays fixed.
+///
+/// In a derelict zero-g base everything floats by default, so a prop is
+/// `Dynamic` unless it is mounted to a surface: wall/ceiling equipment
+/// (computers, screens, vents, fans, access points), structural columns,
+/// the floor teleporter pad, hanging cables, and hologram projectors. Loose
+/// furniture and debris (crates, barrels, chests, desks, lockers, shelves,
+/// pods, …) are not surface-mounted and tumble freely.
+pub fn is_surface_mounted(scene: &str) -> bool {
+    scene.contains("Computer")     // wall + ceiling computers
+        || scene.contains("Screen")
+        || scene.contains("Vent")
+        || scene.contains("Fan")
+        || scene.contains("AccessPoint")
+        || scene.contains("Column") // floor-to-ceiling structure
+        || scene.contains("Teleporter")
+        || scene.contains("Cable")
+        || scene.contains("Hologram")
 }
 
 pub const WALL_ADJACENT_PROPS: &[PropEntry] = &[

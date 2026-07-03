@@ -287,6 +287,14 @@ impl ViewManager {
             left_viewport.set_world_3d(&world);
         }
         Self::apply_aa(&mut left_viewport);
+        // 3D audio listener: in Godot 4.6 positional audio routes through the
+        // *current camera's* viewport (godot#94403, fixed in 4.7), and our only
+        // current cameras are the eye cameras inside these SubViewports. So the
+        // viewport that owns the listening camera must opt into 3D audio — without
+        // this, every AudioStreamPlayer3D is silent. The left eye is the render
+        // camera in both mono and SBS, and it tracks the player each frame
+        // (sync_eye_cameras), so it's the right listener.
+        left_viewport.set_as_audio_listener_3d(true);
 
         let mut left_cam = Camera3D::new_alloc();
         left_cam.set_name("LeftCamera");
@@ -607,22 +615,20 @@ impl ViewManager {
     }
 
     /// Apply the MSAA option to the viewport(s) actually rendering the
-    /// 3D world — the two eye sub-viewports in SBS, the root viewport in
-    /// mono. ViewManager is the sole owner of viewport anti-aliasing.
+    /// 3D world — both eye sub-viewports in SBS, the LEFT eye sub-viewport
+    /// (shown fullscreen) in mono. The root viewport never draws the world
+    /// (it only hosts the eye canvas), so it must never be targeted — same
+    /// set as `active_viewport_rids`. ViewManager is the sole owner of
+    /// viewport anti-aliasing.
     fn apply_msaa(&mut self, enabled: bool) {
         let msaa = if enabled { Msaa::MSAA_4X } else { Msaa::DISABLED };
-        match self.current_mode {
-            DisplayMode::SideBySide => {
-                for path in [nodes::LEFT_VIEWPORT, nodes::RIGHT_VIEWPORT] {
-                    if let Some(mut vp) = self.base().try_get_node_as::<SubViewport>(path) {
-                        vp.set_msaa_3d(msaa);
-                    }
-                }
-            }
-            DisplayMode::Mono => {
-                if let Some(mut vp) = self.base().get_viewport() {
-                    vp.set_msaa_3d(msaa);
-                }
+        let paths: &[&str] = match self.current_mode {
+            DisplayMode::SideBySide => &[nodes::LEFT_VIEWPORT, nodes::RIGHT_VIEWPORT],
+            DisplayMode::Mono => &[nodes::LEFT_VIEWPORT],
+        };
+        for path in paths {
+            if let Some(mut vp) = self.base().try_get_node_as::<SubViewport>(*path) {
+                vp.set_msaa_3d(msaa);
             }
         }
     }
@@ -655,4 +661,7 @@ impl ViewManager {
             camera.set_current(false);
         }
     }
+
+    // (3D audio listener is enabled directly on the left eye SubViewport in
+    // setup_viewports — see the `set_as_audio_listener_3d` call there.)
 }

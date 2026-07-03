@@ -9,6 +9,16 @@ use crate::seed::Seed;
 use crate::shield::ShieldState;
 use crate::ship::ShipColor;
 
+/// Which defensive layer absorbed a hit. Drives impact SFX: a held shield
+/// plays the energy zap, a hull hit plays the heavy metal clang.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DamageOutcome {
+    /// The shield absorbed the whole hit; the hull was untouched.
+    ShieldHeld,
+    /// Damage overflowed the shield and reached the hull.
+    HullHit,
+}
+
 /// Tracks the state of a single roguelike run.
 #[derive(Debug)]
 pub struct RunState {
@@ -40,6 +50,8 @@ impl RunState {
     // wears the player down instead of the shield topping back up between shots.
     const DEFAULT_SHIELD_REGEN: f32 = 1.5;
     const DEFAULT_SHIELD_DELAY: f32 = 5.0;
+    /// Flat tax for ramming geometry, paid by shield-then-hull like any hit.
+    const COLLISION_DAMAGE: f32 = 1.0;
 
     /// Derive the seed for the current level from the run seed.
     pub fn level_seed(&self) -> Seed {
@@ -88,9 +100,23 @@ impl RunState {
         self.health.is_alive()
     }
 
-    pub fn take_damage(&mut self, amount: Damage) {
+    /// Apply damage: the shield absorbs first, any overflow hits health.
+    /// Returns which layer took the hit so the caller picks the right impact SFX.
+    pub fn take_damage(&mut self, amount: Damage) -> DamageOutcome {
         let overflow = self.shield.take_hit(amount);
         self.health = self.health.take(overflow);
+        if overflow > Damage::new(0.0) {
+            DamageOutcome::HullHit
+        } else {
+            DamageOutcome::ShieldHeld
+        }
+    }
+
+    /// Ramming any geometry costs a flat point off the top — the shield while
+    /// it holds, the hull once it's down. Careening carelessly down a hallway
+    /// should hurt, not be consequence-free.
+    pub fn take_collision_damage(&mut self) -> DamageOutcome {
+        self.take_damage(Damage::new(Self::COLLISION_DAMAGE))
     }
 
     pub fn tick_shield(&mut self, delta: f32) {
@@ -156,8 +182,9 @@ mod tests {
     #[test]
     fn damage_hits_shield_first() {
         let mut run = RunState::new(Seed::new(42));
-        run.take_damage(Damage::new(30.0));
+        let outcome = run.take_damage(Damage::new(30.0));
         // Shield absorbs 30 of 50, health untouched
+        assert_eq!(outcome, DamageOutcome::ShieldHeld);
         assert_eq!(run.shield.current, Shield::new(20.0));
         assert_eq!(run.health, Health::new(100.0));
         assert!(run.is_alive());
@@ -166,11 +193,23 @@ mod tests {
     #[test]
     fn damage_overflows_shield_to_health() {
         let mut run = RunState::new(Seed::new(42));
-        run.take_damage(Damage::new(70.0));
+        let outcome = run.take_damage(Damage::new(70.0));
         // Shield absorbs 50, health takes 20
+        assert_eq!(outcome, DamageOutcome::HullHit);
         assert_eq!(run.shield.current, Shield::new(0.0));
         assert_eq!(run.health, Health::new(80.0));
         assert!(run.is_alive());
+    }
+
+    #[test]
+    fn exact_shield_depletion_still_holds_the_hull() {
+        // Draining the shield to exactly zero with no overflow is a held shield,
+        // not a hull hit — the boundary that picks zap vs clang.
+        let mut run = RunState::new(Seed::new(42));
+        let outcome = run.take_damage(Damage::new(50.0));
+        assert_eq!(outcome, DamageOutcome::ShieldHeld);
+        assert_eq!(run.shield.current, Shield::new(0.0));
+        assert_eq!(run.health, Health::new(100.0));
     }
 
     #[test]
@@ -180,6 +219,26 @@ mod tests {
         run.take_damage(Damage::new(200.0));
         assert_eq!(run.health, Health::new(0.0));
         assert!(!run.is_alive());
+    }
+
+    #[test]
+    fn collision_costs_one_shield_point() {
+        // A careless clang against a wall taxes one point off the shield.
+        let mut run = RunState::new(Seed::new(42));
+        let outcome = run.take_collision_damage();
+        assert_eq!(outcome, DamageOutcome::ShieldHeld);
+        assert_eq!(run.shield.current, Shield::new(49.0));
+        assert_eq!(run.health, Health::new(100.0));
+    }
+
+    #[test]
+    fn collision_bites_the_hull_once_the_shield_is_down() {
+        // Shield drained to zero, the next collision costs a hull point.
+        let mut run = RunState::new(Seed::new(42));
+        run.take_damage(Damage::new(50.0)); // drain the shield exactly
+        let outcome = run.take_collision_damage();
+        assert_eq!(outcome, DamageOutcome::HullHit);
+        assert_eq!(run.health, Health::new(99.0));
     }
 
     #[test]

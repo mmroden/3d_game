@@ -195,6 +195,15 @@ pub fn recolor_glow(glow: &Option<LiveRef<OmniLight3D>>, color: Color) {
 /// source of truth for building the ship — both the player and the menu
 /// showcase call this instead of repeating the load/fit/yaw sequence.
 pub fn spawn_fitted_model(parent: &mut Gd<Node3D>, path: &str, length: f32) -> Option<Gd<Node3D>> {
+    let mut model = spawn_model_fitted(parent, path, length)?;
+    model.rotate_y(SHIP_MODEL_YAW);
+    Some(model)
+}
+
+/// Load the model at `path`, instance it under `parent` named "Model", and
+/// fit-scale it to `length` — with no facing applied. Enemies use this (their
+/// imported models keep their own orientation); the ship wraps it with a yaw.
+pub fn spawn_model_fitted(parent: &mut Gd<Node3D>, path: &str, length: f32) -> Option<Gd<Node3D>> {
     let scene = ResourceLoader::singleton().load(path)?;
     let packed = scene.try_cast::<PackedScene>().ok()?;
     let instance = packed.instantiate()?;
@@ -202,7 +211,6 @@ pub fn spawn_fitted_model(parent: &mut Gd<Node3D>, path: &str, length: f32) -> O
     model.set_name("Model");
     parent.add_child(&model);
     fit_model_to_length(&mut model, length);
-    model.rotate_y(SHIP_MODEL_YAW);
     Some(model)
 }
 
@@ -231,7 +239,10 @@ pub fn fit_model_to_length(model: &mut Gd<Node3D>, target: f32) {
 pub fn add_convex_collision(body: &mut Gd<RigidBody3D>, node: &Gd<Node3D>, xform: Transform3D) {
     if let Ok(mesh_inst) = node.clone().try_cast::<MeshInstance3D>() {
         if let Some(mesh) = mesh_inst.get_mesh() {
-            if let Some(shape) = mesh.create_convex_shape() {
+            // simplify(true) collapses near-coplanar faces, so the hull is a
+            // handful of planes instead of (worst case) one per source triangle
+            // — an unsimplified hull makes Jolt narrowphase crawl with 29 enemies.
+            if let Some(shape) = mesh.create_convex_shape_ex().simplify(true).done() {
                 let mut col = CollisionShape3D::new_alloc();
                 col.set_shape(&shape);
                 col.set_transform(xform);
@@ -252,17 +263,26 @@ pub fn add_convex_collision(body: &mut Gd<RigidBody3D>, node: &Gd<Node3D>, xform
 /// an imported model regardless of how it's nested or scaled.
 pub fn combined_mesh_aabb(root: &Gd<Node3D>) -> Option<godot::builtin::Aabb> {
     use godot::classes::Node;
-    let inv = root.get_global_transform().affine_inverse();
+    use godot::builtin::Transform3D;
     let mut result: Option<godot::builtin::Aabb> = None;
-    let mut stack: Vec<Gd<Node>> = vec![root.clone().upcast()];
-    while let Some(node) = stack.pop() {
+    // Chain LOCAL transforms down from `root` rather than reading global ones:
+    // the model is measured the instant it's add_child'd, before global
+    // transforms propagate, so a cold global read misses (returns the unscaled
+    // mesh). Local transforms are valid immediately.
+    let mut stack: Vec<(Gd<Node>, Transform3D)> =
+        vec![(root.clone().upcast(), Transform3D::IDENTITY)];
+    while let Some((node, to_root)) = stack.pop() {
         for child in node.get_children().iter_shared() {
-            stack.push(child);
+            let local = child
+                .clone()
+                .try_cast::<Node3D>()
+                .map(|n| n.get_transform())
+                .unwrap_or(Transform3D::IDENTITY);
+            stack.push((child, to_root * local));
         }
         if let Ok(mesh) = node.try_cast::<MeshInstance3D>() {
             if mesh.get_mesh().is_some() {
-                let local = inv * mesh.get_global_transform();
-                let aabb = local * mesh.get_aabb();
+                let aabb = to_root * mesh.get_aabb();
                 result = Some(match result {
                     Some(acc) => acc.merge(aabb),
                     None => aabb,

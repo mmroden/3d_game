@@ -23,12 +23,22 @@ GUT_DIR := $(GODOT_DIR)/addons/gut
 CARGO := cargo
 RUST_LIB := $(RUST_DIR)/target/debug/libvoid_scavenger.dylib
 
+# Blender — used headless by `make assets` to decimate the cgtrader enemy
+# meshes (21–26k tris) down to a game-weight glB.
+BLENDER := /Applications/Blender.app/Contents/MacOS/Blender
+
 # --- Targets ---
 
 # One-time / occasional setup: installs the toolchains and tools. NOT a
 # prerequisite of build/run/check — those just use what's already installed
 # (see require-rust). Re-run after a machine setup or to update the toolchain.
 deps: deps-rust deps-godot deps-gut
+	@if [ -x "$(BLENDER)" ]; then \
+		echo "Blender already installed ($$($(BLENDER) --version 2>/dev/null | head -1))."; \
+	else \
+		echo "==> Installing Blender (headless mesh decimation for 'make assets')..."; \
+		brew install --cask blender; \
+	fi
 	@echo "All dependencies ready."
 
 # Bootstrap + update the Rust toolchain (network). Explicit only — kept out of
@@ -69,7 +79,7 @@ deps-godot:
 assets: build deps-godot
 	@test -d $(ASSETS_DIR)/quaternius-megakit || { echo "ERROR: assets/ not found. Download paid assets manually into assets/."; exit 1; }
 	@echo "==> Installing Godot addons from asset packs..."
-	@./scripts/install-addons.sh $(ASSETS_DIR) $(GODOT_DIR)
+	@BLENDER="$(BLENDER)" ./scripts/install-addons.sh $(ASSETS_DIR) $(GODOT_DIR)
 	@echo "Addons installed."
 	@rm -f $(GODOT_DIR)/.godot/uid_cache.bin
 	@chmod -R u+w $(GODOT_DIR)/.godot/imported 2>/dev/null; rm -rf $(GODOT_DIR)/.godot/imported || true
@@ -128,12 +138,18 @@ test-rust:
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && $(CARGO) test $(FILTER) -- --nocapture
 
-# Runs GUT against the currently installed dylib (no rebuild).
+# Runs GUT against the currently installed dylib (no rebuild). Optional filters
+# for the fast inner loop (skip the full suite): F selects scripts by filename
+# substring, T narrows to a single test by name. With neither set, runs all:
+#   make test-godot
+#   make test-godot F=test_ship_select_backdrop
+#   make test-godot F=test_ship_select_backdrop T=test_backdrop_is_structure_only
 test-godot: deps-godot deps-gut
-	@echo "==> Running Godot tests (GUT)..."
+	@echo "==> Running Godot tests (GUT)$(if $(F), [F=$(F) T=$(T)])..."
 	@GODOT_DISABLE_LEAK_CHECKS=1 $(GODOT) --headless --path $(GODOT_DIR) \
 		-s res://addons/gut/gut_cmdln.gd \
-		-gdir=res://tests -ginclude_subdirs -gexit
+		-gdir=res://tests -ginclude_subdirs \
+		$(if $(F),-gselect=$(F)) $(if $(T),-gunit_test_name=$(T)) -gexit
 
 build: require-rust
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \

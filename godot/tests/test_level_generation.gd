@@ -115,7 +115,7 @@ func test_level_generation_is_owned_by_the_phase_machine():
 	assert_gt(lm.get_child_count(), 0,
 		"entering Playing through the FSM must generate a level")
 
-	gm.on_player_damaged(1000000.0)  # lethal: Playing -> Death
+	gm.on_player_damaged(1000000.0, Vector3.ZERO)  # lethal: Playing -> Death
 	for child in lm.get_children():
 		child.free()
 	gm.continue_game()
@@ -131,26 +131,65 @@ func test_dead_enemies_are_cleaned_up_without_errors():
 	var lm = LevelManager.new()
 	add_child_autofree(lm)
 	lm.generate_level(4242, 8)
-	var survivors := []
-	for child in lm.get_children():
-		if child is EnemyDrone:
-			survivors.append(child)
+	# Enemies live under per-room containers (cell inhabitants), so scan
+	# the subtree rather than direct children.
+	var survivors := lm.find_children("*", "EnemyDrone", true, false)
 	assert_gt(survivors.size(), 0,
 		"seed 4242 must spawn enemies for this test to mean anything")
 	var victim: Node = survivors.pop_front()
 	victim.free()
 	await wait_physics_frames(5)
-	var remaining := 0
-	for child in lm.get_children():
-		if child is EnemyDrone:
-			remaining += 1
+	var remaining := lm.find_children("*", "EnemyDrone", true, false).size()
 	assert_eq(remaining, survivors.size(),
 		"the freed enemy must be gone and every survivor must still be hosted")
 
 
+func test_static_props_are_fused_into_the_room_collider():
+	# Differential oracle: generate_backdrop builds the same seed's room as
+	# generate_level minus populace, so the two merged colliders differ by
+	# exactly the surface-mounted (Collision::Static) props. Passable and
+	# Dynamic placements are never fused in either build, so a full-build
+	# collider with MORE triangles than the backdrop's proves props were
+	# fused; equal counts on every seed means props were dropped (the
+	# observed red: props were collected after the merge had already run).
+	var grew := 0
+	for level_seed in [4242, 7, 1234]:
+		var bare = LevelManager.new()
+		var full = LevelManager.new()
+		add_child_autofree(bare)
+		add_child_autofree(full)
+		bare.generate_backdrop(level_seed)
+		full.generate_level(level_seed, 1)
+		var bare_faces := _merged_collider_face_count(bare)
+		var full_faces := _merged_collider_face_count(full)
+		assert_gt(bare_faces, 0,
+			"seed %d: backdrop must build a merged collider" % level_seed)
+		assert_true(full_faces >= bare_faces,
+			"seed %d: fusing populace statics must never shrink the collider" % level_seed)
+		if full_faces > bare_faces:
+			grew += 1
+	assert_gt(grew, 0,
+		"at least one seed must furnish a static prop into the collider, else this test is vacuous")
+
+
+## Total triangle vertices across every room's merged collider: the
+## StaticBody3D placed as a direct child of each room container.
+func _merged_collider_face_count(lm: Node3D) -> int:
+	var count := 0
+	for room in lm.get_children():
+		for child in room.get_children():
+			if child.get_class() == "StaticBody3D":
+				for shape_node in child.find_children("*", "CollisionShape3D", true, false):
+					if shape_node.shape is ConcavePolygonShape3D:
+						count += shape_node.shape.get_faces().size()
+	return count
+
+
+## Rooms are identity-transform containers, so the layout lives in their
+## descendants: fingerprint every Node3D in the subtree, not just direct
+## children (which would make all levels look like N rooms at the origin).
 func _layout_fingerprint(lm: Node3D) -> Array:
 	var entries := []
-	for child in lm.get_children():
-		if child is Node3D:
-			entries.append("%s@%s" % [child.get_class(), child.position])
+	for node in lm.find_children("*", "Node3D", true, false):
+		entries.append("%s@%s" % [node.get_class(), node.position])
 	return entries

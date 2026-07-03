@@ -241,7 +241,7 @@ impl AudioManager {
 
 impl AudioManager {
     fn is_collision_event(event: SfxEvent) -> bool {
-        matches!(event, SfxEvent::ImpactMetal | SfxEvent::ImpactShield | SfxEvent::ImpactHeavy)
+        matches!(event, SfxEvent::CollisionShielded | SfxEvent::CollisionBare)
     }
 
     /// Returns true if the collision cooldown has expired, and resets it.

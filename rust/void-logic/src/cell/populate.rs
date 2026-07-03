@@ -4,7 +4,7 @@ use crate::room_template::ConnectorFacing;
 use crate::room_theme::RoomTheme;
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
-use std::f32::consts::{FRAC_PI_2, PI};
+use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use super::{CellGrid, CellKind, CellOccupant};
 
@@ -23,6 +23,12 @@ impl CellGrid {
         };
 
         let mut rng = SmallRng::seed_from_u64(seed);
+        // Separate stream for free-standing props' yaw, so giving them random
+        // facing doesn't perturb the placement RNG (and the level layout).
+        // Dynamic props get their own full tumble in the node shell; this is for
+        // the static free-standing ones (e.g. teleporters, holograms) that would
+        // otherwise all face the same way.
+        let mut orient = SmallRng::seed_from_u64(seed ^ 0x9E37_79B9_7F4A_7C15);
 
         // Collect ConnectorGap positions so we can skip columns adjacent to entrances.
         let gap_positions: std::collections::HashSet<[i32; 3]> = self.cells.iter()
@@ -74,7 +80,7 @@ impl CellGrid {
                                 scene: prop.scene,
                                 position: cell.world_center,
                                 rotation_x: 0.0,
-                                rotation_y: 0.0,
+                                rotation_y: orient.random_range(0.0..TAU),
                                 collision,
                             }]);
                         }
@@ -111,12 +117,22 @@ impl CellGrid {
                 CellKind::Interior => {
                     if !theme.palette.center.is_empty() && rng.random_range(0..center_den) < center_num {
                         let prop = &theme.palette.center[rng.random_range(0..theme.palette.center.len())];
+                        // A center prop only rests on a surface on the ground
+                        // story; upper stories have no floor under them (the room
+                        // floors only at cy 0), so the prop is floating — and
+                        // floating means Dynamic, never a frozen platform hanging
+                        // in mid-air.
+                        let collision = if cell.grid_pos[1] == 0 {
+                            Collision::for_prop(prop.scene)
+                        } else {
+                            Collision::Dynamic
+                        };
                         cell.occupant = CellOccupant::Props(vec![MeshPlacement {
                             scene: prop.scene,
                             position: cell.world_center,
                             rotation_x: 0.0,
-                            rotation_y: 0.0,
-                            collision: Collision::for_prop(prop.scene),
+                            rotation_y: orient.random_range(0.0..TAU),
+                            collision,
                         }]);
                     }
                 }

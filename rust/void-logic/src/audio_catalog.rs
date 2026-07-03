@@ -69,12 +69,19 @@ pub enum SfxEvent {
     LaserFire,
     /// Enemy blaster fire.
     EnemyFire,
-    /// Laser hits wall or enemy hull.
-    ImpactMetal,
-    /// Laser hits shield.
-    ImpactShield,
-    /// Ram collision or enemy death explosion.
-    ImpactHeavy,
+    /// Ship rams static geometry while the shield is up — a cushioned clang.
+    CollisionShielded,
+    /// Ship rams static geometry with the shield down — bare metal on metal.
+    CollisionBare,
+    /// An enemy hit lands while the shield holds — a light energy deflection.
+    HitShielded,
+    /// A full explosion: an enemy dying, or an enemy shot breaching the bare hull.
+    Explosion,
+    /// A swarmer drone latches onto the ship (floor 2+).
+    SwarmerLatch,
+    /// A subsidiary drone arms up from a dying drone's corpse (e.g. EyeDrone
+    /// spawning a GunDrone, floor 3+).
+    DroneSpawn,
     /// Player enters portal.
     PortalEnter,
     /// Lootbox collected.
@@ -89,9 +96,12 @@ pub enum SfxEvent {
 const ALL_SFX_EVENTS: &[SfxEvent] = &[
     SfxEvent::LaserFire,
     SfxEvent::EnemyFire,
-    SfxEvent::ImpactMetal,
-    SfxEvent::ImpactShield,
-    SfxEvent::ImpactHeavy,
+    SfxEvent::CollisionShielded,
+    SfxEvent::CollisionBare,
+    SfxEvent::HitShielded,
+    SfxEvent::Explosion,
+    SfxEvent::SwarmerLatch,
+    SfxEvent::DroneSpawn,
     SfxEvent::PortalEnter,
     SfxEvent::LootPickup,
     SfxEvent::LowHealthAlert,
@@ -112,20 +122,39 @@ impl SfxEvent {
                 sfx!("Gunshots/Blaster/blaster_shoot_02.wav"),
                 sfx!("Gunshots/Blaster/blaster_shoot_03.wav"),
             ],
-            Self::ImpactMetal => &[
-                sfx!("Impacts/impact_kinetic_light_metal_01.wav"),
-                sfx!("Impacts/impact_kinetic_light_metal_02.wav"),
-                sfx!("Impacts/impact_kinetic_light_metal_03.wav"),
-            ],
-            Self::ImpactShield => &[
+            Self::CollisionShielded => &[
                 sfx!("Impacts/impact_kinetic_heavy_shield_01.wav"),
                 sfx!("Impacts/impact_kinetic_heavy_shield_02.wav"),
                 sfx!("Impacts/impact_kinetic_heavy_shield_03.wav"),
             ],
-            Self::ImpactHeavy => &[
-                sfx!("Impacts/impact_kinematic_heavy_metal_01.wav"),
-                sfx!("Impacts/impact_kinematic_heavy_metal_02.wav"),
-                sfx!("Impacts/impact_kinematic_heavy_metal_03.wav"),
+            Self::CollisionBare => &[
+                sfx!("Impacts/impact_metal_01.wav"),
+                sfx!("Impacts/impact_metal_02.wav"),
+                sfx!("Impacts/impact_metal_03.wav"),
+            ],
+            Self::HitShielded => &[
+                sfx!("Impacts/impact_kinetic_light_shield_01.wav"),
+                sfx!("Impacts/impact_kinetic_light_shield_02.wav"),
+                sfx!("Impacts/impact_kinetic_light_shield_03.wav"),
+            ],
+            Self::SwarmerLatch => &[
+                sfx!("AttachmentAttacks/attach_attack_01.wav"),
+                sfx!("AttachmentAttacks/attach_attack_02.wav"),
+                sfx!("AttachmentAttacks/attach_attack_03.wav"),
+            ],
+            Self::DroneSpawn => &[
+                sfx!("Spawns/spawn_01.wav"),
+                sfx!("Spawns/spawn_02.wav"),
+                sfx!("Spawns/spawn_03.wav"),
+                sfx!("Spawns/spawn_04.wav"),
+            ],
+            Self::Explosion => &[
+                sfx!("Impacts/explosion_01.wav"),
+                sfx!("Impacts/explosion_02.wav"),
+                sfx!("Impacts/explosion_03.wav"),
+                sfx!("Impacts/explosion_04.wav"),
+                sfx!("Impacts/explosion_05.wav"),
+                sfx!("Impacts/explosion_06.wav"),
             ],
             Self::PortalEnter => &[
                 sfx!("WeaponSystems/system_cooling_vent.wav"),

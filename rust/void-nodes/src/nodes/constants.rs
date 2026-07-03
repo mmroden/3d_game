@@ -26,6 +26,7 @@ pub mod signals {
     pub const BODY_ENTERED: &str = "body_entered";
     pub const SIZE_CHANGED: &str = "size_changed";
     pub const PLAYER_DAMAGED: &str = "player_damaged";
+    pub const PLAYER_COLLIDED: &str = "player_collided";
     pub const PLAYER_SLOWED: &str = "player_slowed";
     pub const POWER_MODE_CHANGED: &str = "power_mode_changed";
     pub const UPGRADE_COLLECTED: &str = "upgrade_collected";
@@ -86,6 +87,7 @@ pub mod methods {
     pub const GENERATE_BACKDROP: &str = "generate_backdrop";
     pub const ROOM_FLOOR_CENTER: &str = "room_floor_center";
     pub const ON_PLAYER_DAMAGED: &str = "on_player_damaged";
+    pub const ON_PLAYER_COLLIDED: &str = "on_player_collided";
     pub const ON_PLAYER_SLOWED: &str = "on_player_slowed";
     pub const APPLY_SLOW: &str = "apply_slow";
     pub const UPDATE_SLOW: &str = "update_slow";
@@ -190,7 +192,9 @@ pub mod scenes {
     pub const PORTAL: &str = "res://scenes/items/portal.tscn";
     /// Player ship model (CGTrader, installed via `make assets`).
     pub const SHIP_MODEL: &str = "res://addons/ships/Spacecraft_1.glb";
-    pub const ENEMY_DRONE_FALLBACK: &str = "res://scenes/enemies/enemy_drone.tscn";
+    /// End-of-level exit portal model (CGTrader jump gate, OBJ decimated to a
+    /// self-contained glb by `make assets` — see scripts/decimate.py).
+    pub const JUMP_GATE_MODEL: &str = "res://addons/props/jump_gate.glb";
     /// Bestiary pickup models — the same GLTFs the in-level pickups wear, spun
     /// in the briefing room (without the pickups' collision/collect behavior).
     pub const BARREL_MODEL: &str = "res://addons/quaternius/essentials/props/Prop_Barrel1.gltf";
@@ -343,8 +347,8 @@ mod tests {
             scenes::LOOTBOX,
             scenes::ORGANIC_BARREL,
             scenes::PORTAL,
-            scenes::ENEMY_DRONE_FALLBACK,
             scenes::SHIP_MODEL,
+            scenes::JUMP_GATE_MODEL,
         ];
         for path in &all_scenes {
             assert!(

@@ -336,8 +336,10 @@ pub enum LightState {
 }
 
 impl LightState {
-    /// Classify a uniform sample `r` in `[0, 1)`. The base is mostly
-    /// dead: Off 50%, Blinking 25%, Dim 10%, On 15%.
+    /// Classify a uniform sample `r` in `[0, 1)`. The base is mostly dead —
+    /// Off 50%, Blinking 25%, Dim 10%, On 15% — deliberately, since every lit
+    /// fixture is a real OmniLight cost. Brightness comes from fixture energy,
+    /// not from turning more of them on.
     pub fn from_roll(r: f32) -> Self {
         if r < 0.50 {
             LightState::Off

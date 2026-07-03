@@ -476,6 +476,7 @@ fn rim_lights_ring_a_vertical_opening() {
 #[test]
 fn light_state_roll_thresholds_match_weights() {
     // The base is mostly dark: Off 50%, Blinking 25%, Dim 10%, On 15%.
+    // Kept low for physics/render cost; brightness comes from fixture energy.
     // Pinned at each boundary so the distribution can't silently drift.
     assert_eq!(LightState::from_roll(0.0), LightState::Off);
     assert_eq!(LightState::from_roll(0.499), LightState::Off);

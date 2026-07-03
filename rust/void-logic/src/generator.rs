@@ -37,12 +37,13 @@ pub(crate) fn generate_room(rng: &mut SmallRng, config: &GeneratorConfig) -> Roo
 
     let connectors = auto_connectors(ex, ey, ez, rng);
     let enemy_spawns = auto_enemy_spawns(ex, ey, ez, rng);
+    let loot_spawns = auto_loot_spawns(ex, ez, rng);
 
     RoomTemplate {
         kind: TemplateKind::Room,
         connectors,
         enemy_spawns,
-        loot_spawns: vec![],
+        loot_spawns,
         extents: [ex, ey, ez],
     }
 }
@@ -130,11 +131,28 @@ fn auto_enemy_spawns(ex: u32, ey: u32, ez: u32, rng: &mut SmallRng) -> Vec<Spawn
     }).collect()
 }
 
+/// Generate organics-container (green pickup) spawn points at random floor-level
+/// interior positions. Sparser than enemies — a level should reward exploration
+/// without carpeting every room in loot. Lives near the floor so the barrel
+/// rests in view rather than floating mid-air.
+fn auto_loot_spawns(ex: u32, ez: u32, rng: &mut SmallRng) -> Vec<SpawnPoint> {
+    use rand::RngExt;
+
+    let cell_size = 4.0_f32;
+    let count = rng.random_range(0..=2u32);
+    (0..count).map(|_| {
+        let x = rng.random_range(1.0..(ex as f32 - 1.0).max(1.5)) * cell_size;
+        let y = rng.random_range(0.5..2.0);
+        let z = rng.random_range(1.0..(ez as f32 - 1.0).max(1.5)) * cell_size;
+        SpawnPoint { position: [x, y, z] }
+    }).collect()
+}
+
 /// Compute the target room count for a given level number.
-/// Level 1 starts at 15 rooms, each subsequent level adds 5.
+/// Level 1 starts at 8 rooms, each subsequent level adds 2 (8, 10, 12, 14, …).
 pub fn rooms_for_level(level: u32) -> usize {
     let level = level.max(1);
-    10 + level as usize * 5
+    6 + level as usize * 2
 }
 
 /// Generate a level using the sweep pipeline:
@@ -293,6 +311,28 @@ mod tests {
     }
 
     #[test]
+    fn generated_rooms_carry_loot_spawns() {
+        // Loot spawns are revived (were always empty): across many rooms some
+        // must carry containers, and every spawn sits near the floor so the
+        // barrel rests in view rather than floating.
+        let mut rng = SmallRng::seed_from_u64(42);
+        let config = test_config(42);
+        let mut any_loot = false;
+        for _ in 0..50 {
+            let room = generate_room(&mut rng, &config);
+            for sp in &room.loot_spawns {
+                any_loot = true;
+                assert!(
+                    sp.position[1] < 2.0,
+                    "loot should spawn near the floor, got y={}",
+                    sp.position[1]
+                );
+            }
+        }
+        assert!(any_loot, "no room across 50 carried any loot spawn");
+    }
+
+    #[test]
     fn generated_room_is_tagged_as_room() {
         let mut rng = SmallRng::seed_from_u64(42);
         let config = test_config(42);
@@ -303,20 +343,20 @@ mod tests {
     // --- rooms_for_level tests ---
 
     #[test]
-    fn rooms_for_level_starts_at_15() {
-        assert_eq!(rooms_for_level(1), 15);
+    fn rooms_for_level_starts_at_8() {
+        assert_eq!(rooms_for_level(1), 8);
     }
 
     #[test]
-    fn rooms_for_level_increases_by_5() {
-        assert_eq!(rooms_for_level(2), 20);
-        assert_eq!(rooms_for_level(3), 25);
-        assert_eq!(rooms_for_level(4), 30);
+    fn rooms_for_level_increases_by_2() {
+        assert_eq!(rooms_for_level(2), 10);
+        assert_eq!(rooms_for_level(3), 12);
+        assert_eq!(rooms_for_level(4), 14);
     }
 
     #[test]
     fn rooms_for_level_zero_clamps_to_one() {
-        assert_eq!(rooms_for_level(0), 15);
+        assert_eq!(rooms_for_level(0), 8);
     }
 
     // --- Level generation tests ---

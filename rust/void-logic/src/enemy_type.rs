@@ -12,29 +12,40 @@ pub enum EnemyType {
     Bomber,
     EyeDrone,
     QuadShell,
+    /// Subsidiary drone an EyeDrone coughs up on death — a distinct, weaker,
+    /// faster harasser (wears the old GunDrone model) so a respawn reads as a
+    /// *new* enemy, not a clone of the one you just killed. Never placed
+    /// directly; only spawned (see `spawns_directly`).
+    SpawnDrone,
 }
 
 impl EnemyType {
+    // SpawnDrone is appended last so the original variants keep their
+    // `enemy_type_id` (the `.tscn`s and save data depend on those indices).
     pub const ALL: &[EnemyType] = &[
         EnemyType::GunDrone,
         EnemyType::QuadOrb,
         EnemyType::Bomber,
         EnemyType::EyeDrone,
         EnemyType::QuadShell,
+        EnemyType::SpawnDrone,
     ];
 
     /// Compile-time stat table indexed by variant order in `ALL`.
     const STATS: &[EnemyStats] = &[
-        // GunDrone — ranged kiter: holds distance and fires.
-        EnemyStats { hp: Health::new(3.0),  speed: 8.0,  damage: Damage::new(5.0),  detection_range: 25.0, attack_range: 10.0, attack_cooldown: 1.0, archetype: Archetype::Kiter,   reward: 1_000 },
+        // GunDrone — ranged kiter: holds distance and fires. Nimble (not a
+        // battleship), but the SpawnDrone it can drop stays the faster harasser.
+        EnemyStats { hp: Health::new(3.0),  speed: 10.0, damage: Damage::new(5.0),  detection_range: 25.0, attack_range: 10.0, attack_cooldown: 1.0, archetype: Archetype::Kiter,   reward: 1_000 },
         // QuadOrb — swarmer: fast, fragile, four-legged; slows the player on contact.
         EnemyStats { hp: Health::new(3.0),  speed: 12.0, damage: Damage::new(4.0),  detection_range: 25.0, attack_range: 3.0,  attack_cooldown: 1.0, archetype: Archetype::Swarmer, reward: 1_000 },
         // Bomber — suicide: charges, fuses, then detonates for area damage.
         EnemyStats { hp: Health::new(4.0),  speed: 9.0,  damage: Damage::new(16.0), detection_range: 25.0, attack_range: 5.0,  attack_cooldown: 1.0, archetype: Archetype::Bomber,  reward: 1_000 },
-        // EyeDrone — ranged kiter that spawns a GunDrone on death.
+        // EyeDrone — ranged kiter that spawns a SpawnDrone on death.
         EnemyStats { hp: Health::new(5.0),  speed: 7.0,  damage: Damage::new(6.0),  detection_range: 30.0, attack_range: 10.0, attack_cooldown: 1.2, archetype: Archetype::Kiter,   reward: 1_000 },
         // QuadShell — shielded tank: slow, durable, fires.
         EnemyStats { hp: Health::new(12.0), speed: 6.0,  damage: Damage::new(7.0),  detection_range: 25.0, attack_range: 6.0,  attack_cooldown: 1.0, archetype: Archetype::Tank,    reward: 1_000 },
+        // SpawnDrone — weaker, faster harasser; only ever EyeDrone-spawned.
+        EnemyStats { hp: Health::new(2.0),  speed: 11.0, damage: Damage::new(3.0),  detection_range: 25.0, attack_range: 8.0,  attack_cooldown: 1.2, archetype: Archetype::Kiter,   reward: 1_000 },
     ];
 
     pub fn stats(&self) -> EnemyStats {
@@ -71,9 +82,16 @@ impl EnemyType {
     /// Enemies this type spawns when it dies (the "subsidiary drone" mechanic).
     pub fn death_spawn(&self) -> Option<(EnemyType, u8)> {
         match self {
-            Self::EyeDrone => Some((Self::GunDrone, 1)),
-            Self::GunDrone | Self::QuadOrb | Self::Bomber | Self::QuadShell => None,
+            Self::EyeDrone => Some((Self::SpawnDrone, 1)),
+            Self::GunDrone | Self::QuadOrb | Self::Bomber | Self::QuadShell
+            | Self::SpawnDrone => None,
         }
+    }
+
+    /// Whether this type is placed directly into a room's spawn list. Spawn-only
+    /// types (the SpawnDrone) appear solely as another drone's death spawn.
+    pub fn spawns_directly(&self) -> bool {
+        !matches!(self, Self::SpawnDrone)
     }
 
     pub fn display_name(&self) -> &'static str {
@@ -83,29 +101,56 @@ impl EnemyType {
             Self::Bomber => "Bomber",
             Self::EyeDrone => "Eye Drone",
             Self::QuadShell => "Quad Shell",
+            Self::SpawnDrone => "Spawn Drone",
         }
     }
 
+    /// Every enemy is the same node + collider scene; the type (set at spawn)
+    /// drives stats, model, and collider size. One scene, not one per variant.
     pub fn scene_path(&self) -> &'static str {
-        match self {
-            Self::GunDrone =>  "res://scenes/enemies/enemy_drone.tscn",
-            Self::QuadOrb =>   "res://scenes/enemies/enemy_quad_orb.tscn",
-            Self::Bomber =>    "res://scenes/enemies/enemy_bomber.tscn",
-            Self::EyeDrone =>  "res://scenes/enemies/enemy_eye_drone.tscn",
-            Self::QuadShell => "res://scenes/enemies/enemy_quad_shell.tscn",
-        }
+        "res://scenes/enemies/enemy.tscn"
     }
+
 
     /// The bare visual model (no AI/collision) each enemy wears — for the
     /// bestiary briefing, which spins the model without the gameplay node.
     /// The Bomber reuses the QuadOrb model (a placeholder until it has its own).
     pub fn model_path(&self) -> &'static str {
         match self {
-            Self::GunDrone =>  "res://addons/quaternius/essentials/enemies/Enemy_GunDrone.gltf",
-            Self::QuadOrb =>   "res://addons/quaternius/essentials/enemies/Enemy_QuadOrb.gltf",
+            // The two front-line drones wear the cgtrader evil-mech models;
+            // the SpawnDrone inherits the GunDrone's old Quaternius model so a
+            // respawn is visibly a different, lesser machine.
+            Self::GunDrone =>  "res://addons/enemies/evil_mech_03.glb",
+            Self::QuadOrb =>   "res://addons/enemies/evil_mech_01.glb",
             Self::Bomber =>    "res://addons/quaternius/essentials/enemies/Enemy_QuadOrb.gltf",
             Self::EyeDrone =>  "res://addons/quaternius/essentials/enemies/Enemy_EyeDrone.gltf",
             Self::QuadShell => "res://addons/quaternius/essentials/enemies/Enemy_QuadShell.gltf",
+            Self::SpawnDrone => "res://addons/quaternius/essentials/enemies/Enemy_GunDrone.gltf",
+        }
+    }
+
+    /// Longest-edge target the model is fit-scaled to (meters). The GunDrone
+    /// mech is the bruiser at 2 m, the QuadOrb mech at 1 m; the rest keep the
+    /// ~0.5 m drone size.
+    pub fn model_size(&self) -> f32 {
+        match self {
+            Self::GunDrone => 2.0,
+            Self::QuadOrb => 1.0,
+            Self::Bomber | Self::EyeDrone | Self::QuadShell | Self::SpawnDrone => 0.5,
+        }
+    }
+
+    /// Extra yaw (radians) layered on top of "face the player", correcting for
+    /// the model's imported front axis. The cgtrader mechs import facing their
+    /// own +X (their flank points down -Z), so they need a quarter turn to put
+    /// their nose on the player; the Quaternius drones already front along -Z.
+    /// This is the single knob to tune if a model ends up facing askew in-game.
+    pub fn model_yaw_offset(&self) -> f32 {
+        match self {
+            // The cgtrader mechs front along +Z, so look_at (which aims -Z at the
+            // player) leaves them facing exactly backwards — a half turn fixes it.
+            Self::GunDrone | Self::QuadOrb => std::f32::consts::PI,
+            Self::Bomber | Self::EyeDrone | Self::QuadShell | Self::SpawnDrone => 0.0,
         }
     }
 
@@ -125,16 +170,19 @@ impl EnemyType {
         match self {
             Self::GunDrone => 1,
             Self::QuadOrb | Self::Bomber | Self::EyeDrone => 2,
+            // Appears (via EyeDrone death) from level 3; never placed directly.
+            Self::SpawnDrone => 3,
             Self::QuadShell => 4,
         }
     }
 }
 
-/// Returns which enemy types can appear at a given level.
+/// Returns which enemy types can be placed directly at a given level. Spawn-only
+/// types (the SpawnDrone) are excluded — they appear solely as death spawns.
 pub fn enemies_for_level(level: u32) -> Vec<EnemyType> {
     EnemyType::ALL
         .iter()
-        .filter(|e| e.min_level() <= level)
+        .filter(|e| e.spawns_directly() && e.min_level() <= level)
         .copied()
         .collect()
 }
@@ -196,7 +244,11 @@ mod tests {
 
     #[test]
     fn hp_scales_with_tier() {
-        let hps: Vec<f32> = EnemyType::ALL.iter().map(|e| e.stats().hp.as_f32()).collect();
+        // The directly-spawnable roster is ordered by tier; the spawn-only
+        // SpawnDrone sits outside that progression.
+        let hps: Vec<f32> = EnemyType::ALL.iter()
+            .filter(|e| e.spawns_directly())
+            .map(|e| e.stats().hp.as_f32()).collect();
         for w in hps.windows(2) {
             assert!(w[1] >= w[0], "hp should scale: {} >= {}", w[1], w[0]);
         }
@@ -217,11 +269,14 @@ mod tests {
     }
 
     #[test]
-    fn model_paths_are_gltf_resources() {
+    fn model_paths_are_mesh_resources() {
         for enemy in EnemyType::ALL {
             let path = enemy.model_path();
             assert!(path.starts_with("res://"), "{:?} bad model path", enemy);
-            assert!(path.ends_with(".gltf"), "{:?} model should be a gltf", enemy);
+            assert!(
+                path.ends_with(".gltf") || path.ends_with(".glb") || path.ends_with(".fbx"),
+                "{:?} model should be a gltf/glb/fbx", enemy
+            );
         }
     }
 
@@ -255,9 +310,29 @@ mod tests {
     }
 
     #[test]
-    fn enemies_for_level_high_includes_all() {
+    fn enemies_for_level_high_includes_all_directly_spawnable() {
         let enemies = enemies_for_level(8);
-        assert_eq!(enemies.len(), EnemyType::ALL.len());
+        let direct = EnemyType::ALL.iter().filter(|e| e.spawns_directly()).count();
+        assert_eq!(enemies.len(), direct);
+    }
+
+    #[test]
+    fn spawn_drone_is_never_placed_directly() {
+        assert!(!EnemyType::SpawnDrone.spawns_directly());
+        for level in 1..=10 {
+            assert!(
+                !enemies_for_level(level).contains(&EnemyType::SpawnDrone),
+                "SpawnDrone must never be in the direct spawn list (level {level})"
+            );
+        }
+    }
+
+    #[test]
+    fn spawn_drone_is_weaker_and_faster_than_gun_drone() {
+        let spawn = EnemyType::SpawnDrone.stats();
+        let gun = EnemyType::GunDrone.stats();
+        assert!(spawn.hp.as_f32() < gun.hp.as_f32(), "SpawnDrone is weaker");
+        assert!(spawn.speed > gun.speed, "SpawnDrone is faster");
     }
 
     #[test]
@@ -270,13 +345,18 @@ mod tests {
     }
 
     #[test]
-    fn roster_is_the_five_mechanical_enemies() {
-        assert_eq!(EnemyType::ALL.len(), 5, "the roster is five enemies");
+    fn roster_is_five_direct_enemies_plus_the_spawn_drone() {
+        assert_eq!(EnemyType::ALL.len(), 6, "six types total");
+        let direct = EnemyType::ALL.iter().filter(|e| e.spawns_directly()).count();
+        assert_eq!(direct, 5, "five are placed directly; the SpawnDrone is spawn-only");
     }
 
     #[test]
     fn min_level_ordering_matches_all_ordering() {
-        let levels: Vec<u32> = EnemyType::ALL.iter().map(|e| e.min_level()).collect();
+        // Only the directly-spawnable roster is tier-ordered.
+        let levels: Vec<u32> = EnemyType::ALL.iter()
+            .filter(|e| e.spawns_directly())
+            .map(|e| e.min_level()).collect();
         for w in levels.windows(2) {
             assert!(w[1] >= w[0], "min_level should be non-decreasing: {} >= {}", w[1], w[0]);
         }
@@ -320,13 +400,14 @@ mod tests {
     }
 
     #[test]
-    fn eye_drone_spawns_gun_drone_on_death() {
-        assert_eq!(EnemyType::EyeDrone.death_spawn(), Some((EnemyType::GunDrone, 1)));
+    fn eye_drone_spawns_a_spawn_drone_on_death() {
+        assert_eq!(EnemyType::EyeDrone.death_spawn(), Some((EnemyType::SpawnDrone, 1)));
     }
 
     #[test]
     fn most_enemies_have_no_death_spawn() {
         assert_eq!(EnemyType::GunDrone.death_spawn(), None);
         assert_eq!(EnemyType::QuadShell.death_spawn(), None);
+        assert_eq!(EnemyType::SpawnDrone.death_spawn(), None);
     }
 }

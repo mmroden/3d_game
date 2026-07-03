@@ -1,12 +1,14 @@
 extends GutTest
-## Ship-select / loadout backdrop: the loadout screen reuses the real level
-## generator for a single room, then prunes everything that isn't room geometry
-## (enemies, loot, portal) so the player parks in a quiet room with the rotating
-## showcase ship in front. These tests pin two things: the prune actually strips
-## populace (and isn't vacuously pruning nothing), and room_center — where the
-## player is parked — lands inside that room.
+## Ship-select / loadout backdrop: the loadout screen shows a quiet room behind
+## the rotating showcase ship. It is built structure-only — the same generator,
+## with populace (props, loot, enemies, the exit portal) skipped — so no live
+## enemy fires at the parked player and no exit gate floats in the loadout room.
+## These tests pin: a full level really does carry that populace (so the
+## structure-only build is meaningfully different), the backdrop carries none of
+## it anywhere in the room subtree, and room_center lands inside the room.
 
 const SEED := 12345
+
 
 func _fresh_level() -> Node3D:
 	var lm = LevelManager.new()
@@ -14,49 +16,56 @@ func _fresh_level() -> Node3D:
 	add_child_autofree(lm)
 	return lm
 
-## World-space union of every MeshInstance3D AABB under `root`.
-func _mesh_aabb(root: Node3D) -> AABB:
-	var acc := AABB()
-	var found := false
+
+## Every descendant of `root` (depth-first), excluding root itself.
+func _descendants(root: Node) -> Array:
+	var out: Array = []
 	var stack: Array = [root]
 	while not stack.is_empty():
 		var n = stack.pop_back()
 		for c in n.get_children():
+			out.append(c)
 			stack.push_back(c)
-		if n is MeshInstance3D and n.mesh != null:
-			var world: AABB = n.global_transform * n.get_aabb()
-			if found:
-				acc = acc.merge(world)
-			else:
-				acc = world
-				found = true
-	return acc
+	return out
 
-func test_full_level_has_populace_that_backdrop_must_remove():
-	# Guards the prune test below from being vacuous: a populated level really
-	# does contain non-room nodes (portal/enemies/loot) for the backdrop to strip.
+
+func _portal_count(root: Node) -> int:
+	var count := 0
+	for n in _descendants(root):
+		if n.get_class() == "Portal":
+			count += 1
+	return count
+
+
+func _enemy_count(root: Node) -> int:
+	var count := 0
+	for n in _descendants(root):
+		if n.is_in_group("enemies"):
+			count += 1
+	return count
+
+
+func test_full_level_carries_the_populace_the_backdrop_drops():
+	# Guards the structure-only test below from being vacuous: a real level does
+	# build an exit portal (and, seed permitting, enemies) somewhere in its rooms.
 	var lm = _fresh_level()
 	lm.generate_level(SEED, 1)
 	await get_tree().process_frame
-	var non_room := 0
-	for child in lm.get_children():
-		if not child.name.begins_with("Room"):
-			non_room += 1
-	assert_gt(non_room, 0,
-		"a populated level must contain non-room nodes for the backdrop to prune")
+	assert_eq(_portal_count(lm), 1,
+		"a full level must spawn exactly one exit portal for the backdrop to drop")
 
-func test_backdrop_keeps_only_room_geometry():
+
+func test_backdrop_is_structure_only():
 	var lm = _fresh_level()
 	lm.generate_backdrop(SEED)
 	await get_tree().process_frame
 	assert_not_null(lm.get_node_or_null("Room0"),
 		"the backdrop room itself must remain")
-	var non_room := 0
-	for child in lm.get_children():
-		if not child.name.begins_with("Room"):
-			non_room += 1
-	assert_eq(non_room, 0,
-		"backdrop must prune enemies/loot/portal, leaving only Room* containers")
+	assert_eq(_portal_count(lm), 0,
+		"the structure-only backdrop must carry no exit portal")
+	assert_eq(_enemy_count(lm), 0,
+		"the structure-only backdrop must carry no live enemies")
+
 
 func test_room_center_lands_inside_the_backdrop_room():
 	# The player is parked at room_center(0) + a small y offset; that point must
@@ -71,3 +80,18 @@ func test_room_center_lands_inside_the_backdrop_room():
 	var grown := aabb.grow(0.5)
 	assert_true(grown.has_point(center),
 		"room_center(0) must lie inside the room the player parks in")
+
+
+## World-space union of every MeshInstance3D AABB under `root`.
+func _mesh_aabb(root: Node3D) -> AABB:
+	var acc := AABB()
+	var found := false
+	for n in _descendants(root):
+		if n is MeshInstance3D and n.mesh != null:
+			var world: AABB = n.global_transform * n.get_aabb()
+			if found:
+				acc = acc.merge(world)
+			else:
+				acc = world
+				found = true
+	return acc
