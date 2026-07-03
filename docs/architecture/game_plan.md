@@ -8,10 +8,12 @@
 
 ### Combat System
 - Dual hitscan lasers (ROYGBIV progression, 7 levels, damage 1-7)
-- 5 mechanical enemy types, each driven by an `Archetype` in `enemy_ai.rs`:
-  GunDrone (kiter), QuadOrb (swarmer — slows the player on contact), Bomber
-  (suicide/detonate), EyeDrone (kiter today; spawns a GunDrone on death),
-  QuadShell (shielded tank). The node turns the per-tick intent into forces.
+- 6 mechanical enemy types, each driven by an `Archetype` in `enemy_ai.rs`:
+  GunDrone (kiter), QuadOrb (swarmer — latches within 2m and re-tags a
+  compounding slow while it stays close), Bomber (suicide/detonate), EyeDrone
+  (kiter; releases a SpawnDrone on death), QuadShell (shielded tank), and the
+  SpawnDrone itself (weaker, faster harasser — never spawns directly, only
+  from a dying EyeDrone). The node turns the per-tick intent into forces.
   A timed `SlowDebuff` (`debuff.rs`) drives the swarmer's slow, shown by a HUD
   "SLOWED" indicator. (`Archetype::Shooter` exists as the default but no roster
   enemy uses it yet.)

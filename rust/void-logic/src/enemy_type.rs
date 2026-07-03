@@ -36,7 +36,8 @@ impl EnemyType {
         // GunDrone — ranged kiter: holds distance and fires. Nimble (not a
         // battleship), but the SpawnDrone it can drop stays the faster harasser.
         EnemyStats { hp: Health::new(3.0),  speed: 10.0, damage: Damage::new(5.0),  detection_range: 25.0, attack_range: 10.0, attack_cooldown: 1.0, archetype: Archetype::Kiter,   reward: 1_000 },
-        // QuadOrb — swarmer: fast, fragile, four-legged; slows the player on contact.
+        // QuadOrb — swarmer: fast, fragile, four-legged; latches within 2m and
+        // re-tags a compounding slow while it stays close (no contact needed).
         EnemyStats { hp: Health::new(3.0),  speed: 12.0, damage: Damage::new(4.0),  detection_range: 25.0, attack_range: 3.0,  attack_cooldown: 1.0, archetype: Archetype::Swarmer, reward: 1_000 },
         // Bomber — suicide: charges, fuses, then detonates for area damage.
         EnemyStats { hp: Health::new(4.0),  speed: 9.0,  damage: Damage::new(16.0), detection_range: 25.0, attack_range: 5.0,  attack_cooldown: 1.0, archetype: Archetype::Bomber,  reward: 1_000 },
@@ -141,9 +142,10 @@ impl EnemyType {
     }
 
     /// Extra yaw (radians) layered on top of "face the player", correcting for
-    /// the model's imported front axis. The cgtrader mechs import facing their
-    /// own +X (their flank points down -Z), so they need a quarter turn to put
-    /// their nose on the player; the Quaternius drones already front along -Z.
+    /// the model's imported front axis. The cgtrader mechs import fronting
+    /// along +Z, so `look_at` (which aims -Z at the player) leaves them facing
+    /// exactly backwards — a half turn fixes it; the Quaternius drones already
+    /// front along -Z and need nothing.
     /// This is the single knob to tune if a model ends up facing askew in-game.
     pub fn model_yaw_offset(&self) -> f32 {
         match self {
@@ -184,6 +186,23 @@ pub fn enemies_for_level(level: u32) -> Vec<EnemyType> {
         .iter()
         .filter(|e| e.spawns_directly() && e.min_level() <= level)
         .copied()
+        .collect()
+}
+
+
+pub fn coverage_for_level(level: u32) -> Vec<EnemyType> {
+    let direct = enemies_for_level(level);
+    let mut seen = [false; EnemyType::ALL.len()];
+    for t in &direct {
+        seen[t.id() as usize] = true;
+        if let Some((minion, _)) = t.death_spawn() {
+            seen[minion.id() as usize] = true;
+        }
+    }
+    EnemyType::ALL
+        .iter()
+        .copied()
+        .filter(|t| seen[t.id() as usize])
         .collect()
 }
 
@@ -397,6 +416,52 @@ mod tests {
     #[test]
     fn non_tank_has_no_shield() {
         assert!(EnemyType::GunDrone.ai_config().shield.is_none());
+    }
+
+    // --- Level coverage (bestiary: direct + death-spawn types) ---
+
+    #[test]
+    fn coverage_includes_direct_roster() {
+        // Coverage is a superset of the directly-placed roster at every level.
+        for level in 1..=10 {
+            let coverage = coverage_for_level(level);
+            for direct in enemies_for_level(level) {
+                assert!(coverage.contains(&direct),
+                    "level {level}: coverage missing direct type {direct:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn coverage_surfaces_spawn_drone_from_eye_drone() {
+        // The EyeDrone is admitted at level 2 (its min_level); its death spawns a
+        // SpawnDrone, which `enemies_for_level` (direct-only) never lists. From
+        // level 2 up, coverage must include the SpawnDrone.
+        for level in 2..=10 {
+            let coverage = coverage_for_level(level);
+            assert!(coverage.contains(&EnemyType::EyeDrone), "level {level}: no EyeDrone");
+            assert!(coverage.contains(&EnemyType::SpawnDrone),
+                "level {level}: EyeDrone present but SpawnDrone absent from coverage");
+        }
+    }
+
+    #[test]
+    fn coverage_excludes_spawn_drone_below_eye_drone_level() {
+        // Level 1 is GunDrone-only (no EyeDrone), so no SpawnDrone can appear.
+        let coverage = coverage_for_level(1);
+        assert!(!coverage.contains(&EnemyType::EyeDrone), "level 1 has no EyeDrone");
+        assert!(!coverage.contains(&EnemyType::SpawnDrone),
+            "level 1 cannot produce a SpawnDrone, so coverage must exclude it");
+    }
+
+    #[test]
+    fn coverage_is_all_ordered_and_deduplicated() {
+        let coverage = coverage_for_level(8);
+        let ids: Vec<u32> = coverage.iter().map(|t| t.id() as u32).collect();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted, ids, "coverage must be ALL-ordered and deduplicated");
     }
 
     #[test]

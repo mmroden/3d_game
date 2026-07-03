@@ -138,8 +138,9 @@ impl INode for GameManager {
         // Tick shield regeneration
         self.run_state.tick_shield(delta as f32);
 
-        // Connect to any newly-spawned enemies and portal
-        self.connect_spawned_entities();
+        // Signal wiring is no longer a per-frame tax: the Faucet pools build the
+        // whole level roster during the load, and `regenerate_level` wires it
+        // once at the end of the build (see `wire_level_signals`).
 
         // Update HUD
         self.update_hud();
@@ -742,7 +743,11 @@ impl GameManager {
     /// lists them, and persist the bestiary if it grew (it is permanent).
     fn mark_level_enemies_seen(&mut self) {
         let mut grew = false;
-        for enemy in enemy_type::enemies_for_level(self.run_state.current_level) {
+        // Coverage, not the direct roster: it includes death-spawn-only types
+        // (the SpawnDrone an EyeDrone drops), so the briefing lists a type the
+        // moment the level can produce it. `enemies_for_level` filtered on
+        // `spawns_directly()` and could never surface a death-only enemy.
+        for enemy in enemy_type::coverage_for_level(self.run_state.current_level) {
             if self.run_state.mark_enemy_seen(enemy) {
                 grew = true;
             }
@@ -1075,16 +1080,17 @@ impl GameManager {
         }
     }
 
-    /// Connect a single spawned entity's gameplay signals to the matching
-    /// GameManager handlers, idempotently (skips if already wired). A node only
-    /// reacts to the signals it actually has — a barrel has organics_collected,
-    /// an enemy has enemy_killed — so this is safe to call on every node,
-    /// including room-geometry meshes that carry none.
+    /// Connect a single entity's gameplay signals to the matching GameManager
+    /// handlers, idempotently (skips if already wired). A node only reacts to the
+    /// signals it actually has — a barrel has `organics_collected`, an enemy has
+    /// `enemy_killed`, a lootbox has `upgrade_collected` — so this is safe to
+    /// call on every node, including room-geometry meshes that carry none.
     fn connect_entity_signals(
         node: &Gd<Node>,
         kill: &Callable,
         portal: &Callable,
         organics: &Callable,
+        upgrade: &Callable,
     ) {
         if node.has_signal(signals::ENEMY_KILLED) && !node.is_connected(signals::ENEMY_KILLED, kill) {
             node.clone().connect(signals::ENEMY_KILLED, kill);
@@ -1095,35 +1101,45 @@ impl GameManager {
         if node.has_signal(signals::ORGANICS_COLLECTED) && !node.is_connected(signals::ORGANICS_COLLECTED, organics) {
             node.clone().connect(signals::ORGANICS_COLLECTED, organics);
         }
+        if node.has_signal(signals::UPGRADE_COLLECTED) && !node.is_connected(signals::UPGRADE_COLLECTED, upgrade) {
+            node.clone().connect(signals::UPGRADE_COLLECTED, upgrade);
+        }
     }
 
-    fn connect_spawned_entities(&mut self) {
+    /// Wire every gameplay-signal emitter in a freshly built level to the
+    /// mediator, ONCE, at the end of the build — not every frame (Faucet
+    /// Principle: the per-frame `connect_spawned_entities` tree scan is deleted).
+    /// Because the Faucet pools pre-instantiate every enemy, death-spawn minion,
+    /// and lootbox during the load, the whole roster exists under `LevelManager`
+    /// by the time `build_level` returns; a single recursive pass covers them
+    /// all (minions and boxes now live under containers/the level, not the scene
+    /// root). Idempotent, so re-running on a rebuild rewires nothing already set.
+    fn wire_level_signals(&self) {
         let Some(parent) = self.base().get_parent() else { return };
         let Some(level_mgr) = parent.try_get_node_as::<Node>(nodes::LEVEL_MANAGER) else { return };
 
-        let kill_callable = self.base().callable(methods::ON_ENEMY_KILLED);
-        let portal_callable = self.base().callable(methods::ON_PORTAL_ENTERED);
-        let upgrade_callable = self.base().callable(methods::ON_UPGRADE_COLLECTED);
-        let organics_callable = self.base().callable(methods::ON_ORGANICS_COLLECTED);
+        let kill = self.base().callable(methods::ON_ENEMY_KILLED);
+        let portal = self.base().callable(methods::ON_PORTAL_ENTERED);
+        let organics = self.base().callable(methods::ON_ORGANICS_COLLECTED);
+        let upgrade = self.base().callable(methods::ON_UPGRADE_COLLECTED);
 
-        // Enemies, portals, and organics barrels now live under per-room
-        // containers (cell inhabitants), so scan each room container's children
-        // as well as LevelManager's direct children.
-        for child in level_mgr.get_children().iter_shared() {
-            Self::connect_entity_signals(&child, &kill_callable, &portal_callable, &organics_callable);
-            for grandchild in child.get_children().iter_shared() {
-                Self::connect_entity_signals(&grandchild, &kill_callable, &portal_callable, &organics_callable);
-            }
-        }
+        Self::wire_subtree(&level_mgr.upcast(), &kill, &portal, &organics, &upgrade);
+    }
 
-        // Scan scene root children for lootboxes (spawned by enemy death, added to root)
-        if let Some(root) = self.base().get_tree().get_root() {
-            for child in root.get_children().iter_shared() {
-                if child.has_signal(signals::UPGRADE_COLLECTED) && !child.is_connected(signals::UPGRADE_COLLECTED, &upgrade_callable) {
-                    let mut c = child;
-                    c.connect(signals::UPGRADE_COLLECTED, &upgrade_callable);
-                }
-            }
+    /// Depth-first wire of `node` and every descendant — enemies and their
+    /// death-spawn minions sit several levels deep (under room containers), so
+    /// the pass must recurse, not just scan two levels as the old per-frame scan
+    /// did.
+    fn wire_subtree(
+        node: &Gd<Node>,
+        kill: &Callable,
+        portal: &Callable,
+        organics: &Callable,
+        upgrade: &Callable,
+    ) {
+        Self::connect_entity_signals(node, kill, portal, organics, upgrade);
+        for child in node.get_children().iter_shared() {
+            Self::wire_subtree(&child, kill, portal, organics, upgrade);
         }
     }
 
@@ -1188,5 +1204,11 @@ impl GameManager {
                 &[Variant::from(seed.as_i64()), Variant::from(target_rooms)],
             );
         }
+        // `generate_level` builds synchronously (add_child is synchronous), so
+        // the whole pre-instantiated roster — enemies, dormant minions, dormant
+        // lootboxes, portal, barrels — now exists under LevelManager. Wire every
+        // emitter to the mediator once, here, replacing the deleted per-frame
+        // scan. Idempotent, so a later rebuild rewires nothing already connected.
+        self.wire_level_signals();
     }
 }

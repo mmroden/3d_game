@@ -79,7 +79,10 @@ generate_topology(rng, config) → AbstractGraph
     ↓
 assign_positions(abstract_graph, rng) → LevelGraph
     ↓
-spawn_list_full(level_graph, cell_size, seed) → (meshes, lights, enemies, colliders)
+spawn_list_full(level_graph, cell_size, seed) → Vec<RoomAssembly>
+    (per room: structure, props, lights, containers, enemies — the three
+    staged load groups; colliders are built shell-side by fusing each
+    room's static meshes)
     ↓
 portal_position(level_graph, cell_size) → [f32; 3]
     ↓

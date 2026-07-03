@@ -1,5 +1,6 @@
 //! Level assembly: builds meshes, lights, enemies, and collision boxes from a LevelGraph.
 
+use crate::enemy_type::EnemyType;
 use crate::level_graph::LevelGraph;
 use crate::seed::Seed;
 use crate::room_assembler::MeshPlacement;
@@ -198,6 +199,111 @@ pub fn spawn_list_full(
     }
 
     rooms
+}
+
+/// One dormant death-spawn minion the manifest reserves for a parent enemy.
+/// `death_spawn`'s count is already expanded into one entry per minion, so the
+/// shell pre-instantiates exactly `parent.minions.len()` bodies under the
+/// parent's room and activates them all when the parent dies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MinionSpawn {
+    pub enemy_type: EnemyType,
+}
+
+/// One direct enemy spawn: its resolved type, world position, and the dormant
+/// minions its death will cough up (empty for types with no `death_spawn`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnemySpawn {
+    pub enemy_type: EnemyType,
+    pub position: [f32; 3],
+    pub minions: Vec<MinionSpawn>,
+}
+
+/// The manifest's per-room slice: every direct enemy the room will hold, each
+/// carrying its own dormant minions. Positions and types are already resolved,
+/// so the shell parents this room's content under one container with no further
+/// rolling.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RoomManifest {
+    pub enemies: Vec<EnemySpawn>,
+}
+
+/// A seed-deterministic enumeration of everything a level can *contain* — the
+/// Faucet Principle's model half (`void-logic`), consumed by the shell's tier-1
+/// pools (`void-nodes`). It resolves each direct enemy's type (the roll the
+/// shell used to make inline), expands every `death_spawn` into dormant minion
+/// entries bound to their parent, and — since a level drops one lootbox per
+/// enemy — knows the exact lootbox bound. Nothing here touches Godot; the same
+/// seed yields the same manifest, so the pool sizes and the bestiary coverage
+/// are both derivable before a single node is instantiated.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LevelManifest {
+    pub rooms: Vec<RoomManifest>,
+}
+
+impl LevelManifest {
+    /// Total direct enemies across every room — the lootbox bound (one box per
+    /// enemy) and the number of parent bodies the shell instantiates.
+    pub fn enemy_count(&self) -> usize {
+        self.rooms.iter().map(|r| r.enemies.len()).sum()
+    }
+
+    /// Every enemy type that can appear this level — direct spawns *and* the
+    /// death-spawn minions they cough up — deduplicated, in `EnemyType::ALL`
+    /// order. This is what the bestiary marks as seen, so a death-only type (the
+    /// SpawnDrone) enters the catalog the moment a level can produce it, which
+    /// `enemies_for_level` (direct-only) could never surface.
+    pub fn enemy_coverage(&self) -> Vec<EnemyType> {
+        let mut seen = [false; EnemyType::ALL.len()];
+        for room in &self.rooms {
+            for enemy in &room.enemies {
+                seen[enemy.enemy_type.id() as usize] = true;
+                for minion in &enemy.minions {
+                    seen[minion.enemy_type.id() as usize] = true;
+                }
+            }
+        }
+        EnemyType::ALL
+            .iter()
+            .copied()
+            .filter(|t| seen[t.id() as usize])
+            .collect()
+    }
+}
+
+pub fn manifest(graph: &LevelGraph, cell_size: f32, seed: Seed, level: u32) -> LevelManifest {
+    use rand::seq::IndexedRandom;
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+
+    let rooms_assembly = spawn_list_full(graph, cell_size, seed);
+    let available = crate::enemy_type::enemies_for_level(level);
+    let mut enemy_rng = SmallRng::seed_from_u64(seed.value());
+
+    let rooms = rooms_assembly
+        .iter()
+        .map(|room| {
+            let enemies = room
+                .enemies
+                .iter()
+                .map(|pos| {
+                    let enemy_type = *available
+                        .choose(&mut enemy_rng)
+                        .expect("available_enemies is non-empty for any valid level");
+                    let minions = enemy_type
+                        .death_spawn()
+                        .map(|(minion_type, count)| {
+                            (0..count).map(|_| MinionSpawn { enemy_type: minion_type }).collect()
+                        })
+                        .unwrap_or_default();
+                    EnemySpawn { enemy_type, position: *pos, minions }
+                })
+                .collect();
+            RoomManifest { enemies }
+        })
+        .collect();
+
+    LevelManifest { rooms }
 }
 
 /// Return the world-space center of every cell in the level (for player spawn).
@@ -566,5 +672,129 @@ mod tests {
             return;
         }
         panic!("no seed produced a start room with lights");
+    }
+
+    // --- Level manifest (Faucet Principle, tier-1 derivation) ---
+
+    /// A seed is a pure function into a manifest: two derivations from the same
+    /// inputs are byte-identical, so the pool sizes and enemy mix the shell
+    /// builds are reproducible.
+    #[test]
+    fn manifest_is_seed_deterministic() {
+        for seed in 0..20u64 {
+            let Ok(graph) = generate(&test_config(seed)) else { continue };
+            let a = manifest(&graph, 4.0, Seed::new(seed), 5);
+            let b = manifest(&graph, 4.0, Seed::new(seed), 5);
+            assert_eq!(a, b, "seed {seed}: manifest not deterministic");
+        }
+    }
+
+    /// The manifest positions match the assembly's enemy positions one-for-one,
+    /// in the same room-then-position order — the manifest resolves *types* onto
+    /// the assembly's spawn points, it does not invent or drop any.
+    #[test]
+    fn manifest_covers_every_assembly_enemy_position() {
+        for seed in 0..20u64 {
+            let Ok(graph) = generate(&test_config(seed)) else { continue };
+            let assembly = spawn_list_full(&graph, 4.0, Seed::new(seed));
+            let m = manifest(&graph, 4.0, Seed::new(seed), 5);
+            assert_eq!(m.rooms.len(), assembly.len(), "seed {seed}: room count differs");
+            for (room, room_asm) in m.rooms.iter().zip(&assembly) {
+                let positions: Vec<_> = room.enemies.iter().map(|e| e.position).collect();
+                assert_eq!(positions, room_asm.enemies, "seed {seed}: positions differ");
+            }
+        }
+    }
+
+    /// Every EyeDrone the manifest places carries exactly one dormant SpawnDrone
+    /// minion (its `death_spawn`); every type with no death spawn carries none.
+    /// This is the expansion the shell pre-instantiates under the parent's room.
+    #[test]
+    fn manifest_expands_death_spawn_minions() {
+        // Level 2 admits the EyeDrone (its min_level); run enough seeds that at
+        // least one EyeDrone is placed, and check the expansion on every enemy.
+        let mut saw_eye_drone = false;
+        for seed in 0..40u64 {
+            let Ok(graph) = generate(&test_config(seed)) else { continue };
+            let m = manifest(&graph, 4.0, Seed::new(seed), 2);
+            for room in &m.rooms {
+                for enemy in &room.enemies {
+                    match enemy.enemy_type.death_spawn() {
+                        Some((minion_type, count)) => {
+                            assert_eq!(enemy.minions.len(), count as usize);
+                            assert!(enemy.minions.iter().all(|mn| mn.enemy_type == minion_type));
+                            if enemy.enemy_type == EnemyType::EyeDrone {
+                                saw_eye_drone = true;
+                                assert_eq!(
+                                    enemy.minions,
+                                    vec![MinionSpawn { enemy_type: EnemyType::SpawnDrone }],
+                                );
+                            }
+                        }
+                        None => assert!(enemy.minions.is_empty(),
+                            "{:?} has no death spawn but carries minions", enemy.enemy_type),
+                    }
+                }
+            }
+        }
+        assert!(saw_eye_drone, "no EyeDrone placed across 40 seeds at level 2");
+    }
+
+    /// Lootbox bound = one per direct enemy = total enemy count. The minions
+    /// don't add boxes (they're bound to their parent's box), so the count is
+    /// the sum of direct enemies only.
+    #[test]
+    fn manifest_lootbox_bound_is_one_per_enemy() {
+        for seed in 0..20u64 {
+            let Ok(graph) = generate(&test_config(seed)) else { continue };
+            let m = manifest(&graph, 4.0, Seed::new(seed), 5);
+            let direct: usize = m.rooms.iter().map(|r| r.enemies.len()).sum();
+            assert_eq!(m.enemy_count(), direct);
+        }
+    }
+
+    /// Coverage includes death-spawn-only types (the SpawnDrone) once the level
+    /// can produce them — via an EyeDrone parent — which `enemies_for_level`
+    /// (direct-only) never surfaces. This is what fixes the bestiary gap.
+    #[test]
+    fn manifest_coverage_includes_death_spawn_types_at_level() {
+        // At level 3+, the EyeDrone is admitted and its death SpawnDrone should
+        // appear in coverage on at least one seed.
+        let mut covered_spawn_drone = false;
+        for seed in 0..40u64 {
+            let Ok(graph) = generate(&test_config(seed)) else { continue };
+            let m = manifest(&graph, 4.0, Seed::new(seed), 3);
+            let coverage = m.enemy_coverage();
+            // Coverage is a subset of ALL, deduplicated and ALL-ordered.
+            let mut sorted = coverage.clone();
+            sorted.dedup();
+            assert_eq!(sorted, coverage, "coverage must be deduplicated");
+            if coverage.contains(&EnemyType::EyeDrone) {
+                assert!(
+                    coverage.contains(&EnemyType::SpawnDrone),
+                    "seed {seed}: EyeDrone present but SpawnDrone missing from coverage",
+                );
+                covered_spawn_drone = true;
+            }
+        }
+        assert!(covered_spawn_drone, "no seed at level 3 produced an EyeDrone");
+    }
+
+    /// Below its min_level the SpawnDrone can't appear: no EyeDrone is admitted
+    /// (level 1 is GunDrone-only), so coverage never contains it.
+    #[test]
+    fn manifest_coverage_excludes_death_spawn_types_below_level() {
+        for seed in 0..20u64 {
+            let Ok(graph) = generate(&test_config(seed)) else { continue };
+            let coverage = manifest(&graph, 4.0, Seed::new(seed), 1).enemy_coverage();
+            assert!(
+                !coverage.contains(&EnemyType::SpawnDrone),
+                "seed {seed}: SpawnDrone in coverage at level 1 (below its min_level)",
+            );
+            assert!(
+                !coverage.contains(&EnemyType::EyeDrone),
+                "seed {seed}: EyeDrone in coverage at level 1",
+            );
+        }
     }
 }

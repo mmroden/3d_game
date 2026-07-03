@@ -1,8 +1,8 @@
 extends GutTest
 ## The visible enemy model yaws to face the player every physics frame, even
 ## though the RigidBody itself is rotation-locked (so impacts can't tumble it).
-## The mech models import facing sideways, so a static model points its flank at
-## the player; this pins that the model re-aims.
+## The mech models import fronting +Z, so after look_at (which aims -Z) a static
+## model faces exactly backwards; this pins that the model re-aims.
 ##
 ## We assert the *unambiguous* contract: the model keeps the player at a constant
 ## bearing in its own local frame as the player moves around it. That holds for

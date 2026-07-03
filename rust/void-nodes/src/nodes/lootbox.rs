@@ -37,8 +37,8 @@ impl IArea3D for Lootbox {
     }
 
     fn ready(&mut self) {
-        // Monitor for bodies entering (player collision)
-        self.base_mut().set_monitoring(true);
+        // Monitoring is owned by apply_dormancy (deferred): boxes are built mid
+        // portal-signal flush, where a direct set_monitoring is blocked.
         self.base_mut().set_collision_mask(1); // Detect layer 1 (player)
         self.base_mut().set_collision_layer(0); // Don't block anything
 
@@ -49,6 +49,11 @@ impl IArea3D for Lootbox {
         // Soft blue glow distinguishes the upgrade lootbox from green organics.
         let mut node: Gd<Node3D> = self.base().clone().upcast();
         godot_util::attach_glow_light(&mut node, &[0.2, 0.5, 1.0], 4.0, 5.0);
+
+        // Pre-built boxes enter the tree dormant (Faucet Principle, tier 1):
+        // one is reserved per enemy during the load and sits invisible,
+        // non-processing, non-monitoring until that enemy dies and drops it.
+        self.deactivate_dormant();
     }
 
     fn process(&mut self, delta: f64) {
@@ -125,6 +130,55 @@ impl Lootbox {
             ],
         );
 
-        self.base_mut().queue_free();
+        // Tier-1 pool contract (Faucet Principle): a collected box goes dormant,
+        // never freed. It lived its one life; the pool holds it for the level's
+        // lifetime and never reuses it.
+        self.deactivate_dormant();
+    }
+
+    /// Activate this dormant box at `pos` — the drop, on its bound enemy's
+    /// death. Reset-in-place: re-arm the collect/bob state, flip all three
+    /// dormancy flags on, and place it (resetting interpolation so it doesn't
+    /// streak across the map). This is the one structural drop path; nothing is
+    /// instantiated here — the box was pre-built during the load.
+    pub fn drop_at(&mut self, pos: Vector3) {
+        self.collected = false;
+        self.origin_captured = false;
+        self.time = 0.0;
+        self.base_mut().set_global_position(pos);
+        self.activate();
+        self.base_mut().reset_physics_interpolation();
+    }
+
+    /// Go live: engine flags applied on the deferred boundary — the drop happens
+    /// inside the dying enemy's physics-context death chain, where Godot blocks
+    /// monitoring toggles.
+    fn activate(&mut self) {
+        self.base_mut().call_deferred(methods::APPLY_DORMANCY, &[true.to_variant()]);
+    }
+
+    /// Return to dormant, deferred for the same reason: `collect()` runs inside
+    /// this Area3D's own `body_entered` flush, where a direct `set_monitoring`
+    /// is blocked ("Function blocked during in/out signal") and would strand the
+    /// box half-dormant. The `collected` flag is the immediate logical truth;
+    /// the engine flags follow at end of frame.
+    pub fn deactivate_dormant(&mut self) {
+        self.base_mut().call_deferred(methods::APPLY_DORMANCY, &[false.to_variant()]);
+    }
+
+    /// Flip the engine-side dormancy flags, together: visibility, processing,
+    /// and monitoring. Always invoked via `call_deferred` — see
+    /// [`deactivate_dormant`](Self::deactivate_dormant).
+    #[func]
+    fn apply_dormancy(&mut self, live: bool) {
+        let mode = if live {
+            godot::classes::node::ProcessMode::INHERIT
+        } else {
+            godot::classes::node::ProcessMode::DISABLED
+        };
+        let mut base = self.base_mut();
+        base.set_visible(live);
+        base.set_process_mode(mode);
+        base.set_monitoring(live);
     }
 }

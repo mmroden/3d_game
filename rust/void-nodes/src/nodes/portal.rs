@@ -8,10 +8,13 @@ use super::constants::{groups, methods, scenes, signals};
 use super::godot_util;
 use void_logic::audio_catalog::SfxEvent;
 
-/// Diameter (m) the imported gate model is fit-scaled to. Matches the radius-2
-/// collision sphere so the ring the player flies through lines up with the
-/// trigger volume.
-const GATE_SIZE: f32 = 4.0;
+/// Radius (m) of the trigger sphere the player must touch to take the portal.
+const PORTAL_TRIGGER_RADIUS: f32 = 2.0;
+
+/// Diameter (m) the imported gate model is fit-scaled to. Derived from the
+/// trigger radius so the ring the player flies through and the volume that
+/// fires can never drift apart.
+const GATE_SIZE: f32 = 2.0 * PORTAL_TRIGGER_RADIUS;
 
 /// End-of-level portal. Player touches it to complete the level.
 #[derive(GodotClass)]
@@ -31,7 +34,7 @@ impl IArea3D for Portal {
         // Collision shape
         let mut shape = CollisionShape3D::new_alloc();
         let mut sphere = SphereShape3D::new_gd();
-        sphere.set_radius(2.0);
+        sphere.set_radius(PORTAL_TRIGGER_RADIUS);
         shape.set_shape(&sphere);
         self.base_mut().add_child(&shape);
 
