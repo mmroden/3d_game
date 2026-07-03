@@ -4,51 +4,7 @@ extends GutTest
 ## must be a pure function of its seed.
 
 
-## Stub UI layer declaring the union of signals GameManager wires up,
-## so a minimal scene can exercise the real phase machinery.
-class UIStub:
-	extends CanvasLayer
-	@warning_ignore("unused_signal")
-	signal new_game_selected
-	@warning_ignore("unused_signal")
-	signal continue_selected
-	@warning_ignore("unused_signal")
-	signal sbs_toggled(enabled: bool)
-	@warning_ignore("unused_signal")
-	signal msaa_toggled(enabled: bool)
-	@warning_ignore("unused_signal")
-	signal resume_selected
-	@warning_ignore("unused_signal")
-	signal quit_selected
-	@warning_ignore("unused_signal")
-	signal continue_pressed
-	@warning_ignore("unused_signal")
-	signal buy_pressed
-	@warning_ignore("unused_signal")
-	signal return_pressed
-
-	## Death screen contract: GameManager calls this on player death.
-	func show_death(_from_laser: String, _to_laser: String, _level: int) -> void:
-		pass
-
-	@warning_ignore("unused_signal")
-	signal ship_color_selected(id: int)
-	@warning_ignore("unused_signal")
-	signal bestiary_paged(delta: int)
-
-	## Ship-select contract: GameManager calls this when entering ShipSelect.
-	func show_ship_select(_current_id: int) -> void:
-		pass
-
-	## Bestiary briefing contract: GameManager calls these on the Bestiary phase.
-	func show_bestiary(_title: String, _blurb: String, _position: String, _hint: String) -> void:
-		pass
-
-	func begin_briefing() -> void:
-		pass
-
-	func hide_bestiary() -> void:
-		pass
+const UiStub := preload("res://tests/helpers/ui_stub.gd")
 
 
 func test_does_not_generate_on_ready():
@@ -91,8 +47,8 @@ func test_level_generation_is_owned_by_the_phase_machine():
 	add_child_autofree(root)
 	# Stub the UI layers show_phase toggles, so the minimal scene
 	# exercises the real phase machinery without UI warnings.
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI"]:
-		var stub = UIStub.new()
+	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
+		var stub = UiStub.new()
 		stub.name = ui_name
 		root.add_child(stub)
 	var lm = LevelManager.new()

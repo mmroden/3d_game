@@ -35,23 +35,29 @@ impl EnemyType {
     const STATS: &[EnemyStats] = &[
         // GunDrone — ranged kiter: holds distance and fires. Nimble (not a
         // battleship), but the SpawnDrone it can drop stays the faster harasser.
-        EnemyStats { hp: Health::new(3.0),  speed: 10.0, damage: Damage::new(5.0),  detection_range: 25.0, attack_range: 10.0, attack_cooldown: 1.0, archetype: Archetype::Kiter,   reward: 1_000 },
+        EnemyStats { hp: Health::new(3.0),  speed: 10.0, damage: Damage::new(5.0),  detection_range: 25.0, attack_range: 10.0, attack_cooldown: 1.0, archetype: Archetype::Kiter,   reward: 800 },
         // QuadOrb — swarmer: fast, fragile, four-legged; latches within 2m and
         // re-tags a compounding slow while it stays close (no contact needed).
-        EnemyStats { hp: Health::new(3.0),  speed: 12.0, damage: Damage::new(4.0),  detection_range: 25.0, attack_range: 3.0,  attack_cooldown: 1.0, archetype: Archetype::Swarmer, reward: 1_000 },
+        EnemyStats { hp: Health::new(3.0),  speed: 12.0, damage: Damage::new(4.0),  detection_range: 25.0, attack_range: 3.0,  attack_cooldown: 1.0, archetype: Archetype::Swarmer, reward: 900 },
         // Bomber — suicide: charges, fuses, then detonates for area damage.
-        EnemyStats { hp: Health::new(4.0),  speed: 9.0,  damage: Damage::new(16.0), detection_range: 25.0, attack_range: 5.0,  attack_cooldown: 1.0, archetype: Archetype::Bomber,  reward: 1_000 },
+        EnemyStats { hp: Health::new(4.0),  speed: 9.0,  damage: Damage::new(16.0), detection_range: 25.0, attack_range: 5.0,  attack_cooldown: 1.0, archetype: Archetype::Bomber,  reward: 1_200 },
         // EyeDrone — ranged kiter that spawns a SpawnDrone on death.
-        EnemyStats { hp: Health::new(5.0),  speed: 7.0,  damage: Damage::new(6.0),  detection_range: 30.0, attack_range: 10.0, attack_cooldown: 1.2, archetype: Archetype::Kiter,   reward: 1_000 },
+        EnemyStats { hp: Health::new(5.0),  speed: 7.0,  damage: Damage::new(6.0),  detection_range: 30.0, attack_range: 10.0, attack_cooldown: 1.2, archetype: Archetype::Kiter,   reward: 1_500 },
         // QuadShell — shielded tank: slow, durable, fires.
-        EnemyStats { hp: Health::new(12.0), speed: 6.0,  damage: Damage::new(7.0),  detection_range: 25.0, attack_range: 6.0,  attack_cooldown: 1.0, archetype: Archetype::Tank,    reward: 1_000 },
+        EnemyStats { hp: Health::new(12.0), speed: 6.0,  damage: Damage::new(7.0),  detection_range: 25.0, attack_range: 6.0,  attack_cooldown: 1.0, archetype: Archetype::Tank,    reward: 2_500 },
         // SpawnDrone — weaker, faster harasser; only ever EyeDrone-spawned.
-        EnemyStats { hp: Health::new(2.0),  speed: 11.0, damage: Damage::new(3.0),  detection_range: 25.0, attack_range: 8.0,  attack_cooldown: 1.2, archetype: Archetype::Kiter,   reward: 1_000 },
+        EnemyStats { hp: Health::new(2.0),  speed: 11.0, damage: Damage::new(3.0),  detection_range: 25.0, attack_range: 8.0,  attack_cooldown: 1.2, archetype: Archetype::Kiter,   reward: 400 },
     ];
 
     pub fn stats(&self) -> EnemyStats {
         Self::STATS[Self::ALL.iter().position(|e| e == self)
             .expect("EnemyType::ALL must contain every variant")]
+    }
+
+    /// Components carried by the cache this enemy drops on death. The reward is
+    /// only ever credited through that pickup, never directly on the kill.
+    pub fn reward(&self) -> u32 {
+        self.stats().reward
     }
 
     /// Build the AI configuration for this enemy: shared ranges from `stats()`
@@ -240,9 +246,34 @@ mod tests {
     }
 
     #[test]
-    fn all_enemies_award_1000_reward() {
+    fn rewards_scale_with_tier() {
+        // The directly-spawnable roster is tier-ordered; tougher kills drop
+        // richer caches. Strictly richer at the ends so flat tables fail.
+        let rewards: Vec<u32> = EnemyType::ALL.iter()
+            .filter(|e| e.spawns_directly())
+            .map(|e| e.reward()).collect();
+        for w in rewards.windows(2) {
+            assert!(w[1] >= w[0], "rewards should scale with tier: {} >= {}", w[1], w[0]);
+        }
+        assert!(EnemyType::QuadShell.reward() > EnemyType::GunDrone.reward(),
+            "the top of the roster must out-pay the bottom");
+    }
+
+    #[test]
+    fn spawn_drone_reward_is_the_smallest() {
+        // The spawn-only harasser is a lesser machine; its cache pays least.
         for enemy in EnemyType::ALL {
-            assert_eq!(enemy.stats().reward, 1_000, "{:?} doesn't award 1000 components", enemy);
+            if *enemy != EnemyType::SpawnDrone {
+                assert!(EnemyType::SpawnDrone.reward() < enemy.reward(),
+                    "SpawnDrone must pay less than {enemy:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn rewards_are_positive() {
+        for enemy in EnemyType::ALL {
+            assert!(enemy.reward() > 0, "{enemy:?} must drop a non-empty cache");
         }
     }
 

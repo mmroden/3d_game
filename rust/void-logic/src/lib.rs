@@ -2,6 +2,7 @@
 #![deny(clippy::match_wildcard_for_single_variants)]
 
 pub mod abstract_graph;
+pub mod armament;
 pub mod cell;
 pub mod generator;
 pub mod room_theme;
@@ -17,6 +18,7 @@ pub mod audio_catalog;
 pub mod room_assembler;
 pub mod room_furnisher;
 pub mod level_assembly;
+pub mod level_map;
 pub mod lore;
 pub mod weapon;
 pub mod enemy_ai;
@@ -34,12 +36,16 @@ pub mod ui_layout;
 pub mod ui_style;
 pub mod game_options;
 pub mod power_routing;
+pub mod radar;
 pub mod ram_damage;
 pub mod save_game;
 pub mod seed;
+pub mod shop;
 pub mod shield;
 pub mod ship;
+pub mod ship_type;
 pub mod spatial_layout;
+pub mod unlocks;
 pub mod input_method;
 pub mod menu_cursor;
 pub mod newtypes;

@@ -226,6 +226,22 @@ if [ -d "$SHIPS_SRC" ]; then
         cp -R "$SPACESHIP1_SRC/Texture_Base/"Style_* "$STYLES_DST/"
         echo "  Spaceship_1 color styles installed ($(ls -d "$STYLES_DST"/Style_* 2>/dev/null | wc -l | tr -d ' ') styles)."
     fi
+    # Purchasable hull roster (ship_upgrades/): installed under stable names —
+    # the ShipType spec table (void-logic/src/ship_type.rs) is the single
+    # source of truth for these res:// paths. The old free-floating copies
+    # under their upload-artifact names are removed.
+    UPGRADES_SRC="$SHIPS_SRC/ship_upgrades"
+    if [ -d "$UPGRADES_SRC" ]; then
+        rm -f "$SHIPS_DIR/basic_ship.glb" "$SHIPS_DIR/basic_ship.glb.import" \
+              "$SHIPS_DIR/uploads_files_2828578_Dronbizimisimiz.glb" \
+              "$SHIPS_DIR/uploads_files_2828578_Dronbizimisimiz.glb.import" \
+              "$SHIPS_DIR/uploads_files_4774125_Alien_spacecraft_04_FBX_.glb" \
+              "$SHIPS_DIR/uploads_files_4774125_Alien_spacecraft_04_FBX_.glb.import"
+        cp "$UPGRADES_SRC/basic_ship.glb" "$SHIPS_DIR/talon.glb"
+        cp "$UPGRADES_SRC/Dronbizimisimiz.glb" "$SHIPS_DIR/hive.glb"
+        cp "$UPGRADES_SRC/Alien_spacecraft_04_FBX_.glb" "$SHIPS_DIR/reaver.glb"
+        echo "  Hull roster installed (talon, hive, reaver)."
+    fi
     chmod -R u+w "$SHIPS_DIR"
     echo "  Player ship models installed ($(ls "$SHIPS_DIR"/*.glb 2>/dev/null | wc -l | tr -d ' ') models)."
 else

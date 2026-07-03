@@ -16,10 +16,7 @@ use super::bolt_pool::BoltPool;
 use super::constants::{groups, meta_keys, nodes};
 use super::live_handle::{LiveOpt, LiveRef, LiveVec};
 
-/// Yaw applied to the imported ship model so its nose points along the ship's
-/// forward (-Z); the asset is modelled facing backward. One source of truth for
-/// both the player ship and the menu showcase.
-pub const SHIP_MODEL_YAW: f32 = std::f32::consts::PI;
+
 
 /// Get the scene tree root node from a SceneTree (or Optional SceneTree).
 /// Returns `None` during early initialization or after the tree is torn down.
@@ -41,7 +38,7 @@ pub fn camera_front_position(main: &Gd<godot::classes::Node>, distance: f32) -> 
 }
 
 /// Find the AudioManager node by navigating up to the scene root, then down to Main/AudioManager.
-/// Works from any depth in the tree (enemies under LevelManager, portal, lootbox, etc.).
+/// Works from any depth in the tree (enemies under LevelManager, portal, caches, etc.).
 /// Accepts the result of `self.base().get_tree()` to avoid upcast ambiguity.
 pub fn find_audio_manager(tree: impl Into<Option<Gd<godot::classes::SceneTree>>>) -> Option<Gd<AudioManager>> {
     let root = scene_root(tree)?;
@@ -200,13 +197,18 @@ pub fn recolor_glow(glow: &Option<LiveRef<OmniLight3D>>, color: Color) {
     glow.with(|light| light.set_color(Color::from_rgb(color.r, color.g, color.b)));
 }
 
-/// Load the ship model scene at `path`, instance it under `parent`, scale it to
-/// `length`, and face its nose forward. Returns the model node. The single
-/// source of truth for building the ship — both the player and the menu
-/// showcase call this instead of repeating the load/fit/yaw sequence.
-pub fn spawn_fitted_model(parent: &mut Gd<Node3D>, path: &str, length: f32) -> Option<Gd<Node3D>> {
+/// Load the model scene at `path`, instance it under `parent`, scale it to
+/// `length`, and turn it by `front_yaw` — the subject's own front-axis
+/// correction (`ShipType`/`EnemyType` `model_yaw_offset`), so that the
+/// model's nose ends up along the parent's -Z. Returns the model node.
+pub fn spawn_fitted_model(
+    parent: &mut Gd<Node3D>,
+    path: &str,
+    length: f32,
+    front_yaw: f32,
+) -> Option<Gd<Node3D>> {
     let mut model = spawn_model_fitted(parent, path, length)?;
-    model.rotate_y(SHIP_MODEL_YAW);
+    model.rotate_y(front_yaw);
     Some(model)
 }
 

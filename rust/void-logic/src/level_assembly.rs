@@ -232,8 +232,8 @@ pub struct RoomManifest {
 /// Faucet Principle's model half (`void-logic`), consumed by the shell's tier-1
 /// pools (`void-nodes`). It resolves each direct enemy's type (the roll the
 /// shell used to make inline), expands every `death_spawn` into dormant minion
-/// entries bound to their parent, and — since a level drops one lootbox per
-/// enemy — knows the exact lootbox bound. Nothing here touches Godot; the same
+/// entries bound to their parent, and — since a level drops one blue cache per
+/// enemy — knows the exact cache bound. Nothing here touches Godot; the same
 /// seed yields the same manifest, so the pool sizes and the bestiary coverage
 /// are both derivable before a single node is instantiated.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -242,8 +242,8 @@ pub struct LevelManifest {
 }
 
 impl LevelManifest {
-    /// Total direct enemies across every room — the lootbox bound (one box per
-    /// enemy) and the number of parent bodies the shell instantiates.
+    /// Total direct enemies across every room — the blue-cache bound (one
+    /// cache per enemy) and the number of parent bodies the shell instantiates.
     pub fn enemy_count(&self) -> usize {
         self.rooms.iter().map(|r| r.enemies.len()).sum()
     }
@@ -740,11 +740,51 @@ mod tests {
         assert!(saw_eye_drone, "no EyeDrone placed across 40 seeds at level 2");
     }
 
-    /// Lootbox bound = one per direct enemy = total enemy count. The minions
-    /// don't add boxes (they're bound to their parent's box), so the count is
+    /// Cache bound = one per direct enemy = total enemy count. The minions
+    /// don't add caches (they're bound to their parent's), so the count is
     /// the sum of direct enemies only.
+    // --- Pinned seeds for the GUT shell suite ---
+    //
+    // The shell tests (godot/tests) build exactly ONE level per scenario:
+    // whether a seed produces a given property is a pure model question and
+    // is pinned here, through the same `GeneratorConfig::standard` path the
+    // shell builds with. If generation changes and one of these fails, fix
+    // the constant here AND its mirror in the named GUT file — never by
+    // reintroducing a seed scan on the engine side.
+
+    /// Mirror: godot/tests/test_faucet_pools.gd `EYE_DRONE_SEED`.
+    /// Seed 1 at level 3 (8 rooms) places at least one EyeDrone, whose
+    /// death-spawn minion the shell pre-instantiates dormant.
     #[test]
-    fn manifest_lootbox_bound_is_one_per_enemy() {
+    fn pinned_gut_seed_places_an_eye_drone() {
+        let seed = Seed::from_i64(1);
+        let graph = generate(&crate::generator::GeneratorConfig::standard(seed, 8))
+            .expect("the pinned seed must generate");
+        let m = manifest(&graph, 4.0, seed, 3);
+        assert!(
+            m.rooms.iter().any(|r| r.enemies.iter().any(|e| e.enemy_type == EnemyType::EyeDrone)),
+            "seed 1 must place an EyeDrone at level 3 — the GUT suite builds this exact level"
+        );
+    }
+
+    /// Mirror: godot/tests/test_faucet_pools.gd `GREEN_CACHE_RUN_SEED`.
+    /// A run with fixed_seed 1 places at least one loot container (a green
+    /// cache) on level 1 via GameManager's run-seed → level-seed derivation.
+    #[test]
+    fn pinned_gut_run_seed_places_a_loot_container() {
+        use crate::generator::rooms_for_level;
+        let level_seed = Seed::from_i64(1).for_level(1);
+        let graph = generate(&crate::generator::GeneratorConfig::standard(level_seed, rooms_for_level(1)))
+            .expect("the pinned seed must generate");
+        let rooms = spawn_list_full(&graph, 4.0, level_seed);
+        assert!(
+            rooms.iter().any(|r| !r.containers.is_empty()),
+            "run seed 1 must place a green cache on level 1 — the GUT suite drives this run"
+        );
+    }
+
+    #[test]
+    fn manifest_cache_bound_is_one_per_enemy() {
         for seed in 0..20u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
             let m = manifest(&graph, 4.0, Seed::new(seed), 5);

@@ -16,6 +16,7 @@ pub mod signals {
     pub const CONTINUE_PRESSED: &str = "continue_pressed";
     pub const BUY_PRESSED: &str = "buy_pressed";
     pub const RETURN_PRESSED: &str = "return_pressed";
+    pub const RESPAWN_PRESSED: &str = "respawn_pressed";
     pub const NEW_GAME_SELECTED: &str = "new_game_selected";
     pub const CONTINUE_SELECTED: &str = "continue_selected";
     pub const SBS_TOGGLED: &str = "sbs_toggled";
@@ -29,10 +30,12 @@ pub mod signals {
     pub const PLAYER_COLLIDED: &str = "player_collided";
     pub const PLAYER_SLOWED: &str = "player_slowed";
     pub const POWER_MODE_CHANGED: &str = "power_mode_changed";
-    pub const UPGRADE_COLLECTED: &str = "upgrade_collected";
-    pub const ORGANICS_COLLECTED: &str = "organics_collected";
+    pub const CACHE_COLLECTED: &str = "cache_collected";
+    pub const ROOM_CHANGED: &str = "room_changed";
     pub const SHIP_COLOR_SELECTED: &str = "ship_color_selected";
+    pub const SHIP_TYPE_SELECTED: &str = "ship_type_selected";
     pub const BESTIARY_PAGED: &str = "bestiary_paged";
+    pub const BACK_PRESSED: &str = "back_pressed";
     pub const RENDER_VIEWPORTS_CHANGED: &str = "render_viewports_changed";
 }
 
@@ -52,8 +55,15 @@ pub mod methods {
     pub const RESOLVE_HIT: &str = "resolve_hit";
     pub const ADVANCE_TO_SHOP: &str = "advance_to_shop";
     pub const ADVANCE_TO_NEXT_LEVEL: &str = "advance_to_next_level";
-    pub const BUY_LASER_UPGRADE: &str = "buy_laser_upgrade";
+    pub const BUY_SHOP_ITEM: &str = "buy_shop_item";
     pub const RETURN_TO_MENU: &str = "return_to_menu";
+    pub const ON_RESPAWN_PRESSED: &str = "on_respawn_pressed";
+    pub const SHOW_LIFE_LOST: &str = "show_life_lost";
+    pub const UPDATE_LIVES: &str = "update_lives";
+    pub const SET_CONTINUE_AVAILABLE: &str = "set_continue_available";
+    pub const SET_UNLOCK_FLAGS: &str = "set_unlock_flags";
+    pub const ON_ROOM_CHANGED: &str = "on_room_changed";
+    pub const UPDATE_MAP: &str = "update_map";
     pub const RESUME_GAME: &str = "resume_game";
     pub const QUIT_TO_MENU: &str = "quit_to_menu";
     pub const ON_WINDOW_SIZE_CHANGED: &str = "on_window_size_changed";
@@ -68,18 +78,23 @@ pub mod methods {
     pub const UPDATE_HEALTH: &str = "update_health";
     pub const UPDATE_COMPONENTS: &str = "update_components";
     pub const UPDATE_ORGANICS: &str = "update_organics";
-    pub const ON_ORGANICS_COLLECTED: &str = "on_organics_collected";
+    pub const ON_CACHE_COLLECTED: &str = "on_cache_collected";
     pub const ON_SHIP_COLOR_SELECTED: &str = "on_ship_color_selected";
+    pub const ON_SHIP_TYPE_SELECTED: &str = "on_ship_type_selected";
     pub const ADVANCE_FROM_SHIP_SELECT: &str = "advance_from_ship_select";
     pub const SHOW_SHIP_SELECT: &str = "show_ship_select";
     pub const SHOW_BESTIARY: &str = "show_bestiary";
     pub const ADVANCE_FROM_BESTIARY: &str = "advance_from_bestiary";
+    pub const BACK_FROM_BESTIARY: &str = "back_from_bestiary";
     pub const ON_BESTIARY_PAGED: &str = "on_bestiary_paged";
     pub const BEGIN_BRIEFING: &str = "begin_briefing";
     pub const SHOW_ENTRY: &str = "show_entry";
     pub const HIDE_TURNTABLE: &str = "hide_turntable";
     pub const CONFIGURE_SHIP: &str = "configure_ship";
     pub const SET_CONTROLS_ENABLED: &str = "set_controls_enabled";
+    pub const SET_VALKYRIE_OWNED: &str = "set_valkyrie_owned";
+    pub const SHOW_LOADING: &str = "show_loading";
+    pub const HIDE_LOADING: &str = "hide_loading";
     pub const UPDATE_LASER: &str = "update_laser";
     pub const UPDATE_LEVEL: &str = "update_level";
     pub const UPDATE_SHIELD: &str = "update_shield";
@@ -93,7 +108,6 @@ pub mod methods {
     pub const APPLY_SLOW: &str = "apply_slow";
     pub const UPDATE_SLOW: &str = "update_slow";
     pub const ON_POWER_MODE_CHANGED: &str = "on_power_mode_changed";
-    pub const ON_UPGRADE_COLLECTED: &str = "on_upgrade_collected";
     pub const APPLY_DORMANCY: &str = "apply_dormancy";
     pub const ENTER_INITIAL_PHASE: &str = "enter_initial_phase";
     pub const ON_PHASE_CHANGED_AUDIO: &str = "on_phase_changed_audio";
@@ -120,6 +134,8 @@ pub mod actions {
     pub const OPEN_MENU: &str = "open_menu";
     pub const MENU_UP: &str = "menu_up";
     pub const MENU_DOWN: &str = "menu_down";
+    pub const MENU_LEFT: &str = "menu_left";
+    pub const MENU_RIGHT: &str = "menu_right";
     pub const MENU_SELECT: &str = "menu_select";
     pub const MENU_BACK: &str = "menu_back";
     pub const ROUTE_SHIELDS: &str = "route_shields";
@@ -128,12 +144,24 @@ pub mod actions {
     pub const TOGGLE_VIEW: &str = "toggle_view";
 }
 
+// ── Shop row wire format ──────────────────────────────────────────────
+
+/// Bit flags packed per shop-offer row, one byte per row: GameManager encodes
+/// them from `shop::ShopOffer`, ShopUI decodes for row presentation. One
+/// definition so the two ends of the wire cannot drift.
+pub mod shop_flags {
+    pub const AFFORDABLE: u8 = 1;
+    pub const PURCHASABLE: u8 = 2;
+    pub const GREEN: u8 = 4;
+}
+
 // ── Group names ───────────────────────────────────────────────────────
 
 pub mod groups {
     pub const PLAYER: &str = "player";
     pub const ENEMIES: &str = "enemies";
     pub const BOLT_POOL: &str = "bolt_pool";
+    pub const PLAYER_DRONES: &str = "player_drones";
 }
 
 // ── Meta keys ─────────────────────────────────────────────────────────
@@ -157,6 +185,7 @@ pub mod nodes {
     pub const PLAYER: &str = "Player";
     pub const PLAYER_CAMERA: &str = "Player/Camera3D";
     pub const TURNTABLE: &str = "Turntable";
+    pub const LOADING_UI: &str = "LoadingUI";
     pub const MAIN_MENU_UI: &str = "MainMenuUI";
     pub const HUD: &str = "HUD";
     pub const KILL_SUMMARY_UI: &str = "KillSummaryUI";
@@ -190,11 +219,10 @@ pub mod properties {
 // ── Scene paths ───────────────────────────────────────────────────────
 
 pub mod scenes {
-    pub const LOOTBOX: &str = "res://scenes/items/lootbox.tscn";
-    pub const ORGANIC_BARREL: &str = "res://scenes/items/organic_barrel.tscn";
+    /// The one currency pickup scene — blue (components) and green (organics)
+    /// caches are the same node, stamped and tinted by `drop_at`.
+    pub const CURRENCY_CACHE: &str = "res://scenes/items/currency_cache.tscn";
     pub const PORTAL: &str = "res://scenes/items/portal.tscn";
-    /// Player ship model (CGTrader, installed via `make assets`).
-    pub const SHIP_MODEL: &str = "res://addons/ships/Spacecraft_1.glb";
     /// End-of-level exit portal model (CGTrader jump gate, OBJ decimated to a
     /// self-contained glb by `make assets` — see scripts/decimate.py).
     pub const JUMP_GATE_MODEL: &str = "res://addons/props/jump_gate.glb";
@@ -221,6 +249,7 @@ mod tests {
             signals::CONTINUE_PRESSED,
             signals::BUY_PRESSED,
             signals::RETURN_PRESSED,
+            signals::RESPAWN_PRESSED,
             signals::NEW_GAME_SELECTED,
             signals::CONTINUE_SELECTED,
             signals::SBS_TOGGLED,
@@ -233,9 +262,10 @@ mod tests {
             signals::PLAYER_DAMAGED,
             signals::PLAYER_SLOWED,
             signals::POWER_MODE_CHANGED,
-            signals::UPGRADE_COLLECTED,
-            signals::ORGANICS_COLLECTED,
+            signals::CACHE_COLLECTED,
+            signals::ROOM_CHANGED,
             signals::SHIP_COLOR_SELECTED,
+            signals::SHIP_TYPE_SELECTED,
             signals::RENDER_VIEWPORTS_CHANGED,
         ];
         for sig in &all_signals {
@@ -264,8 +294,15 @@ mod tests {
             methods::ON_BODY_ENTERED,
             methods::ADVANCE_TO_SHOP,
             methods::ADVANCE_TO_NEXT_LEVEL,
-            methods::BUY_LASER_UPGRADE,
+            methods::BUY_SHOP_ITEM,
             methods::RETURN_TO_MENU,
+            methods::ON_RESPAWN_PRESSED,
+            methods::SHOW_LIFE_LOST,
+            methods::UPDATE_LIVES,
+            methods::SET_CONTINUE_AVAILABLE,
+            methods::SET_UNLOCK_FLAGS,
+            methods::ON_ROOM_CHANGED,
+            methods::UPDATE_MAP,
             methods::TAKE_DAMAGE,
             methods::APPLY_UPGRADE,
             methods::SHOW_SUMMARY,
@@ -276,8 +313,9 @@ mod tests {
             methods::UPDATE_HEALTH,
             methods::UPDATE_COMPONENTS,
             methods::UPDATE_ORGANICS,
-            methods::ON_ORGANICS_COLLECTED,
+            methods::ON_CACHE_COLLECTED,
             methods::ON_SHIP_COLOR_SELECTED,
+            methods::ON_SHIP_TYPE_SELECTED,
             methods::ADVANCE_FROM_SHIP_SELECT,
             methods::SHOW_SHIP_SELECT,
             methods::CONFIGURE_SHIP,
@@ -292,7 +330,6 @@ mod tests {
             methods::UPDATE_SLOW,
             methods::UPDATE_SHIELD,
             methods::ON_POWER_MODE_CHANGED,
-            methods::ON_UPGRADE_COLLECTED,
             methods::UPDATE_POWER_MODE,
             methods::RESUME_GAME,
             methods::QUIT_TO_MENU,
@@ -326,6 +363,8 @@ mod tests {
             actions::OPEN_MENU,
             actions::MENU_UP,
             actions::MENU_DOWN,
+            actions::MENU_LEFT,
+            actions::MENU_RIGHT,
             actions::MENU_SELECT,
             actions::MENU_BACK,
             actions::ROUTE_SHIELDS,
@@ -347,10 +386,8 @@ mod tests {
     #[test]
     fn scene_paths_are_valid_godot_paths() {
         let all_scenes = [
-            scenes::LOOTBOX,
-            scenes::ORGANIC_BARREL,
+            scenes::CURRENCY_CACHE,
             scenes::PORTAL,
-            scenes::SHIP_MODEL,
             scenes::JUMP_GATE_MODEL,
         ];
         for path in &all_scenes {
@@ -374,7 +411,8 @@ mod tests {
             signals::ENEMY_KILLED, signals::PORTAL_ENTERED,
             signals::PHASE_CHANGED, signals::OPTIONS_CHANGED,
             signals::CONTINUE_PRESSED, signals::BUY_PRESSED,
-            signals::RETURN_PRESSED, signals::NEW_GAME_SELECTED,
+            signals::RETURN_PRESSED, signals::RESPAWN_PRESSED,
+            signals::NEW_GAME_SELECTED,
             signals::CONTINUE_SELECTED, signals::SBS_TOGGLED,
             signals::MSAA_TOGGLED, signals::EXIT_SELECTED,
             signals::RESUME_SELECTED, signals::QUIT_SELECTED,
@@ -383,9 +421,10 @@ mod tests {
             signals::PLAYER_DAMAGED,
             signals::PLAYER_SLOWED,
             signals::POWER_MODE_CHANGED,
-            signals::UPGRADE_COLLECTED,
-            signals::ORGANICS_COLLECTED,
+            signals::CACHE_COLLECTED,
+            signals::ROOM_CHANGED,
             signals::SHIP_COLOR_SELECTED,
+            signals::SHIP_TYPE_SELECTED,
             signals::RENDER_VIEWPORTS_CHANGED,
         ];
         for (i, a) in all.iter().enumerate() {
@@ -408,7 +447,11 @@ mod tests {
             methods::BROADCAST_OPTIONS,
             methods::ON_RENDER_VIEWPORTS_CHANGED,
             methods::ADVANCE_TO_SHOP, methods::ADVANCE_TO_NEXT_LEVEL,
-            methods::BUY_LASER_UPGRADE, methods::RETURN_TO_MENU,
+            methods::BUY_SHOP_ITEM, methods::RETURN_TO_MENU,
+            methods::ON_RESPAWN_PRESSED, methods::SHOW_LIFE_LOST,
+            methods::UPDATE_LIVES, methods::SET_CONTINUE_AVAILABLE,
+            methods::SET_UNLOCK_FLAGS, methods::ON_ROOM_CHANGED,
+            methods::UPDATE_MAP,
             methods::RESUME_GAME, methods::QUIT_TO_MENU,
             methods::ON_WINDOW_SIZE_CHANGED,
             methods::TAKE_DAMAGE, methods::APPLY_UPGRADE,
@@ -416,12 +459,12 @@ mod tests {
             methods::SHOW_SHOP, methods::SHOW_SHIP,
             methods::SET_LASER_LEVEL,
             methods::UPDATE_HEALTH, methods::UPDATE_COMPONENTS,
-            methods::UPDATE_ORGANICS, methods::ON_ORGANICS_COLLECTED,
+            methods::UPDATE_ORGANICS, methods::ON_CACHE_COLLECTED,
             methods::UPDATE_LASER, methods::UPDATE_LEVEL,
             methods::GENERATE_LEVEL, methods::ON_PLAYER_DAMAGED,
             methods::ON_PLAYER_SLOWED, methods::APPLY_SLOW, methods::UPDATE_SLOW,
             methods::UPDATE_SHIELD, methods::ON_POWER_MODE_CHANGED,
-            methods::ON_UPGRADE_COLLECTED, methods::UPDATE_POWER_MODE,
+            methods::UPDATE_POWER_MODE,
             methods::ON_PHASE_CHANGED_AUDIO, methods::ON_MUSIC_FINISHED,
 
             methods::RESET_LOADOUT,

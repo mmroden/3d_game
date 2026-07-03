@@ -144,9 +144,14 @@ test-rust:
 #   make test-godot
 #   make test-godot F=test_ship_select_backdrop
 #   make test-godot F=test_ship_select_backdrop T=test_backdrop_is_structure_only
+# GUT runs under an isolated HOME so its user:// (savegame.cfg, options.cfg)
+# never touches the developer's real profile — tests exercise real
+# persistence, and real persistence must not wipe real progress.
 test-godot: deps-godot deps-gut
 	@echo "==> Running Godot tests (GUT)$(if $(F), [F=$(F) T=$(T)])..."
-	@GODOT_DISABLE_LEAK_CHECKS=1 $(GODOT) --headless --path $(GODOT_DIR) \
+	@mkdir -p $(GODOT_DIR)/.godot/test_home
+	@GODOT_DISABLE_LEAK_CHECKS=1 HOME=$(abspath $(GODOT_DIR)/.godot/test_home) \
+		$(GODOT) --headless --path $(GODOT_DIR) \
 		-s res://addons/gut/gut_cmdln.gd \
 		-gdir=res://tests -ginclude_subdirs \
 		$(if $(F),-gselect=$(F)) $(if $(T),-gunit_test_name=$(T)) -gexit

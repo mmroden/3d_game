@@ -30,10 +30,13 @@
 - HUD: blue shield bar + power mode indicator ("SHIELDS" / "WEAPONS")
 
 ### Enemy Classification
-- All enemies are mechanical and drop components; there is no enemy taxonomy
-  enum (the old `EnemyCategory` was removed once organics moved to barrels).
-- Dual currency is wired: mechanical kills earn **components** (in-run, lost on
-  death); **organics** (permanent) are collected from glowing barrels, not kills.
+- All enemies are mechanical; there is no enemy taxonomy enum (the old
+  `EnemyCategory` was removed once organics moved off kills).
+- Dual currency is wired, and **every reward is a physical pickup**: a kill
+  credits nothing directly — it drops a blue cache carrying the type's tiered
+  component reward (in-run, lost on run-over), and green caches placed at the
+  level's loot spawns carry **organics** (permanent). One `CurrencyCache` node
+  serves both, tinted by `CurrencyKind`.
 
 ### Bestiary Briefing (`Bestiary` phase)
 
@@ -42,7 +45,7 @@
   name and lore; the player taps to step through the catalog and the final tap
   drops into the level. Flow: `ShipSelect → Bestiary → Playing`.
 - The catalog (`void-logic/src/bestiary.rs`) always leads with the two pickups —
-  the green **Organic Barrel** (permanent, run-to-run upgrades) and the blue
+  the green **Organic Cache** (permanent, run-to-run upgrades) and the blue
   **Component Cache** (this-run upgrades) — so level 1, before any enemy is met,
   teaches the economy. Then it lists every enemy **seen so far**, in roster
   order. Enemies are marked on first encounter (level entry) and the seen-set is
@@ -54,7 +57,7 @@
 - Velocity readback after move_and_slide() on both player and enemies
 - Death as event (in take_damage, not polled in physics_process)
 - Self-destructing ephemeral nodes via SceneTreeTimer
-- Upgrade routing through GameManager (lootbox → signal → RunState → push to ShipController)
+- Pickup routing through GameManager (cache → signal → RunState; upgrades now enter via the shop, not drops)
 - State sync on new game/continue (reset_loadout + push)
 - Emission enabled on all emissive materials (was silently disabled everywhere)
 - Enemy spawn Y range clamped to room height
@@ -71,10 +74,13 @@
 
 ### Phase 4: Dual Currency System
 
-**The economy split:** mechanical enemy kills drop components (in-run, lost on death); organics (permanent, kept across runs) are collected from glowing barrels scattered in the level debris, not from kills. Information caches (crystalline pickups, 1-2 per level) are a third permanent currency.
+**The economy split:** mechanical enemy kills drop a blue cache carrying the type's tiered component reward (in-run, lost on run-over); green caches at the level's loot spawns carry organics (permanent, kept across runs). Nothing is credited without flying through the pickup. Information caches (crystalline pickups, 1-2 per level) are a third permanent currency.
 
-> **Status:** components + organics are implemented (`currency.rs`, `RunState`, `SaveGame`),
-> with organics sourced from `OrganicBarrel` pickups. Information caches are still pending.
+> **Status:** components + organics are implemented (`currency.rs`, `RunState`, `SaveGame`).
+> The free-upgrade lootbox is gone: one `CurrencyCache` node (kind-tinted glow) serves
+> blue kill-drops and green loot-spawn pickups, rewards are tiered per enemy
+> (`EnemyType::reward`), and `random_upgrade` is deleted — stat upgrades are shop stock
+> (Phase 5). Information caches are still pending.
 
 #### 4.1 Currency Types
 - **New file:** `void-logic/src/currency.rs`
@@ -96,57 +102,67 @@
 - Caches emit signal → GameManager routes to permanent storage
 
 #### 4.4 Variable Credit Rewards
-- **Modify:** `void-logic/src/enemy_type.rs` — replace flat 1000 credits with tiered values
-- Tougher enemies = more valuable drops
-- Existing test `all_enemies_award_1000_credits` replaced with scaling test
+- **Done:** tiered per `EnemyType::reward` (GunDrone 800 → QuadShell 2 500,
+  SpawnDrone 400), pinned by `rewards_scale_with_tier`. The reward is only
+  ever credited through the dropped cache — kills pay nothing directly.
 
 #### 4.5 Economy UI Update
-- **Modify:** HUD — show components + organics instead of single credits
-- **Modify:** Shop UI — components for in-run purchases, organics shown for reference
-- **Modify:** Kill summary — show component/organic breakdown
+- **Done:** HUD shows components, lives, and organics; the shop shows both
+  balances over its two sections. Kill-summary component/organic breakdown
+  still pending.
 
 #### 4.6 Differentiated Loot Drops
-- **Modify:** `void-nodes/src/nodes/enemy_drone.rs` — on death, spawn typed visual pickup (gear icon for mechanical, organic blob for biological) instead of generic lootbox
-- Lootbox becomes component-specific or organic-specific
+- **Done as modified:** one `CurrencyCache` node, differentiated by `CurrencyKind`
+  tint (blue components glow / green organics glow) rather than distinct meshes —
+  matching how the bestiary turntable already presented the two pickups
 
 ---
 
 ### Phase 5: Ship Selection and Loadout
 
+> **Status:** done as modified — see `docs/architecture/economy.md` for the
+> shop/persistence design that superseded the sketches below.
+
 #### 5.1 Ship Definition Data
-- **New file:** `void-logic/src/ship.rs`
-- `ShipModel` enum: Scout (Spaceship.obj), Interceptor (Spaceship2.obj), Corvette (Spaceship3.obj), Frigate (Spaceship4.obj), Dreadnought (Spaceship5.obj)
-- `ShipSpec`: custom BaseStats, shield_capacity, shield_regen, hardpoint_count (2-4), model_path, display_name, organic_cost
-- Compile-time SPECS table
-- Scout: 2 hardpoints, low shields, fast, free (starter)
-- Dreadnought: 4 hardpoints, heavy shields, slow, expensive
+- **Done as modified:** `void-logic/src/ship_type.rs` — `ShipType`
+  {Vanguard (starter, styled), Talon 300, Hive 400, Reaver 500 organics —
+  the alien hull caps the roster per the owner's stated ~500 anchor},
+  compile-time `SPECS` (stat muls, weapon, model path/size/yaw, blurb),
+  EnemyType-pattern id/from_id. Models from `assets/cgtrader_ships/
+  ship_upgrades/`, installed to stable names by `make assets`. The
+  `spheres/` FBX pack is future *enemies*, not hulls — out of scope here.
+  `ShipColor` remains the orthogonal trim of styled hulls.
 
 #### 5.2 Hardpoint + Weapon System
-- **New file:** `void-logic/src/hardpoint.rs`
-- `HardpointSlot`: Primary (R2), Secondary (L2), Tertiary (R1), Quaternary (L1)
-- `WeaponType`: DualLaser, TrackingMissile, Grenade, Flamethrower, Stabilizer
-- Each weapon: fire_rate, damage, ammo_type, ammo_cost
-- Default: R2=DualLaser, L1=Stabilizer
-- **Modify:** `void-nodes/src/nodes/ship_controller.rs` — read all 4 triggers
-- **Modify:** `godot/project.godot` — fire_secondary, fire_tertiary, fire_quaternary actions
+- **Superseded** (owner decision): one weapon per hull instead of hardpoint
+  slots — `WeaponKind` {HitscanLaser, TrackingLaser, ClusterMunition,
+  SubdroneLauncher} in `void-logic/src/armament.rs`, dispatched by the fire
+  trigger per `ShipType::spec().weapon`. Homing steer, cluster fragmentation,
+  and the subdrone regen clock are pure armament math; the shared bolt ring
+  serves both factions (see faucet_principle.md).
 
 #### 5.3 Ship Selection Game Phase
-- **Modify:** `void-logic/src/game_phase.rs` — add `ShipSelect`, transitions: `MainMenu → ShipSelect → Playing`
-- **New file:** `void-nodes/src/nodes/ui/ship_select_ui.rs` — ship cards, stat comparison, organic cost
-- Ships unlocked by spending organics (permanent progression)
+- **Done:** `ship_select_ui.rs` lists the roster — owned hulls selectable,
+  locked hulls priced and pointed at the shop; hulls are bought with
+  organics through the shop's green section (`ShopItemId::Unlock`).
 
 #### 5.4 Ship Model as Player Geometry
-- **Modify:** `void-nodes/src/nodes/ship_controller.rs` — load selected ship model as child MeshInstance3D around camera
-- Import 5 ship OBJs into godot/addons/quaternius/spaceships/
+- **Done:** `ShipController::spawn_ship_model` reads path/size/yaw from the
+  hull's spec (one source of truth with the turntable); a hull change is a
+  model respawn.
 
 #### 5.5 Inter-Level Rebuild Screen
-- **New file:** `void-logic/src/crafting.rs` — recipes: components → weapon ammo, shield recharge, temporary upgrades
-- **Modify:** `void-logic/src/game_phase.rs` — add `Rebuild` phase between KillSummary and next level
-- **New file:** `void-nodes/src/nodes/ui/rebuild_ui.rs`
+- **Superseded** (owner decision): no crafting phase — the existing Shop
+  phase sells everything (stat upgrades, laser, lives with blue; permanent
+  unlocks and hulls with green), and it also runs between lives.
 
 #### 5.6 Lives System
-- **Modify:** `void-logic/src/run_state.rs` — add `lives: u32` (starts at 1, extras built from components)
-- On death: if lives > 0, decrement and restart level; if 0, run ends → organics saved, components lost
+- **Done:** `RunState::lives` (starts 1, extras bought at the shop,
+  `10k × 2^bought`); a spare-life death keeps everything and restarts the
+  level via `Death → Shop → Playing`; the last life ends the run (components
+  zeroed, bought upgrades cleared, organics/unlocks kept). Continue on the
+  main menu exists only for runs that finished a level (profile/run save
+  split — economy.md).
 
 ---
 
@@ -185,7 +201,8 @@
 
 ## Key Design Decisions
 
-- **All enemies are mechanical** (organic enemies removed; organics come from barrels)
+- **All enemies are mechanical** (organic enemies removed; organics come from green caches)
+- **Every reward is a pickup** — kills credit nothing directly; uncollected caches are money left floating
 - **10 levels per chapter, 40 total**
 - **Components lost on death, organics permanent** — creates the roguelite tension
 - **Player-enemy collision is gameplay** — ramming is a tactic, stabilizer is recovery

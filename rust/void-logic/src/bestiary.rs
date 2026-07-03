@@ -2,7 +2,7 @@
 //! currency pickups always lead (they teach the run-vs-permanent economy),
 //! followed by every enemy type seen so far, in roster order. This drives the
 //! between-level briefing screen — on the first level, before any enemy is met,
-//! it shows only the green barrel and the blue cache.
+//! it shows only the green cache and the blue cache.
 
 use crate::enemy_type::EnemyType;
 
@@ -46,8 +46,8 @@ impl SeenEnemies {
 /// What a briefing entry spins in the room — a currency pickup or an enemy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BestiaryKind {
-    /// Green barrel: permanent, run-to-run ship upgrades (organics).
-    OrganicBarrel,
+    /// Green cache: the permanent currency (organics).
+    OrganicCache,
     /// Blue cache: upgrades for the current run only (components).
     ComponentCache,
     /// A catalogued enemy.
@@ -62,21 +62,23 @@ pub struct BestiaryEntry {
     pub blurb: &'static str,
 }
 
-const ORGANIC_TITLE: &str = "Organic Barrel";
+const ORGANIC_TITLE: &str = "Organic Cache";
 const ORGANIC_BLURB: &str = "A green-glowing canister of something the brass want very badly. \
 Bank it and it stays with you, run after run, buying the upgrades that ride home in your hull. \
 Nobody briefs you on what the green stuff actually is — only that people are paying real money for it.";
 
 const COMPONENT_TITLE: &str = "Component Cache";
-const COMPONENT_BLURB: &str = "A blue salvage cache of spare parts. Useful now, worthless later: \
-its components buy upgrades for this run only, and burn up with you if you don't come home.";
+const COMPONENT_BLURB: &str = "A blue salvage cache of spare parts, shaken loose when a machine \
+dies — fly it down before you move on, because nothing is credited from a distance. Useful now, \
+worthless later: its components buy upgrades between levels, this run only, and burn up with you \
+if you don't come home.";
 
 /// Build the ordered briefing entries: the two pickups first (always — they
 /// teach the economy), then each seen enemy in roster order.
 pub fn entries(seen: &SeenEnemies) -> Vec<BestiaryEntry> {
     let mut out = vec![
         BestiaryEntry {
-            kind: BestiaryKind::OrganicBarrel,
+            kind: BestiaryKind::OrganicCache,
             title: ORGANIC_TITLE,
             blurb: ORGANIC_BLURB,
         },
@@ -167,7 +169,7 @@ mod tests {
     fn empty_bestiary_shows_only_the_two_pickups() {
         let entries = entries(&SeenEnemies::new());
         assert_eq!(entries.len(), 2, "level 1, nothing seen → just the pickups");
-        assert_eq!(entries[0].kind, BestiaryKind::OrganicBarrel);
+        assert_eq!(entries[0].kind, BestiaryKind::OrganicCache);
         assert_eq!(entries[1].kind, BestiaryKind::ComponentCache);
     }
 
@@ -181,7 +183,7 @@ mod tests {
         assert_eq!(
             kinds,
             vec![
-                BestiaryKind::OrganicBarrel,
+                BestiaryKind::OrganicCache,
                 BestiaryKind::ComponentCache,
                 BestiaryKind::Enemy(EnemyType::GunDrone),
                 BestiaryKind::Enemy(EnemyType::QuadShell),

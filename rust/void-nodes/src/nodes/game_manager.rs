@@ -4,6 +4,7 @@ use godot::classes::{
     input::MouseMode,
 };
 
+use super::level_manager::LevelManager;
 use super::persistence;
 
 /// Persisted display/render preferences — the single GameOptions is
@@ -26,13 +27,17 @@ use void_logic::game_options::GameOptions;
 use void_logic::game_phase::GamePhase;
 use void_logic::generator::rooms_for_level;
 use void_logic::input_method::InputMethod;
+use void_logic::level_map;
 use void_logic::newtypes::Damage;
 use void_logic::power_routing::PowerMode;
+use void_logic::currency::CurrencyKind;
 use void_logic::run_state::{RunState, DamageOutcome};
 use void_logic::save_game::SaveGame;
 use void_logic::seed::Seed;
 use void_logic::ship::ShipColor;
-use void_logic::upgrade::{Upgrade, UpgradeKind};
+use void_logic::ship_type::ShipType;
+use void_logic::shop::{self, Receipt, ShopItemId};
+use void_logic::unlocks::Unlock;
 
 /// Central orchestrator: owns RunState, manages game phase transitions,
 /// shows/hides UI screens, and connects signals from enemies/portal.
@@ -45,9 +50,15 @@ pub struct GameManager {
     game_options: GameOptions,
     save_game: Option<SaveGame>,
     active_input: InputMethod,
+    /// Countdown (process ticks) to the deferred sector build — see
+    /// `transition_to`'s Playing arm. 0 = nothing pending.
+    pending_level_build: u8,
     current_power_mode: i32,
     /// Which bestiary entry the pre-level briefing is currently showing.
     bestiary_index: usize,
+    /// Set when the shop was entered by losing a life: its Continue restarts
+    /// the current level (same seed) instead of advancing to the next.
+    pending_respawn: bool,
 
     /// Pins the run seed for reproducible runs when nonzero (0 = random).
     /// Configuration, not build flavor: set it in the editor or a test
@@ -69,8 +80,10 @@ impl INode for GameManager {
             game_options: GameOptions::new(),
             save_game: None,
             active_input: InputMethod::Keyboard,
+            pending_level_build: 0,
             current_power_mode: 0,
             bestiary_index: 0,
+            pending_respawn: false,
             fixed_seed: 0,
         }
     }
@@ -121,6 +134,19 @@ impl INode for GameManager {
     }
 
     fn process(&mut self, delta: f64) {
+        // A pending sector build waits out one rendered frame so the loading
+        // veil actually paints (a synchronous build in the entry frame reads
+        // as a freeze), then lands here.
+        if self.pending_level_build > 0 {
+            self.pending_level_build -= 1;
+            if self.pending_level_build == 0 {
+                if self.phase == GamePhase::Playing {
+                    self.regenerate_level();
+                }
+                self.push_loading_veil(false);
+            }
+        }
+
         // Check for pause toggle
         let input = Input::singleton();
         if input.is_action_just_pressed(actions::OPEN_MENU)
@@ -175,22 +201,36 @@ impl GameManager {
         if !self.phase.can_transition_to(GamePhase::ShipSelect) {
             return;
         }
+        // A new game is the explicit clean slate: the WHOLE save goes,
+        // profile included — organics, unlocks, bestiary (owner's call,
+        // 2026-07-03). Run-over is different: the roguelite loop keeps the
+        // profile there; choosing New Game from the menu does not.
+        self.pending_respawn = false;
+        self.wipe_save();
         self.run_state = RunState::new(self.fresh_run_seed());
-        self.save_game = None;
         self.sync_player_state();
         self.transition_to(GamePhase::ShipSelect);
         self.show_ship_select_ui();
     }
 
-    /// Called from UI: continue from saved game.
+    /// Called from UI: continue from saved game. Only a run that finished a
+    /// level is continuable (the menu hides Continue otherwise; this guard
+    /// backs it).
     #[func]
     pub fn continue_game(&mut self) {
+        if !self.has_continuable_run() {
+            return;
+        }
         // Don't touch the run unless the phase machine can enter Playing.
         if !self.phase.can_transition_to(GamePhase::Playing) {
             return;
         }
         if let Some(save) = &self.save_game {
-            let mut run = RunState::new(save.run_seed);
+            // The snapshot's own seed restores its layouts; without a
+            // continuable run, only the profile applies to a fresh seed.
+            let seed = save.run.as_ref().map(|r| r.run_seed)
+                .unwrap_or_else(|| self.fresh_run_seed());
+            let mut run = RunState::new(seed);
             save.apply_to(&mut run);
             self.run_state = run;
         } else {
@@ -206,18 +246,19 @@ impl GameManager {
         if let Some(enemy_type) = EnemyType::from_id(type_id) {
             self.run_state.record_kill(enemy_type);
             godot_print!(
-                "Kill: {} | Components: {}",
+                "Kill: {} | Cache dropped: {} components",
                 enemy_type.display_name(),
-                self.run_state.components.balance,
+                enemy_type.reward(),
             );
         }
     }
 
-    /// Called when player enters the portal.
+    /// Called when player enters the portal. The continuable-run snapshot is
+    /// NOT written here — it lands at the start of the next level, after the
+    /// shop; see `transition_to`.
     #[func]
     pub fn on_portal_entered(&mut self) {
         if self.phase == GamePhase::Playing {
-            self.save_game = Some(SaveGame::from_run_state(&self.run_state));
             self.transition_to(GamePhase::LevelComplete);
             self.transition_to(GamePhase::KillSummary);
 
@@ -238,53 +279,86 @@ impl GameManager {
     #[func]
     pub fn advance_to_shop(&mut self) {
         if self.phase == GamePhase::KillSummary {
-            // End of level: snapshot and persist so the cleared-level
-            // progress survives a quit (the doc's "saved at end-of-level").
-            self.save_game = Some(SaveGame::from_run_state(&self.run_state));
-            self.save_run();
             self.transition_to(GamePhase::Shop);
             self.show_shop_ui();
         }
     }
 
-    /// Called from shop UI: buy laser upgrade.
+    /// Called from shop UI: buy the item with this typed id. Validation,
+    /// pricing, and mutation all live in `void_logic::shop::purchase`; this
+    /// only routes the receipt to consumers and refreshes the screen.
     #[func]
-    pub fn buy_laser_upgrade(&mut self) -> bool {
-        let next = match self.run_state.laser_level.next() {
-            Some(n) => n,
-            None => return false,
+    pub fn buy_shop_item(&mut self, item_id: i32) -> bool {
+        let Some(id) = ShopItemId::from_id(item_id) else {
+            godot_warn!("buy_shop_item: unknown item id {item_id}");
+            return false;
         };
-        let cost = match next.upgrade_cost() {
-            Some(c) => c,
-            None => return false,
-        };
-        if self.run_state.components.spend(cost).is_ok() {
-            self.run_state.laser_level = next;
-            godot_print!(
-                "Laser upgraded to {} (damage: {})",
-                next.display_name(),
-                next.damage(),
-            );
-            self.update_player_laser();
-            // Refresh shop UI
-            self.show_shop_ui();
-            true
-        } else {
-            false
+        match shop::purchase(&mut self.run_state, id) {
+            Ok(receipt) => {
+                // No disk write here: the save IS the level start. Purchases
+                // persist through the next level-start snapshot; quitting
+                // mid-shop rewinds to the level start, purchase and price
+                // alike (nothing is lost, nothing is ratcheted).
+                match &receipt {
+                    Receipt::UpgradeAdded(upgrade) => {
+                        // Push to ShipController's cache, like any loadout sync.
+                        if let Some(parent) = self.base().get_parent() {
+                            if let Some(mut player) = parent.try_get_node_as::<Node>(nodes::PLAYER) {
+                                player.call(methods::APPLY_UPGRADE, &[
+                                    Variant::from(GString::from(&upgrade.name)),
+                                    Variant::from(upgrade.kind.id()),
+                                    Variant::from(upgrade.multiplier),
+                                ]);
+                            }
+                        }
+                    }
+                    Receipt::LaserChanged(next) => {
+                        godot_print!("Laser upgraded to {} (damage: {})",
+                            next.display_name(), next.damage());
+                        self.update_player_laser();
+                    }
+                    Receipt::LifeAdded(lives) => {
+                        godot_print!("Extra life bought ({} total)", lives);
+                    }
+                    Receipt::UnlockGranted(unlock) => {
+                        godot_print!("Permanent unlock bought: {}", unlock.display_name());
+                        // A permanent purchase must never be lostable —
+                        // profile to disk immediately, run snapshot untouched.
+                        self.persist_profile();
+                        if *unlock == Unlock::Valkyrie {
+                            self.push_valkyrie_owned(true);
+                        }
+                    }
+                }
+                self.show_shop_ui();
+                true
+            }
+            Err(refusal) => {
+                godot_print!("Purchase refused: {refusal:?}");
+                false
+            }
         }
     }
 
-    /// Called from shop UI: proceed to the loadout screen, then the next level.
+    /// Called from shop UI: continue out of the shop — to the loadout screen
+    /// and the next level normally, or back into the current level (same
+    /// seed) when the shop was entered by losing a life.
     #[func]
     pub fn advance_to_next_level(&mut self) {
-        if self.phase == GamePhase::Shop {
-            self.run_state.current_level += 1;
-            self.run_state.kills.reset();
-            self.run_state.health = self.run_state.loadout.max_health();
-            self.run_state.shield.reset();
-            self.transition_to(GamePhase::ShipSelect);
-            self.show_ship_select_ui();
+        if self.phase != GamePhase::Shop {
+            return;
         }
+        if self.pending_respawn {
+            // The life was already spent (apply_life_loss); the ship is
+            // restored — re-enter the same level, which regenerates from the
+            // unchanged level seed.
+            self.pending_respawn = false;
+            self.transition_to(GamePhase::Playing);
+            return;
+        }
+        self.run_state.advance_level();
+        self.transition_to(GamePhase::ShipSelect);
+        self.show_ship_select_ui();
     }
 
     /// Called from the ship-select UI: a color was chosen — apply it live.
@@ -294,10 +368,34 @@ impl GameManager {
         self.run_state.set_ship_color(color);
         self.sync_player_state();
         self.update_hud();
-        // Re-skin the showcase ship behind the loadout screen to the new style.
+        self.refresh_showcase_ship();
+    }
+
+    /// Called from the ship-select UI: a hull was chosen. Ownership is
+    /// validated here (the UI greys locked hulls, the authority backs it).
+    #[func]
+    pub fn on_ship_type_selected(&mut self, ship_type_id: i32) {
+        let Some(ship) = ShipType::from_id(ship_type_id) else { return };
+        if !self.run_state.unlocks.owns_ship(ship) {
+            // Expected guard: the UI greys locked hulls; the authority backs it.
+            godot_print!("on_ship_type_selected: {ship:?} is not owned — ignored");
+            return;
+        }
+        self.run_state.set_ship_type(ship);
+        self.sync_player_state();
+        self.update_hud();
+        self.refresh_showcase_ship();
+    }
+
+    /// Re-model/re-skin the showcase ship behind the loadout screens to the
+    /// current hull and trim.
+    fn refresh_showcase_ship(&self) {
         if let Some(parent) = self.base().get_parent() {
             if let Some(mut turntable) = parent.try_get_node_as::<Node>(nodes::TURNTABLE) {
-                turntable.call(methods::SHOW_SHIP, &[Variant::from(color_id)]);
+                turntable.call(methods::SHOW_SHIP, &[
+                    Variant::from(self.run_state.ship_type.id()),
+                    Variant::from(self.run_state.ship_color.id()),
+                ]);
             }
         }
     }
@@ -317,6 +415,17 @@ impl GameManager {
     pub fn advance_from_bestiary(&mut self) {
         if self.phase == GamePhase::Bestiary {
             self.transition_to(GamePhase::Playing);
+        }
+    }
+
+    /// Called from the bestiary UI's back press (circle is always back):
+    /// return to the loadout screen. The two share one backdrop, so this is
+    /// a content flip, not a rebuild.
+    #[func]
+    pub fn back_from_bestiary(&mut self) {
+        if self.phase == GamePhase::Bestiary {
+            self.transition_to(GamePhase::ShipSelect);
+            self.show_ship_select_ui();
         }
     }
 
@@ -354,7 +463,7 @@ impl GameManager {
         let Some(parent) = self.base().get_parent() else { return };
 
         let (kind_id, enemy_id): (i32, i32) = match entry.kind {
-            BestiaryKind::OrganicBarrel => (0, -1),
+            BestiaryKind::OrganicCache => (0, -1),
             BestiaryKind::ComponentCache => (1, -1),
             BestiaryKind::Enemy(t) => (2, t.id()),
         };
@@ -379,35 +488,130 @@ impl GameManager {
         }
     }
 
-    /// Populate and show the ship-select UI with the current color marked.
+    /// Populate and show the ship-select UI: current hull and color marked,
+    /// per-hull ownership (from the permanent unlocks) gating selection.
     fn show_ship_select_ui(&self) {
         let Some(parent) = self.base().get_parent() else { return };
         if let Some(mut ui) = Self::find_ui_node(&parent, nodes::SHIP_SELECT_UI) {
-            ui.call(methods::SHOW_SHIP_SELECT, &[Variant::from(self.run_state.ship_color.id())]);
+            let owned: PackedByteArray = ShipType::ALL.iter()
+                .map(|ship| self.run_state.unlocks.owns_ship(*ship) as u8)
+                .collect();
+            ui.call(methods::SHOW_SHIP_SELECT, &[
+                Variant::from(self.run_state.ship_type.id()),
+                Variant::from(self.run_state.ship_color.id()),
+                Variant::from(owned),
+            ]);
         }
     }
 
-    /// Called when player dies.
+    /// Called when player dies: a spare life keeps the run alive (through the
+    /// shop, back into the same level); the last life ends it.
     #[func]
     pub fn on_player_death(&mut self) {
-        if self.phase == GamePhase::Playing {
-            let old_laser = self.run_state.laser_level.display_name().to_string();
-            let level_reached = self.run_state.current_level as i32;
-            self.run_state.apply_death_penalty();
-            self.save_game = Some(SaveGame::from_run_state(&self.run_state));
-            self.save_run();
-            let new_laser = self.run_state.laser_level.display_name().to_string();
-            self.transition_to(GamePhase::Death);
+        if self.phase != GamePhase::Playing {
+            return;
+        }
+        let level_reached = self.run_state.current_level as i32;
 
-            // Show death screen
+        if self.run_state.has_spare_life() {
+            self.run_state.apply_life_loss();
+            self.transition_to(GamePhase::Death);
             let Some(parent) = self.base().get_parent() else { return };
             if let Some(mut death_ui) = Self::find_ui_node(&parent, nodes::DEATH_SCREEN_UI) {
-                death_ui.call(methods::SHOW_DEATH, &[
-                    Variant::from(GString::from(old_laser.as_str())),
-                    Variant::from(GString::from(new_laser.as_str())),
+                death_ui.call(methods::SHOW_LIFE_LOST, &[
+                    Variant::from(self.run_state.lives as i32),
                     Variant::from(level_reached),
                 ]);
             }
+            return;
+        }
+
+        let old_laser = self.run_state.laser_level.display_name().to_string();
+        self.run_state.apply_death_penalty();
+        // Run over: the snapshot goes (no more Continue), the profile stays.
+        match &mut self.save_game {
+            Some(save) => {
+                save.clear_run();
+                save.update_profile(&self.run_state);
+            }
+            None => self.save_game = Some(SaveGame::profile_only(&self.run_state)),
+        }
+        self.save_run();
+        let new_laser = self.run_state.laser_level.display_name().to_string();
+        self.transition_to(GamePhase::Death);
+
+        // Show death screen
+        let Some(parent) = self.base().get_parent() else { return };
+        if let Some(mut death_ui) = Self::find_ui_node(&parent, nodes::DEATH_SCREEN_UI) {
+            death_ui.call(methods::SHOW_DEATH, &[
+                Variant::from(GString::from(old_laser.as_str())),
+                Variant::from(GString::from(new_laser.as_str())),
+                Variant::from(level_reached),
+            ]);
+        }
+    }
+
+    /// Called when the player's room changes (LevelManager's culling
+    /// detection): visit it in RunState and, on a first visit, refresh the
+    /// recon map from the retained graph.
+    #[func]
+    pub fn on_room_changed(&mut self, room: i64) {
+        if room < 0 {
+            return;
+        }
+        if self.run_state.visit_room(room as usize) {
+            self.push_map_view();
+        }
+    }
+
+    /// Derive the recon-map view (void-logic, on the retained LevelGraph)
+    /// and push it to the HUD's corner widget as packed arrays.
+    fn push_map_view(&self) {
+        let Some(parent) = self.base().get_parent() else { return };
+        let Some(level_mgr) = parent.try_get_node_as::<LevelManager>(nodes::LEVEL_MANAGER) else {
+            return;
+        };
+        let view = {
+            let lm = level_mgr.bind();
+            level_map::map_view(
+                lm.graph(),
+                &self.run_state.rooms_visited,
+                self.run_state.current_room,
+            )
+        };
+
+        let rooms: PackedVector2Array = view.rooms.iter()
+            .map(|r| Vector2::new(r.pos[0], r.pos[1]))
+            .collect();
+        let room_flags: PackedByteArray = view.rooms.iter()
+            .map(|r| r.is_current as u8)
+            .collect();
+        let mut edges = PackedVector2Array::new();
+        let mut edge_flags = PackedByteArray::new();
+        for edge in &view.edges {
+            edges.push(Vector2::new(edge.from[0], edge.from[1]));
+            edges.push(Vector2::new(edge.to[0], edge.to[1]));
+            edge_flags.push(edge.frontier as u8);
+        }
+
+        if let Some(mut hud) = Self::find_ui_node(&parent, nodes::HUD) {
+            hud.call(methods::UPDATE_MAP, &[
+                rooms.to_variant(),
+                room_flags.to_variant(),
+                edges.to_variant(),
+                edge_flags.to_variant(),
+            ]);
+        }
+    }
+
+    /// Called from the death screen after a life loss: re-arm at the shop,
+    /// whose Continue then restarts the current level.
+    #[func]
+    pub fn on_respawn_pressed(&mut self) {
+        if self.phase == GamePhase::Death {
+            self.pending_respawn = true;
+            self.transition_to(GamePhase::Shop);
+            self.show_shop_ui();
         }
     }
 
@@ -440,6 +644,23 @@ impl GameManager {
     fn reload_options_from_disk(&mut self) {
         self.game_options = GameOptions::default();
         self.load_options();
+    }
+
+    /// Test seam (mirrors `reload_options_from_disk`): forget the persisted
+    /// save, memory and disk — a fresh install. Real persistence otherwise
+    /// leaks profiles (organics, unlocks) across tests within one run and
+    /// makes them order-dependent. The GUT Makefile target runs under an
+    /// isolated HOME, so this can never touch a developer's real profile.
+    #[func]
+    fn clear_save_for_tests(&mut self) {
+        self.wipe_save();
+    }
+
+    /// Forget the save, memory and disk. New Game rides this (the explicit
+    /// clean slate); tests reuse it via `clear_save_for_tests`.
+    fn wipe_save(&mut self) {
+        self.save_game = None;
+        godot::classes::DirAccess::remove_absolute(SAVE_FILE);
     }
 
     /// Called from main menu: toggle SBS stereo.
@@ -533,43 +754,17 @@ impl GameManager {
         }
     }
 
-    /// Called when a lootbox is collected — update RunState then push to ShipController.
+    /// Called when a currency cache is collected — credit the matching account
+    /// and refresh the HUD. The only reward path in a level: nothing credits
+    /// either account without this pickup. Green is permanent the moment it
+    /// is banked, so it writes the profile immediately.
     #[func]
-    pub fn on_upgrade_collected(&mut self, name: GString, kind_id: i32, multiplier: f32) {
-        let kind = match kind_id {
-            0 => UpgradeKind::Thrust,
-            1 => UpgradeKind::RotationSpeed,
-            2 => UpgradeKind::Damping,
-            3 => UpgradeKind::MaxHealth,
-            4 => UpgradeKind::FireRate,
-            5 => UpgradeKind::ProjectileSpeed,
-            6 => UpgradeKind::ProjectileDamage,
-            _ => return,
-        };
-        let upgrade = Upgrade {
-            name: name.to_string(),
-            kind,
-            multiplier,
-        };
-        // Update authority
-        self.run_state.loadout.add_upgrade(upgrade);
-
-        // Push to ShipController cache
-        let Some(parent) = self.base().get_parent() else { return };
-        if let Some(mut player) = parent.try_get_node_as::<Node>(nodes::PLAYER) {
-            player.call(methods::APPLY_UPGRADE, &[
-                Variant::from(name),
-                Variant::from(kind_id),
-                Variant::from(multiplier),
-            ]);
+    pub fn on_cache_collected(&mut self, kind_id: i32, amount: i64) {
+        let Some(kind) = CurrencyKind::from_id(kind_id) else { return };
+        self.run_state.collect_cache(kind, amount.max(0) as u32);
+        if kind == CurrencyKind::Organics {
+            self.persist_profile();
         }
-    }
-
-    /// Called when an organics barrel is collected — adds to the permanent
-    /// organics account and refreshes the HUD.
-    #[func]
-    pub fn on_organics_collected(&mut self, amount: i32) {
-        self.run_state.collect_organics(amount.max(0) as u32);
         self.update_hud();
     }
 
@@ -591,6 +786,9 @@ impl GameManager {
     #[func]
     pub fn return_to_menu(&mut self) {
         if self.phase == GamePhase::Death {
+            // Defensive: a respawn armed but never taken must not leak into
+            // the next run's first shop visit.
+            self.pending_respawn = false;
             self.transition_to(GamePhase::MainMenu);
         }
     }
@@ -662,26 +860,28 @@ impl GameManager {
     }
 
     #[func]
-    pub fn get_next_upgrade_cost(&self) -> i64 {
-        self.run_state.laser_level
-            .next()
-            .and_then(|n| n.upgrade_cost())
-            .unwrap_or(0) as i64
+    pub fn get_lives(&self) -> i32 {
+        self.run_state.lives as i32
     }
 
+    /// Whether a continuable run exists — a run that finished at least one
+    /// level. Gates the main menu's Continue.
     #[func]
-    pub fn can_afford_upgrade(&self) -> bool {
-        if let Some(next) = self.run_state.laser_level.next() {
-            if let Some(cost) = next.upgrade_cost() {
-                return self.run_state.components.can_afford(cost);
-            }
-        }
-        false
+    pub fn has_continuable_run(&self) -> bool {
+        self.save_game.as_ref().is_some_and(|save| save.has_run())
     }
 
+    /// Whether the permanent unlock with this id is owned (Unlock::id).
     #[func]
-    pub fn is_max_laser(&self) -> bool {
-        self.run_state.laser_level.next().is_none()
+    pub fn has_unlock(&self, unlock_id: i32) -> bool {
+        Unlock::from_id(unlock_id)
+            .is_some_and(|unlock| self.run_state.unlocks.contains(unlock))
+    }
+
+    /// The chosen hull's id (ShipType::id).
+    #[func]
+    pub fn get_ship_type_id(&self) -> i32 {
+        self.run_state.ship_type.id()
     }
 
     #[func]
@@ -727,9 +927,28 @@ impl GameManager {
         // The phase machine owns lifecycle effects: entering Playing
         // means a fresh level for the current RunState — except when
         // resuming from pause, which returns to the level in progress.
+        // The build itself defers to `process` (two ticks: the first may
+        // land in the entry frame) so the loading veil gets a rendered
+        // frame — one choke point covers new game, Continue, the next
+        // level, and respawns alike.
         if next == GamePhase::Playing && prev != GamePhase::Paused {
             self.mark_level_enemies_seen();
-            self.regenerate_level();
+            self.push_loading_veil(true);
+            self.pending_level_build = 2;
+            // A run becomes continuable at the start of level 2 — it has
+            // finished a level, the definition of continuable. The snapshot
+            // freezes the level start (post-shop, purchases included); a
+            // mid-level quit resumes here. An unfinished first level never
+            // writes one.
+            if self.run_state.current_level >= 2 {
+                self.save_game = Some(SaveGame::from_run_state(&self.run_state));
+                self.save_run();
+            }
+        } else if self.pending_level_build > 0 && next != GamePhase::Playing {
+            // Left Playing before the deferred build landed — the sector is
+            // no longer wanted; drop the veil with it.
+            self.pending_level_build = 0;
+            self.push_loading_veil(false);
         }
 
         // Entering the briefing: catalog stands at whatever's been seen so far,
@@ -753,9 +972,18 @@ impl GameManager {
             }
         }
         if grew {
-            self.save_game = Some(SaveGame::from_run_state(&self.run_state));
-            self.save_run();
+            self.persist_profile();
         }
+    }
+
+    /// Permanent state changed (green banked, bestiary grew): write the
+    /// profile now, leaving any run snapshot frozen at its level start.
+    fn persist_profile(&mut self) {
+        match &mut self.save_game {
+            Some(save) => save.update_profile(&self.run_state),
+            None => self.save_game = Some(SaveGame::profile_only(&self.run_state)),
+        }
+        self.save_run();
     }
 
     /// Build the quiet one-room backdrop shown behind the loadout screen.
@@ -802,6 +1030,15 @@ impl GameManager {
         let death_vis = phase == GamePhase::Death;
 
         Self::set_ui_visible(&parent, nodes::MAIN_MENU_UI, menu_vis);
+        // The menu never reads disk: GameManager pushes whether a continuable
+        // run exists every time the menu is shown (broadcast discipline).
+        if menu_vis {
+            if let Some(mut menu) = Self::find_ui_node(&parent, nodes::MAIN_MENU_UI) {
+                menu.call(methods::SET_CONTINUE_AVAILABLE, &[
+                    Variant::from(self.has_continuable_run()),
+                ]);
+            }
+        }
         Self::set_ui_visible(&parent, nodes::HUD, hud_vis);
         Self::set_ui_visible(&parent, nodes::PAUSE_MENU_UI, pause_vis);
         Self::set_ui_visible(&parent, nodes::KILL_SUMMARY_UI, summary_vis);
@@ -837,10 +1074,10 @@ impl GameManager {
         let showcase_vis = menu_vis || ship_select_vis || summary_vis || shop_vis || death_vis;
         if let Some(mut turntable) = parent.try_get_node_as::<Node>(nodes::TURNTABLE) {
             if showcase_vis {
-                turntable.call(
-                    methods::SHOW_SHIP,
-                    &[Variant::from(self.run_state.ship_color.id())],
-                );
+                turntable.call(methods::SHOW_SHIP, &[
+                    Variant::from(self.run_state.ship_type.id()),
+                    Variant::from(self.run_state.ship_color.id()),
+                ]);
             } else if !bestiary_vis {
                 turntable.call(methods::HIDE_TURNTABLE, &[]);
             }
@@ -882,16 +1119,49 @@ impl GameManager {
             for upgrade in &self.run_state.loadout.upgrades {
                 player.call(methods::APPLY_UPGRADE, &[
                     Variant::from(GString::from(&upgrade.name)),
-                    Variant::from(upgrade.kind as i32),
+                    Variant::from(upgrade.kind.id()),
                     Variant::from(upgrade.multiplier),
                 ]);
             }
-            // Push the chosen ship color (drives body-style texture + accent) and
-            // its thrust tradeoff.
+            // Push the chosen hull and trim (model, body-style texture,
+            // accent) and the combined thrust tradeoff.
+            let thrust_mul = self.run_state.ship_type.spec().thrust_mul
+                * self.run_state.ship_color.thrust_mul();
             player.call(methods::CONFIGURE_SHIP, &[
+                Variant::from(self.run_state.ship_type.id()),
                 Variant::from(self.run_state.ship_color.id()),
-                Variant::from(self.run_state.ship_color.thrust_mul()),
+                Variant::from(thrust_mul),
             ]);
+            // Arm (or disarm) the Valkyrie from the profile — RESET_LOADOUT
+            // above wiped the node's cache, and ownership is green state the
+            // node must never read from disk itself.
+            let valkyrie = self.run_state.unlocks.contains(Unlock::Valkyrie);
+            player.call(methods::SET_VALKYRIE_OWNED, &[Variant::from(valkyrie)]);
+        }
+    }
+
+
+    /// Push Valkyrie ownership to the flying ship (purchase receipt path —
+    /// the full sync also carries it, but a mid-shop grant must arm the
+    /// cannon without waiting for the next rebuild).
+    fn push_valkyrie_owned(&self, owned: bool) {
+        let Some(parent) = self.base().get_parent() else { return };
+        if let Some(mut player) = parent.try_get_node_as::<Node>(nodes::PLAYER) {
+            player.call(methods::SET_VALKYRIE_OWNED, &[Variant::from(owned)]);
+        }
+    }
+
+
+    /// Raise or drop the loading veil around a deferred sector build.
+    fn push_loading_veil(&self, up: bool) {
+        let Some(parent) = self.base().get_parent() else { return };
+        if let Some(mut ui) = Self::find_ui_node(&parent, nodes::LOADING_UI) {
+            if up {
+                let level = self.run_state.current_level as i32;
+                ui.call(methods::SHOW_LOADING, &[Variant::from(level)]);
+            } else {
+                ui.call(methods::HIDE_LOADING, &[]);
+            }
         }
     }
 
@@ -903,19 +1173,35 @@ impl GameManager {
         }
     }
 
+    /// Price the catalog in void-logic and push it to ShopUI as parallel
+    /// packed arrays (typed id, label, cost, flag bits per row — the bit
+    /// protocol lives in `constants::shop_flags`, shared with ShopUI).
     fn show_shop_ui(&self) {
+        use super::constants::shop_flags;
+
         let Some(parent) = self.base().get_parent() else { return };
         if let Some(mut shop) = Self::find_ui_node(&parent, nodes::SHOP_UI) {
-            let c = self.run_state.laser_level.color();
-            let color = Color::from_rgba(c[0], c[1], c[2], c[3]);
+            let offers = shop::offers(&self.run_state);
+            let ids: PackedInt32Array = offers.iter().map(|o| o.id.id()).collect();
+            let labels: PackedStringArray = offers.iter().map(|o| GString::from(&o.label)).collect();
+            let details: PackedStringArray = offers.iter().map(|o| GString::from(&o.detail)).collect();
+            let costs: PackedInt64Array = offers.iter().map(|o| o.cost as i64).collect();
+            let flags: PackedByteArray = offers.iter().map(|o| {
+                let mut flag = 0u8;
+                if o.affordable { flag |= shop_flags::AFFORDABLE; }
+                if o.purchasable { flag |= shop_flags::PURCHASABLE; }
+                if o.currency == CurrencyKind::Organics { flag |= shop_flags::GREEN; }
+                flag
+            }).collect();
+
             shop.call(methods::SHOW_SHOP, &[
                 Variant::from(self.run_state.components.balance as i64),
-                Variant::from(GString::from(self.run_state.laser_level.display_name())),
-                Variant::from(color),
-                Variant::from(self.run_state.laser_damage().as_f32()),
-                Variant::from(self.get_next_upgrade_cost()),
-                Variant::from(self.can_afford_upgrade()),
-                Variant::from(self.is_max_laser()),
+                Variant::from(self.run_state.organics.balance as i64),
+                Variant::from(ids),
+                Variant::from(labels),
+                Variant::from(details),
+                Variant::from(costs),
+                Variant::from(flags),
             ]);
         }
     }
@@ -1024,7 +1310,7 @@ impl GameManager {
 
         // Connect ShopUI
         if let Some(shop) = Self::find_ui_node(&parent, nodes::SHOP_UI) {
-            let buy_callable = self.base().callable(methods::BUY_LASER_UPGRADE);
+            let buy_callable = self.base().callable(methods::BUY_SHOP_ITEM);
             let continue_callable = self.base().callable(methods::ADVANCE_TO_NEXT_LEVEL);
             if !shop.is_connected(signals::BUY_PRESSED, &buy_callable) {
                 let mut shop = shop;
@@ -1036,10 +1322,12 @@ impl GameManager {
         // Connect ShipSelectUI
         if let Some(ship_select) = Self::find_ui_node(&parent, nodes::SHIP_SELECT_UI) {
             let color_callable = self.base().callable(methods::ON_SHIP_COLOR_SELECTED);
+            let type_callable = self.base().callable(methods::ON_SHIP_TYPE_SELECTED);
             let continue_callable = self.base().callable(methods::ADVANCE_FROM_SHIP_SELECT);
             if !ship_select.is_connected(signals::SHIP_COLOR_SELECTED, &color_callable) {
                 let mut ship_select = ship_select;
                 ship_select.connect(signals::SHIP_COLOR_SELECTED, &color_callable);
+                ship_select.connect(signals::SHIP_TYPE_SELECTED, &type_callable);
                 ship_select.connect(signals::CONTINUE_PRESSED, &continue_callable);
             }
         }
@@ -1052,6 +1340,8 @@ impl GameManager {
                 bestiary.connect(signals::CONTINUE_PRESSED, &begin_callable);
                 let paged_callable = self.base().callable(methods::ON_BESTIARY_PAGED);
                 bestiary.connect(signals::BESTIARY_PAGED, &paged_callable);
+                let back_callable = self.base().callable(methods::BACK_FROM_BESTIARY);
+                bestiary.connect(signals::BACK_PRESSED, &back_callable);
             }
         }
 
@@ -1070,27 +1360,29 @@ impl GameManager {
             }
         }
 
-        // Connect DeathScreenUI
+        // Connect DeathScreenUI: run over returns to the menu, a lost life
+        // re-arms at the shop.
         if let Some(death) = Self::find_ui_node(&parent, nodes::DEATH_SCREEN_UI) {
             let callable = self.base().callable(methods::RETURN_TO_MENU);
             if !death.is_connected(signals::RETURN_PRESSED, &callable) {
                 let mut death = death;
                 death.connect(signals::RETURN_PRESSED, &callable);
+                let respawn = self.base().callable(methods::ON_RESPAWN_PRESSED);
+                death.connect(signals::RESPAWN_PRESSED, &respawn);
             }
         }
     }
 
     /// Connect a single entity's gameplay signals to the matching GameManager
-    /// handlers, idempotently (skips if already wired). A node only reacts to the
-    /// signals it actually has — a barrel has `organics_collected`, an enemy has
-    /// `enemy_killed`, a lootbox has `upgrade_collected` — so this is safe to
-    /// call on every node, including room-geometry meshes that carry none.
+    /// handlers, idempotently (skips if already wired). A node only reacts to
+    /// the signals it actually has — a currency cache has `cache_collected`, an
+    /// enemy has `enemy_killed` — so this is safe to call on every node,
+    /// including room-geometry meshes that carry none.
     fn connect_entity_signals(
         node: &Gd<Node>,
         kill: &Callable,
         portal: &Callable,
-        organics: &Callable,
-        upgrade: &Callable,
+        cache: &Callable,
     ) {
         if node.has_signal(signals::ENEMY_KILLED) && !node.is_connected(signals::ENEMY_KILLED, kill) {
             node.clone().connect(signals::ENEMY_KILLED, kill);
@@ -1098,11 +1390,8 @@ impl GameManager {
         if node.has_signal(signals::PORTAL_ENTERED) && !node.is_connected(signals::PORTAL_ENTERED, portal) {
             node.clone().connect(signals::PORTAL_ENTERED, portal);
         }
-        if node.has_signal(signals::ORGANICS_COLLECTED) && !node.is_connected(signals::ORGANICS_COLLECTED, organics) {
-            node.clone().connect(signals::ORGANICS_COLLECTED, organics);
-        }
-        if node.has_signal(signals::UPGRADE_COLLECTED) && !node.is_connected(signals::UPGRADE_COLLECTED, upgrade) {
-            node.clone().connect(signals::UPGRADE_COLLECTED, upgrade);
+        if node.has_signal(signals::CACHE_COLLECTED) && !node.is_connected(signals::CACHE_COLLECTED, cache) {
+            node.clone().connect(signals::CACHE_COLLECTED, cache);
         }
     }
 
@@ -1110,20 +1399,33 @@ impl GameManager {
     /// mediator, ONCE, at the end of the build — not every frame (Faucet
     /// Principle: the per-frame `connect_spawned_entities` tree scan is deleted).
     /// Because the Faucet pools pre-instantiate every enemy, death-spawn minion,
-    /// and lootbox during the load, the whole roster exists under `LevelManager`
-    /// by the time `build_level` returns; a single recursive pass covers them
-    /// all (minions and boxes now live under containers/the level, not the scene
-    /// root). Idempotent, so re-running on a rebuild rewires nothing already set.
+    /// and currency cache during the load, the whole roster exists under
+    /// `LevelManager` by the time `build_level` returns; a single recursive pass
+    /// covers them all (minions and caches live under containers/the level, not
+    /// the scene root). Idempotent, so re-running on a rebuild rewires nothing
+    /// already set.
     fn wire_level_signals(&self) {
         let Some(parent) = self.base().get_parent() else { return };
         let Some(level_mgr) = parent.try_get_node_as::<Node>(nodes::LEVEL_MANAGER) else { return };
 
+        // The LevelManager itself reports room changes (recon map). Deferred
+        // subscription: the handler binds back into LevelManager for the
+        // graph, and the signal fires inside its &mut culling pass — the
+        // deferral lives here at the subscription, not at the emit.
+        let room = self.base().callable(methods::ON_ROOM_CHANGED);
+        if !level_mgr.is_connected(signals::ROOM_CHANGED, &room) {
+            level_mgr.clone().connect_flags(
+                signals::ROOM_CHANGED,
+                &room,
+                godot::classes::object::ConnectFlags::DEFERRED,
+            );
+        }
+
         let kill = self.base().callable(methods::ON_ENEMY_KILLED);
         let portal = self.base().callable(methods::ON_PORTAL_ENTERED);
-        let organics = self.base().callable(methods::ON_ORGANICS_COLLECTED);
-        let upgrade = self.base().callable(methods::ON_UPGRADE_COLLECTED);
+        let cache = self.base().callable(methods::ON_CACHE_COLLECTED);
 
-        Self::wire_subtree(&level_mgr.upcast(), &kill, &portal, &organics, &upgrade);
+        Self::wire_subtree(&level_mgr.upcast(), &kill, &portal, &cache);
     }
 
     /// Depth-first wire of `node` and every descendant — enemies and their
@@ -1134,12 +1436,11 @@ impl GameManager {
         node: &Gd<Node>,
         kill: &Callable,
         portal: &Callable,
-        organics: &Callable,
-        upgrade: &Callable,
+        cache: &Callable,
     ) {
-        Self::connect_entity_signals(node, kill, portal, organics, upgrade);
+        Self::connect_entity_signals(node, kill, portal, cache);
         for child in node.get_children().iter_shared() {
-            Self::wire_subtree(&child, kill, portal, organics, upgrade);
+            Self::wire_subtree(&child, kill, portal, cache);
         }
     }
 
@@ -1162,6 +1463,9 @@ impl GameManager {
             hud.call(methods::UPDATE_COMPONENTS, &[
                 Variant::from(self.run_state.components.balance as i64),
             ]);
+            hud.call(methods::UPDATE_LIVES, &[
+                Variant::from(self.run_state.lives as i32),
+            ]);
             hud.call(methods::UPDATE_ORGANICS, &[
                 Variant::from(self.run_state.organics.balance as i64),
             ]);
@@ -1171,6 +1475,10 @@ impl GameManager {
             ]);
             hud.call(methods::UPDATE_LEVEL, &[
                 Variant::from(self.run_state.current_level as i32),
+            ]);
+            hud.call(methods::SET_UNLOCK_FLAGS, &[
+                Variant::from(self.run_state.unlocks.contains(Unlock::Radar)),
+                Variant::from(self.run_state.unlocks.contains(Unlock::FogMap)),
             ]);
         }
     }
@@ -1205,8 +1513,8 @@ impl GameManager {
             );
         }
         // `generate_level` builds synchronously (add_child is synchronous), so
-        // the whole pre-instantiated roster — enemies, dormant minions, dormant
-        // lootboxes, portal, barrels — now exists under LevelManager. Wire every
+        // the whole pre-instantiated roster — enemies, dormant minions, currency
+        // caches, portal — now exists under LevelManager. Wire every
         // emitter to the mediator once, here, replacing the deleted per-frame
         // scan. Idempotent, so a later rebuild rewires nothing already connected.
         self.wire_level_signals();

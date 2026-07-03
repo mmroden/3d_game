@@ -84,7 +84,7 @@ pub enum SfxEvent {
     DroneSpawn,
     /// Player enters portal.
     PortalEnter,
-    /// Lootbox collected.
+    /// Currency cache collected.
     LootPickup,
     /// Health below critical threshold.
     LowHealthAlert,

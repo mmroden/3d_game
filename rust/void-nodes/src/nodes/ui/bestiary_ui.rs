@@ -50,10 +50,13 @@ impl ICanvasLayer for BestiaryUI {
         // subjects — the same navigation every other menu uses, never the left
         // stick; Select/Fire begins the mission. GameManager owns the index and
         // clamps the ends.
-        if input.is_action_just_pressed(actions::MENU_UP) {
+        if input.is_action_just_pressed(actions::MENU_LEFT) {
             self.base_mut().emit_signal(signals::BESTIARY_PAGED, &[Variant::from(-1_i32)]);
-        } else if input.is_action_just_pressed(actions::MENU_DOWN) {
+        } else if input.is_action_just_pressed(actions::MENU_RIGHT) {
             self.base_mut().emit_signal(signals::BESTIARY_PAGED, &[Variant::from(1_i32)]);
+        } else if input.is_action_just_pressed(actions::MENU_BACK) {
+            // Circle is always back: return to the loadout screen.
+            self.base_mut().emit_signal(signals::BACK_PRESSED, &[]);
         } else if input.is_action_just_pressed(actions::MENU_SELECT)
             || input.is_action_just_pressed(actions::FIRE)
         {
@@ -69,6 +72,9 @@ impl BestiaryUI {
 
     #[signal]
     fn bestiary_paged(delta: i32);
+
+    #[signal]
+    fn back_pressed();
 
     /// Populate the panel for one entry and show the screen. `position` reads
     /// like "1 / 3"; `hint` is the call to action ("▲ next ▼" / "Begin mission").

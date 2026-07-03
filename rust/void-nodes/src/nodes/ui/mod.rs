@@ -1,3 +1,4 @@
+pub mod loading_ui;
 pub mod main_menu_ui;
 pub mod pause_menu_ui;
 pub mod kill_summary_ui;
@@ -6,6 +7,7 @@ pub mod ship_select_ui;
 pub mod bestiary_ui;
 pub mod death_screen_ui;
 pub mod hud;
+pub mod map_panel;
 pub mod menu_panel;
 
 use godot::prelude::Color;

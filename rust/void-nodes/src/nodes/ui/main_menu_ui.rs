@@ -5,20 +5,49 @@ use godot::classes::{
 
 use super::menu_panel;
 use crate::nodes::constants::{actions, methods, nodes, signals, theme};
-use crate::nodes::live_handle::LiveVec;
+use crate::nodes::live_handle::{LiveRef, LiveVec};
 use void_logic::game_options::GameOptions;
 use void_logic::menu_cursor::MenuCursor;
 use void_logic::ui_style;
 
-/// FF-style main menu: Continue / New Game / Options / Exit.
+/// One row of the main menu. Typed, so hiding a row (Continue without a
+/// continuable run) can never mis-route a selection through a shifted index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuAction {
+    Continue,
+    NewGame,
+    Options,
+    Exit,
+}
+
+impl MenuAction {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Continue => "Continue",
+            Self::NewGame => "New Game",
+            Self::Options => "Options",
+            Self::Exit => "Exit",
+        }
+    }
+}
+
+/// FF-style main menu: [Continue] / New Game / Options / Exit. Continue
+/// appears only while GameManager says a continuable run exists (pushed via
+/// `set_continue_available` — the menu never reads disk).
 /// Pure view — emits signals for all actions, never reaches into the scene tree.
 #[derive(GodotClass)]
 #[class(base=CanvasLayer)]
 pub struct MainMenuUI {
     base: Base<CanvasLayer>,
     cursor: MenuCursor,
-    menu_items: Vec<String>,
+    actions: Vec<MenuAction>,
+    /// Whether a continuable run exists. Defaults pessimistic; GameManager
+    /// pushes the truth whenever the menu is shown.
+    continue_available: bool,
     labels: LiveVec<Label>,
+    /// The container the action rows live in, kept so a Continue-availability
+    /// change can rebuild just the rows.
+    items_parent: Option<LiveRef<godot::classes::VBoxContainer>>,
     in_options: bool,
     option_cursor: MenuCursor,
     option_labels: LiveVec<Label>,
@@ -28,19 +57,26 @@ pub struct MainMenuUI {
     options: GameOptions,
 }
 
+/// The menu rows for a given Continue availability. New Game always leads
+/// when Continue is absent.
+fn actions_for(continue_available: bool) -> Vec<MenuAction> {
+    if continue_available {
+        vec![MenuAction::Continue, MenuAction::NewGame, MenuAction::Options, MenuAction::Exit]
+    } else {
+        vec![MenuAction::NewGame, MenuAction::Options, MenuAction::Exit]
+    }
+}
+
 #[godot_api]
 impl ICanvasLayer for MainMenuUI {
     fn init(base: Base<CanvasLayer>) -> Self {
         Self {
             base,
-            cursor: MenuCursor::new_at(1, 4), // Default to New Game
-            menu_items: vec![
-                "Continue".to_string(),
-                "New Game".to_string(),
-                "Options".to_string(),
-                "Exit".to_string(),
-            ],
+            cursor: MenuCursor::new(3),
+            actions: actions_for(false),
+            continue_available: false,
             labels: LiveVec::new(),
+            items_parent: None,
             in_options: false,
             option_cursor: MenuCursor::new(3),
             option_labels: LiveVec::new(),
@@ -110,6 +146,18 @@ impl MainMenuUI {
     pub fn on_options_changed(&mut self, sbs_enabled: bool, msaa_enabled: bool) {
         self.set_option_states(sbs_enabled, msaa_enabled);
     }
+
+    /// Pushed by GameManager whenever the menu is shown: whether a
+    /// continuable run exists. Rebuilds the rows when the answer changes,
+    /// with the cursor parked on New Game.
+    #[func]
+    pub fn set_continue_available(&mut self, available: bool) {
+        if self.continue_available == available && !self.labels.is_empty() {
+            return;
+        }
+        self.continue_available = available;
+        self.rebuild_items();
+    }
 }
 
 impl MainMenuUI {
@@ -158,28 +206,52 @@ impl MainMenuUI {
         spacer.set_custom_minimum_size(Vector2::new(0.0, 40.0));
         vbox.add_child(&spacer);
 
-        // Menu items
-        self.labels.clear();
-        for (i, item) in self.menu_items.iter().enumerate() {
-            let mut label = Label::new_alloc();
-            let text = if i == self.cursor.index() {
-                format!("> {}", item)
-            } else {
-                format!("  {}", item)
-            };
-            label.set_text(&text);
-            label.add_theme_font_size_override(theme::FONT_SIZE, 32);
-            let color = if i == self.cursor.index() {
-                super::rgb(ui_style::TEXT_SELECTED)
-            } else {
-                super::rgb(ui_style::TEXT_UNSELECTED)
-            };
-            label.add_theme_color_override(theme::FONT_COLOR, color);
-            vbox.add_child(&label);
-            self.labels.push(&label, ());
-        }
+        // Menu items live in this container; availability changes rebuild them.
+        self.items_parent = Some(LiveRef::new(&vbox));
+        self.rebuild_items();
 
         self.base_mut().add_child(&panel);
+    }
+
+    /// (Re)build the action rows for the current Continue availability, with
+    /// the cursor parked on New Game.
+    fn rebuild_items(&mut self) {
+        self.actions = actions_for(self.continue_available);
+        let default_row = self.actions.iter()
+            .position(|a| *a == MenuAction::NewGame)
+            .unwrap_or(0);
+        self.cursor = MenuCursor::new_at(default_row, self.actions.len());
+
+        self.labels.for_each_live(|_, label, _| label.queue_free());
+        self.labels.clear();
+
+        let Some(items_parent) = &self.items_parent else { return };
+        let actions = self.actions.clone();
+        let selected = self.cursor.index();
+        let mut new_labels: Vec<Gd<Label>> = Vec::new();
+        items_parent.with(|vbox| {
+            for (i, action) in actions.iter().enumerate() {
+                let mut label = Label::new_alloc();
+                let text = if i == selected {
+                    format!("> {}", action.label())
+                } else {
+                    format!("  {}", action.label())
+                };
+                label.set_text(&text);
+                label.add_theme_font_size_override(theme::FONT_SIZE, 32);
+                let color = if i == selected {
+                    super::rgb(ui_style::TEXT_SELECTED)
+                } else {
+                    super::rgb(ui_style::TEXT_UNSELECTED)
+                };
+                label.add_theme_color_override(theme::FONT_COLOR, color);
+                vbox.add_child(&label);
+                new_labels.push(label);
+            }
+        });
+        for label in &new_labels {
+            self.labels.push(label, ());
+        }
     }
 
     fn handle_menu_actions(&mut self, input: &Gd<Input>) {
@@ -195,29 +267,29 @@ impl MainMenuUI {
     }
 
     fn select_item(&mut self) {
-        match self.cursor.index() {
-            0 => {
+        let Some(action) = self.actions.get(self.cursor.index()).copied() else { return };
+        match action {
+            MenuAction::Continue => {
                 self.base_mut().emit_signal(signals::CONTINUE_SELECTED, &[]);
             }
-            1 => {
+            MenuAction::NewGame => {
                 self.base_mut().emit_signal(signals::NEW_GAME_SELECTED, &[]);
             }
-            2 => {
+            MenuAction::Options => {
                 self.in_options = true;
                 self.option_cursor.reset();
                 self.show_options();
             }
-            3 => {
+            MenuAction::Exit => {
                 self.base_mut().emit_signal(signals::EXIT_SELECTED, &[]);
                 self.base().get_tree().quit();
             }
-            _ => {}
         }
     }
 
     fn update_cursor(&mut self) {
         let selected = self.cursor.index();
-        let items = &self.menu_items;
+        let actions = &self.actions;
         self.labels.for_each_live(|i, label, _| {
             let color = if i == selected {
                 super::rgb(ui_style::TEXT_SELECTED)
@@ -226,10 +298,11 @@ impl MainMenuUI {
             };
             label.add_theme_color_override(theme::FONT_COLOR, color);
 
+            let Some(action) = actions.get(i) else { return };
             if i == selected {
-                label.set_text(&format!("> {}", items[i]));
+                label.set_text(&format!("> {}", action.label()));
             } else {
-                label.set_text(&format!("  {}", items[i]));
+                label.set_text(&format!("  {}", action.label()));
             }
         });
     }

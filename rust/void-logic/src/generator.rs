@@ -22,6 +22,23 @@ pub struct GeneratorConfig {
     pub max_room_y: u32,
 }
 
+impl GeneratorConfig {
+    /// The game's canonical generation parameters — the single config the
+    /// shell builds every level with. Tests that pin seed properties for the
+    /// GUT shell suite must construct through this too, so a pinned seed and
+    /// the level the shell actually builds from it can never drift apart.
+    pub fn standard(seed: Seed, max_rooms: usize) -> Self {
+        Self {
+            seed,
+            max_rooms,
+            min_room_xz: 3,
+            max_room_xz: 6,
+            min_room_y: 1,
+            max_room_y: 6,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum GenerateError {
     Empty,

@@ -9,10 +9,11 @@ use godot::classes::{
 use super::constants::{groups, methods, signals};
 use super::godot_util;
 use super::live_handle::{LiveOpt, LiveRef, LiveVec};
-use super::lootbox::Lootbox;
+use super::currency_cache::CurrencyCache;
 use void_logic::enemy_ai::{strafe_velocity, Archetype, Attack, DroneAi, DroneConfig, Movement};
 use void_logic::audio_catalog::SfxEvent;
 use void_logic::difficulty;
+use void_logic::currency::CurrencyKind;
 use void_logic::enemy_type::EnemyType;
 use void_logic::newtypes::{Health, Damage};
 use void_logic::ram_damage::{ram_damage, PLAYER_RAM_FRACTION};
@@ -81,10 +82,11 @@ pub struct EnemyDrone {
     /// the LevelManager, so there is no death-path instantiate. Weak handles
     /// (freed minions are skipped) — the crate forbids cached raw `Gd` fields.
     minions: LiveVec<EnemyDrone>,
-    /// The one lootbox this drone drops on death, pre-built dormant under the
-    /// level during the load and bound here. Activated (dropped) at the corpse
-    /// position; there is no per-drop instantiate.
-    lootbox: Option<LiveRef<Lootbox>>,
+    /// The one blue currency cache this drone drops on death, pre-built dormant
+    /// under the level during the load and bound here. Activated (dropped) at
+    /// the corpse position carrying the type's component reward; there is no
+    /// per-drop instantiate.
+    cache: Option<LiveRef<CurrencyCache>>,
 }
 
 #[godot_api]
@@ -110,7 +112,7 @@ impl IRigidBody3D for EnemyDrone {
             health_bar_fill: None,
             chase_force: Vector3::ZERO,
             minions: LiveVec::new(),
-            lootbox: None,
+            cache: None,
         }
     }
 
@@ -180,6 +182,10 @@ impl IRigidBody3D for EnemyDrone {
         // Report contacts so we can deal ram damage on player collision.
         base.set_contact_monitor(true);
         base.set_max_contacts_reported(4);
+        // Never sleep: Jolt lets a moving Area3D pass through a sleeping body
+        // undetected, so a player bolt fired at an idle enemy would whiff.
+        // These are active AI agents anyway — sleep saves nothing real.
+        base.set_can_sleep(false);
         base.add_to_group(groups::ENEMIES);
         drop(base);
 
@@ -285,10 +291,19 @@ impl EnemyDrone {
         self.minions.push(minion, ());
     }
 
-    /// Bind the pre-built dormant lootbox this drone drops on death. One box per
-    /// enemy (the manifest's bound), reserved during the load.
-    pub fn bind_lootbox(&mut self, lootbox: &Gd<Lootbox>) {
-        self.lootbox = Some(LiveRef::new(lootbox));
+    /// Bind the pre-built dormant cache this drone drops on death. One cache
+    /// per enemy (the manifest's bound), reserved during the load.
+    pub fn bind_cache(&mut self, cache: &Gd<CurrencyCache>) {
+        self.cache = Some(LiveRef::new(cache));
+    }
+
+    /// Components in the cache this drone drops on death — the single source is
+    /// the `EnemyType` stats table; exposed to GDScript for HUD and tests.
+    #[func]
+    pub fn cache_reward(&self) -> i64 {
+        EnemyType::from_id(self.enemy_type_id)
+            .map(|t| t.reward() as i64)
+            .unwrap_or(0)
     }
 
     /// Enter dormancy for a pre-built minion (Faucet Principle, tier 1): all
@@ -518,12 +533,14 @@ impl EnemyDrone {
         // Spawn wreckage (small debris meshes that fall)
         Self::spawn_wreckage(&root, pos);
 
-        // Drop the bound lootbox at the death position (Faucet Principle, tier
-        // 1): the box was pre-built dormant under the level during the load and
-        // reserved for this drone. Activation is a placement + flip, never an
-        // instantiate — `drop_at` sets the position before it goes live so its
-        // bob anchors at the corpse, not the world floor.
-        self.lootbox.with(|box_node| box_node.bind_mut().drop_at(pos));
+        // Drop the bound blue cache at the death position (Faucet Principle,
+        // tier 1): the cache was pre-built dormant under the level during the
+        // load and reserved for this drone; it carries this type's component
+        // reward — the kill pays nothing except through this pickup. Activation
+        // is a placement + flip, never an instantiate — `drop_at` sets the
+        // position before it goes live so its bob anchors at the corpse.
+        let reward = EnemyType::from_id(type_id).map(|t| t.reward()).unwrap_or(0);
+        self.cache.with(|cache| cache.bind_mut().drop_at(pos, CurrencyKind::Components, reward));
 
         // Subsidiary-drone activation on death (e.g. EyeDrone → SpawnDrone): the
         // reserved minions were pre-instantiated dormant under the same room

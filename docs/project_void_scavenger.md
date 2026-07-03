@@ -11,7 +11,7 @@ Assets: Quaternius Modular Sci-Fi MegaKit (CC0) + Sci-Fi Essentials Kit + Kenney
 Target platforms: macOS, Linux (Steam Deck)
 Controller support: Xbox/PS/Steam Deck via GCController/Godot input
 
-Features planned: procedural level generation from modular corridor pieces, silly name generator for items/stations, lootbox ship upgrades, Hades-style meta-progression (later).
+Features planned: procedural level generation from modular corridor pieces, silly name generator for items/stations, currency-cache drops feeding a between-level upgrade shop, Hades-style meta-progression (later).
 
 **Why:** No good SBS 3D games available on Mac. Building one.
 

@@ -47,6 +47,11 @@ impl Loadout {
         self.upgrades.push(upgrade);
     }
 
+    /// The total multiplier the loadout applies to `kind` (1.0 = stock).
+    pub fn stat_multiplier(&self, kind: UpgradeKind) -> f32 {
+        self.effective(kind, 1.0)
+    }
+
     /// Compute effective stat by applying all relevant upgrade multipliers.
     fn effective(&self, kind: UpgradeKind, base_value: f32) -> f32 {
         self.upgrades
@@ -64,15 +69,10 @@ impl Loadout {
     }
 
     pub fn damping(&self) -> Retention {
-        // Stability upgrades scale the decay *rate* — the exponent of
-        // the per-second retention: retention' = base^multiplier.
-        // Multipliers > 1 settle the ship faster, stacking approaches
-        // but never reaches zero, and the result can never exceed the
-        // base — the invariants hold structurally, no clamps needed.
-        // Retention's own invariant (< 1.0 unless FULL) keeps the
-        // infinite-spin bug unrepresentable.
-        let exponent = self.effective(UpgradeKind::Damping, 1.0);
-        Retention::decaying(self.base.damping.factor().powf(exponent))
+        // Fixed base value: the "Stability" upgrade was retired with the
+        // free-drop economy. Retention's own invariant (< 1.0 unless FULL)
+        // keeps the infinite-spin bug unrepresentable.
+        self.base.damping
     }
 
     pub fn max_health(&self) -> Health {
@@ -84,7 +84,9 @@ impl Loadout {
     }
 
     pub fn projectile_speed(&self) -> f32 {
-        self.effective(UpgradeKind::ProjectileSpeed, self.base.projectile_speed)
+        // Fixed base value: the "Beam Focus" upgrade was retired with the
+        // free-drop economy.
+        self.base.projectile_speed
     }
 
     pub fn projectile_damage(&self) -> Damage {
@@ -116,52 +118,18 @@ mod tests {
         assert_eq!(loadout.rotation_speed(), 6.0);
     }
 
-    fn stability(multiplier: f32) -> Upgrade {
-        Upgrade {
-            name: format!("Stability +{}%", ((multiplier - 1.0) * 100.0).round()),
-            kind: UpgradeKind::Damping,
-            multiplier,
-        }
-    }
-
     #[test]
-    fn stability_upgrade_keeps_damping_below_one() {
+    fn damping_and_projectile_speed_are_fixed_base_values() {
+        // These stats have no upgrade kind (retired with the free-drop
+        // economy): whatever the loadout collects, they stay at base.
         let mut loadout = Loadout::new();
-        loadout.add_upgrade(stability(1.1));
-        assert!(
-            loadout.damping().factor() < 1.0,
-            "damping is per-frame velocity retention; at >= 1.0 motion never \
-             decays and the ship spins forever, got {}",
-            loadout.damping().factor()
-        );
-    }
-
-    #[test]
-    fn stability_upgrade_settles_the_ship_faster() {
-        let base = Loadout::new();
-        let mut upgraded = Loadout::new();
-        upgraded.add_upgrade(stability(1.2));
-        assert!(
-            upgraded.damping().factor() < base.damping().factor(),
-            "a stability upgrade must decay velocity faster than base \
-             (smaller retention), got {} vs base {}",
-            upgraded.damping().factor(),
-            base.damping().factor()
-        );
-    }
-
-    #[test]
-    fn stacked_stability_upgrades_never_exceed_base_retention() {
-        let base = Loadout::new().damping().factor();
-        let mut loadout = Loadout::new();
-        for _ in 0..30 {
-            loadout.add_upgrade(stability(1.3));
-        }
-        let damping = loadout.damping().factor();
-        assert!(
-            (0.0..=base).contains(&damping),
-            "stacked stability upgrades must keep retention in [0, base], got {damping}"
-        );
+        loadout.add_upgrade(Upgrade {
+            name: "Everything Booster".to_string(),
+            kind: UpgradeKind::Thrust,
+            multiplier: 2.0,
+        });
+        assert_eq!(loadout.damping().factor(), Loadout::new().damping().factor());
+        assert_eq!(loadout.projectile_speed(), Loadout::new().projectile_speed());
     }
 
     #[test]
