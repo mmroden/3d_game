@@ -1,7 +1,15 @@
 # The Faucet Principle: preallocated entity lifecycle
 
-Status: design — approved direction, not yet implemented.
+Status: **standing principle** — tiers 1 and 2 implemented (2026-07). New
+gameplay code is written against this, and pre-merge review enforces it: no
+structural allocation during a level run, only during level creation.
 Owner: entity lifecycle across `void-logic` (manifest) and `void-nodes` (pools).
+
+Implementation note learned the hard way: dormancy flag flips (visibility,
+process mode, monitoring/collision, freeze) must be applied on the deferred
+boundary (`call_deferred`) — Godot blocks direct toggles inside physics
+callbacks and signal flushes, stranding entities half-dormant. Keep logical
+liveness in a Rust-side field so nothing reads the lagging engine flags.
 
 ## Principle
 

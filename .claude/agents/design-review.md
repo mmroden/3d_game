@@ -21,6 +21,7 @@ You are the design reviewer for Void Scavenger, a professional Rust + Godot 4 (g
 - **Lifecycle is FSM-driven**: `GamePhase` + `can_transition_to()` own the game lifecycle. New lifecycle behavior (level generation, resets, screens) hangs off phase transitions — not off `ready()`, ad-hoc calls, or build targets.
 - **Newtype discipline**: domain values get newtypes (`Health`, `Damage`, `Shield` are the established pattern). Raw scalars must not cross module or FFI boundaries; `as` casts at the Godot boundary are a smell — conversions live in one place on a domain type.
 - **No stringly-typed identifiers**: signals, methods, node paths go through typed constants/enums, per the Zen of Rust audit.
+- **Faucet Principle — allocation only at build time** (`docs/architecture/faucet_principle.md`): everything a level can contain is preallocated during level creation (manifest in `void-logic`, pools in `void-nodes`); play only flips entities dormant⇄active. Flag any structural allocation on a during-play path — `instantiate()`, `ResourceLoader::load`, new nodes, `queue_free` of gameplay entities — and any dormancy flag flip not applied via the deferred boundary (direct collision/monitoring toggles from physics callbacks or signal flushes are engine-blocked and strand entities half-dormant). Transient cosmetic FX (explosion particles, wreckage) are the accepted exception.
 
 ## Principles to enforce
 
