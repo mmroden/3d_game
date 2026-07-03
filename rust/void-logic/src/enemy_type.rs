@@ -187,6 +187,23 @@ pub fn enemies_for_level(level: u32) -> Vec<EnemyType> {
         .collect()
 }
 
+
+pub fn coverage_for_level(level: u32) -> Vec<EnemyType> {
+    let direct = enemies_for_level(level);
+    let mut seen = [false; EnemyType::ALL.len()];
+    for t in &direct {
+        seen[t.id() as usize] = true;
+        if let Some((minion, _)) = t.death_spawn() {
+            seen[minion.id() as usize] = true;
+        }
+    }
+    EnemyType::ALL
+        .iter()
+        .copied()
+        .filter(|t| seen[t.id() as usize])
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EnemyStats {
     pub hp: Health,
@@ -397,6 +414,52 @@ mod tests {
     #[test]
     fn non_tank_has_no_shield() {
         assert!(EnemyType::GunDrone.ai_config().shield.is_none());
+    }
+
+    // --- Level coverage (bestiary: direct + death-spawn types) ---
+
+    #[test]
+    fn coverage_includes_direct_roster() {
+        // Coverage is a superset of the directly-placed roster at every level.
+        for level in 1..=10 {
+            let coverage = coverage_for_level(level);
+            for direct in enemies_for_level(level) {
+                assert!(coverage.contains(&direct),
+                    "level {level}: coverage missing direct type {direct:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn coverage_surfaces_spawn_drone_from_eye_drone() {
+        // The EyeDrone is admitted at level 2 (its min_level); its death spawns a
+        // SpawnDrone, which `enemies_for_level` (direct-only) never lists. From
+        // level 2 up, coverage must include the SpawnDrone.
+        for level in 2..=10 {
+            let coverage = coverage_for_level(level);
+            assert!(coverage.contains(&EnemyType::EyeDrone), "level {level}: no EyeDrone");
+            assert!(coverage.contains(&EnemyType::SpawnDrone),
+                "level {level}: EyeDrone present but SpawnDrone absent from coverage");
+        }
+    }
+
+    #[test]
+    fn coverage_excludes_spawn_drone_below_eye_drone_level() {
+        // Level 1 is GunDrone-only (no EyeDrone), so no SpawnDrone can appear.
+        let coverage = coverage_for_level(1);
+        assert!(!coverage.contains(&EnemyType::EyeDrone), "level 1 has no EyeDrone");
+        assert!(!coverage.contains(&EnemyType::SpawnDrone),
+            "level 1 cannot produce a SpawnDrone, so coverage must exclude it");
+    }
+
+    #[test]
+    fn coverage_is_all_ordered_and_deduplicated() {
+        let coverage = coverage_for_level(8);
+        let ids: Vec<u32> = coverage.iter().map(|t| t.id() as u32).collect();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted, ids, "coverage must be ALL-ordered and deduplicated");
     }
 
     #[test]

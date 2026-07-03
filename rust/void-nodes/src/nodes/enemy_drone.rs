@@ -1,15 +1,15 @@
 use godot::prelude::*;
 use godot::prelude::EulerOrder;
 use godot::classes::{
-    RigidBody3D, IRigidBody3D, PackedScene, ResourceLoader, PhysicsRayQueryParameters3D,
+    RigidBody3D, IRigidBody3D, PhysicsRayQueryParameters3D,
     PhysicsDirectBodyState3D, GpuParticles3D, ParticleProcessMaterial, SphereMesh,
-    StandardMaterial3D, MeshInstance3D, BoxMesh, Node3D,
+    StandardMaterial3D, MeshInstance3D, BoxMesh, Node3D, node,
 };
 
-use super::constants::{groups, methods, scenes, signals};
-use super::enemy_bolt::EnemyBolt;
+use super::constants::{groups, methods, signals};
 use super::godot_util;
-use super::live_handle::{LiveOpt, LiveRef};
+use super::live_handle::{LiveOpt, LiveRef, LiveVec};
+use super::lootbox::Lootbox;
 use void_logic::enemy_ai::{strafe_velocity, Archetype, Attack, DroneAi, DroneConfig, Movement};
 use void_logic::audio_catalog::SfxEvent;
 use void_logic::difficulty;
@@ -75,6 +75,16 @@ pub struct EnemyDrone {
     /// legal) and applied in `integrate_forces` (the engine's hook for
     /// touching physics state) — same split as the ship.
     chase_force: Vector3,
+    /// Death-spawn minions reserved for this drone (Faucet Principle, tier 1):
+    /// pre-instantiated dormant under the same room container during the load
+    /// and activated all together when this drone dies. Bound at build time by
+    /// the LevelManager, so there is no death-path instantiate. Weak handles
+    /// (freed minions are skipped) — the crate forbids cached raw `Gd` fields.
+    minions: LiveVec<EnemyDrone>,
+    /// The one lootbox this drone drops on death, pre-built dormant under the
+    /// level during the load and bound here. Activated (dropped) at the corpse
+    /// position; there is no per-drop instantiate.
+    lootbox: Option<LiveRef<Lootbox>>,
 }
 
 #[godot_api]
@@ -99,6 +109,8 @@ impl IRigidBody3D for EnemyDrone {
             health_bar_bg: None,
             health_bar_fill: None,
             chase_force: Vector3::ZERO,
+            minions: LiveVec::new(),
+            lootbox: None,
         }
     }
 
@@ -258,6 +270,59 @@ impl EnemyDrone {
         self.enemy_type_id = type_id;
     }
 
+    /// Bind a pre-built dormant minion to this drone (Faucet Principle, tier 1).
+    /// The LevelManager calls this once per manifest minion during the load;
+    /// this drone activates all of them when it dies. Weak handle only.
+    pub fn bind_minion(&mut self, minion: &Gd<EnemyDrone>) {
+        self.minions.push(minion, ());
+    }
+
+    /// Bind the pre-built dormant lootbox this drone drops on death. One box per
+    /// enemy (the manifest's bound), reserved during the load.
+    pub fn bind_lootbox(&mut self, lootbox: &Gd<Lootbox>) {
+        self.lootbox = Some(LiveRef::new(lootbox));
+    }
+
+    /// Enter dormancy for a pre-built minion (Faucet Principle, tier 1): all
+    /// three flags together — invisible, non-processing, non-colliding — plus a
+    /// physics freeze so the RigidBody neither simulates nor is pushed while it
+    /// waits. `process_mode = DISABLED` stops `physics_process`/`integrate_forces`
+    /// (its AI), zeroed collision layer+mask keeps it intangible, and freeze
+    /// pins it in place. Hull-building already ran in `ready()`; only its
+    /// behaviour is gated. One-way per level: the parent's death activates it.
+    pub fn deactivate_dormant(&mut self) {
+        self.base_mut().call_deferred(methods::APPLY_DORMANCY, &[false.to_variant()]);
+    }
+
+    /// Activate a dormant minion at `pos` — the parent's death cough-up.
+    /// Placement is immediate (legal on a frozen body); the flag flips ride the
+    /// deferred boundary, because this runs inside the parent's physics-context
+    /// death chain, where Godot blocks collision/freeze toggles.
+    pub fn activate_at(&mut self, pos: Vector3) {
+        let mut base = self.base_mut();
+        base.set_global_position(pos);
+        base.reset_physics_interpolation();
+        base.call_deferred(methods::APPLY_DORMANCY, &[true.to_variant()]);
+    }
+
+    /// Flip the engine-side dormancy flags, together: visibility, processing
+    /// (`process_mode` gates the AI), physics freeze, and collision layers —
+    /// layer/mask 1 (shared with enemies/bolts) is what `ready()` left before
+    /// dormancy zeroed it. Always invoked via `call_deferred`: a direct toggle
+    /// from a physics callback or signal flush is blocked by the engine and
+    /// would strand the minion half-dormant.
+    #[func]
+    fn apply_dormancy(&mut self, live: bool) {
+        let mode = if live { node::ProcessMode::INHERIT } else { node::ProcessMode::DISABLED };
+        let layer = if live { 1 } else { 0 };
+        let mut base = self.base_mut();
+        base.set_visible(live);
+        base.set_process_mode(mode);
+        base.set_freeze_enabled(!live);
+        base.set_collision_layer(layer);
+        base.set_collision_mask(layer);
+    }
+
     pub fn apply_damage(&mut self, damage: Damage) {
         let died = self.ai.take_damage(damage);
         self.update_health_bar_fill();
@@ -399,9 +464,11 @@ impl EnemyDrone {
         }
         let dir = to_player.normalized();
         let muzzle = my_pos + dir * MUZZLE_CLEARANCE;
-        let mut bolt = EnemyBolt::new_alloc();
-        root.clone().add_child(&bolt);
-        bolt.bind_mut().launch(muzzle, dir * BOLT_SPEED, self.damage);
+        // Fire through the preallocated ring — never instantiate a bolt per shot.
+        // The pool is built once during the load and lives under LevelManager.
+        if let Some(mut pool) = godot_util::find_bolt_pool(self.base().get_tree()) {
+            pool.bind_mut().fire(muzzle, dir * BOLT_SPEED, self.damage);
+        }
         Self::spawn_muzzle_flash(&root, muzzle);
     }
 
@@ -443,53 +510,27 @@ impl EnemyDrone {
         // Spawn wreckage (small debris meshes that fall)
         Self::spawn_wreckage(&root, pos);
 
-        // Spawn lootbox at the death position. Set the position *before*
-        // adding to the tree: the lootbox's `ready()`/first frame reads its
-        // own position to anchor its bob, so positioning after add_child left
-        // it bobbing around the world floor (the "transposed" drop).
-        if let Some(scene) = ResourceLoader::singleton()
-            .load(scenes::LOOTBOX)
-        {
-            let packed = scene.cast::<PackedScene>();
-            if let Some(instance) = packed.instantiate() {
-                let mut node: Gd<Node3D> = instance.cast();
-                node.set_position(pos);
-                root.clone().add_child(&node);
-            }
-        }
+        // Drop the bound lootbox at the death position (Faucet Principle, tier
+        // 1): the box was pre-built dormant under the level during the load and
+        // reserved for this drone. Activation is a placement + flip, never an
+        // instantiate — `drop_at` sets the position before it goes live so its
+        // bob anchors at the corpse, not the world floor.
+        self.lootbox.with(|box_node| box_node.bind_mut().drop_at(pos));
 
-        // Subsidiary-drone spawn on death (e.g. EyeDrone → GunDrone): the new
-        // drone arms up from the corpse, over the parent's death explosion.
-        if let Some((spawn_type, count)) =
-            EnemyType::from_id(self.enemy_type_id).and_then(|t| t.death_spawn())
-        {
+        // Subsidiary-drone activation on death (e.g. EyeDrone → SpawnDrone): the
+        // reserved minions were pre-instantiated dormant under the same room
+        // container during the load; they arm up from the corpse now, over the
+        // parent's death explosion. Nothing is instantiated here.
+        if !self.minions.is_empty() {
             if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
                 audio.bind_mut().play_event_at(SfxEvent::DroneSpawn, pos);
             }
-            let level = self.level;
-            for _ in 0..count {
-                Self::spawn_death_minion(&root, spawn_type, pos, level);
-            }
+            self.minions.for_each_live(|_, minion, _| {
+                minion.bind_mut().activate_at(pos);
+            });
         }
 
         self.base_mut().queue_free();
-    }
-
-    /// Instantiate an enemy at `pos` (used for death-spawned minions). Stamps
-    /// the type and level, since the scene itself is generic.
-    fn spawn_death_minion(root: &Gd<Node>, enemy_type: EnemyType, pos: Vector3, level: i32) {
-        let Some(scene) = ResourceLoader::singleton().load(enemy_type.scene_path()) else { return };
-        let packed = scene.cast::<PackedScene>();
-        let Some(instance) = packed.instantiate() else { return };
-        let Ok(mut enemy) = instance.try_cast::<EnemyDrone>() else { return };
-        {
-            let mut g = enemy.bind_mut();
-            g.set_spawn_type(enemy_type.id());
-            g.set_spawn_level(level);
-        }
-        enemy.set_position(pos);
-        root.clone().add_child(&enemy);
-        enemy.reset_physics_interpolation();
     }
 
     fn spawn_explosion(root: &Gd<Node>, pos: Vector3) {

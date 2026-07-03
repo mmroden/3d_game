@@ -6,6 +6,7 @@ mod ship_controller;
 mod telemetry;
 mod enemy_drone;
 mod enemy_bolt;
+mod bolt_pool;
 mod lootbox;
 mod organic_barrel;
 mod level_manager;

@@ -85,6 +85,11 @@ impl<T: Inherits<Node>, D> LiveVec<T, D> {
         self.entries.len()
     }
 
+    /// Whether no handles are tracked (alive or not).
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     /// Resolve the node at `index` for immediate use, or `None` if the index is
     /// out of range or that node has been freed. The returned `Gd` is a fresh
     /// resolution — use it now, don't cache it (that would reintroduce the

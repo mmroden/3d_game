@@ -12,7 +12,8 @@ use godot::classes::{
 };
 
 use super::audio_manager::AudioManager;
-use super::constants::{meta_keys, nodes};
+use super::bolt_pool::BoltPool;
+use super::constants::{groups, meta_keys, nodes};
 use super::live_handle::{LiveOpt, LiveRef, LiveVec};
 
 /// Yaw applied to the imported ship model so its nose points along the ship's
@@ -47,6 +48,15 @@ pub fn find_audio_manager(tree: impl Into<Option<Gd<godot::classes::SceneTree>>>
     // Main is the first child of root; AudioManager is a direct child of Main
     let main = root.try_get_node_as::<godot::classes::Node>("Main")?;
     main.try_get_node_as::<AudioManager>(nodes::AUDIO_MANAGER)
+}
+
+/// Find the level's bolt pool (Faucet Principle tier-2 ring). One pool exists
+/// per running level; it joins the `bolt_pool` group on ready, so any fire site
+/// — enemies deep under room containers — reaches it without a node path.
+pub fn find_bolt_pool(tree: impl Into<Option<Gd<godot::classes::SceneTree>>>) -> Option<Gd<BoltPool>> {
+    let tree = tree.into()?;
+    tree.get_first_node_in_group(groups::BOLT_POOL)
+        .and_then(|n| n.try_cast::<BoltPool>().ok())
 }
 
 /// Compute an orientation basis pointing along `forward`.

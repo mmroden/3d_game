@@ -7,13 +7,14 @@ use godot::classes::{
 use super::constants::{methods, nodes, scenes, signals};
 use super::godot_util;
 use super::live_handle::{LiveRef, LiveVec, LiveOpt};
+use super::bolt_pool::BoltPool;
 use super::enemy_drone::EnemyDrone;
+use super::lootbox::Lootbox;
 use super::ship_controller::ShipController;
 use super::telemetry::Telemetry;
 use super::views::ViewManager;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
-use rand::seq::IndexedRandom;
 
 use void_logic::generator::{generate, GeneratorConfig};
 use void_logic::level_assembly::{self, RoomBounds};
@@ -66,6 +67,18 @@ pub struct LevelManager {
     current_room: Option<usize>,
     /// Cached player node, for reading position each tick.
     player: Option<LiveRef<Node3D>>,
+    /// The level's bolt ring buffer (Faucet Principle tier 2). Built once, the
+    /// first time a level is generated, and reused across regenerations — it is
+    /// a sibling of the room containers so bolts escape per-room culling, and it
+    /// outlives the room nodes `build_level` frees. Re-dormanted on each rebuild.
+    bolt_pool: Option<LiveRef<BoltPool>>,
+    /// The level's lootbox pool (Faucet Principle tier 1): one dormant box per
+    /// enemy, pre-built during the load and parented here under the LevelManager
+    /// (not under a room container) so a dropped box persists and stays visible
+    /// when the player leaves the room it dropped in — drops are collected
+    /// across rooms. Unlike the bolt ring these are one-life-per-level, so they
+    /// are freed and rebuilt on each regeneration rather than reused.
+    lootboxes: LiveVec<Lootbox>,
     /// Blinking light fixtures and their full ("on") energy, modulated
     /// each frame so a flickering abandoned base reads as alive.
     blinking_lights: LiveVec<OmniLight3D, f32>,
@@ -89,6 +102,8 @@ impl INode3D for LevelManager {
             level_graph: LevelGraph::default(),
             current_room: None,
             player: None,
+            bolt_pool: None,
+            lootboxes: LiveVec::new(),
             blinking_lights: LiveVec::new(),
             blink_time: 0.0,
         }
@@ -254,6 +269,15 @@ impl LevelManager {
         // containers), then enemies.
         let rooms = level_assembly::spawn_list_full(&graph, self.grid_cell_size, seed);
 
+        // The level manifest (Faucet Principle, tier-1 model): resolves each
+        // enemy's type, expands its death-spawn minions, and binds one lootbox
+        // per enemy — all seed-deterministic, all derived in void-logic. The
+        // shell only places what the manifest enumerates; the enemy-type roll
+        // that used to live inline here now lives in the manifest. Its rooms
+        // align one-for-one with `rooms` (both from `spawn_list_full`).
+        let level = self.current_level;
+        let manifest = level_assembly::manifest(&graph, self.grid_cell_size, seed, level as u32);
+
         // Drop any room nodes from a previous level before rebuilding.
         self.room_nodes.for_each_live(|_, node, _| node.queue_free());
         self.room_nodes.clear();
@@ -261,6 +285,17 @@ impl LevelManager {
         self.current_room = None;
         // Blinking lights are children of the freed room nodes.
         self.blinking_lights.clear();
+        // Lootboxes are direct children of the LevelManager (not under a room),
+        // so they aren't freed with the room nodes — free them explicitly. They
+        // are one-life-per-level (tier 1), rebuilt fresh below, unlike the reused
+        // bolt ring.
+        self.lootboxes.for_each_live(|_, node, _| node.queue_free());
+        self.lootboxes.clear();
+
+        // The bolt ring survives the rebuild: build it once, then re-dormant it
+        // so any bolt from the previous level is cleared. It is a sibling of the
+        // room containers, so per-room culling never touches it.
+        self.ensure_bolt_pool();
 
         let mut loader = ResourceLoader::singleton();
         let mut loose_rng = SmallRng::seed_from_u64(seed.value());
@@ -268,16 +303,10 @@ impl LevelManager {
         let mut light_count = 0;
         let mut enemy_count = 0;
 
-        // Enemy type selection scales with the level; one stream for the whole
-        // level so the mix is deterministic per seed.
-        let level = self.current_level;
-        let available_enemies = enemy_type::enemies_for_level(level as u32);
-        let mut enemy_rng = SmallRng::seed_from_u64(seed.value());
-
         // One container Node3D per room (identity transform; children keep world
         // positions). Hiding a container culls that room's geometry, lights, AND
         // inhabitants in a single visibility toggle.
-        for room in &rooms {
+        for (room_index, room) in rooms.iter().enumerate() {
             let mut room_node = Node3D::new_alloc();
             room_node.set_name(&format!("Room{}", self.room_nodes.len()));
             self.base_mut().add_child(&room_node);
@@ -331,12 +360,31 @@ impl LevelManager {
                 }
 
                 // --- Step 3: enemies — each a self-driving RigidBody3D parented
-                // under the room so it culls/hides with it.
-                for pos in &room.enemies {
-                    let etype = *available_enemies.choose(&mut enemy_rng)
-                        .expect("available_enemies is non-empty for any valid level");
-                    if Self::spawn_enemy(&mut loader, &mut room_node, etype, level, *pos) {
-                        enemy_count += 1;
+                // under the room so it culls/hides with it. Type, death-spawn
+                // minions, and the bound lootbox all come from the manifest: the
+                // parent is placed live, its minions pre-built dormant under the
+                // SAME room, its lootbox pre-built dormant under the level. On
+                // the parent's death it activates them — no death-path or
+                // per-drop instantiate remains.
+                for spawn in &manifest.rooms[room_index].enemies {
+                    let Some(mut parent) = Self::spawn_enemy(
+                        &mut loader, &mut room_node, spawn.enemy_type, level, spawn.position, false,
+                    ) else { continue };
+                    enemy_count += 1;
+
+                    for minion in &spawn.minions {
+                        if let Some(minion_node) = Self::spawn_enemy(
+                            &mut loader, &mut room_node, minion.enemy_type, level, spawn.position, true,
+                        ) {
+                            parent.bind_mut().bind_minion(&minion_node);
+                        }
+                    }
+
+                    let mut level_mgr: Gd<Node3D> = self.base().clone().cast();
+                    if let Some(box_node) = Self::build_lootbox(&mut loader, &mut level_mgr) {
+                        parent.bind_mut().bind_lootbox(&box_node);
+                        // Track it so a rebuild frees it (tier-1, one life/level).
+                        self.lootboxes.push(&box_node, ());
                     }
                 }
             }
@@ -412,6 +460,21 @@ impl LevelManager {
         Self::collect_static_bodies(&node.clone().upcast::<Node>(), &mut bodies);
         for body in bodies {
             body.free();
+        }
+    }
+
+    /// Build the bolt pool on first use and re-dormant it on every rebuild. The
+    /// pool is a direct child of this LevelManager (a sibling of the room
+    /// containers, not inside one), so bolts are not toggled off by per-room
+    /// visibility culling and the pool outlives the room nodes cleared above.
+    fn ensure_bolt_pool(&mut self) {
+        match self.bolt_pool.with(|p| p.bind_mut().reset()) {
+            Some(()) => {} // already built and now re-dormanted
+            None => {
+                let pool = BoltPool::new_alloc();
+                self.base_mut().add_child(&pool);
+                self.bolt_pool = Some(LiveRef::new(&pool));
+            }
         }
     }
 
@@ -540,25 +603,24 @@ impl LevelManager {
         });
     }
 
-    /// Instantiate an enemy scene and position it. It self-drives as a
-    /// RigidBody3D; the engine owns its motion.
+    /// Instantiate an enemy scene under `parent`, stamped with its type + level,
+    /// positioned. It self-drives as a RigidBody3D; the engine owns its motion.
+    /// Returns the live handle so the caller can bind its death-spawn minions and
+    /// lootbox (Faucet Principle, tier 1). `dormant` builds it invisible,
+    /// non-processing, non-colliding — that's how a reserved death-spawn minion
+    /// enters the tree, waiting for its parent to die.
     fn spawn_enemy(
         loader: &mut Gd<ResourceLoader>,
         parent: &mut Gd<Node3D>,
         etype: enemy_type::EnemyType,
         level: i32,
         pos: [f32; 3],
-    ) -> bool {
-        let Some(scene_res) = loader.load(etype.scene_path()) else {
-            return false;
-        };
+        dormant: bool,
+    ) -> Option<Gd<EnemyDrone>> {
+        let scene_res = loader.load(etype.scene_path())?;
         let packed: Gd<PackedScene> = scene_res.cast();
-        let Some(instance) = packed.instantiate() else {
-            return false;
-        };
-        let Ok(mut enemy) = instance.try_cast::<EnemyDrone>() else {
-            return false;
-        };
+        let instance = packed.instantiate()?;
+        let mut enemy = instance.try_cast::<EnemyDrone>().ok()?;
         // Stamp type + level before entering the tree so ready() configures it.
         {
             let mut g = enemy.bind_mut();
@@ -567,10 +629,35 @@ impl LevelManager {
         }
         enemy.set_position(vec3(pos));
         // Parented under the room container (a cell inhabitant), so hiding or
-        // culling the room takes its enemies with it.
+        // culling the room takes its enemies with it. Death-spawn minions parent
+        // under the SAME room as their parent-to-be, so they share its culling
+        // and the one recursive signal wire.
         parent.add_child(&enemy);
-        enemy.reset_physics_interpolation();
-        true
+        // ready() has now run (add_child is synchronous): a reserved minion is
+        // fully built (model, hull, health bar) but must sit dormant until its
+        // parent dies. An active enemy resets interpolation for its placement.
+        if dormant {
+            enemy.bind_mut().deactivate_dormant();
+        } else {
+            enemy.reset_physics_interpolation();
+        }
+        Some(enemy)
+    }
+
+    /// Pre-build the one lootbox reserved for an enemy (Faucet Principle, tier
+    /// 1), dormant, parented under the LevelManager rather than a room container
+    /// so a dropped box persists and stays visible when the player leaves the
+    /// room it dropped in (drops are collected across rooms, matching the old
+    /// scene-root drop). Returns the handle for the enemy to bind and drop.
+    fn build_lootbox(loader: &mut Gd<ResourceLoader>, level_mgr: &mut Gd<Node3D>) -> Option<Gd<Lootbox>> {
+        let scene_res = loader.load(scenes::LOOTBOX)?;
+        let packed: Gd<PackedScene> = scene_res.cast();
+        let instance = packed.instantiate()?;
+        let lootbox = instance.try_cast::<Lootbox>().ok()?;
+        // ready() dormants it; parent under the level (sibling of rooms + the
+        // bolt pool), so per-room culling never hides a dropped box.
+        level_mgr.add_child(&lootbox);
+        Some(lootbox)
     }
 
     /// Instantiate an organics barrel at `pos` under the given room container (a

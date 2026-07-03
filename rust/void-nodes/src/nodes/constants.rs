@@ -49,6 +49,7 @@ pub mod methods {
     pub const BROADCAST_OPTIONS: &str = "broadcast_options";
     pub const ON_RENDER_VIEWPORTS_CHANGED: &str = "on_render_viewports_changed";
     pub const ON_BODY_ENTERED: &str = "on_body_entered";
+    pub const RESOLVE_HIT: &str = "resolve_hit";
     pub const ADVANCE_TO_SHOP: &str = "advance_to_shop";
     pub const ADVANCE_TO_NEXT_LEVEL: &str = "advance_to_next_level";
     pub const BUY_LASER_UPGRADE: &str = "buy_laser_upgrade";
@@ -93,6 +94,7 @@ pub mod methods {
     pub const UPDATE_SLOW: &str = "update_slow";
     pub const ON_POWER_MODE_CHANGED: &str = "on_power_mode_changed";
     pub const ON_UPGRADE_COLLECTED: &str = "on_upgrade_collected";
+    pub const APPLY_DORMANCY: &str = "apply_dormancy";
     pub const ENTER_INITIAL_PHASE: &str = "enter_initial_phase";
     pub const ON_PHASE_CHANGED_AUDIO: &str = "on_phase_changed_audio";
     pub const ON_MUSIC_FINISHED: &str = "on_music_finished";
@@ -131,6 +133,7 @@ pub mod actions {
 pub mod groups {
     pub const PLAYER: &str = "player";
     pub const ENEMIES: &str = "enemies";
+    pub const BOLT_POOL: &str = "bolt_pool";
 }
 
 // ── Meta keys ─────────────────────────────────────────────────────────

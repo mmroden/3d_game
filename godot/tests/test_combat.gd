@@ -46,8 +46,14 @@ func test_enemy_in_range_fires_and_damages_player():
 	# End-to-end: an enemy within attack range must fire a bolt that survives
 	# its own muzzle, travels to the player, and deals damage. Regression for
 	# bolts self-detonating on the firing enemy (shared collision layer).
+	# Bolts are now drawn from the level's preallocated pool (Faucet Principle),
+	# so the enemy fires through the BoltPool rather than instantiating a bolt —
+	# a running level always provides one; the test stands in for that here.
 	var player = _spawn_player(Vector3.ZERO)
 	watch_signals(player)
+	var pool := BoltPool.new()
+	pool.capacity = 8 # a handful of slots is plenty for one enemy's fire
+	add_child_autofree(pool)
 	var enemy_scene = load("res://scenes/enemies/enemy.tscn")
 	if enemy_scene == null:
 		pass_test("skipped — scene not available")
@@ -117,31 +123,32 @@ func test_game_manager_class_exists():
 		"GameManager must expose health for HUD")
 	autofree(gm)
 
-# --- Node lifecycle: death spawns exactly one lootbox ---
+# --- Node lifecycle: death drops exactly one (pre-built) lootbox ---
 
-func test_enemy_death_spawns_one_lootbox():
-	var player = _spawn_player(Vector3(0, 0, 0))
-	var enemy_scene = load("res://scenes/enemies/enemy.tscn")
-	if enemy_scene == null:
-		pass_test("skipped — scene not available")
-		return
-	var enemy = enemy_scene.instantiate()
-	add_child_autofree(enemy)
-	enemy.global_position = Vector3(5, 0, 0)
+func test_enemy_death_drops_one_pre_built_lootbox():
+	# Faucet Principle, tier 1: one lootbox per enemy is pre-built dormant during
+	# the level build; the enemy's death activates its bound box (a flip, not an
+	# instantiate). Killing one enemy leaves exactly one live box, and the level's
+	# total box count is unchanged (nothing was created on drop).
+	var lm := LevelManager.new()
+	lm.current_level = 2
+	add_child_autofree(lm)
+	lm.generate_level(4242, 8)
 
-	# Let enemy initialize
-	await get_tree().physics_frame
+	var boxes_before := lm.find_children("*", "Lootbox", true, false).size()
+	assert_gt(boxes_before, 0, "a level with enemies pre-builds lootboxes")
 
-	# Kill it (GunDrone has 3 HP; it has no death-spawn, so exactly one lootbox)
+	var enemies := lm.find_children("*", "EnemyDrone", true, false)
+	assert_gt(enemies.size(), 0, "seed 4242 must place enemies")
+	var enemy: RigidBody3D = enemies.front()
 	enemy.take_damage(100.0)
+	await wait_physics_frames(10, "let the enemy die and drop its bound box")
 
-	# Wait for death + queue_free
-	await wait_physics_frames(10, "Waiting for death cleanup")
-
-	# Count lootboxes — should be exactly 1
-	var count = 0
-	for child in get_tree().root.get_children():
-		if child is Lootbox:
-			count += 1
-	assert_eq(count, 1,
-		"Killing one enemy should spawn exactly 1 lootbox, got %d" % count)
+	var boxes_after := lm.find_children("*", "Lootbox", true, false).size()
+	assert_eq(boxes_after, boxes_before,
+		"dropping a box must not instantiate — the pre-built count is unchanged")
+	var live := 0
+	for box in lm.find_children("*", "Lootbox", true, false):
+		if box.visible:
+			live += 1
+	assert_eq(live, 1, "exactly one box (the dead enemy's) is now live, got %d" % live)
