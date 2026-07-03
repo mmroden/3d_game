@@ -134,9 +134,11 @@ func test_rapid_impact_events_are_throttled():
 	# Baseline includes 2 music crossfade players
 	var baseline = _count_sfx_children(mgr)
 
-	# Fire 5 impact events in rapid succession (non-positional to count on mgr)
+	# Fire 5 collision events in rapid succession (non-positional to count on
+	# mgr). Id 2 = CollisionShielded in ALL_SFX_EVENTS order — one of the two
+	# events is_collision_event throttles.
 	for i in range(5):
-		mgr.play_sfx_event(2)  # 2 = ImpactMetal
+		mgr.play_sfx_event(2)  # 2 = CollisionShielded
 
 	await wait_physics_frames(2, "Waiting for SFX nodes")
 

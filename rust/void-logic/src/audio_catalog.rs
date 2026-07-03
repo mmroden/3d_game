@@ -80,7 +80,7 @@ pub enum SfxEvent {
     /// A swarmer drone latches onto the ship (floor 2+).
     SwarmerLatch,
     /// A subsidiary drone arms up from a dying drone's corpse (e.g. EyeDrone
-    /// spawning a GunDrone, floor 3+).
+    /// releasing its SpawnDrone, floor 3+).
     DroneSpawn,
     /// Player enters portal.
     PortalEnter,

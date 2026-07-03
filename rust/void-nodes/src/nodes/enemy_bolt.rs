@@ -17,6 +17,11 @@ use super::godot_util;
 // land reliably (the dominant cause of "damage feels low").
 const BOLT_RADIUS: f32 = 0.35;
 const BOLT_LIFETIME_S: f64 = 3.0;
+/// How far back along the bolt's travel the hit sound is placed, so the cue
+/// points at the shooter (the ship-side companion knob is ship_controller's
+/// HIT_SFX_OFFSET — tune the two together or ram and bolt hits localize
+/// inconsistently).
+const HIT_SFX_OFFSET: f32 = 5.0;
 
 #[derive(GodotClass)]
 #[class(base=Area3D)]
@@ -208,7 +213,7 @@ impl EnemyBolt {
             // The bolt is on top of the ship at impact, so its own position gives
             // no direction. Point back along its travel — that's where the
             // shooter is — so the hit sound localizes toward the threat.
-            let source = self.base().get_global_position() - self.velocity.normalized() * 5.0;
+            let source = self.base().get_global_position() - self.velocity.normalized() * HIT_SFX_OFFSET;
             body.call(
                 methods::TAKE_DAMAGE,
                 &[Variant::from(self.damage), Variant::from(source)],

@@ -6,14 +6,13 @@ extends GutTest
 ## every type, never collider-less.
 
 const ENEMY_SCENE = "res://scenes/enemies/enemy.tscn"
-## Number of EnemyType variants — pinned in Rust by
-## `roster_is_five_direct_enemies_plus_the_spawn_drone` (ALL.len() == 6).
-const ENEMY_TYPE_COUNT = 6
 
 
 func test_every_enemy_type_gets_convex_colliders():
 	var checked := 0
-	for type_id in range(ENEMY_TYPE_COUNT):
+	# The roster size comes from Rust (EnemyType::ALL.len()), not a restated
+	# constant — a seventh enemy type is audited the moment it exists.
+	for type_id in range(EnemyDrone.enemy_type_count()):
 		var enemy = load(ENEMY_SCENE).instantiate()
 		enemy.enemy_type_id = type_id
 		add_child_autofree(enemy)

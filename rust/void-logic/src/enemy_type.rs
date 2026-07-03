@@ -36,7 +36,8 @@ impl EnemyType {
         // GunDrone — ranged kiter: holds distance and fires. Nimble (not a
         // battleship), but the SpawnDrone it can drop stays the faster harasser.
         EnemyStats { hp: Health::new(3.0),  speed: 10.0, damage: Damage::new(5.0),  detection_range: 25.0, attack_range: 10.0, attack_cooldown: 1.0, archetype: Archetype::Kiter,   reward: 1_000 },
-        // QuadOrb — swarmer: fast, fragile, four-legged; slows the player on contact.
+        // QuadOrb — swarmer: fast, fragile, four-legged; latches within 2m and
+        // re-tags a compounding slow while it stays close (no contact needed).
         EnemyStats { hp: Health::new(3.0),  speed: 12.0, damage: Damage::new(4.0),  detection_range: 25.0, attack_range: 3.0,  attack_cooldown: 1.0, archetype: Archetype::Swarmer, reward: 1_000 },
         // Bomber — suicide: charges, fuses, then detonates for area damage.
         EnemyStats { hp: Health::new(4.0),  speed: 9.0,  damage: Damage::new(16.0), detection_range: 25.0, attack_range: 5.0,  attack_cooldown: 1.0, archetype: Archetype::Bomber,  reward: 1_000 },
@@ -141,9 +142,10 @@ impl EnemyType {
     }
 
     /// Extra yaw (radians) layered on top of "face the player", correcting for
-    /// the model's imported front axis. The cgtrader mechs import facing their
-    /// own +X (their flank points down -Z), so they need a quarter turn to put
-    /// their nose on the player; the Quaternius drones already front along -Z.
+    /// the model's imported front axis. The cgtrader mechs import fronting
+    /// along +Z, so `look_at` (which aims -Z at the player) leaves them facing
+    /// exactly backwards — a half turn fixes it; the Quaternius drones already
+    /// front along -Z and need nothing.
     /// This is the single knob to tune if a model ends up facing askew in-game.
     pub fn model_yaw_offset(&self) -> f32 {
         match self {

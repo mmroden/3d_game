@@ -94,7 +94,7 @@ impl IRigidBody3D for EnemyDrone {
         let ai = DroneAi::new(config);
         Self {
             base,
-            enemy_type_id: 1, // GunDrone by default
+            enemy_type_id: 1, // QuadOrb (ALL[1]) unless the spawner stamps a type
             speed: 8.0,
             health: 3.0,
             detection_range: 25.0,
@@ -261,6 +261,14 @@ impl EnemyDrone {
     /// speed and fire rate for it.
     pub fn set_spawn_level(&mut self, level: i32) {
         self.level = level;
+    }
+
+    /// Size of the enemy roster (`EnemyType::ALL`), exposed so GDScript tests
+    /// iterate the real count instead of restating it across the language
+    /// boundary — a new type is audited the moment the roster grows.
+    #[func]
+    pub fn enemy_type_count() -> i64 {
+        EnemyType::ALL.len() as i64
     }
 
     /// Set the enemy type before the node enters the tree, so `ready()` builds
