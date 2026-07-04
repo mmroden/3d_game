@@ -15,7 +15,7 @@ use void_logic::laser::LaserLevel;
 use void_logic::ship::{self, ShipColor};
 use void_logic::loadout::Loadout;
 use void_logic::power_routing::PowerMode;
-use void_logic::armament::{subdrone, valkyrie, WeaponKind};
+use void_logic::armament::{cluster, subdrone, valkyrie, WeaponKind};
 use void_logic::ship_type::ShipType;
 use void_logic::upgrade::{Upgrade, UpgradeKind};
 use void_logic::audio_catalog::SfxEvent;
@@ -33,7 +33,9 @@ const WING_OFFSET: f32 = 0.3;
 
 /// Aim forgiveness: lasers also test a ring of this radius around the centre
 /// line, so a near-miss still connects instead of needing pixel-perfect aim.
-const LASER_AIM_RADIUS: f32 = 0.7;
+/// Sized against the SMALLEST enemies (0.5 m models, ~0.25 m hulls —
+/// playtest 2026-07-04: they read as unhittable at 0.7).
+const LASER_AIM_RADIUS: f32 = 1.3;
 /// Minimum gap between collision sounds (so a wall scrape doesn't machine-gun).
 const IMPACT_SOUND_COOLDOWN: f32 = 0.4;
 /// How far off the hull (m) the hit sound is placed, toward whatever struck us.
@@ -110,6 +112,8 @@ pub struct ShipController {
     /// keystone is owned (pushed by GameManager), firing alongside the
     /// hitscan lasers on the same trigger.
     valkyrie: Option<WeaponState>,
+    /// Bursts fired — seeds each burst's deterministic fan.
+    valkyrie_bursts: u64,
     /// Pilot input (fly, fire, view toggle) is only live during gameplay. On
     /// menu/showcase/bestiary screens the camera must NOT respond to the stick,
     /// so GameManager flips this off there.
@@ -140,6 +144,7 @@ impl IRigidBody3D for ShipController {
             ship_rotation_mul: 1.0,
             subdrone_regen: subdrone::RegenTimer::new(subdrone::REGEN_SECONDS),
             valkyrie: None,
+            valkyrie_bursts: 0,
             controls_enabled: false,
         }
     }
@@ -228,6 +233,11 @@ impl ShipController {
     /// the source, so GameManager can play the hit sound directionally.
     #[signal]
     fn player_damaged(amount: f32, hit_position: Vector3);
+
+    /// The pilot pressed the item trigger (Shield Surge). GameManager owns
+    /// the charges and the shield; this only reports intent.
+    #[signal]
+    fn shield_burst_requested();
 
     /// Ship hit static geometry (onset, throttled). Carries no shield state —
     /// GameManager owns that and picks the shielded/bare collision sound.
@@ -498,6 +508,12 @@ impl ShipController {
         self.subdrone_regen.tick(delta);
         self.age_beams(delta);
 
+        if input.is_action_just_pressed(actions::USE_ITEM) {
+            // The Shield Surge (and future consumables): the node only
+            // reports the press — charges and the shield are RunState's,
+            // so GameManager mediates.
+            self.base_mut().emit_signal(signals::SHIELD_BURST_REQUESTED, &[]);
+        }
         if input.is_action_pressed(actions::FIRE) {
             // The hull's weapon decides what the trigger does. Everything
             // shares the one cooldown state; the subdrone bay layers its
@@ -629,14 +645,11 @@ impl ShipController {
         (t.origin + forward * 1.2, forward)
     }
 
-    /// Tracking laser: lock the nearest live enemy inside the aim cone and
-    /// fire a homing bolt at it; with no lock the bolt flies ballistic.
-    fn fire_tracking(&mut self, damage: f32) {
-        const TRACKING_BOLT_SPEED: f32 = 45.0;
+    /// Lock the nearest live enemy inside the aim cone: the shared acquire
+    /// for every seeking weapon (Talon tracking, Valkyrie burst).
+    fn acquire_lock(&self, muzzle: Vector3, forward: Vector3) -> Option<i64> {
         const AIM_CONE_COS: f32 = 0.75;
         const LOCK_RANGE: f32 = 80.0;
-
-        let (muzzle, forward) = self.muzzle();
         let mut best: Option<(f32, i64)> = None;
         let tree = self.base().get_tree();
         for node in tree.get_nodes_in_group(groups::ENEMIES).iter_shared() {
@@ -656,10 +669,19 @@ impl ShipController {
                 best = Some((distance, enemy.instance_id().to_i64()));
             }
         }
+        best.map(|(_, id)| id)
+    }
+
+    /// Tracking laser: lock the nearest live enemy inside the aim cone and
+    /// fire a homing bolt at it; with no lock the bolt flies ballistic.
+    fn fire_tracking(&mut self, damage: f32) {
+        const TRACKING_BOLT_SPEED: f32 = 45.0;
+        let (muzzle, forward) = self.muzzle();
+        let lock = self.acquire_lock(muzzle, forward);
         if let Some(mut pool) = self.bolt_pool() {
             let velocity = forward * TRACKING_BOLT_SPEED;
-            match best {
-                Some((_, target_id)) => {
+            match lock {
+                Some(target_id) => {
                     pool.bind_mut().fire_homing(muzzle, velocity, damage, target_id)
                 }
                 None => pool.bind_mut().fire_player(muzzle, velocity, damage),
@@ -667,11 +689,29 @@ impl ShipController {
         }
     }
 
-    /// Valkyrie: one heavy player bolt straight down the reticle line.
+    /// Valkyrie: empty the rack — a fan of heavy bolts that all curve onto
+    /// whatever the reticle holds (the cannon's job is CONNECTING when raw
+    /// aim can't — playtest 2026-07-04: one straight bolt read as nothing).
+    /// With no lock the fan flies ballistic.
     fn fire_valkyrie(&mut self, damage: f32) {
         let (muzzle, forward) = self.muzzle();
+        let lock = self.acquire_lock(muzzle, forward);
+        self.valkyrie_bursts = self.valkyrie_bursts.wrapping_add(1);
+        let directions = cluster::fragment_directions(
+            [forward.x, forward.y, forward.z],
+            valkyrie::BURST_COUNT,
+            valkyrie::BURST_SPREAD,
+            self.valkyrie_bursts,
+        );
         if let Some(mut pool) = self.bolt_pool() {
-            pool.bind_mut().fire_player(muzzle, forward * valkyrie::BOLT_SPEED, damage);
+            let mut pool = pool.bind_mut();
+            for dir in directions {
+                let velocity = Vector3::new(dir[0], dir[1], dir[2]) * valkyrie::BOLT_SPEED;
+                match lock {
+                    Some(target_id) => pool.fire_homing(muzzle, velocity, damage, target_id),
+                    None => pool.fire_player(muzzle, velocity, damage),
+                }
+            }
         }
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
             audio.bind_mut().play_event(SfxEvent::LaserFire);
@@ -751,7 +791,20 @@ impl ShipController {
         let self_rid = self.base().get_rid();
 
         let r = LASER_AIM_RADIUS;
-        let offsets = [Vector3::ZERO, right * r, -right * r, up * r, -up * r];
+        // Center, the four cardinals, and the four diagonals: nine rays so
+        // a small hull can't slip between the spokes.
+        let d = r * std::f32::consts::FRAC_1_SQRT_2;
+        let offsets = [
+            Vector3::ZERO,
+            right * r,
+            -right * r,
+            up * r,
+            -up * r,
+            (right + up) * d,
+            (right - up) * d,
+            (-right + up) * d,
+            (-right - up) * d,
+        ];
         let mut beam_end = fallback;
         for (i, off) in offsets.iter().enumerate() {
             let origin = center + *off;

@@ -29,6 +29,9 @@ pub enum ShopItemId {
     ExtraLife,
     /// A permanent unlock, priced in organics.
     Unlock(Unlock),
+    /// One Shield Surge refill (blue) — stocked only once the green item
+    /// is owned. Its id sits AFTER the unlocks so their ids never shift.
+    ShieldCharge,
 }
 
 /// Number of stat ids; Laser, ExtraLife, then the unlocks follow.
@@ -41,6 +44,7 @@ impl ShopItemId {
             Self::Laser => STAT_IDS,
             Self::ExtraLife => STAT_IDS + 1,
             Self::Unlock(unlock) => STAT_IDS + 2 + unlock.id(),
+            Self::ShieldCharge => STAT_IDS + 2 + Unlock::ALL.len() as i32,
         }
     }
 
@@ -51,6 +55,7 @@ impl ShopItemId {
         match id - STAT_IDS {
             0 => Some(Self::Laser),
             1 => Some(Self::ExtraLife),
+            n if n - 2 == Unlock::ALL.len() as i32 => Some(Self::ShieldCharge),
             n => Unlock::from_id(n - 2).map(Self::Unlock),
         }
     }
@@ -83,6 +88,8 @@ pub enum Receipt {
     LifeAdded(u32),
     /// A permanent unlock was granted — persist the profile immediately.
     UnlockGranted(Unlock),
+    /// Shield Surge charges after the refill.
+    ChargeAdded(u32),
 }
 
 /// Why a purchase was refused. The run is untouched in every refusal.
@@ -97,8 +104,15 @@ pub enum Refusal {
 const STAT_UPGRADE_MULTIPLIER: f32 = 1.10;
 /// Cost growth per already-owned upgrade of the same kind.
 const STAT_COST_GROWTH: f32 = 1.6;
-/// First extra life; doubles per purchase.
+/// First extra life; each purchase adds a flat step (linear, not
+/// exponential — owner's call 2026-07-04: a life stays reachable).
 const LIFE_BASE_COST: u32 = 10_000;
+/// Added to the life price per life already bought this run.
+const LIFE_STEP_COST: u32 = 5_000;
+/// One Shield Surge refill (flat — the rack is the ratchet).
+const SHIELD_CHARGE_COST: u32 = 5_000;
+/// Rack capacity — the HUD counter's ceiling.
+const SHIELD_CHARGE_CAP: u32 = 9;
 
 /// Base price per stat kind — the catalog's relative value ordering.
 fn stat_base_cost(kind: UpgradeKind) -> u32 {
@@ -120,10 +134,10 @@ fn stat_cost(run: &RunState, kind: UpgradeKind) -> u32 {
     ((raw / 100.0).round() as u32).saturating_mul(100)
 }
 
-/// Current price of the next extra life: doubles per life *bought* this run,
-/// so losing one never discounts the next.
+/// Current price of the next extra life: a flat step per life *bought*
+/// this run (losing one never discounts the next).
 fn life_cost(run: &RunState) -> u32 {
-    LIFE_BASE_COST.checked_shl(run.lives_purchased).unwrap_or(u32::MAX)
+    LIFE_BASE_COST.saturating_add(LIFE_STEP_COST.saturating_mul(run.lives_purchased))
 }
 
 /// The full catalog priced against `run`, in display order: the five stat
@@ -179,6 +193,23 @@ pub fn offers(run: &RunState) -> Vec<ShopOffer> {
         purchasable: true,
     });
 
+    // Shield Surge refills: blue, and only stocked once the green item is
+    // owned (the item explains the trigger at purchase; refills need no
+    // second tutorial).
+    if run.unlocks.contains(Unlock::ShieldBurst) {
+        let full = run.shield_charges >= SHIELD_CHARGE_CAP;
+        out.push(ShopOffer {
+            id: ShopItemId::ShieldCharge,
+            label: "Surge Charge".to_string(),
+            detail: format!("charges {} → {}", run.shield_charges,
+                (run.shield_charges + 1).min(SHIELD_CHARGE_CAP)),
+            cost: SHIELD_CHARGE_COST,
+            currency: CurrencyKind::Components,
+            affordable: !full && run.components.can_afford(SHIELD_CHARGE_COST),
+            purchasable: !full,
+        });
+    }
+
     // The green section: permanent unlocks, priced in organics. Owned
     // unlocks leave the catalog for good — unlike the maxed laser, they can
     // never come back on offer, so there is no row to keep stable.
@@ -190,7 +221,9 @@ pub fn offers(run: &RunState) -> Vec<ShopOffer> {
         out.push(ShopOffer {
             id: ShopItemId::Unlock(*unlock),
             label: unlock.display_name().to_string(),
-            detail: unlock.blurb(),
+            // Blurb + trigger: the confirm screen shows exactly this, so a
+            // green purchase always says what it does AND how to use it.
+            detail: format!("{} | {}", unlock.blurb(), unlock.trigger_hint()),
             cost,
             currency: CurrencyKind::Organics,
             affordable: run.organics.can_afford(cost),
@@ -241,7 +274,21 @@ pub fn purchase(run: &mut RunState, id: ShopItemId) -> Result<Receipt, Refusal> 
             }
             run.organics.spend(unlock.organic_cost()).map_err(Refusal::NotEnough)?;
             run.unlocks.grant(unlock);
+            if unlock == Unlock::ShieldBurst {
+                // The item arrives stocked.
+                run.shield_charges = crate::run_state::SHIELD_BURST_STARTING_CHARGES;
+            }
             Ok(Receipt::UnlockGranted(unlock))
+        }
+        ShopItemId::ShieldCharge => {
+            if !run.unlocks.contains(Unlock::ShieldBurst)
+                || run.shield_charges >= SHIELD_CHARGE_CAP
+            {
+                return Err(Refusal::NotPurchasable);
+            }
+            run.components.spend(SHIELD_CHARGE_COST).map_err(Refusal::NotEnough)?;
+            run.shield_charges += 1;
+            Ok(Receipt::ChargeAdded(run.shield_charges))
         }
     }
 }
@@ -283,9 +330,10 @@ mod tests {
             assert!(!offer.label.is_empty(), "{:?} needs a label", offer.id);
             let expected = match offer.id {
                 ShopItemId::Unlock(_) => CurrencyKind::Organics,
-                ShopItemId::Stat(_) | ShopItemId::Laser | ShopItemId::ExtraLife => {
-                    CurrencyKind::Components
-                }
+                ShopItemId::Stat(_)
+                | ShopItemId::Laser
+                | ShopItemId::ExtraLife
+                | ShopItemId::ShieldCharge => CurrencyKind::Components,
             };
             assert_eq!(offer.currency, expected,
                 "{:?} belongs to the {expected:?} section", offer.id);
@@ -351,14 +399,20 @@ mod tests {
             offers(run).iter().find(|o| o.id == ShopItemId::ExtraLife).expect("life offer").cost
         };
         let first = life_cost(&run);
+        assert_eq!(first, 10_000, "the first spare life anchors at 10k");
         let receipt = purchase(&mut run, ShopItemId::ExtraLife).expect("affordable");
         assert_eq!(receipt, Receipt::LifeAdded(2), "one spare life on top of the starting one");
         let second = life_cost(&run);
-        assert_eq!(second, first * 2, "each life doubles");
-        // Losing the bought life must NOT discount the next one: the ratchet
+        // Linear steps, not doubling (owner's call 2026-07-04): 10k, 15k,
+        // 20k, 25k — a life stays reachable deep into a run.
+        assert_eq!(second, 15_000, "each life adds a flat step");
+        purchase(&mut run, ShopItemId::ExtraLife).expect("affordable");
+        let third = life_cost(&run);
+        assert_eq!(third, 20_000, "10k → 15k → 20k");
+        // Losing a bought life must NOT discount the next one: the ratchet
         // keys to lives purchased, not lives held.
         run.apply_life_loss();
-        assert_eq!(life_cost(&run), second, "dying never discounts the next life");
+        assert_eq!(life_cost(&run), third, "dying never discounts the next life");
     }
 
     #[test]
@@ -420,6 +474,54 @@ mod tests {
         assert!(matches!(result, Err(Refusal::NotEnough(_))),
             "green purchases are refused on the green balance, got {result:?}");
         assert!(!run.unlocks.contains(Unlock::FogMap));
+    }
+
+    #[test]
+    fn surge_charges_are_blue_and_wait_for_the_green_item() {
+        let mut run = RunState::new(Seed::new(42));
+        run.collect_cache(CurrencyKind::Components, 20_000);
+        assert!(!offers(&run).iter().any(|o| o.id == ShopItemId::ShieldCharge),
+            "no Surge item, no refill row");
+        assert!(matches!(purchase(&mut run, ShopItemId::ShieldCharge),
+            Err(Refusal::NotPurchasable)));
+
+        run.collect_cache(CurrencyKind::Organics, 2_000);
+        run.unlocks.grant(Unlock::Radar);
+        purchase(&mut run, ShopItemId::Unlock(Unlock::ShieldBurst))
+            .expect("radar owned, 2k affords the 1k surge item");
+        assert_eq!(run.shield_charges, 3, "the item arrives stocked");
+
+        let offer = offers(&run).into_iter()
+            .find(|o| o.id == ShopItemId::ShieldCharge)
+            .expect("owned item stocks the refill row");
+        assert_eq!(offer.currency, CurrencyKind::Components, "refills are blue");
+        assert_eq!(offer.cost, 5_000);
+
+        let before = run.components.balance;
+        let receipt = purchase(&mut run, ShopItemId::ShieldCharge).expect("affordable");
+        assert_eq!(receipt, Receipt::ChargeAdded(4));
+        assert_eq!(before - run.components.balance, 5_000, "flat price, no ratchet");
+    }
+
+    #[test]
+    fn green_details_carry_the_trigger_hint() {
+        // The confirm screen shows the detail line verbatim — every green
+        // row must say what it does AND how to use it.
+        let run = RunState::new(Seed::new(42));
+        let radar = offers(&run).into_iter()
+            .find(|o| o.id == ShopItemId::Unlock(Unlock::Radar))
+            .expect("radar on offer");
+        assert!(radar.detail.contains('|'),
+            "blurb | trigger, got {:?}", radar.detail);
+    }
+
+    #[test]
+    fn shield_charge_id_sits_after_the_unlocks() {
+        // Appended AFTER the unlock block so no GDScript id shifted.
+        assert_eq!(ShopItemId::Unlock(Unlock::Radar).id(), 8, "radar keeps its id");
+        let charge = ShopItemId::ShieldCharge.id();
+        assert_eq!(ShopItemId::from_id(charge), Some(ShopItemId::ShieldCharge));
+        assert!(charge > ShopItemId::Unlock(Unlock::ShieldBurst).id());
     }
 
     #[test]
@@ -508,8 +610,14 @@ mod tests {
             .map(|o| o.id)
             .collect();
         use crate::ship_type::ShipType;
-        assert_eq!(green.len(), 3, "the three hulls, nothing else: {green:?}");
+        assert_eq!(green.len(), 6,
+            "the spine done: three hulls, the two map branches, the surge: {green:?}");
         assert!(green.contains(&ShopItemId::Unlock(Unlock::Ship(ShipType::Talon))));
+        assert!(green.contains(&ShopItemId::Unlock(Unlock::RouteScanner)),
+            "owning the map put its upgrades on offer");
+        assert!(green.contains(&ShopItemId::Unlock(Unlock::ThreatTracker)));
+        assert!(green.contains(&ShopItemId::Unlock(Unlock::ShieldBurst)),
+            "owning the radar put the surge on offer");
     }
 
     #[test]

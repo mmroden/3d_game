@@ -156,8 +156,8 @@ func test_shop_ui_renders_one_row_per_offer_plus_continue():
 		PackedByteArray([3, 3, 3]),
 	)
 	var labels := shop.find_children("*", "Label", true, false)
-	assert_eq(labels.size(), 3 + 3 + 4,
-		"3 offer rows + 3 detail hints + title + components + organics + continue")
+	assert_eq(labels.size(), 3 + 3 + 5,
+		"3 offer rows + 3 detail hints + title + balances ×2 + Continue + Save & Exit")
 	assert_true(shop.visible, "show_shop presents the screen")
 
 
@@ -310,3 +310,53 @@ func test_one_press_on_the_level_2_summary_lands_in_the_shop_not_past_it():
 	assert_lt(gm.get_components(), components_before,
 		"the player can actually buy something after level 2")
 	assert_eq(gm.get_phase_name(), "Shop", "buying keeps the shop open")
+
+
+func test_save_and_exit_banks_the_run_at_the_next_level():
+	# The shop's Save & Exit row (owner's ask 2026-07-04): everything up to
+	# this point — purchases included — banks as the next level's start, and
+	# the player lands on the main menu with Continue armed.
+	var gm := _playing_game()
+	await wait_process_frames(3)
+	gm.on_cache_collected(KIND_COMPONENTS, 30_000)
+	gm.on_portal_entered()
+	gm.advance_to_shop()
+	assert_true(gm.buy_shop_item(THRUST_ID), "bank a purchase before leaving")
+	var components_after_buy: int = gm.get_components()
+
+	gm.save_and_exit()
+	assert_eq(gm.get_phase_name(), "MainMenu", "Save & Exit lands on the menu")
+	assert_true(gm.has_continuable_run(), "the run is banked")
+
+	gm.continue_game()
+	assert_eq(gm.get_phase_name(), "Playing", "Continue resumes the banked run")
+	assert_eq(gm.get_current_level(), 2, "the run resumes at the NEXT level")
+	assert_eq(gm.get_components(), components_after_buy, "purchases and salvage survived")
+
+
+func test_the_shield_surge_stocks_charges_and_spends_on_the_trigger():
+	# The Shield Surge: green item arrives with three charges, refills are
+	# 5k blue, and the item trigger spends one for instant shields.
+	var gm := _playing_game()
+	await wait_process_frames(3)
+	gm.on_cache_collected(KIND_ORGANICS, 2_000)
+	gm.on_cache_collected(KIND_COMPONENTS, 30_000)
+	gm.on_portal_entered()
+	gm.advance_to_shop()
+	assert_true(gm.buy_shop_item(RADAR_ID), "the radar opens the surge branch")
+	assert_true(gm.buy_shop_item(16), "the surge item sells green")
+	assert_eq(gm.get_shield_charges(), 3, "the item arrives stocked")
+	var components_before: int = gm.get_components()
+	assert_true(gm.buy_shop_item(17), "a refill sells blue")
+	assert_eq(components_before - gm.get_components(), 5_000, "refills are 5k flat")
+	assert_eq(gm.get_shield_charges(), 4)
+
+	gm.advance_to_next_level()
+	gm.advance_from_ship_select()
+	for _i in range(12):
+		if gm.get_phase_name() == "Playing":
+			break
+		gm.advance_from_bestiary()
+	await wait_process_frames(3)
+	gm.on_shield_burst_requested()
+	assert_eq(gm.get_shield_charges(), 3, "the trigger spends a charge")

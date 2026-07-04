@@ -6,7 +6,7 @@ use godot::classes::{
 
 use super::menu_panel;
 use crate::nodes::constants::{actions, shop_flags, signals, theme};
-use crate::nodes::live_handle::LiveVec;
+use crate::nodes::live_handle::{LiveRef, LiveVec};
 use void_logic::menu_cursor::MenuCursor;
 use void_logic::ui_style;
 
@@ -28,6 +28,14 @@ pub struct ShopUI {
     /// can't buy or Continue (playtest 2026-07-04: the kill-summary press
     /// closed the level-2 shop before it was ever seen).
     swallow_entry_press: bool,
+    /// A green purchase awaiting confirmation: the info screen for this row
+    /// (what it does + how to trigger it) is up — select again buys, circle
+    /// cancels. Nobody buys a mystery (owner's ask, 2026-07-04).
+    pending_confirm: Option<usize>,
+    confirm_panel: Option<LiveRef<godot::classes::PanelContainer>>,
+    /// Row text retained for the confirm screen's content.
+    row_labels: PackedStringArray,
+    row_details: PackedStringArray,
 }
 
 #[godot_api]
@@ -40,6 +48,10 @@ impl ICanvasLayer for ShopUI {
             ids: PackedInt32Array::new(),
             flags: PackedByteArray::new(),
             swallow_entry_press: false,
+            pending_confirm: None,
+            confirm_panel: None,
+            row_labels: PackedStringArray::new(),
+            row_details: PackedStringArray::new(),
         }
     }
 
@@ -61,20 +73,35 @@ impl ICanvasLayer for ShopUI {
         let input = Input::singleton();
 
         if input.is_action_just_pressed(actions::MENU_UP) {
+            self.dismiss_confirm();
             self.cursor.move_up();
             self.update_cursor();
         } else if input.is_action_just_pressed(actions::MENU_DOWN) {
+            self.dismiss_confirm();
             self.cursor.move_down();
             self.update_cursor();
+        } else if input.is_action_just_pressed(actions::MENU_BACK) {
+            self.dismiss_confirm();
         } else if input.is_action_just_pressed(actions::MENU_SELECT) {
             let index = self.cursor.index();
             if index < self.ids.len() {
-                // A buy: the authority (GameManager -> shop::purchase)
-                // validates affordability; refused buys are a no-op.
-                let item_id = self.ids[index];
-                self.base_mut().emit_signal(signals::BUY_PRESSED, &[Variant::from(item_id)]);
-            } else {
+                // Green (permanent) purchases confirm through an info
+                // screen first — what it does, how to trigger it. Blue
+                // rows buy immediately; the authority (GameManager ->
+                // shop::purchase) validates affordability either way.
+                let flag = self.flags.get(index).unwrap_or(0);
+                let green = flag & shop_flags::GREEN != 0;
+                if green && self.pending_confirm != Some(index) {
+                    self.show_confirm(index);
+                } else {
+                    self.dismiss_confirm();
+                    let item_id = self.ids[index];
+                    self.base_mut().emit_signal(signals::BUY_PRESSED, &[Variant::from(item_id)]);
+                }
+            } else if index == self.ids.len() {
                 self.base_mut().emit_signal(signals::CONTINUE_PRESSED, &[]);
+            } else {
+                self.base_mut().emit_signal(signals::SAVE_EXIT_PRESSED, &[]);
             }
         }
     }
@@ -87,6 +114,9 @@ impl ShopUI {
 
     #[signal]
     fn continue_pressed();
+
+    #[signal]
+    fn save_exit_pressed();
 
     /// ENTER the shop: cursor at the top, and the press that opened the
     /// screen swallowed. Fresh-vs-refresh is explicit in the API — it must
@@ -147,9 +177,14 @@ impl ShopUI {
             child.queue_free();
         }
         self.labels.clear();
+        self.pending_confirm = None;
+        self.confirm_panel = None; // freed with the children above
         self.ids = ids;
         self.flags = flags;
-        self.cursor = MenuCursor::new(self.ids.len() + 1);
+        self.row_labels = labels.clone();
+        self.row_details = details.clone();
+        // Rows: the offers, then Continue, then Save & Exit.
+        self.cursor = MenuCursor::new(self.ids.len() + 2);
         for _ in 0..keep_row {
             self.cursor.move_down();
         }
@@ -223,16 +258,65 @@ impl ShopUI {
             }
         }
 
-        // Continue
+        // Continue, then Save & Exit — the run banks at the shop.
         let mut continue_label = Label::new_alloc();
         continue_label.set_text("  Continue");
         continue_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_ROW);
         vbox.add_child(&continue_label);
         self.labels.push(&continue_label, ());
 
+        let mut save_exit_label = Label::new_alloc();
+        save_exit_label.set_text("  Save & Exit");
+        save_exit_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_ROW);
+        vbox.add_child(&save_exit_label);
+        self.labels.push(&save_exit_label, ());
+
         self.base_mut().add_child(&panel);
         self.base_mut().set_visible(true);
         self.update_cursor();
+    }
+
+    /// Raise the info screen for a green row: name, what it does, how to
+    /// trigger it, and the confirm/cancel prompt.
+    fn show_confirm(&mut self, index: usize) {
+        self.dismiss_confirm();
+        let (mut panel, mut vbox) = menu_panel::create_menu_panel();
+
+        let mut title = Label::new_alloc();
+        title.set_text(&self.row_labels.get(index).map(|l| l.to_string()).unwrap_or_default());
+        title.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_HEADING);
+        title.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_ORGANICS));
+        vbox.add_child(&title);
+
+        // "blurb | trigger" — one line each.
+        let detail = self.row_details.get(index).map(|d| d.to_string()).unwrap_or_default();
+        for part in detail.split('|') {
+            let mut line = Label::new_alloc();
+            line.set_text(part.trim());
+            line.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_BODY);
+            line.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_SECONDARY));
+            vbox.add_child(&line);
+        }
+
+        let mut prompt = Label::new_alloc();
+        prompt.set_text("SELECT: buy    CIRCLE: back");
+        prompt.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_DETAIL);
+        prompt.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_UNSELECTED));
+        vbox.add_child(&prompt);
+
+        // Above the catalog, centered by the shared panel builder.
+        panel.set_z_index(10);
+        self.base_mut().add_child(&panel);
+        self.confirm_panel = Some(LiveRef::new(&panel));
+        self.pending_confirm = Some(index);
+    }
+
+    /// Drop the info screen, if up.
+    fn dismiss_confirm(&mut self) {
+        if let Some(panel) = self.confirm_panel.take() {
+            panel.with(|p| p.queue_free());
+        }
+        self.pending_confirm = None;
     }
 
     /// Row coloring: the selected row highlights; unpurchasable stock is

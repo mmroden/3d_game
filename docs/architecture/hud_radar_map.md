@@ -16,16 +16,19 @@ Edge arrows pointing at enemies that are not visibly on screen.
 - **The shell feeds it** (`hud.rs::update_radar`): every Playing frame,
   project each member of the `"enemies"` group through the player camera
   (`unproject_position` + `is_position_behind`).
-- **Scope is the lit neighborhood, not the level** (playtest 2026-07-04:
-  level-wide arrows are noise). The cull-visibility authority serves two
-  budgets: rendering lights `RENDER_ROOM_DEPTH` (2) rooms deep, the radar
-  pings `RADAR_ROOM_DEPTH` (1) — current room, its corridors, the next room.
+- **Scope is deliberately LOCAL** (owner's calls, 2026-07-04): standing in
+  a room, the radar hears that room and its corridor mouths — never past a
+  door; standing in a corridor, the corridor chain and the rooms it joins.
+  One authority: `LevelGraph::radar_scope` rides the same room/corridor
+  cost model as `visible_from`, budget picked by where you stand (room 0,
+  corridor 1); rendering still lights `RENDER_ROOM_DEPTH` (2) rooms deep.
   `LevelManager::radar_contacts` resolves the enemy ids in that set;
   GameManager pushes them to the HUD on every room change
   (`set_radar_contacts`); the HUD draws ONLY pushed contacts (empty set =
   silent radar). `is_visible_in_tree` still filters dormant minions on top.
   Enemies activated mid-fight join at the next room change — they spawn in
-  the player's own room, on screen anyway.
+  the player's own room, on screen anyway. The Threat Tracker's map dots
+  share this same pushed set.
 - **SBS confinement is structural**: the arrow pool (16 `Polygon2D`s,
   Faucet-style — built once, visibility-flipped) lives under the HUD's
   `safe_area` control, so the SBS central band applies to arrows by

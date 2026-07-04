@@ -61,7 +61,7 @@ func test_locked_radar_draws_nothing():
 func test_unlocked_radar_marks_offscreen_enemies_inside_the_band():
 	var rig := _rig()
 	var hud: HUD = rig["hud"]
-	hud.set_unlock_flags(true, false)
+	hud.set_unlock_flags(true, false, false)
 	# Off-axis behind the camera — dead-center-behind is the (tested) no-
 	# direction degenerate that correctly draws nothing.
 	var a := _contact(rig["root"], Vector3(5, 0, 50))
@@ -82,7 +82,7 @@ func test_unlocked_radar_marks_offscreen_enemies_inside_the_band():
 func test_onscreen_enemy_gets_no_arrow():
 	var rig := _rig()
 	var hud: HUD = rig["hud"]
-	hud.set_unlock_flags(true, false)
+	hud.set_unlock_flags(true, false, false)
 	var onscreen := _contact(rig["root"], Vector3(0, 0, -20))  # dead ahead, on screen
 	_push_contacts(hud, [onscreen])
 	await wait_process_frames(2)
@@ -93,7 +93,7 @@ func test_onscreen_enemy_gets_no_arrow():
 func test_hidden_enemies_are_off_the_radar():
 	var rig := _rig()
 	var hud: HUD = rig["hud"]
-	hud.set_unlock_flags(true, false)
+	hud.set_unlock_flags(true, false, false)
 	var enemy := _contact(rig["root"], Vector3(0, 0, 50))
 	_push_contacts(hud, [enemy])
 	enemy.visible = false  # dormant minion / culled room
@@ -105,7 +105,7 @@ func test_hidden_enemies_are_off_the_radar():
 func test_revoking_visibility_clears_the_arrows():
 	var rig := _rig()
 	var hud: HUD = rig["hud"]
-	hud.set_unlock_flags(true, false)
+	hud.set_unlock_flags(true, false, false)
 	var behind := _contact(rig["root"], Vector3(5, 0, 50))  # off-axis behind
 	_push_contacts(hud, [behind])
 	await wait_process_frames(2)
@@ -116,7 +116,7 @@ func test_revoking_visibility_clears_the_arrows():
 	# and the next pass parks the pool.
 	await wait_process_frames(2)
 	hud.visible = true
-	hud.set_unlock_flags(false, false)
+	hud.set_unlock_flags(false, false, false)
 	await wait_process_frames(2)
 	assert_eq(_visible_arrows(hud).size(), 0,
 		"revoking the flag parks every arrow")
@@ -145,7 +145,7 @@ func test_only_pushed_contacts_reach_the_radar():
 	# HUD draws ONLY what was pushed. Nothing pushed, nothing drawn.
 	var rig := _rig()
 	var hud: HUD = rig["hud"]
-	hud.set_unlock_flags(true, false)
+	hud.set_unlock_flags(true, false, false)
 	var near := _contact(rig["root"], Vector3(5, 0, 50))
 	var _far := _contact(rig["root"], Vector3(-5, 0, 50))
 	await wait_process_frames(2)

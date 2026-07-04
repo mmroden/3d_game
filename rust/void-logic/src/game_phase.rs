@@ -54,6 +54,8 @@ impl GamePhase {
                 | (GamePhase::LevelComplete, GamePhase::KillSummary)
                 | (GamePhase::KillSummary, GamePhase::Shop)
                 | (GamePhase::Shop, GamePhase::Playing)
+                // Save & Exit: bank the run at the shop, back to the menu.
+                | (GamePhase::Shop, GamePhase::MainMenu)
                 // Loadout / ship-color screen, reached on new game and between levels.
                 | (GamePhase::MainMenu, GamePhase::ShipSelect)
                 | (GamePhase::Shop, GamePhase::ShipSelect)
@@ -103,6 +105,13 @@ mod tests {
     #[test]
     fn shop_to_playing() {
         assert!(GamePhase::Shop.can_transition_to(GamePhase::Playing));
+    }
+
+    #[test]
+    fn shop_can_save_and_exit_to_the_menu() {
+        // The shop's Save & Exit row banks the run and returns to the menu
+        // (owner's ask, 2026-07-04).
+        assert!(GamePhase::Shop.can_transition_to(GamePhase::MainMenu));
     }
 
     #[test]

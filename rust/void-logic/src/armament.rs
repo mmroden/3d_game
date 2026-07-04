@@ -220,11 +220,15 @@ pub mod valkyrie {
     use crate::newtypes::Damage;
     use crate::weapon::WeaponState;
 
-    /// Shots per second — deliberately heavy next to the 2/s hitscan.
-    pub const FIRE_RATE: f32 = 0.5;
-    /// Damage multiple over the laser's per-shot damage.
-    pub const DAMAGE_MULT: f32 = 5.0;
-    /// Muzzle speed of the heavy bolt (m/s).
+    /// Bolts per burst — the trigger empties the whole rack at once.
+    pub const BURST_COUNT: usize = 3;
+    /// Fan half-angle (radians) of the burst before the bolts curve in.
+    pub const BURST_SPREAD: f32 = 0.12;
+    /// Bursts per second — deliberately heavy next to the 2/s hitscan.
+    pub const FIRE_RATE: f32 = 0.4;
+    /// Per-bolt damage multiple over the laser's per-shot damage.
+    pub const DAMAGE_MULT: f32 = 2.0;
+    /// Muzzle speed of the heavy bolts (m/s).
     pub const BOLT_SPEED: f32 = 35.0;
 
     /// Cooldown state for the cannon, its punch scaled off the equipped
@@ -336,7 +340,7 @@ mod tests {
 
 
     #[test]
-    fn the_valkyrie_trades_cadence_for_weight() {
+    fn the_valkyrie_trades_cadence_for_a_seeking_burst() {
         use crate::newtypes::Damage;
         use crate::weapon::WeaponState;
         let laser = WeaponState::default();
@@ -344,8 +348,17 @@ mod tests {
         assert!(cannon.fire_rate < laser.fire_rate,
             "the cannon must fire slower than the lasers ({} vs {})",
             cannon.fire_rate, laser.fire_rate);
-        assert!(cannon.damage.as_f32() >= 4.0 * laser.damage.as_f32(),
-            "the cannon must hit several times harder than one laser shot");
+
+        // A BURST that connects, not one bolt that misses (playtest
+        // 2026-07-04: a lone slow bolt read as doing nothing): several
+        // bolts per trigger, each a real hit, the full rack a payload.
+        assert!(valkyrie::BURST_COUNT >= 3, "the trigger empties a rack");
+        assert!(cannon.damage.as_f32() >= 1.5 * laser.damage.as_f32(),
+            "each bolt still outhits a laser shot");
+        let burst_total = cannon.damage.as_f32() * valkyrie::BURST_COUNT as f32;
+        assert!(burst_total >= 5.0 * laser.damage.as_f32(),
+            "the full rack lands like a payload (got {burst_total})");
+        assert!(valkyrie::BURST_SPREAD > 0.0, "the fan opens before the bolts curve in");
 
         // The punch scales with the equipped laser — the keystone never
         // goes obsolete as the ROYGBIV ladder climbs.

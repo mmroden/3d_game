@@ -36,6 +36,8 @@ pub mod signals {
     pub const SHIP_TYPE_SELECTED: &str = "ship_type_selected";
     pub const BESTIARY_PAGED: &str = "bestiary_paged";
     pub const BACK_PRESSED: &str = "back_pressed";
+    pub const SAVE_EXIT_PRESSED: &str = "save_exit_pressed";
+    pub const SHIELD_BURST_REQUESTED: &str = "shield_burst_requested";
     pub const RENDER_VIEWPORTS_CHANGED: &str = "render_viewports_changed";
 }
 
@@ -86,6 +88,9 @@ pub mod methods {
     pub const SHOW_BESTIARY: &str = "show_bestiary";
     pub const ADVANCE_FROM_BESTIARY: &str = "advance_from_bestiary";
     pub const BACK_FROM_BESTIARY: &str = "back_from_bestiary";
+    pub const SAVE_AND_EXIT: &str = "save_and_exit";
+    pub const ON_SHIELD_BURST_REQUESTED: &str = "on_shield_burst_requested";
+    pub const UPDATE_CHARGES: &str = "update_charges";
     pub const ON_BESTIARY_PAGED: &str = "on_bestiary_paged";
     pub const BEGIN_BRIEFING: &str = "begin_briefing";
     pub const SHOW_ENTRY: &str = "show_entry";
@@ -144,6 +149,7 @@ pub mod actions {
     pub const ROUTE_WEAPONS: &str = "route_weapons";
     pub const STABILIZE: &str = "stabilize";
     pub const TOGGLE_VIEW: &str = "toggle_view";
+    pub const USE_ITEM: &str = "use_item";
 }
 
 // ── Shop row wire format ──────────────────────────────────────────────
@@ -383,6 +389,7 @@ mod tests {
             actions::ROUTE_WEAPONS,
             actions::STABILIZE,
             actions::TOGGLE_VIEW,
+            actions::USE_ITEM,
         ];
         for action in &all_actions {
             assert!(!action.is_empty());

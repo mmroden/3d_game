@@ -17,11 +17,7 @@ mod tests;
 /// don't count. See [`LevelGraph::visible_from`].
 pub const RENDER_ROOM_DEPTH: usize = 2;
 
-/// How deep the enemy radar pings: tighter than render visibility — the
-/// arrows cover the current room, its corridors, and the neighboring room,
-/// not everything the renderer happens to light (playtest 2026-07-04:
-/// level-wide arrows are noise). Same authority, smaller budget.
-pub const RADAR_ROOM_DEPTH: usize = 1;
+
 
 /// The full level layout as a graph of flyable spaces connected by edges.
 /// Backed by petgraph for correct, battle-tested graph algorithms.
@@ -222,6 +218,21 @@ impl LevelGraph {
     /// traversed — they span the map, so the room on the far side isn't in
     /// view. This is the single authority for cull visibility; the shell
     /// resolves the player's current node and calls it.
+    /// The enemy radar's scope — deliberately LOCAL (owner's call
+    /// 2026-07-04). Standing in a room, the radar hears that room and its
+    /// corridor mouths, never past a door; standing in a corridor, the
+    /// corridor chain and the rooms it joins. Same cost model as
+    /// [`visible_from`], with the budget picked by where you stand.
+    pub fn radar_scope(&self, start: NodeIndex) -> Vec<NodeIndex> {
+        use crate::room_template::TemplateKind;
+        let in_room = self
+            .graph
+            .node_weight(start)
+            .map(|room| room.template.kind == TemplateKind::Room)
+            .unwrap_or(true);
+        self.visible_from(start, if in_room { 0 } else { 1 })
+    }
+
     pub fn visible_from(&self, start: NodeIndex, budget: usize) -> Vec<NodeIndex> {
         use petgraph::algo::dijkstra;
         use petgraph::visit::EdgeFiltered;

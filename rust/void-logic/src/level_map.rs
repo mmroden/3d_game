@@ -79,8 +79,15 @@ fn grid_frame(graph: &LevelGraph) -> Option<([f32; 2], f32, [f32; 2])> {
 /// Project the graph onto the map for a player who has visited `visited`
 /// (room-list positions) and currently sits in `current`. One uniform scale
 /// over the WHOLE level footprint: the frame never re-scales and rectangles
-/// never distort as exploration grows.
-pub fn map_rects(graph: &LevelGraph, visited: &[usize], current: usize) -> Vec<MapRect> {
+/// never distort as exploration grows. Frontier hints (unvisited corridors
+/// bordering explored space) appear only with `routes` — the Route Scanner
+/// unlock (owner's call 2026-07-04: unexplored-route intel is a purchase).
+pub fn map_rects(
+    graph: &LevelGraph,
+    visited: &[usize],
+    current: usize,
+    routes: bool,
+) -> Vec<MapRect> {
     use crate::room_template::TemplateKind;
     use std::collections::{HashMap, HashSet};
 
@@ -115,8 +122,13 @@ pub fn map_rects(graph: &LevelGraph, visited: &[usize], current: usize) -> Vec<M
     let visited_set: HashSet<usize> = visited.iter().copied().collect();
 
     // Frontier: unvisited CORRIDORS adjacent to explored space — real
-    // geometry pointing into the dark, but never an unvisited room.
+    // geometry pointing into the dark, but never an unvisited room. Gated
+    // behind the Route Scanner unlock.
     let mut frontier: HashSet<usize> = HashSet::new();
+    if !routes {
+        // No scanner: only what was actually flown through appears.
+        return collect_rects(graph, &nodes, &footprints, &visited_set, &frontier, current, min, scale, offset);
+    }
     for (a, b, _kind) in graph.edges() {
         let (Some(&ia), Some(&ib)) = (id_of.get(&a), id_of.get(&b)) else { continue };
         for (this, other) in [(ia, ib), (ib, ia)] {
@@ -128,6 +140,21 @@ pub fn map_rects(graph: &LevelGraph, visited: &[usize], current: usize) -> Vec<M
         }
     }
 
+    collect_rects(graph, &nodes, &footprints, &visited_set, &frontier, current, min, scale, offset)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_rects(
+    _graph: &LevelGraph,
+    nodes: &[petgraph::graph::NodeIndex],
+    footprints: &[Option<([f32; 4], bool)>],
+    visited_set: &std::collections::HashSet<usize>,
+    frontier: &std::collections::HashSet<usize>,
+    current: usize,
+    min: [f32; 2],
+    scale: f32,
+    offset: [f32; 2],
+) -> Vec<MapRect> {
     (0..nodes.len())
         .filter_map(|id| {
             let (fp, corridor) = footprints[id]?;
@@ -171,7 +198,7 @@ mod tests {
     #[test]
     fn only_visited_nodes_and_frontier_corridors_appear() {
         let graph = level();
-        let view = map_rects(&graph, &[0], 0);
+        let view = map_rects(&graph, &[0], 0, true);
         let solid: Vec<_> = view.iter().filter(|r| !r.frontier).collect();
         assert_eq!(solid.len(), 1, "one node visited, one solid rect");
         assert_eq!(solid[0].id, 0);
@@ -185,9 +212,23 @@ mod tests {
         assert!(view.iter().any(|r| r.frontier),
             "the start room's exits hint at the unexplored");
 
-        let full = map_rects(&graph, &all_nodes(&graph), 0);
+        let full = map_rects(&graph, &all_nodes(&graph), 0, true);
         assert_eq!(full.len(), graph.room_count(), "full exploration draws every node");
         assert!(full.iter().all(|r| !r.frontier), "nothing is frontier once seen");
+    }
+
+    #[test]
+    fn frontier_hints_wait_for_the_route_scanner() {
+        // Without the Route Scanner unlock only flown space appears — the
+        // unexplored-route intel is a purchase (owner's call 2026-07-04).
+        let graph = level();
+        let bare = map_rects(&graph, &[0], 0, false);
+        assert_eq!(bare.len(), 1, "no scanner: just the one visited node");
+        assert!(bare.iter().all(|r| !r.frontier), "and nothing hints into the dark");
+
+        let scanned = map_rects(&graph, &[0], 0, true);
+        assert!(scanned.iter().any(|r| r.frontier),
+            "the scanner lights the unexplored routes");
     }
 
     #[test]
@@ -195,7 +236,7 @@ mod tests {
         // Uniform scaling: a node's rect must have the same width/depth
         // ratio as its template extents — rectilinear geometry, no squish.
         let graph = level();
-        let view = map_rects(&graph, &all_nodes(&graph), 0);
+        let view = map_rects(&graph, &all_nodes(&graph), 0, true);
         let nodes: Vec<_> = graph.room_indices().collect();
         for r in &view {
             let room = graph.room(nodes[r.id]).expect("id maps to a node");
@@ -212,7 +253,7 @@ mod tests {
         // Two nodes' rects must sit in the same relative arrangement as
         // their grid positions: one scale for the whole map.
         let graph = level();
-        let view = map_rects(&graph, &all_nodes(&graph), 0);
+        let view = map_rects(&graph, &all_nodes(&graph), 0, true);
         let nodes: Vec<_> = graph.room_indices().collect();
         // Derive the scale from the first node, verify on every other.
         let first = &view[0];
@@ -237,7 +278,7 @@ mod tests {
     fn the_projection_places_world_points_on_their_map_rects() {
         let graph = level();
         let cell = 4.0;
-        let view = map_rects(&graph, &all_nodes(&graph), 0);
+        let view = map_rects(&graph, &all_nodes(&graph), 0, true);
         let proj = map_projection(&graph, cell);
         let nodes: Vec<_> = graph.room_indices().collect();
         let story = crate::asset_catalog::WALL_SET_ASTRA.story_height;
@@ -260,7 +301,7 @@ mod tests {
     #[test]
     fn current_node_is_flagged_exactly_once() {
         let graph = level();
-        let view = map_rects(&graph, &all_nodes(&graph), 2);
+        let view = map_rects(&graph, &all_nodes(&graph), 2, true);
         let current: Vec<_> = view.iter().filter(|r| r.current).collect();
         assert_eq!(current.len(), 1, "exactly one current node");
         assert_eq!(current[0].id, 2);
@@ -269,7 +310,7 @@ mod tests {
     #[test]
     fn corridors_know_they_are_corridors() {
         let graph = level();
-        let view = map_rects(&graph, &all_nodes(&graph), 0);
+        let view = map_rects(&graph, &all_nodes(&graph), 0, true);
         let nodes: Vec<_> = graph.room_indices().collect();
         for r in &view {
             let room = graph.room(nodes[r.id]).unwrap();

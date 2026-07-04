@@ -125,6 +125,6 @@ func test_map_panel_renders_only_with_the_unlock():
 	assert_not_null(panel, "the HUD builds its map panel")
 	assert_false(panel.visible, "no unlock, no map")
 
-	hud.set_unlock_flags(false, true)
+	hud.set_unlock_flags(false, true, false)
 	await wait_process_frames(2)
 	assert_true(panel.visible, "the FogMap unlock shows the corner map")

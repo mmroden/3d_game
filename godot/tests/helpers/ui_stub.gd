@@ -26,6 +26,8 @@ signal buy_pressed(item_id: int)
 @warning_ignore("unused_signal")
 signal return_pressed
 @warning_ignore("unused_signal")
+signal save_exit_pressed
+@warning_ignore("unused_signal")
 signal respawn_pressed
 @warning_ignore("unused_signal")
 signal ship_color_selected(id: int)
@@ -40,7 +42,7 @@ signal back_pressed
 func set_continue_available(_a: bool) -> void: pass
 func show_loading(_level: int) -> void: pass
 func hide_loading() -> void: pass
-func set_unlock_flags(_r: bool, _m: bool) -> void: pass
+func set_unlock_flags(_r: bool, _m: bool, _t: bool) -> void: pass
 func set_radar_contacts(_ids: PackedInt64Array) -> void: pass
 func show_death(_a: String, _b: String, _c: int) -> void: pass
 func show_life_lost(_lives: int, _level: int) -> void: pass
@@ -56,6 +58,7 @@ func update_shield(_c: float, _m: float) -> void: pass
 func update_power_mode(_m: int) -> void: pass
 func update_components(_c: int) -> void: pass
 func update_lives(_l: int) -> void: pass
+func update_charges(_c: int) -> void: pass
 func update_map(_rects: PackedFloat32Array, _flags: PackedByteArray, _projection: PackedFloat32Array) -> void: pass
 func update_organics(_o: int) -> void: pass
 func update_laser(_n: String, _c: Color) -> void: pass

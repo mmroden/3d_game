@@ -70,6 +70,20 @@ pub fn edge_arrow(projected: [f32; 2], behind: bool, band: BandRect) -> Option<A
     })
 }
 
+/// Arrow scale for a contact `distance` metres away: close threats loom,
+/// far ones shrink — but never below legibility (playtest 2026-07-04: the
+/// arrows were tiny at any range).
+pub fn arrow_scale(distance: f32) -> f32 {
+    const NEAR: f32 = 2.5; // scale at point blank
+    const FAR: f32 = 1.0; // resting scale — never smaller
+    const RANGE: f32 = 60.0; // metres over which the loom decays
+    if !distance.is_finite() {
+        return FAR;
+    }
+    let t = (distance / RANGE).clamp(0.0, 1.0);
+    NEAR + (FAR - NEAR) * t
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,5 +164,23 @@ mod tests {
         // Behind the camera but projecting exactly onto the band center: no
         // direction exists — no arrow, no NaN.
         assert_eq!(edge_arrow(CENTER, true, BAND), None);
+    }
+
+    #[test]
+    fn close_contacts_loom_and_far_ones_never_vanish() {
+        // Monotonic: nearer is never smaller.
+        let mut last = f32::MAX;
+        for d in [0.0, 5.0, 10.0, 20.0, 40.0, 80.0, 200.0] {
+            let s = arrow_scale(d);
+            assert!(s <= last, "scale must not grow with distance ({d}m: {s} > {last})");
+            last = s;
+        }
+        // Point-blank threats loom well past the resting size; the far end
+        // stays legible.
+        assert!(arrow_scale(0.0) >= 1.8, "a point-blank contact looms");
+        assert!(arrow_scale(200.0) >= 1.0, "a distant contact stays legible");
+        assert!(arrow_scale(200.0) < arrow_scale(0.0));
+        // NaN-safe on nonsense input.
+        assert!(arrow_scale(f32::NAN).is_finite());
     }
 }

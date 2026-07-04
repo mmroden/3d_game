@@ -44,6 +44,7 @@ pub struct RunSnapshot {
     pub ship_type: ShipType,
     pub lives: u32,
     pub lives_purchased: u32,
+    pub shield_charges: u32,
 }
 
 /// Everything persisted to disk: the permanent profile plus, while a run is
@@ -90,6 +91,7 @@ impl SaveGame {
                 ship_type: run.ship_type,
                 lives: run.lives,
                 lives_purchased: run.lives_purchased,
+                shield_charges: run.shield_charges,
             }),
         }
     }
@@ -145,6 +147,12 @@ impl SaveGame {
             run.ship_color = snapshot.ship_color;
             run.lives = snapshot.lives;
             run.lives_purchased = snapshot.lives_purchased;
+            run.shield_charges = snapshot.shield_charges;
+        }
+        // A profile-only load hands the owned Surge item over freshly
+        // stocked (a snapshot's rack, restored above, wins when present).
+        if self.run.is_none() && run.unlocks.contains(crate::unlocks::Unlock::ShieldBurst) {
+            run.shield_charges = crate::run_state::SHIELD_BURST_STARTING_CHARGES;
         }
         // Reset ephemeral state
         run.kills.reset();

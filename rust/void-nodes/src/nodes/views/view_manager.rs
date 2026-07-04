@@ -477,7 +477,10 @@ impl ViewManager {
             return;
         };
 
-        let cam_transform = camera.get_global_transform();
+        // INTERPOLATED, not raw: the world renders at the physics-interpolated
+        // pose, and a plane pinned to the raw pose swims against it.
+        let mut camera = camera;
+        let cam_transform = camera.get_global_transform_interpolated();
         let forward = -cam_transform.basis.col_c();
         let plane_origin = cam_transform.origin + forward * self.ui_plane_distance;
 
@@ -496,7 +499,13 @@ impl ViewManager {
             return;
         };
 
-        let camera_transform = camera.get_global_transform();
+        // INTERPOLATED, not raw (chase-view fix, playtest 2026-07-04): the
+        // ship's hull renders at the physics-interpolated pose, but the raw
+        // transform steps at physics ticks — an eye camera copying the raw
+        // pose oscillates against the hull it's chasing. Invisible in
+        // cockpit (no hull in frame), violent in chase view.
+        let mut camera = camera;
+        let camera_transform = camera.get_global_transform_interpolated();
         let config = self.stereo_config();
 
         // Mono = a single centered eye: no horizontal separation, no frustum

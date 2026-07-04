@@ -22,9 +22,18 @@ pub enum Unlock {
     Valkyrie,
     /// A purchasable hull (the starter is always owned and never listed).
     Ship(ShipType),
+    /// Map upgrade: unexplored connectors draw on the recon map.
+    RouteScanner,
+    /// Map upgrade: nearby enemies draw on the recon map.
+    ThreatTracker,
+    /// One-press shield surge: comes with three charges, refills are blue
+    /// (`ShopItemId::ShieldCharge`).
+    ShieldBurst,
 }
 
 impl Unlock {
+    // The map upgrades append AFTER the hulls: ids are positions in ALL,
+    // and the GDScript crossings pin them — append-only, never reorder.
     pub const ALL: &[Unlock] = &[
         Unlock::Radar,
         Unlock::FogMap,
@@ -32,6 +41,9 @@ impl Unlock {
         Unlock::Ship(ShipType::Talon),
         Unlock::Ship(ShipType::Hive),
         Unlock::Ship(ShipType::Reaver),
+        Unlock::RouteScanner,
+        Unlock::ThreatTracker,
+        Unlock::ShieldBurst,
     ];
 
     /// Stable id for GDScript crossings (position in `ALL`).
@@ -50,6 +62,22 @@ impl Unlock {
             Self::FogMap => "Recon Map",
             Self::Valkyrie => "Valkyrie Cannon",
             Self::Ship(ship) => ship.spec().display_name,
+            Self::RouteScanner => "Route Scanner",
+            Self::ThreatTracker => "Threat Tracker",
+            Self::ShieldBurst => "Shield Surge",
+        }
+    }
+
+    /// How the player USES what they bought — shown before every green
+    /// purchase so nobody buys a mystery (owner's ask, 2026-07-04).
+    pub fn trigger_hint(&self) -> &'static str {
+        match self {
+            Self::Radar | Self::FogMap | Self::RouteScanner | Self::ThreatTracker => {
+                "Passive — always on once bought"
+            }
+            Self::Valkyrie => "Fires with your lasers — hold FIRE",
+            Self::Ship(_) => "Choose it at the loadout screen",
+            Self::ShieldBurst => "Press L1 (pad) / C (keys) — one charge per press",
         }
     }
 
@@ -60,6 +88,9 @@ impl Unlock {
             Self::FogMap => "Charts visited rooms and unexplored corridors".to_string(),
             Self::Valkyrie => "Heavy second cannon on the fire trigger".to_string(),
             Self::Ship(ship) => format!("New hull — {}", ship.spec().weapon.display_name()),
+            Self::RouteScanner => "Unexplored routes glow on the recon map".to_string(),
+            Self::ThreatTracker => "Nearby enemies mark on the recon map".to_string(),
+            Self::ShieldBurst => "Instant +50 shields, three charges; refills are components".to_string(),
         }
     }
 
@@ -72,6 +103,9 @@ impl Unlock {
             Self::FogMap => 500,
             Self::Valkyrie => 800,
             Self::Ship(ship) => ship.spec().organic_cost.unwrap_or(0),
+            Self::RouteScanner => 600,
+            Self::ThreatTracker => 1_200,
+            Self::ShieldBurst => 1_000,
         }
     }
 }
@@ -111,6 +145,10 @@ impl PermanentUnlocks {
             Unlock::FogMap => self.contains(Unlock::Radar),
             Unlock::Valkyrie => self.contains(Unlock::FogMap),
             Unlock::Ship(_) => self.contains(Unlock::Valkyrie),
+            // Map upgrades BRANCH off the map — they never gate the spine.
+            Unlock::RouteScanner | Unlock::ThreatTracker => self.contains(Unlock::FogMap),
+            // The surge branches off the radar (the defensive intro).
+            Unlock::ShieldBurst => self.contains(Unlock::Radar),
         }
     }
 }
@@ -165,7 +203,19 @@ mod tests {
             assert!(unlock.organic_cost() > 0, "{unlock:?} must cost organics");
             assert!(!unlock.blurb().is_empty(),
                 "{unlock:?} needs a blurb — the shop row must say what it does");
+            assert!(!unlock.trigger_hint().is_empty(),
+                "{unlock:?} needs a trigger hint — nobody buys a mystery");
         }
+    }
+
+    #[test]
+    fn the_surge_branches_off_the_radar() {
+        let mut unlocks = PermanentUnlocks::new();
+        assert!(!unlocks.available(Unlock::ShieldBurst), "no radar, no surge");
+        unlocks.grant(Unlock::Radar);
+        assert!(unlocks.available(Unlock::ShieldBurst));
+        // A branch, never a gate: the map doesn't wait for it.
+        assert!(unlocks.available(Unlock::FogMap));
     }
 
     #[test]
@@ -201,6 +251,21 @@ mod tests {
             assert!(unlocks.available(Unlock::Ship(ship)),
                 "the Valkyrie opens the whole fleet ({ship:?})");
         }
+    }
+
+    #[test]
+    fn map_upgrades_branch_off_the_map_without_gating_the_spine() {
+        let mut unlocks = PermanentUnlocks::new();
+        assert!(!unlocks.available(Unlock::RouteScanner), "no map, no routes");
+        assert!(!unlocks.available(Unlock::ThreatTracker), "no map, no tracker");
+
+        unlocks.grant(Unlock::Radar);
+        unlocks.grant(Unlock::FogMap);
+        assert!(unlocks.available(Unlock::RouteScanner), "the map opens its upgrades");
+        assert!(unlocks.available(Unlock::ThreatTracker));
+        // The spine doesn't wait for the branches.
+        assert!(unlocks.available(Unlock::Valkyrie),
+            "the Valkyrie needs only the map, never the map's extras");
     }
 
     #[test]

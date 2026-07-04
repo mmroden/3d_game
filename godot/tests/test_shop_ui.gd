@@ -105,3 +105,51 @@ func test_menu_type_is_readable_from_the_couch():
 			title_size = size
 	assert_gte(row_size, 36, "shop rows must be readable (>= 36px), got %d" % row_size)
 	assert_gte(title_size, 64, "the title must anchor the screen (>= 64px), got %d" % title_size)
+
+
+func test_the_shop_offers_save_and_exit_after_continue():
+	# The catalog ends Continue, then Save & Exit (owner's ask 2026-07-04).
+	var ui := ShopUI.new()
+	add_child_autofree(ui)
+	_show(ui)
+	watch_signals(ui)
+	await wait_process_frames(1)
+	for _i in range(4):  # 3 offers → Continue → Save & Exit
+		await _press("menu_down")
+	await _press("menu_select")
+	assert_signal_emitted(ui, "save_exit_pressed", "the last row banks the run")
+	assert_signal_not_emitted(ui, "continue_pressed")
+	assert_signal_not_emitted(ui, "buy_pressed")
+
+
+func test_green_rows_confirm_before_buying():
+	# Permanent purchases raise an info screen first — what it does and how
+	# to trigger it (owner's ask 2026-07-04: nobody buys a mystery).
+	var ui := ShopUI.new()
+	add_child_autofree(ui)
+	_show(ui)
+	watch_signals(ui)
+	await wait_process_frames(1)
+	await _press("menu_down")
+	await _press("menu_down")    # row 2 — Enemy Radar, GREEN
+	await _press("menu_select")
+	assert_signal_not_emitted(ui, "buy_pressed",
+		"the first select raises the info screen, it must not buy")
+	assert_string_contains(_labels(ui), "HUD arrows")
+	await _press("menu_select")  # the confirming select buys
+	assert_signal_emitted_with_parameters(ui, "buy_pressed", [7])
+
+
+func test_circle_cancels_a_green_confirm():
+	var ui := ShopUI.new()
+	add_child_autofree(ui)
+	_show(ui)
+	watch_signals(ui)
+	await wait_process_frames(1)
+	await _press("menu_down")
+	await _press("menu_down")
+	await _press("menu_select")  # info screen up
+	await _press("menu_back")    # circle backs out
+	await _press("menu_select")  # select again: the info screen again, NOT a buy
+	assert_signal_not_emitted(ui, "buy_pressed",
+		"cancelling resets the confirm — no accidental buy")

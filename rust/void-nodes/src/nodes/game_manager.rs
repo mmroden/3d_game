@@ -320,6 +320,9 @@ impl GameManager {
                     Receipt::LifeAdded(lives) => {
                         godot_print!("Extra life bought ({} total)", lives);
                     }
+                    Receipt::ChargeAdded(charges) => {
+                        godot_print!("Surge charge bought ({charges} in the rack)");
+                    }
                     Receipt::UnlockGranted(unlock) => {
                         godot_print!("Permanent unlock bought: {}", unlock.display_name());
                         // A permanent purchase must never be lostable —
@@ -338,6 +341,38 @@ impl GameManager {
                 false
             }
         }
+    }
+
+    /// Called from the ship's item trigger: spend a Shield Surge charge for
+    /// instant shields. A no-op with an empty rack.
+    #[func]
+    pub fn on_shield_burst_requested(&mut self) {
+        if self.phase != GamePhase::Playing {
+            return;
+        }
+        if self.run_state.use_shield_burst() {
+            self.update_hud();
+        }
+    }
+
+    /// Called from the shop UI's Save & Exit row: bank everything up to this
+    /// point and return to the menu. The save IS the level start, so a
+    /// between-levels exit advances first (Continue resumes at the next
+    /// level, purchases included); a between-lives exit keeps the current
+    /// level (the life was already spent, the level restarts on Continue).
+    #[func]
+    pub fn save_and_exit(&mut self) {
+        if self.phase != GamePhase::Shop {
+            return;
+        }
+        if self.pending_respawn {
+            self.pending_respawn = false;
+        } else {
+            self.run_state.advance_level();
+        }
+        self.save_game = Some(SaveGame::from_run_state(&self.run_state));
+        self.save_run();
+        self.transition_to(GamePhase::MainMenu);
     }
 
     /// Called from shop UI: continue out of the shop — to the loadout screen
@@ -598,6 +633,7 @@ impl GameManager {
                     lm.graph(),
                     &self.run_state.rooms_visited,
                     self.run_state.current_room,
+                    self.run_state.unlocks.contains(Unlock::RouteScanner),
                 ),
                 level_map::map_projection(lm.graph(), lm.cell_size()),
             )
@@ -832,6 +868,11 @@ impl GameManager {
     #[func]
     pub fn get_organics(&self) -> i64 {
         self.run_state.organics.balance as i64
+    }
+
+    #[func]
+    pub fn get_shield_charges(&self) -> i32 {
+        self.run_state.shield_charges as i32
     }
 
     #[func]
@@ -1358,6 +1399,8 @@ impl GameManager {
                 let mut shop = shop;
                 shop.connect(signals::BUY_PRESSED, &buy_callable);
                 shop.connect(signals::CONTINUE_PRESSED, &continue_callable);
+                let save_exit_callable = self.base().callable(methods::SAVE_AND_EXIT);
+                shop.connect(signals::SAVE_EXIT_PRESSED, &save_exit_callable);
             }
         }
 
@@ -1399,6 +1442,8 @@ impl GameManager {
                 player.connect(signals::PLAYER_SLOWED, &slow_callable);
                 let collide_callable = self.base().callable(methods::ON_PLAYER_COLLIDED);
                 player.connect(signals::PLAYER_COLLIDED, &collide_callable);
+                let burst_callable = self.base().callable(methods::ON_SHIELD_BURST_REQUESTED);
+                player.connect(signals::SHIELD_BURST_REQUESTED, &burst_callable);
             }
         }
 
@@ -1508,6 +1553,9 @@ impl GameManager {
             hud.call(methods::UPDATE_LIVES, &[
                 Variant::from(self.run_state.lives as i32),
             ]);
+            hud.call(methods::UPDATE_CHARGES, &[
+                Variant::from(self.run_state.shield_charges as i32),
+            ]);
             hud.call(methods::UPDATE_ORGANICS, &[
                 Variant::from(self.run_state.organics.balance as i64),
             ]);
@@ -1521,6 +1569,7 @@ impl GameManager {
             hud.call(methods::SET_UNLOCK_FLAGS, &[
                 Variant::from(self.run_state.unlocks.contains(Unlock::Radar)),
                 Variant::from(self.run_state.unlocks.contains(Unlock::FogMap)),
+                Variant::from(self.run_state.unlocks.contains(Unlock::ThreatTracker)),
             ]);
         }
     }

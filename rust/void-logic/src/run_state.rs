@@ -22,6 +22,11 @@ pub enum DamageOutcome {
     HullHit,
 }
 
+/// Shields the Shield Surge restores per charge.
+pub const SHIELD_BURST_AMOUNT: f32 = 50.0;
+/// Charges the Surge item carries when handed over fresh.
+pub const SHIELD_BURST_STARTING_CHARGES: u32 = 3;
+
 /// Tracks the state of a single roguelike run.
 #[derive(Debug)]
 pub struct RunState {
@@ -57,6 +62,11 @@ pub struct RunState {
     /// Permanent unlocks bought with organics (radar, map, …). Survive
     /// run-over like the organics that paid for them.
     pub unlocks: PermanentUnlocks,
+    /// Shield Surge charges in the rack. The ITEM is green-permanent; the
+    /// charges ride the run (snapshot-saved, refilled blue at the shop, and
+    /// the rack restocks to its starting three wherever the item would be
+    /// handed over fresh — grant, run-over, profile-only load).
+    pub shield_charges: u32,
 }
 
 impl RunState {
@@ -110,7 +120,22 @@ impl RunState {
             lives_purchased: 0,
             seen_enemies: SeenEnemies::new(),
             unlocks: PermanentUnlocks::new(),
+            shield_charges: 0,
         }
+    }
+
+    /// Spend one Shield Surge charge: +[`SHIELD_BURST_AMOUNT`] shields on
+    /// the spot, clamped to capacity. False (and no effect) with an empty
+    /// rack.
+    pub fn use_shield_burst(&mut self) -> bool {
+        if self.shield_charges == 0 {
+            return false;
+        }
+        self.shield_charges -= 1;
+        let boosted = (self.shield.current.as_f32() + SHIELD_BURST_AMOUNT)
+            .min(self.shield.max_capacity.as_f32());
+        self.shield.current = Shield::new(boosted);
+        true
     }
 
     /// Whether death costs a life instead of the run.
@@ -249,6 +274,13 @@ impl RunState {
         self.loadout.upgrades.clear();
         self.lives = 1;
         self.lives_purchased = 0;
+        // The Surge item is green-permanent and arrives stocked on a fresh
+        // run; unbought, the rack stays empty.
+        self.shield_charges = if self.unlocks.contains(crate::unlocks::Unlock::ShieldBurst) {
+            SHIELD_BURST_STARTING_CHARGES
+        } else {
+            0
+        };
         self.kills.reset();
         self.current_level = 1;
         self.rooms_cleared.clear();
@@ -362,6 +394,40 @@ mod tests {
         assert_eq!(run.health, run.loadout.max_health(), "patched up between levels");
         assert_eq!(run.shield.current, run.shield.max_capacity, "shield recharged");
         assert_eq!(run.components.balance, 7_000, "the bank persists");
+    }
+
+    #[test]
+    fn the_shield_surge_spends_charges_for_instant_shields() {
+        let mut run = RunState::new(Seed::new(42));
+        assert!(!run.use_shield_burst(), "an empty rack does nothing");
+
+        run.shield_charges = 3;
+        run.take_damage(Damage::new(45.0)); // 50-cap shield down to 5
+        let before = run.shield.current.as_f32();
+        assert!(run.use_shield_burst(), "a stocked rack fires");
+        assert_eq!(run.shield_charges, 2, "one charge spent");
+        assert!(run.shield.current.as_f32() >= before + 44.0,
+            "the surge lands its ~50 on the spot (got {} from {before})",
+            run.shield.current.as_f32());
+
+        // Clamped to capacity: a full shield wastes the overflow, not the rack.
+        assert!(run.use_shield_burst());
+        assert!(run.shield.current <= run.shield.max_capacity);
+        assert_eq!(run.shield_charges, 1);
+    }
+
+    #[test]
+    fn run_over_restocks_the_owned_rack() {
+        let mut run = RunState::new(Seed::new(42));
+        run.unlocks.grant(crate::unlocks::Unlock::ShieldBurst);
+        run.shield_charges = 0;
+        run.apply_death_penalty();
+        assert_eq!(run.shield_charges, 3,
+            "the owned item comes with three charges on a fresh run");
+
+        let mut never_bought = RunState::new(Seed::new(42));
+        never_bought.apply_death_penalty();
+        assert_eq!(never_bought.shield_charges, 0, "no item, no charges");
     }
 
     #[test]

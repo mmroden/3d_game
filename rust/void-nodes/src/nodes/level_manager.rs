@@ -21,7 +21,7 @@ use rand::rngs::SmallRng;
 
 use void_logic::generator::{generate, GeneratorConfig};
 use void_logic::level_assembly::{self, RoomBounds};
-use void_logic::level_graph::{LevelGraph, RADAR_ROOM_DEPTH, RENDER_ROOM_DEPTH};
+use void_logic::level_graph::{LevelGraph, RENDER_ROOM_DEPTH};
 use void_logic::room_furnisher::LightState;
 use void_logic::room_assembler::{Collision, MeshPlacement};
 use void_logic::portal as portal_sys;
@@ -199,12 +199,12 @@ impl LevelManager {
         self.grid_cell_size
     }
 
-    /// Enemy instance ids inside the radar's scope: the current room, its
-    /// corridors, and the neighboring room (`visible_from` at
-    /// RADAR_ROOM_DEPTH — the same authority as cull visibility, with the
-    /// tighter budget). GameManager pulls this on every room change and
-    /// pushes it to the HUD; enemies activated mid-fight join on the next
-    /// room change (they spawn in the player's own room, on screen anyway).
+    /// Enemy instance ids inside the radar's scope — deliberately local
+    /// (`LevelGraph::radar_scope`: the room you stand in, or from a
+    /// corridor the rooms it joins). GameManager pulls this on every room
+    /// change and pushes it to the HUD; enemies activated mid-fight join
+    /// on the next room change (they spawn in the player's own room, on
+    /// screen anyway).
     #[func]
     pub fn radar_contacts(&self) -> PackedInt64Array {
         let Some(current) = self.current_room else { return PackedInt64Array::new() };
@@ -213,7 +213,7 @@ impl LevelManager {
         };
         let in_scope: std::collections::HashSet<usize> = self
             .level_graph
-            .visible_from(current_node, RADAR_ROOM_DEPTH)
+            .radar_scope(current_node)
             .into_iter()
             .map(|n| n.index())
             .collect();

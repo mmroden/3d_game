@@ -45,8 +45,13 @@ file for retuning):
   growth curve is the soft cap. Damping ("Stability") and projectile speed
   ("Beam Focus") are retired — fixed base values, no upgrade kind.
 - Laser: the existing `LaserLevel::upgrade_cost` ROYGBIV table, unchanged.
-- Extra life: `10k × 2^lives_purchased` — keyed to lives *bought* this run,
+- Extra life: `10k + 5k × lives_purchased` (linear — owner's call
+  2026-07-04: a life stays reachable) — keyed to lives *bought* this run,
   so dying never discounts the next one.
+- Surge charge: 5k flat (blue), stocked only once the green Shield Surge
+  item is owned; rack caps at 9. The item arrives with three charges, and
+  restocks to three wherever it would be handed over fresh (grant,
+  run-over, profile-only load).
 - Unlocks: flat organics prices — Radar 300, Recon Map 500, Valkyrie 800,
   hulls from the `ShipType` spec (Talon 3 000, Hive 4 000, Reaver 5 000 —
   repriced 2026-07-03; hulls are long-arc purchases).
@@ -56,10 +61,23 @@ tutorial spine, not a menu. Radar is always offered; the Recon Map needs the
 radar; the Valkyrie needs the map; no hull is offered (or purchasable — the
 shop refuses `NotPurchasable` even with the balance) until the Valkyrie is
 owned. Early game therefore shows exactly one next capability. The Valkyrie
-itself is the Vanguard's heavy second cannon: it rides the fire trigger with
-its own slow clock (`armament::valkyrie`), damage scaled off the equipped
-laser, pushed to the ship as `set_valkyrie_owned` on the purchase receipt and
-on every player sync.
+itself is the Vanguard's heavy second cannon: a fan of aim-assisted homing
+bolts on a slow clock (`armament::valkyrie` — the cannon's job is
+CONNECTING when raw aim can't), damage scaled off the equipped laser,
+pushed to the ship as `set_valkyrie_owned` on the purchase receipt and on
+every player sync.
+
+**Branches** hang off the spine without gating it: the Route Scanner (600)
+and Threat Tracker (1 200) open with the Recon Map; the Shield Surge
+(1 000) opens with the radar. Every green purchase confirms through an
+info screen first — `Unlock::blurb()` (what it does) plus
+`Unlock::trigger_hint()` (how to use it), carried on the offer's detail
+line as `blurb | trigger` and rendered by ShopUI before the buy.
+
+**Save & Exit** (shop row after Continue): banks the run and returns to
+the menu. The save IS the level start, so a between-levels exit advances
+first (Continue resumes at the next level, purchases included); a
+between-lives exit keeps the current level.
 
 ## Lives
 

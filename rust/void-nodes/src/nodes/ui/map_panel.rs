@@ -28,6 +28,11 @@ pub struct MapPanel {
     /// World→unit XZ transform `[scale, off_x, off_z]` — places the LIVE
     /// player marker between room-change pushes.
     projection: PackedFloat32Array,
+    /// The Threat Tracker unlock: nearby enemies mark on the map.
+    tracker: bool,
+    /// Radar-scope enemy instance ids (the lit neighborhood), forwarded by
+    /// the HUD from GameManager's per-room-change push.
+    threats: PackedInt64Array,
 }
 
 #[godot_api]
@@ -38,6 +43,8 @@ impl IControl for MapPanel {
             rects: PackedFloat32Array::new(),
             flags: PackedByteArray::new(),
             projection: PackedFloat32Array::new(),
+            tracker: false,
+            threats: PackedInt64Array::new(),
         }
     }
 
@@ -77,10 +84,12 @@ impl IControl for MapPanel {
 
             // Opacity is the fog: the room you stand in is nearly solid,
             // explored space shows through, the frontier barely glows.
+            // Frontier routes read GREEN and bright — "here's somewhere you
+            // haven't been" is the Route Scanner's whole product.
             let color = if current {
                 Color::from_rgba(0.85, 0.95, 1.0, 0.95)
             } else if frontier {
-                Color::from_rgba(1.0, 0.75, 0.25, 0.25)
+                Color::from_rgba(0.35, 1.0, 0.4, 0.75)
             } else if corridor {
                 Color::from_rgba(0.45, 0.6, 0.75, 0.4)
             } else {
@@ -99,6 +108,27 @@ impl IControl for MapPanel {
             }
         }
         drop(base);
+
+        // Threat Tracker: nearby enemies (the radar's neighborhood set) as
+        // hot dots — resolved per frame so the dots ride the enemies.
+        if self.tracker && self.projection.len() >= 3 {
+            let (s, ox, oz) = (self.projection[0], self.projection[1], self.projection[2]);
+            let threats = self.threats.clone();
+            let mut base = self.base_mut();
+            for id in threats.as_slice() {
+                let Some(instance_id) = InstanceId::try_from_i64(*id) else { continue };
+                let Ok(enemy) = Gd::<Node3D>::try_from_instance_id(instance_id) else {
+                    continue; // died since the push
+                };
+                if !enemy.is_visible_in_tree() {
+                    continue;
+                }
+                let p = enemy.get_global_position();
+                let dot = origin + Vector2::new(p.x * s + ox, p.z * s + oz) * scale;
+                base.draw_circle(dot, 4.0, Color::from_rgba(1.0, 0.3, 0.25, 0.95));
+            }
+            drop(base);
+        }
 
         // The live player marker: a heading triangle at the ship's actual
         // position (north-up map, the 6DOF-friendly convention — the arrow
@@ -135,6 +165,18 @@ impl MapPanel {
         self.flags = flags;
         self.projection = projection;
         self.base_mut().queue_redraw();
+    }
+
+    /// The Threat Tracker unlock flag, pushed through the HUD.
+    #[func]
+    pub fn set_tracker(&mut self, tracker: bool) {
+        self.tracker = tracker;
+    }
+
+    /// The radar-scope enemy ids, forwarded by the HUD per room change.
+    #[func]
+    pub fn set_threats(&mut self, ids: PackedInt64Array) {
+        self.threats = ids;
     }
 
     /// The player's map-space pose: unit-square position + yaw, or None

@@ -47,6 +47,8 @@ pub struct HUD {
     health_label: Option<LiveRef<Label>>,
     shield_fill: Option<LiveRef<ColorRect>>,
     shield_label: Option<LiveRef<Label>>,
+    /// Shield Surge charges — blank until the item is owned and stocked.
+    charges_label: Option<LiveRef<Label>>,
     power_mode_label: Option<LiveRef<Label>>,
     components_label: Option<LiveRef<Label>>,
     lives_label: Option<LiveRef<Label>>,
@@ -82,6 +84,7 @@ impl ICanvasLayer for HUD {
             health_label: None,
             shield_fill: None,
             shield_label: None,
+            charges_label: None,
             power_mode_label: None,
             components_label: None,
             lives_label: None,
@@ -185,9 +188,10 @@ impl HUD {
     /// Pushed by GameManager with the authoritative unlock state. Cached so
     /// the radar/map draw paths gate on it without asking anyone per frame.
     #[func]
-    pub fn set_unlock_flags(&mut self, radar: bool, map: bool) {
+    pub fn set_unlock_flags(&mut self, radar: bool, map: bool, tracker: bool) {
         self.radar_unlocked = radar;
         self.map_unlocked = map;
+        self.map_panel.with(|panel| panel.bind_mut().set_tracker(tracker));
     }
 
     /// The radar's scope, pushed by GameManager on every room change: the
@@ -196,6 +200,8 @@ impl HUD {
     #[func]
     pub fn set_radar_contacts(&mut self, ids: PackedInt64Array) {
         self.radar_contacts = ids.as_slice().iter().copied().collect();
+        // The Threat Tracker draws the same neighborhood on the recon map.
+        self.map_panel.with(|panel| panel.bind_mut().set_threats(ids.clone()));
     }
 
     /// Apply the HUD type ladder: an `ui_style` size plus the dark outline
@@ -220,9 +226,10 @@ impl HUD {
             for _ in 0..MAX_RADAR_ARROWS {
                 let mut arrow = Polygon2D::new_alloc();
                 let mut points = PackedVector2Array::new();
-                points.push(Vector2::new(14.0, 0.0));
-                points.push(Vector2::new(-10.0, -9.0));
-                points.push(Vector2::new(-10.0, 9.0));
+                // Resting size — arrow_scale looms this up as contacts close.
+                points.push(Vector2::new(22.0, 0.0));
+                points.push(Vector2::new(-16.0, -14.0));
+                points.push(Vector2::new(-16.0, 14.0));
                 arrow.set_polygon(&points);
                 arrow.set_visible(false);
                 sa.add_child(&arrow);
@@ -326,11 +333,27 @@ impl HUD {
                     arrow.set_visible(true);
                     arrow.set_position(Vector2::new(placement.pos[0], placement.pos[1]));
                     arrow.set_rotation(placement.angle_rad);
-                    // Near threats burn hot, far ones fade.
+                    // Near threats loom larger and burn hot; far ones rest
+                    // small and fade — but never below legibility.
+                    let scale = radar::arrow_scale(*distance);
+                    arrow.set_scale(Vector2::new(scale, scale));
                     let fade = (1.0 - (distance - 10.0) / 80.0).clamp(0.35, 1.0);
                     arrow.set_color(Color::from_rgba(1.0, 0.35, 0.25, fade));
                 }
                 None => arrow.set_visible(false),
+            }
+        });
+    }
+
+    /// Shield Surge rack size. Zero blanks the line (unbought or spent —
+    /// either way there is nothing to press).
+    #[func]
+    pub fn update_charges(&mut self, charges: i32) {
+        self.charges_label.with(|label| {
+            if charges > 0 {
+                label.set_text(&format!("Surge ×{charges}"));
+            } else {
+                label.set_text("");
             }
         });
     }
@@ -478,6 +501,14 @@ impl HUD {
 
         self.shield_fill = Some(LiveRef::new(&shield_fill));
         self.shield_label = Some(LiveRef::new(&shield_label));
+
+        // Shield Surge charges (below the shield it refills).
+        let mut charges_label = Label::new_alloc();
+        charges_label.set_text("");
+        Self::style_hud_text(&mut charges_label, ui_style::FONT_HUD_LABEL);
+        charges_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.5, 0.7, 1.0));
+        top_left.add_child(&charges_label);
+        self.charges_label = Some(LiveRef::new(&charges_label));
 
         // Power mode indicator (below shield bar)
         let mut power_mode_label = Label::new_alloc();

@@ -313,3 +313,48 @@ func test_enemy_death_drops_one_pre_built_cache():
 		if cache.visible and cache.get_parent() == lm:
 			live += 1
 	assert_eq(live, 1, "exactly one blue cache (the dead enemy's) is now live, got %d" % live)
+
+
+func test_small_drones_are_hittable_with_aim_forgiveness():
+	# Playtest (2026-07-04): the little spheres (0.5 m models, ~0.25 m
+	# hulls) were nearly impossible to hit. The hitscan's forgiveness ring
+	# must connect a near-miss on a small drone — here 1.4 m off the
+	# center line at 20 m.
+	var player = _spawn_player(Vector3.ZERO)
+	player.set_controls_enabled(true)
+	var enemy = load("res://scenes/enemies/enemy.tscn").instantiate()
+	enemy.enemy_type_id = 3  # EyeDrone — one of the tiny spheres
+	add_child_autofree(enemy)
+	enemy.global_position = Vector3(1.4, 0.5, -20)
+	enemy.freeze = true  # hold the geometry still for a precise ray test
+	await wait_physics_frames(2, "let the drone build its hull and bar")
+
+	var fill = enemy.get_node_or_null("HealthBarFill")
+	assert_not_null(fill, "the drone needs a health bar to observe")
+	if fill == null:
+		return
+	var full_width: float = fill.global_transform.basis.x.length()
+
+	Input.action_press("fire")
+	var hurt := false
+	for _i in range(120):  # 2 seconds of fire
+		await get_tree().physics_frame
+		if fill.global_transform.basis.x.length() < full_width * 0.9:
+			hurt = true
+			break
+	Input.action_release("fire")
+	assert_true(hurt, "a near-miss on a small drone must still connect")
+
+
+func test_item_trigger_reports_to_the_mediator():
+	# The Shield Surge press: the ship only reports intent — charges and
+	# the shield are RunState's, mediated by GameManager.
+	var player = _spawn_player(Vector3.ZERO)
+	player.set_controls_enabled(true)
+	watch_signals(player)
+	Input.action_press("use_item")
+	await wait_process_frames(2)
+	Input.action_release("use_item")
+	await wait_process_frames(1)
+	assert_signal_emitted(player, "shield_burst_requested",
+		"the item trigger must reach the mediator")
