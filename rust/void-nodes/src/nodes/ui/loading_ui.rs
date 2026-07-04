@@ -4,6 +4,7 @@ use godot::classes::control::{LayoutPreset, SizeFlags};
 
 use crate::nodes::constants::theme;
 use crate::nodes::live_handle::LiveRef;
+use void_logic::ui_style;
 
 /// Full-screen "building the sector" veil, shown for the frame(s) a level
 /// build occupies. Every entry into Playing routes through one deferred
@@ -43,7 +44,7 @@ impl ICanvasLayer for LoadingUI {
 
         let mut label = Label::new_alloc();
         label.set_text("ENTERING SECTOR…");
-        label.add_theme_font_size_override(theme::FONT_SIZE, 36);
+        label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_TITLE);
         label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.6, 0.9, 1.0));
         label.set_anchors_preset(LayoutPreset::CENTER);
         label.set_h_size_flags(SizeFlags::SHRINK_CENTER);

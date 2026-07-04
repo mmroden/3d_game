@@ -14,7 +14,7 @@ use crate::nodes::constants::{methods, nodes, signals};
 use void_logic::stereo::{
     frustum_offsets, left_eye_offset, right_eye_offset,
     single_viewport_size, ui_plane_size, ui_viewport_size,
-    DisplayMode, StereoConfig, UI_NODE_NAMES,
+    DisplayMode, StereoConfig,
 };
 
 /// Default distance (meters) from camera to the floating UI plane in SBS mode.
@@ -221,6 +221,10 @@ impl ViewManager {
 
     /// Set custom_viewport on all UI CanvasLayers to point at UIViewport.
     /// Called once at startup — never changed again at runtime.
+    /// STRUCTURAL, not a name list: every CanvasLayer child of Main is a UI
+    /// layer and renders through the one UIViewport, so any new screen is
+    /// SBS-correct by construction (a hand-maintained list went stale the
+    /// moment LoadingUI arrived and put the veil in one eye).
     fn set_ui_viewport_once(&self) {
         let Some(main_scene) = self.base().get_parent() else {
             return;
@@ -229,8 +233,8 @@ impl ViewManager {
             godot_warn!("ViewManager: UIViewport not found");
             return;
         };
-        for name in UI_NODE_NAMES {
-            if let Some(mut canvas) = main_scene.try_get_node_as::<CanvasLayer>(*name) {
+        for child in main_scene.get_children().iter_shared() {
+            if let Ok(mut canvas) = child.try_cast::<CanvasLayer>() {
                 canvas.set_custom_viewport(&ui_vp);
             }
         }

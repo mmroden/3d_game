@@ -109,13 +109,13 @@ impl BestiaryUI {
 
         let mut position_label = Label::new_alloc();
         position_label.set_text(&position.to_string());
-        position_label.add_theme_font_size_override(theme::FONT_SIZE, 20);
+        position_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_DETAIL);
         position_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_UNSELECTED));
         vbox.add_child(&position_label);
 
         let mut title_label = Label::new_alloc();
         title_label.set_text(&title.to_string());
-        title_label.add_theme_font_size_override(theme::FONT_SIZE, 44);
+        title_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_TITLE);
         title_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.6, 0.9, 1.0));
         vbox.add_child(&title_label);
 
@@ -125,7 +125,7 @@ impl BestiaryUI {
 
         let mut blurb_label = Label::new_alloc();
         blurb_label.set_text(&blurb.to_string());
-        blurb_label.add_theme_font_size_override(theme::FONT_SIZE, 24);
+        blurb_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_BODY);
         blurb_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_UNSELECTED));
         // Lore is a paragraph — wrap it and cap the width so it stays readable.
         blurb_label.set_autowrap_mode(AutowrapMode::WORD_SMART);
@@ -138,7 +138,7 @@ impl BestiaryUI {
 
         let mut hint_label = Label::new_alloc();
         hint_label.set_text(&hint.to_string());
-        hint_label.add_theme_font_size_override(theme::FONT_SIZE, 26);
+        hint_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_DETAIL);
         hint_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_SELECTED));
         vbox.add_child(&hint_label);
 

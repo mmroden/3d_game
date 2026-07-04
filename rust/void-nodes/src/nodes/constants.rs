@@ -93,6 +93,7 @@ pub mod methods {
     pub const CONFIGURE_SHIP: &str = "configure_ship";
     pub const SET_CONTROLS_ENABLED: &str = "set_controls_enabled";
     pub const SET_VALKYRIE_OWNED: &str = "set_valkyrie_owned";
+    pub const REFRESH_SHOP: &str = "refresh_shop";
     pub const SHOW_LOADING: &str = "show_loading";
     pub const HIDE_LOADING: &str = "hide_loading";
     pub const UPDATE_LASER: &str = "update_laser";

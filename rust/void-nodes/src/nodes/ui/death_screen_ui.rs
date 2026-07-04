@@ -79,7 +79,7 @@ impl DeathScreenUI {
 
         let mut title = Label::new_alloc();
         title.set_text("LIFE LOST");
-        title.add_theme_font_size_override(theme::FONT_SIZE, 56);
+        title.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_TITLE);
         title.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(1.0, 0.5, 0.2));
         vbox.add_child(&title);
 
@@ -90,13 +90,13 @@ impl DeathScreenUI {
         let mut lives_label = Label::new_alloc();
         let plural = if lives_left == 1 { "life" } else { "lives" };
         lives_label.set_text(&format!("{} {} remaining — level {} restarts", lives_left, plural, level));
-        lives_label.add_theme_font_size_override(theme::FONT_SIZE, 28);
+        lives_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_BODY);
         lives_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_SECONDARY));
         vbox.add_child(&lives_label);
 
         let mut kept_label = Label::new_alloc();
         kept_label.set_text("Salvage and upgrades kept");
-        kept_label.add_theme_font_size_override(theme::FONT_SIZE, 24);
+        kept_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_BODY);
         kept_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_UNSELECTED));
         vbox.add_child(&kept_label);
 
@@ -106,7 +106,7 @@ impl DeathScreenUI {
 
         let mut prompt = Label::new_alloc();
         prompt.set_text("Press ENTER to re-arm at the shop");
-        prompt.add_theme_font_size_override(theme::FONT_SIZE, 22);
+        prompt.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_DETAIL);
         prompt.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_UNSELECTED));
         vbox.add_child(&prompt);
 
@@ -132,7 +132,7 @@ impl DeathScreenUI {
 
         let mut title = Label::new_alloc();
         title.set_text("MISSION FAILED");
-        title.add_theme_font_size_override(theme::FONT_SIZE, 56);
+        title.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_TITLE);
         title.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(1.0, 0.2, 0.2));
         vbox.add_child(&title);
 
@@ -142,7 +142,7 @@ impl DeathScreenUI {
 
         let mut level_label = Label::new_alloc();
         level_label.set_text(&format!("Reached Level {}", level_reached));
-        level_label.add_theme_font_size_override(theme::FONT_SIZE, 28);
+        level_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_BODY);
         level_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_SECONDARY));
         vbox.add_child(&level_label);
 
@@ -151,14 +151,14 @@ impl DeathScreenUI {
             "Laser downgraded: {} -> {}",
             laser_name, downgraded_to
         ));
-        penalty_label.add_theme_font_size_override(theme::FONT_SIZE, 28);
+        penalty_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_BODY);
         penalty_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(1.0, 0.6, 0.2));
         vbox.add_child(&penalty_label);
 
         // Blue purchases die with the run — say so, so it reads as design.
         let mut salvage_label = Label::new_alloc();
         salvage_label.set_text("Salvage and bought upgrades lost");
-        salvage_label.add_theme_font_size_override(theme::FONT_SIZE, 28);
+        salvage_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_BODY);
         salvage_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(1.0, 0.6, 0.2));
         vbox.add_child(&salvage_label);
 
@@ -168,7 +168,7 @@ impl DeathScreenUI {
 
         let mut prompt = Label::new_alloc();
         prompt.set_text("Press ENTER to return to base");
-        prompt.add_theme_font_size_override(theme::FONT_SIZE, 22);
+        prompt.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_DETAIL);
         prompt.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_UNSELECTED));
         vbox.add_child(&prompt);
 

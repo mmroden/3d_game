@@ -120,17 +120,7 @@ pub fn ui_overlay_rect_right(config: &StereoConfig) -> [f32; 4] {
     [0.0, 0.0, config.viewport_width as f32, config.viewport_height as f32]
 }
 
-/// UI CanvasLayer node names that must be reparented when toggling SBS mode.
-pub const UI_NODE_NAMES: &[&str] = &[
-    "MainMenuUI",
-    "HUD",
-    "PauseMenuUI",
-    "KillSummaryUI",
-    "ShopUI",
-    "DeathScreenUI",
-    "ShipSelectUI",
-    "BestiaryUI",
-];
+
 
 #[cfg(test)]
 mod tests {
@@ -256,31 +246,11 @@ mod tests {
         assert_eq!(ui_overlay_rect_right(&cfg), [0.0, 0.0, 1920.0, 1080.0]);
     }
 
-    #[test]
-    fn ui_node_names_non_empty() {
-        assert!(!UI_NODE_NAMES.is_empty());
-    }
-
-    #[test]
-    fn ui_node_names_no_duplicates() {
-        let mut seen = std::collections::HashSet::new();
-        for name in UI_NODE_NAMES {
-            assert!(seen.insert(name), "duplicate UI node name: {name}");
-        }
-    }
-
-    #[test]
-    fn every_screen_filling_ui_routes_through_the_ui_viewport() {
-        // Each full-screen UI must render into the UIViewport so SBS shows it in
-        // BOTH eyes (not once across the seam). The loadout and briefing screens
-        // were the regression — they painted to the root viewport.
-        for required in ["MainMenuUI", "HUD", "ShipSelectUI", "BestiaryUI"] {
-            assert!(
-                UI_NODE_NAMES.contains(&required),
-                "{required} must route through the UIViewport for per-eye SBS"
-            );
-        }
-    }
+    // The UI-layer adoption contract moved from a name list here to a
+    // STRUCTURAL rule: ViewManager adopts every CanvasLayer child of Main
+    // into the UIViewport (a hand-maintained list went stale the moment a
+    // new screen arrived and rendered in one eye). The pin now lives where
+    // the tree is: godot/tests/test_sbs_ui.gd sweeps the real Main scene.
 
     #[test]
     fn display_mode_default_is_mono() {

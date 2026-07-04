@@ -159,3 +159,154 @@ func test_shop_ui_renders_one_row_per_offer_plus_continue():
 	assert_eq(labels.size(), 3 + 3 + 4,
 		"3 offer rows + 3 detail hints + title + components + organics + continue")
 	assert_true(shop.visible, "show_shop presents the screen")
+
+
+class ShopRecordingStub:
+	extends UiStub
+	var shop_pushes := 0
+	func show_shop(_c: int, _o: int, _ids: PackedInt32Array, _labels: PackedStringArray, _details: PackedStringArray, _costs: PackedInt64Array, _flags: PackedByteArray) -> void:
+		shop_pushes += 1
+
+
+func test_the_shop_returns_after_every_level():
+	# Playtest (2026-07-04): the shop appeared after level 1 but not after
+	# level 2. Walk two full levels through the real phase machine; the shop
+	# must be pushed to the UI both times.
+	var root := Node3D.new()
+	add_child_autofree(root)
+	var shop_stub: ShopRecordingStub = null
+	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
+		var stub: UiStub
+		if ui_name == "ShopUI":
+			shop_stub = ShopRecordingStub.new()
+			stub = shop_stub
+		else:
+			stub = UiStub.new()
+		stub.name = ui_name
+		root.add_child(stub)
+	var lm := LevelManager.new()
+	lm.name = "LevelManager"
+	var gm := GameManager.new()
+	root.add_child(lm)
+	root.add_child(gm)
+	gm.clear_save_for_tests()
+
+	gm.start_new_game()
+	gm.advance_from_ship_select()
+	for _i in range(12):
+		if gm.get_phase_name() == "Playing":
+			break
+		gm.advance_from_bestiary()
+	await wait_process_frames(3)  # let the deferred sector build land
+
+	gm.on_portal_entered()
+	gm.advance_to_shop()
+	assert_eq(gm.get_phase_name(), "Shop", "level 1 ends at the shop")
+	assert_eq(shop_stub.shop_pushes, 1, "the level-1 shop is pushed")
+
+	gm.advance_to_next_level()
+	gm.advance_from_ship_select()
+	for _i in range(12):
+		if gm.get_phase_name() == "Playing":
+			break
+		gm.advance_from_bestiary()
+	assert_eq(gm.get_phase_name(), "Playing", "level 2 must start")
+	await wait_process_frames(3)
+
+	gm.on_portal_entered()
+	gm.advance_to_shop()
+	assert_eq(gm.get_phase_name(), "Shop", "level 2 must end at the shop too")
+	assert_eq(shop_stub.shop_pushes, 2, "the level-2 shop must be pushed")
+
+
+func test_one_press_on_the_level_2_summary_lands_in_the_shop_not_past_it():
+	# Playtest (2026-07-04): after the second level the player went straight
+	# into the third and could buy nothing. Mechanism: leaving the level-1
+	# shop via Continue parked the cursor on the Continue row, and the ONE
+	# press that dismissed the level-2 kill summary was still just_pressed
+	# when the shop appeared in the same frame — it chained through the shop
+	# (Continue), then ship select, menu after menu. This drives the two
+	# button moments with REAL UIs and real presses: the press that closes
+	# the summary must land the player IN the shop, cursor at the top.
+	var root := Node3D.new()
+	add_child_autofree(root)
+	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
+		var stub := UiStub.new()
+		stub.name = ui_name
+		root.add_child(stub)
+	var summary := KillSummaryUI.new()
+	summary.name = "KillSummaryUI"
+	root.add_child(summary)
+	var shop := ShopUI.new()
+	shop.name = "ShopUI"
+	root.add_child(shop)
+	var ship_select := ShipSelectUI.new()
+	ship_select.name = "ShipSelectUI"
+	root.add_child(ship_select)
+	var lm := LevelManager.new()
+	lm.name = "LevelManager"
+	var gm := GameManager.new()
+	root.add_child(lm)
+	root.add_child(gm)
+	gm.clear_save_for_tests()
+
+	# Level 1, driven directly (the two button moments come later).
+	gm.start_new_game()
+	gm.advance_from_ship_select()
+	for _i in range(12):
+		if gm.get_phase_name() == "Playing":
+			break
+		gm.advance_from_bestiary()
+	await wait_process_frames(3)
+	gm.on_portal_entered()
+	gm.advance_to_shop()
+	await wait_process_frames(2)
+
+	# Leave the level-1 shop the way a player does: walk to Continue (a
+	# fresh catalog has 8 rows — 5 stats, laser, life, radar) and press it.
+	# This is what used to park the cursor on Continue for the next visit.
+	for _i in range(8):
+		Input.action_press("menu_down")
+		await wait_process_frames(2)
+		Input.action_release("menu_down")
+		await wait_process_frames(1)
+	Input.action_press("menu_select")
+	await wait_process_frames(2)
+	Input.action_release("menu_select")
+	await wait_process_frames(1)
+	assert_eq(gm.get_phase_name(), "ShipSelect", "Continue leaves the level-1 shop")
+
+	# Level 2, driven directly again.
+	gm.advance_from_ship_select()
+	for _i in range(12):
+		if gm.get_phase_name() == "Playing":
+			break
+		gm.advance_from_bestiary()
+	assert_eq(gm.get_phase_name(), "Playing", "level 2 must start")
+	await wait_process_frames(3)
+	gm.on_portal_entered()
+	assert_eq(gm.get_phase_name(), "KillSummary")
+	await wait_process_frames(2)
+
+	# THE moment: one press dismisses the summary. The player must land IN
+	# the shop — not chained past it into ship select or level 3.
+	Input.action_press("menu_select")
+	await wait_process_frames(2)
+	Input.action_release("menu_select")
+	await wait_process_frames(2)
+	assert_eq(gm.get_phase_name(), "Shop",
+		"the press that closes the summary must stop at the shop")
+	assert_true(shop.visible, "the storefront is on screen")
+	assert_false(ship_select.visible, "and it did not chain into ship select")
+
+	# And the shop is USABLE: the next press buys the top row (Thrust,
+	# 2000 — affordable with the level's salvage untouched by upgrades).
+	gm.on_cache_collected(KIND_COMPONENTS, 2_000)
+	var components_before: int = gm.get_components()
+	Input.action_press("menu_select")
+	await wait_process_frames(2)
+	Input.action_release("menu_select")
+	await wait_process_frames(1)
+	assert_lt(gm.get_components(), components_before,
+		"the player can actually buy something after level 2")
+	assert_eq(gm.get_phase_name(), "Shop", "buying keeps the shop open")

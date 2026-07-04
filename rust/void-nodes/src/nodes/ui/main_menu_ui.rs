@@ -190,14 +190,14 @@ impl MainMenuUI {
         // Title
         let mut title = Label::new_alloc();
         title.set_text("VOID SCAVENGER");
-        title.add_theme_font_size_override(theme::FONT_SIZE, 64);
+        title.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_TITLE);
         title.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.6, 0.8, 1.0));
         vbox.add_child(&title);
 
         // Subtitle
         let mut subtitle = Label::new_alloc();
         subtitle.set_text("6DOF Roguelike Space Shooter");
-        subtitle.add_theme_font_size_override(theme::FONT_SIZE, 20);
+        subtitle.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_DETAIL);
         subtitle.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.4, 0.5, 0.7));
         vbox.add_child(&subtitle);
 
@@ -238,7 +238,7 @@ impl MainMenuUI {
                     format!("  {}", action.label())
                 };
                 label.set_text(&text);
-                label.add_theme_font_size_override(theme::FONT_SIZE, 32);
+                label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_ROW);
                 let color = if i == selected {
                     super::rgb(ui_style::TEXT_SELECTED)
                 } else {
@@ -332,7 +332,7 @@ impl MainMenuUI {
                 text.clone()
             };
             label.set_text(&display);
-            label.add_theme_font_size_override(theme::FONT_SIZE, 32);
+            label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_ROW);
             let color = if i == self.option_cursor.index() {
                 super::rgb(ui_style::TEXT_SELECTED)
             } else {

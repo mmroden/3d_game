@@ -44,6 +44,7 @@ func set_unlock_flags(_r: bool, _m: bool) -> void: pass
 func show_death(_a: String, _b: String, _c: int) -> void: pass
 func show_life_lost(_lives: int, _level: int) -> void: pass
 func show_shop(_c: int, _o: int, _ids: PackedInt32Array, _labels: PackedStringArray, _details: PackedStringArray, _costs: PackedInt64Array, _flags: PackedByteArray) -> void: pass
+func refresh_shop(_c: int, _o: int, _ids: PackedInt32Array, _labels: PackedStringArray, _details: PackedStringArray, _costs: PackedInt64Array, _flags: PackedByteArray) -> void: pass
 func show_ship_select(_ship_id: int, _color_id: int, _owned: PackedByteArray) -> void: pass
 func show_bestiary(_t: String, _b: String, _p: String, _h: String) -> void: pass
 func begin_briefing() -> void: pass

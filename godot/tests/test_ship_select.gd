@@ -95,3 +95,18 @@ func test_circle_backs_the_trim_stage_out_to_the_hulls():
 	assert_string_contains(_labels(ui), "Standard")
 	await _press("menu_back")
 	assert_string_contains(_labels(ui), "Vanguard")  # back on the hull stage
+
+
+func test_the_press_that_opened_the_screen_selects_nothing():
+	# Same bleed-through as the shop: the press that closed the previous
+	# screen must not pick a hull in the frame this one appears.
+	var ui := ShipSelectUI.new()
+	add_child_autofree(ui)
+	watch_signals(ui)
+	Input.action_press("menu_select")
+	ui.show_ship_select(0, 0, PackedByteArray([1, 0, 0, 0]))
+	await wait_process_frames(2)
+	Input.action_release("menu_select")
+	await wait_process_frames(1)
+	assert_signal_not_emitted(ui, "ship_type_selected",
+		"the opening press must not choose a hull")

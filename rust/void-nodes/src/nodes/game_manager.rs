@@ -330,7 +330,7 @@ impl GameManager {
                         }
                     }
                 }
-                self.show_shop_ui();
+                self.refresh_shop_ui();
                 true
             }
             Err(refusal) => {
@@ -1173,10 +1173,23 @@ impl GameManager {
         }
     }
 
+    /// Enter the shop screen (cursor reset, opening press swallowed).
+    fn show_shop_ui(&self) {
+        self.push_shop_catalog(methods::SHOW_SHOP);
+    }
+
+    /// Re-price the open shop after a buy (cursor stays on its row).
+    fn refresh_shop_ui(&self) {
+        self.push_shop_catalog(methods::REFRESH_SHOP);
+    }
+
     /// Price the catalog in void-logic and push it to ShopUI as parallel
     /// packed arrays (typed id, label, cost, flag bits per row — the bit
     /// protocol lives in `constants::shop_flags`, shared with ShopUI).
-    fn show_shop_ui(&self) {
+    /// `method` picks enter-vs-refresh; the distinction is explicit because
+    /// ShopUI cannot infer it (the phase machine shows the layer before
+    /// this populates it).
+    fn push_shop_catalog(&self, method: &str) {
         use super::constants::shop_flags;
 
         let Some(parent) = self.base().get_parent() else { return };
@@ -1194,7 +1207,7 @@ impl GameManager {
                 flag
             }).collect();
 
-            shop.call(methods::SHOW_SHOP, &[
+            shop.call(method, &[
                 Variant::from(self.run_state.components.balance as i64),
                 Variant::from(self.run_state.organics.balance as i64),
                 Variant::from(ids),

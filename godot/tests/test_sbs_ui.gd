@@ -25,16 +25,21 @@ func after_each():
 # --- UIViewport wiring ---
 
 func test_all_ui_layers_render_into_ui_viewport():
+	# STRUCTURAL: every CanvasLayer child of Main renders through the one
+	# UIViewport — no hand-maintained name list anywhere (the list went
+	# stale the moment LoadingUI arrived and put the veil in one eye,
+	# playtest 2026-07-04). Text drawn on any UI layer is view-agnostic by
+	# construction: both eyes sample the same viewport texture.
 	var ui_vp = _main.get_node("ViewManager/UIViewport")
 	assert_not_null(ui_vp, "UIViewport must exist under ViewManager")
 
-	var ui_names = ["MainMenuUI", "HUD", "PauseMenuUI",
-		"KillSummaryUI", "ShopUI", "DeathScreenUI"]
-	for ui_name in ui_names:
-		var layer = _main.get_node(ui_name) as CanvasLayer
-		assert_not_null(layer, "%s must exist" % ui_name)
-		assert_eq(layer.get_custom_viewport(), ui_vp,
-			"%s must render into UIViewport for SBS compositing" % ui_name)
+	var layers := 0
+	for child in _main.get_children():
+		if child is CanvasLayer:
+			layers += 1
+			assert_eq((child as CanvasLayer).get_custom_viewport(), ui_vp,
+				"%s must render into UIViewport for SBS compositing" % child.name)
+	assert_gt(layers, 8, "the sweep must actually cover the UI layers")
 
 # --- Menu centering ---
 

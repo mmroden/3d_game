@@ -23,6 +23,11 @@ pub struct ShopUI {
     labels: LiveVec<Label>,
     ids: PackedInt32Array,
     flags: PackedByteArray,
+    /// The press that opened this screen is still `just_pressed` in the
+    /// frame it becomes visible — swallow that one frame of input so it
+    /// can't buy or Continue (playtest 2026-07-04: the kill-summary press
+    /// closed the level-2 shop before it was ever seen).
+    swallow_entry_press: bool,
 }
 
 #[godot_api]
@@ -34,6 +39,7 @@ impl ICanvasLayer for ShopUI {
             labels: LiveVec::new(),
             ids: PackedInt32Array::new(),
             flags: PackedByteArray::new(),
+            swallow_entry_press: false,
         }
     }
 
@@ -46,6 +52,10 @@ impl ICanvasLayer for ShopUI {
 
     fn process(&mut self, _delta: f64) {
         if !self.base().is_visible() {
+            return;
+        }
+        if self.swallow_entry_press {
+            self.swallow_entry_press = false;
             return;
         }
         let input = Input::singleton();
@@ -78,8 +88,12 @@ impl ShopUI {
     #[signal]
     fn continue_pressed();
 
-    /// Populate and show the shop. One row per offer (parallel arrays:
-    /// typed id, label, detail line, cost, flag bits), then Continue.
+    /// ENTER the shop: cursor at the top, and the press that opened the
+    /// screen swallowed. Fresh-vs-refresh is explicit in the API — it must
+    /// NOT be inferred from visibility, because the phase machine shows the
+    /// layer before the mediator populates it (that inference let the
+    /// level-2 summary press chain straight through a cursor still parked
+    /// on Continue — playtest 2026-07-04).
     // A Variant-boundary crossing: the arg list IS the wire protocol
     // (balances + one packed array per row column), not a bundle of state
     // that wants a struct — GDScript callers can't pass one.
@@ -95,10 +109,40 @@ impl ShopUI {
         costs: PackedInt64Array,
         flags: PackedByteArray,
     ) {
-        // Keep the cursor's row across a refresh (a buy re-prices the catalog);
-        // clamp in case the offer count ever changes.
-        let keep_row = self.cursor.index().min(ids.len());
+        self.swallow_entry_press = true;
+        self.populate(components, organics, ids, labels, details, costs, flags, 0);
+    }
 
+    /// RE-PRICE the open shop after a buy: same catalog wire, cursor kept
+    /// on the row the player just used.
+    #[allow(clippy::too_many_arguments)]
+    #[func]
+    pub fn refresh_shop(
+        &mut self,
+        components: i64,
+        organics: i64,
+        ids: PackedInt32Array,
+        labels: PackedStringArray,
+        details: PackedStringArray,
+        costs: PackedInt64Array,
+        flags: PackedByteArray,
+    ) {
+        let keep_row = self.cursor.index().min(ids.len());
+        self.populate(components, organics, ids, labels, details, costs, flags, keep_row);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn populate(
+        &mut self,
+        components: i64,
+        organics: i64,
+        ids: PackedInt32Array,
+        labels: PackedStringArray,
+        details: PackedStringArray,
+        costs: PackedInt64Array,
+        flags: PackedByteArray,
+        keep_row: usize,
+    ) {
         for mut child in self.base().get_children().iter_shared() {
             child.queue_free();
         }
@@ -119,7 +163,7 @@ impl ShopUI {
         // Title
         let mut title = Label::new_alloc();
         title.set_text("UPGRADE STATION");
-        title.add_theme_font_size_override(theme::FONT_SIZE, 48);
+        title.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_TITLE);
         title.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.8, 0.6, 1.0));
         vbox.add_child(&title);
 
@@ -130,13 +174,13 @@ impl ShopUI {
         // Balances: blue and green side by side.
         let mut components_label = Label::new_alloc();
         components_label.set_text(&format!("Components: {}", components));
-        components_label.add_theme_font_size_override(theme::FONT_SIZE, 28);
+        components_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_HEADING);
         components_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_COMPONENTS));
         vbox.add_child(&components_label);
 
         let mut organics_label = Label::new_alloc();
         organics_label.set_text(&format!("Organics: {}", organics));
-        organics_label.add_theme_font_size_override(theme::FONT_SIZE, 28);
+        organics_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_HEADING);
         organics_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_ORGANICS));
         vbox.add_child(&organics_label);
 
@@ -158,7 +202,7 @@ impl ShopUI {
             };
             let mut row = Label::new_alloc();
             row.set_text(&text);
-            row.add_theme_font_size_override(theme::FONT_SIZE, 28);
+            row.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_ROW);
             vbox.add_child(&row);
             self.labels.push(&row, ());
 
@@ -169,7 +213,7 @@ impl ShopUI {
                 if !detail.is_empty() {
                     let mut hint = Label::new_alloc();
                     hint.set_text(&format!("      {}", detail));
-                    hint.add_theme_font_size_override(theme::FONT_SIZE, 18);
+                    hint.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_DETAIL);
                     hint.add_theme_color_override(
                         theme::FONT_COLOR,
                         Color::from_rgb(0.55, 0.6, 0.65),
@@ -182,7 +226,7 @@ impl ShopUI {
         // Continue
         let mut continue_label = Label::new_alloc();
         continue_label.set_text("  Continue");
-        continue_label.add_theme_font_size_override(theme::FONT_SIZE, 28);
+        continue_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_ROW);
         vbox.add_child(&continue_label);
         self.labels.push(&continue_label, ());
 

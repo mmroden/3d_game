@@ -53,6 +53,10 @@ pub struct ShipSelectUI {
     selected_color_id: i32,
     /// Per-hull ownership, indexed by `ShipType::id()`, pushed by GameManager.
     owned: PackedByteArray,
+    /// The press that opened this screen is still `just_pressed` in the
+    /// frame it becomes visible — swallow that one frame of input so it
+    /// can't pick a hull (same bleed-through the shop and bestiary guard).
+    swallow_entry_press: bool,
 }
 
 #[godot_api]
@@ -67,6 +71,7 @@ impl ICanvasLayer for ShipSelectUI {
             selected_ship_id: 0,
             selected_color_id: 0,
             owned: PackedByteArray::new(),
+            swallow_entry_press: false,
         }
     }
 
@@ -79,6 +84,10 @@ impl ICanvasLayer for ShipSelectUI {
 
     fn process(&mut self, _delta: f64) {
         if !self.base().is_visible() {
+            return;
+        }
+        if self.swallow_entry_press {
+            self.swallow_entry_press = false;
             return;
         }
         let input = Input::singleton();
@@ -154,6 +163,10 @@ impl ShipSelectUI {
         self.selected_color_id = color_id;
         self.owned = owned;
         self.stage = Stage::Hulls;
+        // Always swallow: the phase machine shows this layer before the
+        // mediator populates it, so "was I visible?" cannot detect a fresh
+        // entry — and show_ship_select IS the entry, every time.
+        self.swallow_entry_press = true;
         self.build_options();
         self.base_mut().set_visible(true);
     }
@@ -205,7 +218,7 @@ impl ShipSelectUI {
 
         let mut title = Label::new_alloc();
         title.set_text(&self.stage_title());
-        title.add_theme_font_size_override(theme::FONT_SIZE, 48);
+        title.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_TITLE);
         title.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.6, 0.9, 1.0));
         vbox.add_child(&title);
 
@@ -218,7 +231,7 @@ impl ShipSelectUI {
             let (text, color) = self.row_presentation(*row);
             let mut label = Label::new_alloc();
             label.set_text(&text);
-            label.add_theme_font_size_override(theme::FONT_SIZE, 28);
+            label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_ROW);
             label.add_theme_color_override(theme::FONT_COLOR, color);
             vbox.add_child(&label);
             self.labels.push(&label, ());

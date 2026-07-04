@@ -60,7 +60,7 @@ impl KillSummaryUI {
         // Title
         let mut title = Label::new_alloc();
         title.set_text(&format!("LEVEL {} COMPLETE", level));
-        title.add_theme_font_size_override(theme::FONT_SIZE, 48);
+        title.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_TITLE);
         title.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.3, 1.0, 0.3));
         vbox.add_child(&title);
 
@@ -72,7 +72,7 @@ impl KillSummaryUI {
         // Kill list header
         let mut header = Label::new_alloc();
         header.set_text("ENEMIES DEFEATED");
-        header.add_theme_font_size_override(theme::FONT_SIZE, 28);
+        header.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_HEADING);
         header.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_SECONDARY));
         vbox.add_child(&header);
 
@@ -80,7 +80,7 @@ impl KillSummaryUI {
         for (name, count) in kill_data.iter_shared() {
             let mut row = Label::new_alloc();
             row.set_text(&format!("  {} x {}", name, count));
-            row.add_theme_font_size_override(theme::FONT_SIZE, 24);
+            row.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_BODY);
             row.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.8, 0.8, 0.9));
             vbox.add_child(&row);
         }
@@ -93,7 +93,7 @@ impl KillSummaryUI {
         // Components earned
         let mut components_label = Label::new_alloc();
         components_label.set_text(&format!("TOTAL COMPONENTS: {}", total_components));
-        components_label.add_theme_font_size_override(theme::FONT_SIZE, 32);
+        components_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_HEADING);
         components_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_COMPONENTS));
         vbox.add_child(&components_label);
 
@@ -105,7 +105,7 @@ impl KillSummaryUI {
         // Continue prompt
         let mut prompt = Label::new_alloc();
         prompt.set_text("Press ENTER to continue");
-        prompt.add_theme_font_size_override(theme::FONT_SIZE, 22);
+        prompt.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_DETAIL);
         prompt.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_UNSELECTED));
         vbox.add_child(&prompt);
 
