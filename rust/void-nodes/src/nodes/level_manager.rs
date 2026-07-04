@@ -4,7 +4,7 @@ use godot::classes::{
     PackedScene, ResourceLoader, RigidBody3D, StaticBody3D,
 };
 
-use super::constants::{methods, nodes, scenes, signals};
+use super::constants::{groups, methods, nodes, scenes, signals};
 use super::godot_util;
 use super::live_handle::{LiveRef, LiveVec, LiveOpt};
 use super::bolt_pool::BoltPool;
@@ -21,7 +21,7 @@ use rand::rngs::SmallRng;
 
 use void_logic::generator::{generate, GeneratorConfig};
 use void_logic::level_assembly::{self, RoomBounds};
-use void_logic::level_graph::{LevelGraph, RENDER_ROOM_DEPTH};
+use void_logic::level_graph::{LevelGraph, RADAR_ROOM_DEPTH, RENDER_ROOM_DEPTH};
 use void_logic::room_furnisher::LightState;
 use void_logic::room_assembler::{Collision, MeshPlacement};
 use void_logic::portal as portal_sys;
@@ -191,6 +191,48 @@ impl LevelManager {
     #[func]
     fn on_render_viewports_changed(&mut self, viewports: Array<Rid>) {
         self.apply_measured_viewports(viewports);
+    }
+
+    /// The world grid's cell size — GameManager derives the map projection
+    /// from it (one source; the exported field stays private).
+    pub fn cell_size(&self) -> f32 {
+        self.grid_cell_size
+    }
+
+    /// Enemy instance ids inside the radar's scope: the current room, its
+    /// corridors, and the neighboring room (`visible_from` at
+    /// RADAR_ROOM_DEPTH — the same authority as cull visibility, with the
+    /// tighter budget). GameManager pulls this on every room change and
+    /// pushes it to the HUD; enemies activated mid-fight join on the next
+    /// room change (they spawn in the player's own room, on screen anyway).
+    #[func]
+    pub fn radar_contacts(&self) -> PackedInt64Array {
+        let Some(current) = self.current_room else { return PackedInt64Array::new() };
+        let Some(current_node) = self.level_graph.room_indices().nth(current) else {
+            return PackedInt64Array::new();
+        };
+        let in_scope: std::collections::HashSet<usize> = self
+            .level_graph
+            .visible_from(current_node, RADAR_ROOM_DEPTH)
+            .into_iter()
+            .map(|n| n.index())
+            .collect();
+        let tree = self.base().get_tree();
+        let mut ids = PackedInt64Array::new();
+        for node in tree.get_nodes_in_group(groups::ENEMIES).iter_shared() {
+            let Ok(enemy) = node.try_cast::<Node3D>() else { continue };
+            let p = enemy.get_global_position();
+            let Some(room) = level_assembly::room_at([p.x, p.y, p.z], &self.room_bounds) else {
+                continue;
+            };
+            // Room-list index → graph node index, the same alignment
+            // update_room_culling uses.
+            let Some(room_node) = self.level_graph.room_indices().nth(room) else { continue };
+            if in_scope.contains(&room_node.index()) {
+                ids.push(enemy.instance_id().to_i64());
+            }
+        }
+        ids
     }
 
     /// World-space center of room `i` (midpoint of its bounds). Drives room
@@ -449,17 +491,19 @@ impl LevelManager {
 
         // Place the player in the first room's center. The ship is a
         // RigidBody3D and drives its own motion; we only position it.
-        let centers = level_assembly::cell_centers(&graph, self.grid_cell_size);
-        if let Some(first_center) = centers.first() {
-            let spawn = [first_center[0], first_center[1] + 1.5, first_center[2]];
-            if let Some(parent) = self.base().get_parent() {
-                if let Some(player) = parent.try_get_node_as::<ShipController>(nodes::PLAYER) {
-                    let mut player_node = player.clone();
-                    player_node.set_position(vec3(spawn));
-                    player_node.reset_physics_interpolation();
-                    self.player = Some(LiveRef::new(&player_node.upcast::<Node3D>()));
-                    godot_print!("Player spawned at ({}, {}, {})", spawn[0], spawn[1], spawn[2]);
-                }
+        let (spawn, spawn_yaw) = level_assembly::spawn_pose(&graph, self.grid_cell_size);
+        if let Some(parent) = self.base().get_parent() {
+            if let Some(player) = parent.try_get_node_as::<ShipController>(nodes::PLAYER) {
+                let mut player_node = player.clone();
+                player_node.set_position(vec3(spawn));
+                // Centered in the start room, facing its doorway — never a
+                // corner (the pose is the model's, tested in level_assembly).
+                player_node.set_rotation(Vector3::new(0.0, spawn_yaw, 0.0));
+                player_node.set_linear_velocity(Vector3::ZERO);
+                player_node.set_angular_velocity(Vector3::ZERO);
+                player_node.reset_physics_interpolation();
+                self.player = Some(LiveRef::new(&player_node.upcast::<Node3D>()));
+                godot_print!("Player spawned at ({}, {}, {})", spawn[0], spawn[1], spawn[2]);
             }
         }
 

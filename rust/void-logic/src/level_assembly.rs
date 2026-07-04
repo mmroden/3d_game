@@ -99,8 +99,18 @@ pub fn spawn_list_full(
 
         let room_seed = seed.value().wrapping_add(room_idx as u64).wrapping_mul(2654435761);
         grid.populate(theme, room_seed);
-        // Step 2 data — furnished fixtures (cell-rolled).
-        let props = grid.prop_placements();
+        // Step 2 data — furnished fixtures (cell-rolled). The start room's
+        // spawn square stays empty: the player materializes there and
+        // shares it with nothing (playtest 2026-07-04).
+        let mut props = grid.prop_placements();
+        if room_idx == 0 {
+            let (spawn, _) = spawn_pose(graph, cell_size);
+            let half = cell_size * 0.5;
+            props.retain(|p| {
+                (p.position[0] - spawn[0]).abs() > half
+                    || (p.position[2] - spawn[2]).abs() > half
+            });
+        }
 
         let mut lights = Vec::new();
         for (mesh, light) in room_furnisher::light_fixtures(&room.template, &active, origin, cell_size, room_seed) {
@@ -111,8 +121,9 @@ pub fn spawn_list_full(
         }
 
         // Step 2 data — organics containers, authored per template via loot
-        // spawns (replaces the shell's old ad-hoc scatter).
-        let containers: Vec<[f32; 3]> = room
+        // spawns (replaces the shell's old ad-hoc scatter). The start room's
+        // spawn square is kept clear here too.
+        let mut containers: Vec<[f32; 3]> = room
             .template
             .loot_spawns
             .iter()
@@ -122,6 +133,13 @@ pub fn spawn_list_full(
                 origin[2] + sp.position[2],
             ])
             .collect();
+        if room_idx == 0 {
+            let (spawn, _) = spawn_pose(graph, cell_size);
+            let half = cell_size * 0.5;
+            containers.retain(|c| {
+                (c[0] - spawn[0]).abs() > half || (c[2] - spawn[2]).abs() > half
+            });
+        }
 
         // Step 3 data — enemies, authored per template via enemy spawns. The
         // start room (room_idx 0) stays clear so the player isn't ambushed on
@@ -306,32 +324,39 @@ pub fn manifest(graph: &LevelGraph, cell_size: f32, seed: Seed, level: u32) -> L
     LevelManifest { rooms }
 }
 
-/// Return the world-space center of every cell in the level (for player spawn).
-pub fn cell_centers(
-    graph: &LevelGraph,
-    cell_size: f32,
-) -> Vec<[f32; 3]> {
+/// Where the run begins: the center of the start room's ground story at
+/// flight height, yawed to face the room's first doorway. A first-cell,
+/// corner-facing spawn reads as disorientation (playtest 2026-07-04).
+pub fn spawn_pose(graph: &LevelGraph, cell_size: f32) -> ([f32; 3], f32) {
     let story_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
-    graph
-        .room_indices()
-        .filter_map(|idx| {
-            let room = graph.room(idx)?;
-            let origin = room.world_position(cell_size, story_height);
-            let [ex, ey, ez] = room.template.extents.map(|e| e as i32);
-            let centers: Vec<_> = (0..ex).flat_map(|cx| {
-                (0..ey).flat_map(move |cy| {
-                    (0..ez).map(move |cz| [
-                        origin[0] + (cx as f32 + 0.5) * cell_size,
-                        origin[1] + cy as f32 * story_height,
-                        origin[2] + (cz as f32 + 0.5) * cell_size,
-                    ])
-                })
-            }).collect();
-            Some(centers)
+    let Some(idx) = graph.room_indices().next() else { return ([0.0; 3], 0.0) };
+    let Some(room) = graph.room(idx) else { return ([0.0; 3], 0.0) };
+    let origin = room.world_position(cell_size, story_height);
+    let [ex, _ey, ez] = room.template.extents;
+    let pos = [
+        origin[0] + ex as f32 * cell_size * 0.5,
+        origin[1] + 1.5,
+        origin[2] + ez as f32 * cell_size * 0.5,
+    ];
+    // Face the first doorway: -Z rotated by yaw must point from the spawn
+    // toward the connector cell.
+    let yaw = graph
+        .active_connectors(idx)
+        .first()
+        .map(|c| {
+            let cx = origin[0] + (c.offset[0] as f32 + 0.5) * cell_size;
+            let cz = origin[2] + (c.offset[2] as f32 + 0.5) * cell_size;
+            let (dx, dz) = (cx - pos[0], cz - pos[2]);
+            if dx.abs() + dz.abs() < 1e-3 {
+                0.0
+            } else {
+                (-dx).atan2(-dz)
+            }
         })
-        .flatten()
-        .collect()
+        .unwrap_or(0.0);
+    (pos, yaw)
 }
+
 
 
 #[cfg(test)]
@@ -341,6 +366,64 @@ mod tests {
     use crate::level_graph::{EdgeKind, RENDER_ROOM_DEPTH};
     use crate::room_template::ConnectorFacing;
     use crate::seed::Seed;
+
+    #[test]
+    fn spawn_pose_centers_the_start_room_facing_its_doorway() {
+        for seed in 0..10u64 {
+            let Ok(graph) = generate(&test_config(seed)) else { continue };
+            let cell = 4.0;
+            let (pos, yaw) = spawn_pose(&graph, cell);
+
+            // Centered on the start room's footprint, at flight height.
+            let idx = graph.room_indices().next().unwrap();
+            let room = graph.room(idx).unwrap();
+            let story = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+            let origin = room.world_position(cell, story);
+            let [ex, _ey, ez] = room.template.extents;
+            assert!((pos[0] - (origin[0] + ex as f32 * cell * 0.5)).abs() < 0.01,
+                "seed {seed}: spawn X centers the room");
+            assert!((pos[2] - (origin[2] + ez as f32 * cell * 0.5)).abs() < 0.01,
+                "seed {seed}: spawn Z centers the room");
+            assert!(pos[1] > origin[1], "seed {seed}: spawn floats above the floor");
+
+            // Facing the first doorway, not a corner: the yaw's forward
+            // (-Z rotated by yaw) points at the connector.
+            let connectors = graph.active_connectors(idx);
+            let Some(c) = connectors.first() else { continue };
+            let cx = origin[0] + (c.offset[0] as f32 + 0.5) * cell;
+            let cz = origin[2] + (c.offset[2] as f32 + 0.5) * cell;
+            let (dx, dz) = (cx - pos[0], cz - pos[2]);
+            let len = (dx * dx + dz * dz).sqrt();
+            if len < 0.1 { continue; } // doorway dead-center: any yaw works
+            let forward = (-yaw.sin(), -yaw.cos());
+            let dot = forward.0 * dx / len + forward.1 * dz / len;
+            assert!(dot > 0.99,
+                "seed {seed}: spawn must face its doorway (dot {dot})");
+        }
+    }
+
+    #[test]
+    fn the_spawn_square_holds_nothing_but_the_player() {
+        for seed in 0..10u64 {
+            let Ok(graph) = generate(&test_config(seed)) else { continue };
+            let cell = 4.0;
+            let (pos, _) = spawn_pose(&graph, cell);
+            let rooms = spawn_list_full(&graph, cell, Seed::new(seed));
+            let start = &rooms[0];
+            let half = cell * 0.5;
+            for p in &start.props {
+                let (dx, dz) = ((p.position[0] - pos[0]).abs(), (p.position[2] - pos[2]).abs());
+                assert!(dx > half || dz > half,
+                    "seed {seed}: prop at ({}, {}) squats in the spawn square",
+                    p.position[0], p.position[2]);
+            }
+            for c in &start.containers {
+                let (dx, dz) = ((c[0] - pos[0]).abs(), (c[2] - pos[2]).abs());
+                assert!(dx > half || dz > half,
+                    "seed {seed}: container at ({}, {}) squats in the spawn square", c[0], c[2]);
+            }
+        }
+    }
 
     /// End-to-end: through the full generation pipeline, a real level's
     /// vertical shafts are square (no rounded corner pieces) and lit by rim

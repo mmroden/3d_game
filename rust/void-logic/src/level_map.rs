@@ -2,116 +2,160 @@
 //! [`LevelGraph`] — the same authority that drives room culling; never a
 //! parallel structure.
 //!
-//! Only visited rooms appear. An edge from a visited room to an unvisited one
-//! renders as a short *frontier stub*: it says "an unexplored corridor leaves
-//! this room, that way" without revealing where the far room sits. Room ids
-//! are room-list positions (`room_indices()` order) — the same indexing the
-//! shell's culling and bounds use.
+//! The map draws the level's REAL rectilinear footprints (playtest
+//! 2026-07-04: abstract dots were useless): every visited node — room or
+//! corridor — renders as its top-down rectangle, uniformly scaled so the
+//! geometry keeps its aspect. Fog rules: unvisited rooms never appear; an
+//! unvisited CORRIDOR adjacent to a visited node appears faint — the
+//! direction into the dark, with real geometry but no room reveal.
 
 use crate::level_graph::LevelGraph;
 
-/// Length of a frontier stub in unit-square space: long enough to read as a
-/// direction, far too short to place the unexplored room.
-pub const FRONTIER_STUB: f32 = 0.06;
-
-/// A revealed room, in unit-square coordinates.
+/// One drawable footprint, in unit-square coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MapRoom {
+pub struct MapRect {
     /// Room-list position (`room_indices()` order).
     pub id: usize,
-    pub pos: [f32; 2],
-    pub is_current: bool,
-}
-
-/// A drawable map edge: full corridors between visited rooms, or a frontier
-/// stub pointing at the unexplored.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MapEdge {
-    pub from: [f32; 2],
-    pub to: [f32; 2],
+    /// Top-down rect `[x, z, w, d]`, uniform scale (aspect preserved),
+    /// centered inside the unit square.
+    pub rect: [f32; 4],
+    pub corridor: bool,
+    pub current: bool,
+    /// An unvisited corridor bordering explored space — drawn faint.
     pub frontier: bool,
 }
 
-/// Everything the map widget draws.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct MapView {
-    pub rooms: Vec<MapRoom>,
-    pub edges: Vec<MapEdge>,
+/// The map's world→unit transform for the XZ plane, per axis:
+/// `unit = world * scale + offset`. The panel uses it to place the LIVE
+/// player marker — the map itself redraws per room change, but the marker
+/// tracks the ship every frame (playtest 2026-07-04: a room-granular
+/// marker reads as never having moved).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MapProjection {
+    pub scale: f32,
+    pub offset: [f32; 2],
+}
+
+/// Derive the world→unit projection matching [`map_rects`]' normalization:
+/// grid coords are world / cell, so `unit = world·(s/cell) + (offset − min·s)`.
+pub fn map_projection(graph: &LevelGraph, cell_size: f32) -> MapProjection {
+    let Some((min, scale, offset)) = grid_frame(graph) else {
+        return MapProjection { scale: 0.0, offset: [0.0; 2] };
+    };
+    MapProjection {
+        scale: scale / cell_size,
+        offset: [offset[0] - min[0] * scale, offset[1] - min[1] * scale],
+    }
+}
+
+/// The shared normalization frame in grid space: `(min, scale, offset)` with
+/// `unit = offset + (grid − min)·scale`. One uniform scale (the larger
+/// span), the minor axis centered.
+fn grid_frame(graph: &LevelGraph) -> Option<([f32; 2], f32, [f32; 2])> {
+    let mut any = false;
+    let (mut min, mut max) = ([f32::MAX; 2], [f32::MIN; 2]);
+    for n in graph.room_indices() {
+        let Some(room) = graph.room(n) else { continue };
+        any = true;
+        let [ex, _ey, ez] = room.template.extents;
+        let (x, z) = (room.grid_pos[0] as f32, room.grid_pos[2] as f32);
+        min[0] = min[0].min(x);
+        min[1] = min[1].min(z);
+        max[0] = max[0].max(x + ex as f32);
+        max[1] = max[1].max(z + ez as f32);
+    }
+    if !any {
+        return None;
+    }
+    let span = [(max[0] - min[0]).max(1.0), (max[1] - min[1]).max(1.0)];
+    let scale = 1.0 / span[0].max(span[1]);
+    let offset = [
+        (1.0 - span[0] * scale) * 0.5,
+        (1.0 - span[1] * scale) * 0.5,
+    ];
+    Some((min, scale, offset))
 }
 
 /// Project the graph onto the map for a player who has visited `visited`
-/// (room-list positions) and currently sits in `current`. Coordinates are
-/// normalized to the unit square over the WHOLE level's footprint, so the
-/// map's frame never re-scales as exploration grows.
-pub fn map_view(graph: &LevelGraph, visited: &[usize], current: usize) -> MapView {
-    use std::collections::HashMap;
+/// (room-list positions) and currently sits in `current`. One uniform scale
+/// over the WHOLE level footprint: the frame never re-scales and rectangles
+/// never distort as exploration grows.
+pub fn map_rects(graph: &LevelGraph, visited: &[usize], current: usize) -> Vec<MapRect> {
+    use crate::room_template::TemplateKind;
+    use std::collections::{HashMap, HashSet};
 
-    // Room-list position <-> node, and each room's unit-square position,
-    // normalized over the WHOLE footprint so the frame never re-scales.
     let nodes: Vec<_> = graph.room_indices().collect();
-    let grid: Vec<[f32; 2]> = nodes.iter()
-        .filter_map(|n| graph.room(*n))
-        .map(|room| [room.grid_pos[0] as f32, room.grid_pos[2] as f32])
+    if nodes.is_empty() {
+        return Vec::new();
+    }
+
+    // Grid footprints (top-down: x/z), and the level's total bounding box.
+    let footprints: Vec<Option<([f32; 4], bool)>> = nodes.iter()
+        .map(|n| graph.room(*n).map(|room| {
+            let [ex, _ey, ez] = room.template.extents;
+            (
+                [
+                    room.grid_pos[0] as f32,
+                    room.grid_pos[2] as f32,
+                    ex as f32,
+                    ez as f32,
+                ],
+                room.template.kind == TemplateKind::Corridor,
+            )
+        }))
         .collect();
-    if grid.len() != nodes.len() || grid.is_empty() {
-        return MapView::default();
-    }
-    let (mut min, mut max) = ([f32::MAX; 2], [f32::MIN; 2]);
-    for p in &grid {
-        for axis in 0..2 {
-            min[axis] = min[axis].min(p[axis]);
-            max[axis] = max[axis].max(p[axis]);
-        }
-    }
-    let span = [(max[0] - min[0]).max(1.0), (max[1] - min[1]).max(1.0)];
-    let unit = |p: [f32; 2]| [(p[0] - min[0]) / span[0], (p[1] - min[1]) / span[1]];
-    let positions: Vec<[f32; 2]> = grid.into_iter().map(unit).collect();
+    // ONE uniform scale (the larger span), the minor axis centered: the
+    // geometry keeps its aspect and the frame never re-scales. Shared with
+    // `map_projection` so the live player marker lands where the rects are.
+    let Some((min, scale, offset)) = grid_frame(graph) else {
+        return Vec::new();
+    };
+
     let id_of: HashMap<_, _> = nodes.iter().enumerate().map(|(i, n)| (*n, i)).collect();
-    let is_visited = |id: usize| visited.contains(&id);
+    let visited_set: HashSet<usize> = visited.iter().copied().collect();
 
-    let rooms = (0..nodes.len())
-        .filter(|id| is_visited(*id))
-        .map(|id| MapRoom { id, pos: positions[id], is_current: id == current })
-        .collect();
-
-    let mut edges = Vec::new();
+    // Frontier: unvisited CORRIDORS adjacent to explored space — real
+    // geometry pointing into the dark, but never an unvisited room.
+    let mut frontier: HashSet<usize> = HashSet::new();
     for (a, b, _kind) in graph.edges() {
         let (Some(&ia), Some(&ib)) = (id_of.get(&a), id_of.get(&b)) else { continue };
-        match (is_visited(ia), is_visited(ib)) {
-            // A corridor between two known rooms draws in full.
-            (true, true) => edges.push(MapEdge {
-                from: positions[ia],
-                to: positions[ib],
-                frontier: false,
-            }),
-            // Known -> unknown: a short stub along the corridor's direction,
-            // never reaching (or revealing) the far room.
-            (true, false) | (false, true) => {
-                let (known, hidden) = if is_visited(ia) { (ia, ib) } else { (ib, ia) };
-                let (from, to) = (positions[known], positions[hidden]);
-                let dir = [to[0] - from[0], to[1] - from[1]];
-                let len = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt();
-                if len <= f32::EPSILON {
-                    continue;
+        for (this, other) in [(ia, ib), (ib, ia)] {
+            if visited_set.contains(&other) && !visited_set.contains(&this) {
+                if let Some((_, true)) = footprints[this] {
+                    frontier.insert(this);
                 }
-                let scale = FRONTIER_STUB / len;
-                edges.push(MapEdge {
-                    from,
-                    to: [from[0] + dir[0] * scale, from[1] + dir[1] * scale],
-                    frontier: true,
-                });
             }
-            (false, false) => {}
         }
     }
 
-    MapView { rooms, edges }
+    (0..nodes.len())
+        .filter_map(|id| {
+            let (fp, corridor) = footprints[id]?;
+            let shown = visited_set.contains(&id) || frontier.contains(&id);
+            if !shown {
+                return None;
+            }
+            Some(MapRect {
+                id,
+                rect: [
+                    offset[0] + (fp[0] - min[0]) * scale,
+                    offset[1] + (fp[1] - min[1]) * scale,
+                    fp[2] * scale,
+                    fp[3] * scale,
+                ],
+                corridor,
+                current: id == current && visited_set.contains(&id),
+                frontier: !visited_set.contains(&id),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::generator::{generate, GeneratorConfig};
+    use crate::room_template::TemplateKind;
     use crate::seed::Seed;
 
     /// The pinned GUT seed's level, through the shell's exact build path.
@@ -120,84 +164,119 @@ mod tests {
             .expect("the pinned seed must generate")
     }
 
-    fn all_rooms(graph: &LevelGraph) -> Vec<usize> {
+    fn all_nodes(graph: &LevelGraph) -> Vec<usize> {
         (0..graph.room_count()).collect()
     }
 
     #[test]
-    fn only_visited_rooms_are_revealed() {
+    fn only_visited_nodes_and_frontier_corridors_appear() {
         let graph = level();
-        let view = map_view(&graph, &[0], 0);
-        assert_eq!(view.rooms.len(), 1, "one room visited, one room drawn");
-        assert_eq!(view.rooms[0].id, 0);
-        assert!(view.rooms[0].is_current);
+        let view = map_rects(&graph, &[0], 0);
+        let solid: Vec<_> = view.iter().filter(|r| !r.frontier).collect();
+        assert_eq!(solid.len(), 1, "one node visited, one solid rect");
+        assert_eq!(solid[0].id, 0);
+        assert!(solid[0].current);
 
-        let everything = all_rooms(&graph);
-        let full = map_view(&graph, &everything, 0);
-        assert_eq!(full.rooms.len(), graph.room_count(), "full exploration draws every room");
+        // Whatever else appears is a faint corridor at the frontier —
+        // never an unvisited room.
+        for r in view.iter().filter(|r| r.frontier) {
+            assert!(r.corridor, "only corridors may hint into the dark, got room {}", r.id);
+        }
+        assert!(view.iter().any(|r| r.frontier),
+            "the start room's exits hint at the unexplored");
+
+        let full = map_rects(&graph, &all_nodes(&graph), 0);
+        assert_eq!(full.len(), graph.room_count(), "full exploration draws every node");
+        assert!(full.iter().all(|r| !r.frontier), "nothing is frontier once seen");
     }
 
     #[test]
-    fn current_room_is_flagged_exactly_once() {
+    fn footprints_keep_their_true_aspect() {
+        // Uniform scaling: a node's rect must have the same width/depth
+        // ratio as its template extents — rectilinear geometry, no squish.
         let graph = level();
-        let everything = all_rooms(&graph);
-        let view = map_view(&graph, &everything, 2);
-        let current: Vec<_> = view.rooms.iter().filter(|r| r.is_current).collect();
-        assert_eq!(current.len(), 1, "exactly one current room");
+        let view = map_rects(&graph, &all_nodes(&graph), 0);
+        let nodes: Vec<_> = graph.room_indices().collect();
+        for r in &view {
+            let room = graph.room(nodes[r.id]).expect("id maps to a node");
+            let [ex, _ey, ez] = room.template.extents;
+            let expect = ex as f32 / ez as f32;
+            let got = r.rect[2] / r.rect[3];
+            assert!((got - expect).abs() < 0.01,
+                "node {}: footprint aspect {} must match template {}", r.id, got, expect);
+        }
+    }
+
+    #[test]
+    fn the_scale_is_shared_so_positions_are_true() {
+        // Two nodes' rects must sit in the same relative arrangement as
+        // their grid positions: one scale for the whole map.
+        let graph = level();
+        let view = map_rects(&graph, &all_nodes(&graph), 0);
+        let nodes: Vec<_> = graph.room_indices().collect();
+        // Derive the scale from the first node, verify on every other.
+        let first = &view[0];
+        let room0 = graph.room(nodes[first.id]).unwrap();
+        let scale = first.rect[2] / room0.template.extents[0] as f32;
+        for r in &view {
+            let room = graph.room(nodes[r.id]).unwrap();
+            let w = room.template.extents[0] as f32 * scale;
+            assert!((r.rect[2] - w).abs() < 0.01,
+                "node {}: width {} breaks the shared scale ({} expected)", r.id, r.rect[2], w);
+        }
+        // And the frame stays inside the unit square.
+        for r in &view {
+            assert!(r.rect[0] >= -0.01 && r.rect[0] + r.rect[2] <= 1.01,
+                "node {} escapes horizontally: {:?}", r.id, r.rect);
+            assert!(r.rect[1] >= -0.01 && r.rect[1] + r.rect[3] <= 1.01,
+                "node {} escapes vertically: {:?}", r.id, r.rect);
+        }
+    }
+
+    #[test]
+    fn the_projection_places_world_points_on_their_map_rects() {
+        let graph = level();
+        let cell = 4.0;
+        let view = map_rects(&graph, &all_nodes(&graph), 0);
+        let proj = map_projection(&graph, cell);
+        let nodes: Vec<_> = graph.room_indices().collect();
+        let story = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+        for r in &view {
+            let room = graph.room(nodes[r.id]).unwrap();
+            let origin = room.world_position(cell, story);
+            let [ex, _ey, ez] = room.template.extents;
+            // The room's world center must land on its map rect's center.
+            let ux = (origin[0] + ex as f32 * cell * 0.5) * proj.scale + proj.offset[0];
+            let uz = (origin[2] + ez as f32 * cell * 0.5) * proj.scale + proj.offset[1];
+            assert!((ux - (r.rect[0] + r.rect[2] * 0.5)).abs() < 1e-3,
+                "node {}: world center X projects to {} but the rect centers at {}",
+                r.id, ux, r.rect[0] + r.rect[2] * 0.5);
+            assert!((uz - (r.rect[1] + r.rect[3] * 0.5)).abs() < 1e-3,
+                "node {}: world center Z projects to {} but the rect centers at {}",
+                r.id, uz, r.rect[1] + r.rect[3] * 0.5);
+        }
+    }
+
+    #[test]
+    fn current_node_is_flagged_exactly_once() {
+        let graph = level();
+        let view = map_rects(&graph, &all_nodes(&graph), 2);
+        let current: Vec<_> = view.iter().filter(|r| r.current).collect();
+        assert_eq!(current.len(), 1, "exactly one current node");
         assert_eq!(current[0].id, 2);
     }
 
     #[test]
-    fn coordinates_stay_in_the_unit_square() {
+    fn corridors_know_they_are_corridors() {
         let graph = level();
-        let everything = all_rooms(&graph);
-        let view = map_view(&graph, &everything, 0);
-        for room in &view.rooms {
-            assert!((0.0..=1.0).contains(&room.pos[0]) && (0.0..=1.0).contains(&room.pos[1]),
-                "room {} escaped the unit square: {:?}", room.id, room.pos);
+        let view = map_rects(&graph, &all_nodes(&graph), 0);
+        let nodes: Vec<_> = graph.room_indices().collect();
+        for r in &view {
+            let room = graph.room(nodes[r.id]).unwrap();
+            assert_eq!(r.corridor, room.template.kind == TemplateKind::Corridor,
+                "node {} mislabels its kind", r.id);
         }
-        for edge in &view.edges {
-            for p in [edge.from, edge.to] {
-                assert!((-0.01..=1.01).contains(&p[0]) && (-0.01..=1.01).contains(&p[1]),
-                    "edge point escaped the unit square: {p:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn frontier_stubs_point_without_revealing() {
-        let graph = level();
-        // Only the start room visited: every drawn edge is a frontier stub.
-        let view = map_view(&graph, &[0], 0);
-        assert!(!view.edges.is_empty(), "the start room has unexplored corridors");
-        let full = map_view(&graph, &all_rooms(&graph), 0);
-        for edge in &view.edges {
-            assert!(edge.frontier, "with one room visited, every edge is a frontier");
-            let len = ((edge.to[0] - edge.from[0]).powi(2) + (edge.to[1] - edge.from[1]).powi(2)).sqrt();
-            assert!(len <= FRONTIER_STUB + 1e-3,
-                "a stub stays short (got {len}), it must not reach the hidden room");
-            // The stub must be strictly shorter than the real corridor it
-            // hints at — otherwise it IS the reveal.
-            let real = full.edges.iter()
-                .filter(|e| !e.frontier)
-                .map(|e| {
-                    let d0 = (e.from[0] - edge.from[0]).powi(2) + (e.from[1] - edge.from[1]).powi(2);
-                    let len = ((e.to[0] - e.from[0]).powi(2) + (e.to[1] - e.from[1]).powi(2)).sqrt();
-                    (d0, len)
-                })
-                .filter(|(d0, _)| *d0 < 1e-6)
-                .map(|(_, len)| len)
-                .fold(0.0f32, f32::max);
-            assert!(real > len, "the real corridor ({real}) outreaches the stub ({len})");
-        }
-    }
-
-    #[test]
-    fn full_exploration_has_no_frontiers() {
-        let graph = level();
-        let view = map_view(&graph, &all_rooms(&graph), 0);
-        assert!(!view.edges.is_empty(), "a connected level draws corridors");
-        assert!(view.edges.iter().all(|e| !e.frontier),
-            "nothing is unexplored once everything is visited");
+        assert!(view.iter().any(|r| r.corridor), "a connected level has corridors");
+        assert!(view.iter().any(|r| !r.corridor), "and rooms");
     }
 }

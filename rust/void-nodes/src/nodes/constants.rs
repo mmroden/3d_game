@@ -93,6 +93,7 @@ pub mod methods {
     pub const CONFIGURE_SHIP: &str = "configure_ship";
     pub const SET_CONTROLS_ENABLED: &str = "set_controls_enabled";
     pub const SET_VALKYRIE_OWNED: &str = "set_valkyrie_owned";
+    pub const SET_RADAR_CONTACTS: &str = "set_radar_contacts";
     pub const REFRESH_SHOP: &str = "refresh_shop";
     pub const SHOW_LOADING: &str = "show_loading";
     pub const HIDE_LOADING: &str = "hide_loading";
@@ -156,6 +157,14 @@ pub mod shop_flags {
     pub const GREEN: u8 = 4;
 }
 
+/// Bit flags packed per recon-map footprint, one byte per node: GameManager
+/// encodes them from `level_map::MapRect`, MapPanel decodes for drawing.
+pub mod map_flags {
+    pub const CURRENT: u8 = 1;
+    pub const CORRIDOR: u8 = 2;
+    pub const FRONTIER: u8 = 4;
+}
+
 // ── Group names ───────────────────────────────────────────────────────
 
 pub mod groups {
@@ -176,6 +185,8 @@ pub mod meta_keys {
 pub mod theme {
     pub const FONT_SIZE: &str = "font_size";
     pub const FONT_COLOR: &str = "font_color";
+    pub const OUTLINE_SIZE: &str = "outline_size";
+    pub const FONT_OUTLINE_COLOR: &str = "font_outline_color";
 }
 
 // ── Node paths ────────────────────────────────────────────────────────

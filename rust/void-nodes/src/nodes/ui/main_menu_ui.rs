@@ -214,11 +214,17 @@ impl MainMenuUI {
     }
 
     /// (Re)build the action rows for the current Continue availability, with
-    /// the cursor parked on New Game.
+    /// the cursor parked on what the player almost always wants: Continue
+    /// when a run exists, New Game otherwise.
     fn rebuild_items(&mut self) {
         self.actions = actions_for(self.continue_available);
+        let preferred = if self.continue_available {
+            MenuAction::Continue
+        } else {
+            MenuAction::NewGame
+        };
         let default_row = self.actions.iter()
-            .position(|a| *a == MenuAction::NewGame)
+            .position(|a| *a == preferred)
             .unwrap_or(0);
         self.cursor = MenuCursor::new_at(default_row, self.actions.len());
 

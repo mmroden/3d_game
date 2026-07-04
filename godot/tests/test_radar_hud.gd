@@ -33,6 +33,15 @@ func _contact(root: Node3D, pos: Vector3) -> Node3D:
 	enemy.global_position = pos
 	return enemy
 
+## Push a contact set covering these enemies — in play, LevelManager scopes
+## the set to the lit neighborhood (RADAR_ROOM_DEPTH) and GameManager pushes
+## it on every room change; the HUD draws ONLY what was pushed.
+func _push_contacts(hud: HUD, enemies: Array) -> void:
+	var ids := PackedInt64Array()
+	for e in enemies:
+		ids.append(e.get_instance_id())
+	hud.set_radar_contacts(ids)
+
 func _visible_arrows(hud: Node) -> Array:
 	var out := []
 	for poly in hud.find_children("*", "Polygon2D", true, false):
@@ -55,8 +64,9 @@ func test_unlocked_radar_marks_offscreen_enemies_inside_the_band():
 	hud.set_unlock_flags(true, false)
 	# Off-axis behind the camera — dead-center-behind is the (tested) no-
 	# direction degenerate that correctly draws nothing.
-	_contact(rig["root"], Vector3(5, 0, 50))
-	_contact(rig["root"], Vector3(200, 0, -5))  # far right, in front
+	var a := _contact(rig["root"], Vector3(5, 0, 50))
+	var b := _contact(rig["root"], Vector3(200, 0, -5))  # far right, in front
+	_push_contacts(hud, [a, b])
 	await wait_process_frames(2)
 
 	var arrows := _visible_arrows(hud)
@@ -73,7 +83,8 @@ func test_onscreen_enemy_gets_no_arrow():
 	var rig := _rig()
 	var hud: HUD = rig["hud"]
 	hud.set_unlock_flags(true, false)
-	_contact(rig["root"], Vector3(0, 0, -20))  # dead ahead, on screen
+	var onscreen := _contact(rig["root"], Vector3(0, 0, -20))  # dead ahead, on screen
+	_push_contacts(hud, [onscreen])
 	await wait_process_frames(2)
 	assert_eq(_visible_arrows(hud).size(), 0,
 		"a visibly on-screen enemy needs no arrow")
@@ -84,6 +95,7 @@ func test_hidden_enemies_are_off_the_radar():
 	var hud: HUD = rig["hud"]
 	hud.set_unlock_flags(true, false)
 	var enemy := _contact(rig["root"], Vector3(0, 0, 50))
+	_push_contacts(hud, [enemy])
 	enemy.visible = false  # dormant minion / culled room
 	await wait_process_frames(2)
 	assert_eq(_visible_arrows(hud).size(), 0,
@@ -94,7 +106,8 @@ func test_revoking_visibility_clears_the_arrows():
 	var rig := _rig()
 	var hud: HUD = rig["hud"]
 	hud.set_unlock_flags(true, false)
-	_contact(rig["root"], Vector3(5, 0, 50))  # off-axis behind
+	var behind := _contact(rig["root"], Vector3(5, 0, 50))  # off-axis behind
+	_push_contacts(hud, [behind])
 	await wait_process_frames(2)
 	assert_gt(_visible_arrows(hud).size(), 0, "sanity: an arrow is up")
 
@@ -107,3 +120,72 @@ func test_revoking_visibility_clears_the_arrows():
 	await wait_process_frames(2)
 	assert_eq(_visible_arrows(hud).size(), 0,
 		"revoking the flag parks every arrow")
+
+
+func test_hud_text_is_readable_and_outlined():
+	# Playtest (2026-07-04): in-game text is too small and drowns in the
+	# scene. Every HUD label draws from the ui_style HUD ladder (>= 26px)
+	# with a dark outline so it reads against any backdrop.
+	var hud := HUD.new()
+	add_child_autofree(hud)
+	await wait_process_frames(1)
+	var labels := hud.find_children("*", "Label", true, false)
+	assert_gt(labels.size(), 3, "the HUD builds its labels in ready")
+	for l in labels:
+		var size: int = l.get_theme_font_size("font_size")
+		var outline: int = l.get_theme_constant("outline_size")
+		assert_gte(size, 26, "%s must be couch-readable, got %dpx" % [l.text, size])
+		assert_gte(outline, 4, "%s needs an outline to read against the scene" % l.text)
+
+
+func test_only_pushed_contacts_reach_the_radar():
+	# Playtest (2026-07-04): an arrow for every enemy on the level is noise.
+	# The radar's scope is the lit neighborhood — LevelManager computes it
+	# at RADAR_ROOM_DEPTH, GameManager pushes it on room changes, and the
+	# HUD draws ONLY what was pushed. Nothing pushed, nothing drawn.
+	var rig := _rig()
+	var hud: HUD = rig["hud"]
+	hud.set_unlock_flags(true, false)
+	var near := _contact(rig["root"], Vector3(5, 0, 50))
+	var _far := _contact(rig["root"], Vector3(-5, 0, 50))
+	await wait_process_frames(2)
+	assert_eq(_visible_arrows(hud).size(), 0,
+		"before any contact push the radar is silent")
+	_push_contacts(hud, [near])
+	await wait_process_frames(2)
+	assert_eq(_visible_arrows(hud).size(), 1,
+		"only the pushed contact gets an arrow — the far one is out of scope")
+
+
+func test_radar_contacts_cover_the_neighborhood_not_the_level():
+	# Full stack: the wire LevelManager → GameManager → HUD scopes contacts
+	# to the lit neighborhood; the level-wide enemy roster is bigger.
+	const UiStub := preload("res://tests/helpers/ui_stub.gd")
+	var root := Node3D.new()
+	add_child_autofree(root)
+	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
+		var stub := UiStub.new()
+		stub.name = ui_name
+		root.add_child(stub)
+	var lm := LevelManager.new()
+	lm.name = "LevelManager"
+	var gm := GameManager.new()
+	gm.fixed_seed = 1
+	root.add_child(lm)
+	root.add_child(gm)
+	gm.clear_save_for_tests()
+	gm.start_new_game()
+	gm.advance_from_ship_select()
+	for _i in range(12):
+		if gm.get_phase_name() == "Playing":
+			break
+		gm.advance_from_bestiary()
+	await wait_process_frames(4)  # deferred build + first culling pass
+
+	var contacts: PackedInt64Array = lm.radar_contacts()
+	var roster := 0
+	for e in lm.find_children("*", "EnemyDrone", true, false):
+		roster += 1
+	assert_gt(roster, 0, "the pinned level fields enemies")
+	assert_lt(contacts.size(), roster,
+		"the radar scope (depth 1) must exclude the level's far rooms")

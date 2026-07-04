@@ -17,6 +17,12 @@ mod tests;
 /// don't count. See [`LevelGraph::visible_from`].
 pub const RENDER_ROOM_DEPTH: usize = 2;
 
+/// How deep the enemy radar pings: tighter than render visibility — the
+/// arrows cover the current room, its corridors, and the neighboring room,
+/// not everything the renderer happens to light (playtest 2026-07-04:
+/// level-wide arrows are noise). Same authority, smaller budget.
+pub const RADAR_ROOM_DEPTH: usize = 1;
+
 /// The full level layout as a graph of flyable spaces connected by edges.
 /// Backed by petgraph for correct, battle-tested graph algorithms.
 /// Generated in pure Rust, then handed to LevelManager (Godot node)

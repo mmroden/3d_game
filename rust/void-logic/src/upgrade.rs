@@ -10,6 +10,10 @@ pub enum UpgradeKind {
     MaxHealth,
     FireRate,
     ProjectileDamage,
+    /// Shield envelope (+10% capacity per purchase, like every stat).
+    /// Appended LAST: ids are positions in `ALL`, and the shop id space
+    /// (laser, life, unlocks) continues after the stats.
+    ShieldCapacity,
 }
 
 impl UpgradeKind {
@@ -19,6 +23,7 @@ impl UpgradeKind {
         UpgradeKind::MaxHealth,
         UpgradeKind::FireRate,
         UpgradeKind::ProjectileDamage,
+        UpgradeKind::ShieldCapacity,
     ];
 
     /// Stable id for GDScript crossings (position in `ALL`), like `EnemyType`.
@@ -39,6 +44,7 @@ impl UpgradeKind {
             Self::MaxHealth => "Armor",
             Self::FireRate => "Fire Rate",
             Self::ProjectileDamage => "Damage",
+            Self::ShieldCapacity => "Shields",
         }
     }
 }
@@ -57,12 +63,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shop_stock_is_five_kinds() {
+    fn shop_stock_is_six_kinds() {
         // Damping ("Stability") and ProjectileSpeed ("Beam Focus") are retired:
         // nothing grants them under the shop economy. Their base stats remain
-        // fixed values on BaseStats.
-        assert_eq!(UpgradeKind::ALL.len(), 5,
-            "shop stock: Thrust, Rotation, Armor, Fire Rate, Damage");
+        // fixed values on BaseStats. Shields joined the stock 2026-07-04
+        // (playtest ask), appended last so the id space didn't reshuffle.
+        assert_eq!(UpgradeKind::ALL.len(), 6,
+            "shop stock: Thrust, Rotation, Armor, Fire Rate, Damage, Shields");
+        assert_eq!(UpgradeKind::ShieldCapacity.id(), 5,
+            "Shields is appended — the laser/life/unlock ids sit after it");
         for kind in UpgradeKind::ALL {
             assert!(kind.label() != "Stability" && kind.label() != "Beam Focus",
                 "{kind:?} is retired stock");

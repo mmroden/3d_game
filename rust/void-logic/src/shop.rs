@@ -106,6 +106,7 @@ fn stat_base_cost(kind: UpgradeKind) -> u32 {
         UpgradeKind::ProjectileDamage => 5_000,
         UpgradeKind::FireRate => 4_000,
         UpgradeKind::MaxHealth => 3_000,
+        UpgradeKind::ShieldCapacity => 3_500,
         UpgradeKind::Thrust => 2_000,
         UpgradeKind::RotationSpeed => 1_500,
     }
@@ -213,6 +214,11 @@ pub fn purchase(run: &mut RunState, id: ShopItemId) -> Result<Receipt, Refusal> 
                 multiplier: STAT_UPGRADE_MULTIPLIER,
             };
             run.loadout.add_upgrade(upgrade.clone());
+            if kind == UpgradeKind::ShieldCapacity {
+                // The shield envelope lives on RunState, not the loadout —
+                // re-derive it so the purchase takes effect immediately.
+                run.refresh_shield();
+            }
             Ok(Receipt::UpgradeAdded(upgrade))
         }
         ShopItemId::Laser => {
@@ -414,6 +420,17 @@ mod tests {
         assert!(matches!(result, Err(Refusal::NotEnough(_))),
             "green purchases are refused on the green balance, got {result:?}");
         assert!(!run.unlocks.contains(Unlock::FogMap));
+    }
+
+    #[test]
+    fn buying_shields_raises_the_envelope_through_the_shop() {
+        let mut run = RunState::new(Seed::new(42));
+        run.collect_cache(CurrencyKind::Components, 10_000);
+        let before = run.shield.max_capacity;
+        purchase(&mut run, ShopItemId::Stat(UpgradeKind::ShieldCapacity))
+            .expect("10k affords the 3.5k shield upgrade");
+        assert!(run.shield.max_capacity > before,
+            "the purchase must reach the shield envelope, not just the loadout");
     }
 
     #[test]

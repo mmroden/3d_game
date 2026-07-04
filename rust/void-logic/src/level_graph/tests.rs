@@ -656,6 +656,18 @@ fn visible_from_lights_one_more_room_per_budget_unit() {
 }
 
 #[test]
+fn radar_scope_is_one_room_deep() {
+    let (graph, n) = linear_chain();
+    assert_eq!(
+        visible_indices(&graph, n[0], RADAR_ROOM_DEPTH),
+        vec![0, 1, 2, 3],
+        "the radar pings the current room, its corridors, and the next room"
+    );
+    assert!(RADAR_ROOM_DEPTH < RENDER_ROOM_DEPTH,
+        "you can see farther than the radar hears — arrows stay scoped");
+}
+
+#[test]
 fn visible_from_never_crosses_a_teleporter() {
     let mut graph = LevelGraph::new();
     let r0 = graph.place_room(room_1x1_east_west(), [0, 0, 0]).unwrap();

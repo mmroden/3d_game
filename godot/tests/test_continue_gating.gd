@@ -148,7 +148,7 @@ func test_new_game_wipes_the_save_completely():
 	gm.on_cache_collected(1, 700)  # green — enough for the 300 radar
 	gm.on_portal_entered()
 	gm.advance_to_shop()
-	assert_true(gm.buy_shop_item(7), "own the radar so there is a profile to lose")
+	assert_true(gm.buy_shop_item(8), "own the radar so there is a profile to lose")
 	gm.advance_to_next_level()
 	_into_playing(gm)
 
@@ -171,3 +171,50 @@ func test_new_game_wipes_the_save_completely():
 	assert_false(reboot.has_continuable_run(), "the save file itself is wiped")
 	assert_eq(reboot.get_organics(), 0, "no profile survives on disk")
 	reboot.queue_free()
+
+func test_continue_is_the_default_row_when_available():
+	# Playtest (2026-07-04): with a run to continue, Continue is what the
+	# player almost always wants — the cursor starts there, not on New Game.
+	# Build the whole stack DETACHED, then attach once — like scene
+	# instancing, every sibling exists before any ready() runs (the real
+	# MainMenuUI and GameManager wire to each other by name at ready).
+	var root := Node3D.new()
+	for ui_name in ["HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
+		var stub := MenuRecordingStub.new()
+		stub.name = ui_name
+		root.add_child(stub)
+	var ui := MainMenuUI.new()
+	ui.name = "MainMenuUI"
+	root.add_child(ui)
+	var lm := LevelManager.new()
+	lm.name = "LevelManager"
+	var gm := GameManager.new()
+	gm.name = "GameManager"
+	root.add_child(lm)
+	root.add_child(gm)
+	add_child_autofree(root)
+	gm.clear_save_for_tests()
+	await wait_process_frames(2)  # let GM's initial-phase push land
+
+	ui.visible = true
+	ui.set_continue_available(true)
+	watch_signals(ui)
+	await wait_process_frames(1)
+	Input.action_press("menu_select")
+	await wait_process_frames(2)
+	Input.action_release("menu_select")
+	await wait_process_frames(1)
+	assert_signal_emitted(ui, "continue_selected",
+		"select on the default row must continue the run")
+	assert_signal_not_emitted(ui, "new_game_selected",
+		"and must not start a new game")
+
+	# Without a run, New Game leads and is the default.
+	ui.set_continue_available(false)
+	await wait_process_frames(1)
+	Input.action_press("menu_select")
+	await wait_process_frames(2)
+	Input.action_release("menu_select")
+	await wait_process_frames(1)
+	assert_signal_emitted(ui, "new_game_selected",
+		"a fresh install defaults to New Game")

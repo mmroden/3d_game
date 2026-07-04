@@ -12,9 +12,23 @@ const UiStub := preload("res://tests/helpers/ui_stub.gd")
 ## UiStub contract (tests/helpers/ui_stub.gd).
 class MapRecordingStub:
 	extends UiStub
+	# Solid (visited, non-frontier) ROOM rects per push — the fog contract's
+	# observable. Corridor rects and frontier hints don't count as rooms.
+	# Also records each push's current-flagged rect so tests can watch the
+	# player marker FOLLOW the player (playtest 2026-07-04: it lagged).
 	var map_room_counts: Array = []
-	func update_map(rooms: PackedVector2Array, _rf: PackedByteArray, _e: PackedVector2Array, _ef: PackedByteArray) -> void:
-		map_room_counts.append(rooms.size())
+	var current_rects: Array = []
+	var projections: Array = []
+	func update_map(rects: PackedFloat32Array, flags: PackedByteArray, projection: PackedFloat32Array) -> void:
+		projections.append(projection)
+		var rooms := 0
+		for i in flags.size():
+			var f: int = flags[i]
+			if f & 2 == 0 and f & 4 == 0:  # not CORRIDOR, not FRONTIER
+				rooms += 1
+			if f & 1 != 0:  # CURRENT
+				current_rects.append(Rect2(rects[4 * i], rects[4 * i + 1], rects[4 * i + 2], rects[4 * i + 3]))
+		map_room_counts.append(rooms)
 
 
 func test_visiting_rooms_grows_the_pushed_map():
@@ -39,6 +53,7 @@ func test_visiting_rooms_grows_the_pushed_map():
 	shape.shape = sphere
 	player.add_child(shape)
 	var gm := GameManager.new()
+	gm.fixed_seed = 1  # the pinned seed
 	root.add_child(lm)
 	root.add_child(player)
 	root.add_child(gm)
@@ -60,22 +75,39 @@ func test_visiting_rooms_grows_the_pushed_map():
 		"entering the level pushes the first map view")
 	assert_eq(hud_stub.map_room_counts.back(), 1, "one room visited, one room mapped")
 
-	# Teleport to another room's floor center: a new visit, a bigger map.
+	# Walk node by node until a second ROOM is mapped: the node list mixes
+	# rooms and corridors, and only room footprints count as rooms on the
+	# map (corridors draw as corridors).
 	var pushes_before: int = hud_stub.map_room_counts.size()
-	player.global_position = lm.room_floor_center(1)
-	player.reset_physics_interpolation()
-	await wait_physics_frames(3, "let culling resolve the new room")
+	var target := 1
+	while hud_stub.map_room_counts.back() < 2 and target < 8:
+		player.global_position = lm.room_floor_center(target)
+		player.reset_physics_interpolation()
+		await wait_physics_frames(3, "let culling resolve the hop")
+		target += 1
 	assert_gt(hud_stub.map_room_counts.size(), pushes_before,
-		"a newly visited room pushes a fresh view")
+		"newly visited nodes push fresh views")
 	assert_eq(hud_stub.map_room_counts.back(), 2, "two rooms visited, two mapped")
 
-	# Re-entering a known room must NOT push again.
+	# Re-entering a known room reveals nothing new — but the current marker
+	# must FOLLOW the player (playtest 2026-07-04: it stuck on the last
+	# newly-visited room).
 	var pushes_after_two: int = hud_stub.map_room_counts.size()
+	var marker_before: Rect2 = hud_stub.current_rects.back()
 	player.global_position = lm.room_floor_center(0)
 	player.reset_physics_interpolation()
 	await wait_physics_frames(3, "let culling resolve the return")
-	assert_eq(hud_stub.map_room_counts.size(), pushes_after_two,
-		"revisiting a known room pushes nothing — redraws are per NEW room")
+	assert_gt(hud_stub.map_room_counts.size(), pushes_after_two,
+		"re-entering a known room still pushes — the marker must move")
+	assert_eq(hud_stub.map_room_counts.back(), 2,
+		"but reveals nothing new — the fog only lifts on first visits")
+	assert_ne(hud_stub.current_rects.back(), marker_before,
+		"the current marker followed the player back to the start room")
+	# The projection rides every push, so the panel can place the LIVE
+	# player marker between room changes.
+	var proj: PackedFloat32Array = hud_stub.projections.back()
+	assert_eq(proj.size(), 3, "projection = [scale, off_x, off_z]")
+	assert_gt(proj[0], 0.0, "a real level projects at a positive scale")
 
 
 func test_map_panel_renders_only_with_the_unlock():
@@ -83,10 +115,9 @@ func test_map_panel_renders_only_with_the_unlock():
 	add_child_autofree(hud)
 	hud.visible = true
 	hud.update_map(
-		PackedVector2Array([Vector2(0.5, 0.5)]),
-		PackedByteArray([1]),
-		PackedVector2Array([Vector2(0.5, 0.5), Vector2(0.56, 0.5)]),
-		PackedByteArray([1]),
+		PackedFloat32Array([0.4, 0.4, 0.2, 0.2]),
+		PackedByteArray([1]),  # the current room
+		PackedFloat32Array([0.01, 0.5, 0.5]),
 	)
 
 	await wait_process_frames(2)

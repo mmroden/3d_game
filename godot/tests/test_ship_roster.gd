@@ -5,12 +5,12 @@ extends GutTest
 ## weapons) is pinned in Rust (ship_type.rs); this suite covers the shell.
 
 const TALON_SHIP_ID := 1        # ShipType::id (Talon costs 3000 organics)
-# ShopItemId layout: stats 0-4, laser 5, life 6, then the green ladder —
-# radar 7, map 8, Valkyrie 9, ships from 10.
-const RADAR_ITEM := 7
-const MAP_ITEM := 8
-const VALKYRIE_ITEM := 9
-const TALON_UNLOCK_ITEM := 10
+# ShopItemId layout: stats 0-5 (Shields joined last), laser 6, life 7, then
+# the green ladder — radar 8, map 9, Valkyrie 10, ships from 11.
+const RADAR_ITEM := 8
+const MAP_ITEM := 9
+const VALKYRIE_ITEM := 10
+const TALON_UNLOCK_ITEM := 11
 const KIND_ORGANICS := 1
 const VALKYRIE_UNLOCK := 2      # Unlock::id of Valkyrie
 

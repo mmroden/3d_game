@@ -18,7 +18,7 @@ const SAVE_SECTION: &str = "run";
 
 use rand::RngExt;
 
-use super::constants::{actions, signals, methods, nodes, properties};
+use super::constants::{actions, map_flags, signals, methods, nodes, properties};
 use super::godot_util;
 use void_logic::audio_catalog::SfxEvent;
 use void_logic::bestiary::{self, BestiaryKind};
@@ -559,8 +559,28 @@ impl GameManager {
         if room < 0 {
             return;
         }
-        if self.run_state.visit_room(room as usize) {
-            self.push_map_view();
+        // Every room change re-pushes the map: the fog only lifts on first
+        // visits (visit_room feeds map_rects), but the current marker must
+        // follow the player through KNOWN rooms too (playtest 2026-07-04:
+        // it stuck on the last new room). Still per room change, never per
+        // frame.
+        self.run_state.visit_room(room as usize);
+        self.push_map_view();
+        self.push_radar_contacts();
+    }
+
+    /// Scope the radar to the lit neighborhood: pull the contact set from
+    /// LevelManager (the cull-visibility authority at RADAR_ROOM_DEPTH) and
+    /// push it to the HUD. Runs on every room change — the set follows the
+    /// player through the level.
+    fn push_radar_contacts(&self) {
+        let Some(parent) = self.base().get_parent() else { return };
+        let Some(level_mgr) = parent.try_get_node_as::<LevelManager>(nodes::LEVEL_MANAGER) else {
+            return;
+        };
+        let contacts = level_mgr.bind().radar_contacts();
+        if let Some(mut hud) = Self::find_ui_node(&parent, nodes::HUD) {
+            hud.call(methods::SET_RADAR_CONTACTS, &[Variant::from(contacts)]);
         }
     }
 
@@ -571,35 +591,44 @@ impl GameManager {
         let Some(level_mgr) = parent.try_get_node_as::<LevelManager>(nodes::LEVEL_MANAGER) else {
             return;
         };
-        let view = {
+        let (view, projection) = {
             let lm = level_mgr.bind();
-            level_map::map_view(
-                lm.graph(),
-                &self.run_state.rooms_visited,
-                self.run_state.current_room,
+            (
+                level_map::map_rects(
+                    lm.graph(),
+                    &self.run_state.rooms_visited,
+                    self.run_state.current_room,
+                ),
+                level_map::map_projection(lm.graph(), lm.cell_size()),
             )
         };
 
-        let rooms: PackedVector2Array = view.rooms.iter()
-            .map(|r| Vector2::new(r.pos[0], r.pos[1]))
-            .collect();
-        let room_flags: PackedByteArray = view.rooms.iter()
-            .map(|r| r.is_current as u8)
-            .collect();
-        let mut edges = PackedVector2Array::new();
-        let mut edge_flags = PackedByteArray::new();
-        for edge in &view.edges {
-            edges.push(Vector2::new(edge.from[0], edge.from[1]));
-            edges.push(Vector2::new(edge.to[0], edge.to[1]));
-            edge_flags.push(edge.frontier as u8);
+        let mut rects = PackedFloat32Array::new();
+        let mut flags = PackedByteArray::new();
+        for r in &view {
+            for v in r.rect {
+                rects.push(v);
+            }
+            let mut flag = 0u8;
+            if r.current { flag |= map_flags::CURRENT; }
+            if r.corridor { flag |= map_flags::CORRIDOR; }
+            if r.frontier { flag |= map_flags::FRONTIER; }
+            flags.push(flag);
         }
+
+        // The world→unit projection rides along so the panel can place the
+        // LIVE player marker between room-change pushes.
+        let proj = PackedFloat32Array::from(&[
+            projection.scale,
+            projection.offset[0],
+            projection.offset[1],
+        ][..]);
 
         if let Some(mut hud) = Self::find_ui_node(&parent, nodes::HUD) {
             hud.call(methods::UPDATE_MAP, &[
-                rooms.to_variant(),
-                room_flags.to_variant(),
-                edges.to_variant(),
-                edge_flags.to_variant(),
+                rects.to_variant(),
+                flags.to_variant(),
+                proj.to_variant(),
             ]);
         }
     }

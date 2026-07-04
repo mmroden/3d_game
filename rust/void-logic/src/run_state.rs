@@ -4,6 +4,7 @@ use crate::enemy_type::EnemyType;
 use crate::kill_tracker::KillTracker;
 use crate::laser::LaserLevel;
 use crate::loadout::Loadout;
+use crate::upgrade::UpgradeKind;
 use crate::newtypes::{Health, Damage, Shield};
 use crate::seed::Seed;
 use crate::shield::ShieldState;
@@ -130,17 +131,28 @@ impl RunState {
         self.current_room = 0;
     }
 
+    /// Re-derive the shield envelope from hull × trim × owned upgrades,
+    /// preserving nothing (the rebuild recharges — shields are topped off
+    /// wherever this is called: purchases, hull/trim changes, level starts).
+    pub fn refresh_shield(&mut self) {
+        let mut shield = Self::shield_for(self.ship_type, self.ship_color);
+        let upgrade_mul = self.loadout.stat_multiplier(UpgradeKind::ShieldCapacity);
+        shield.max_capacity = Shield::new(shield.max_capacity.as_f32() * upgrade_mul);
+        shield.reset();
+        self.shield = shield;
+    }
+
     /// Choose a ship color, rebuilding the shield to its capacity/regen.
     pub fn set_ship_color(&mut self, color: ShipColor) {
         self.ship_color = color;
-        self.shield = Self::shield_for(self.ship_type, color);
+        self.refresh_shield();
     }
 
     /// Choose a hull, rebuilding the shield to its capacity/regen.
     /// Ownership validation is the caller's job (`unlocks.owns_ship`).
     pub fn set_ship_type(&mut self, ship_type: ShipType) {
         self.ship_type = ship_type;
-        self.shield = Self::shield_for(ship_type, self.ship_color);
+        self.refresh_shield();
     }
 
     pub fn is_alive(&self) -> bool {
@@ -350,6 +362,29 @@ mod tests {
         assert_eq!(run.health, run.loadout.max_health(), "patched up between levels");
         assert_eq!(run.shield.current, run.shield.max_capacity, "shield recharged");
         assert_eq!(run.components.balance, 7_000, "the bank persists");
+    }
+
+    #[test]
+    fn shield_upgrades_raise_the_envelope() {
+        let mut run = RunState::new(Seed::new(42));
+        let base_cap = run.shield.max_capacity.as_f32();
+        run.loadout.add_upgrade(crate::upgrade::Upgrade {
+            name: "Shields +10%".to_string(),
+            kind: crate::upgrade::UpgradeKind::ShieldCapacity,
+            multiplier: 1.10,
+        });
+        run.refresh_shield();
+        assert!((run.shield.max_capacity.as_f32() - base_cap * 1.10).abs() < 0.01,
+            "one shield upgrade is +10% capacity, got {} from {}",
+            run.shield.max_capacity.as_f32(), base_cap);
+        assert_eq!(run.shield.current, run.shield.max_capacity,
+            "the rebuilt shield is topped off");
+
+        // The envelope composes hull × trim × upgrades: a trim change must
+        // keep the upgrade multiplier.
+        run.set_ship_color(ShipColor::Armored);
+        assert!(run.shield.max_capacity.as_f32() > base_cap * 1.10,
+            "Armored trim on top of the upgrade beats the upgrade alone");
     }
 
     #[test]

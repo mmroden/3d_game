@@ -36,6 +36,22 @@ pub const FONT_BODY: i32 = 32;
 /// Fine print — row detail hints, prompts, pager position.
 pub const FONT_DETAIL: i32 = 26;
 
+// ── HUD type ─────────────────────────────────────────────────────
+// The in-game HUD lives inside the SBS safe band, so its ladder is tighter
+// than the menus' — but still couch-readable, and every HUD label wears a
+// dark outline so it reads against any backdrop (playtest 2026-07-04).
+
+/// The big readouts — health, the slow-warning banner.
+pub const FONT_HUD_PRIMARY: i32 = 38;
+/// Balances, shield, laser, lives, level.
+pub const FONT_HUD_LABEL: i32 = 32;
+/// Power mode, the controls hint.
+pub const FONT_HUD_FINE: i32 = 26;
+/// Outline width (px) on every HUD label.
+pub const HUD_OUTLINE: i32 = 6;
+/// Outline color — near-black, softened just enough not to ring.
+pub const HUD_OUTLINE_COLOR: [f32; 3] = [0.02, 0.03, 0.05];
+
 // ── Text colors ──────────────────────────────────────────────────
 
 /// White — selected / highlighted menu item [R, G, B].
@@ -117,6 +133,13 @@ mod tests {
         assert!(FONT_ROW >= 36, "menu rows must be readable from the couch");
         assert!(FONT_TITLE >= 64);
         assert!(FONT_DETAIL >= 22, "even fine print must not be squint-sized");
+        // The HUD ladder: tighter than the menus (it shares the safe band
+        // with the action) but never below the readable floor, and always
+        // outlined.
+        assert!(FONT_HUD_PRIMARY > FONT_HUD_LABEL);
+        assert!(FONT_HUD_LABEL > FONT_HUD_FINE);
+        assert!(FONT_HUD_FINE >= 26, "HUD fine print must be couch-readable");
+        assert!(HUD_OUTLINE >= 4, "HUD text needs a real outline to read");
     }
 
     #[test]

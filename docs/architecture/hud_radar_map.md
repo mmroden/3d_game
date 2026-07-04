@@ -16,10 +16,16 @@ Edge arrows pointing at enemies that are not visibly on screen.
 - **The shell feeds it** (`hud.rs::update_radar`): every Playing frame,
   project each member of the `"enemies"` group through the player camera
   (`unproject_position` + `is_position_behind`).
-- **Filtering reuses the dormancy/culling authority**: `is_visible_in_tree`
-  skips dormant minions and room-culled enemies — no aggro bookkeeping, no
-  parallel visibility logic. The radar sells "what's around you," which is
-  exactly what the culling graph already decides.
+- **Scope is the lit neighborhood, not the level** (playtest 2026-07-04:
+  level-wide arrows are noise). The cull-visibility authority serves two
+  budgets: rendering lights `RENDER_ROOM_DEPTH` (2) rooms deep, the radar
+  pings `RADAR_ROOM_DEPTH` (1) — current room, its corridors, the next room.
+  `LevelManager::radar_contacts` resolves the enemy ids in that set;
+  GameManager pushes them to the HUD on every room change
+  (`set_radar_contacts`); the HUD draws ONLY pushed contacts (empty set =
+  silent radar). `is_visible_in_tree` still filters dormant minions on top.
+  Enemies activated mid-fight join at the next room change — they spawn in
+  the player's own room, on screen anyway.
 - **SBS confinement is structural**: the arrow pool (16 `Polygon2D`s,
   Faucet-style — built once, visibility-flipped) lives under the HUD's
   `safe_area` control, so the SBS central band applies to arrows by
@@ -28,23 +34,36 @@ Edge arrows pointing at enemies that are not visibly on screen.
 
 ## Recon Map (`Unlock::FogMap`)
 
-A corner widget (bottom-left of the safe band) drawing the rooms the player
-has visited and where unexplored corridors leave them.
+A corner widget (bottom-left of the safe band, 340px) drawing the level's
+REAL rectilinear footprints — every visited room and corridor as its
+top-down rectangle (playtest 2026-07-04: abstract dots were useless).
 
 - **Built on the retained LevelGraph, never a parallel structure**
-  (`void-logic/src/level_map.rs::map_view`): the same petgraph the culling
-  reads. Only visited rooms appear; a visited→unvisited edge renders as a
-  short **frontier stub** (`FRONTIER_STUB` in unit space) pointing along the
-  corridor without revealing the far room. Coordinates normalize over the
-  whole footprint so the frame never re-scales mid-exploration.
+  (`void-logic/src/level_map.rs::map_rects`): the same petgraph the culling
+  reads, including its corridor nodes. One uniform scale over the whole
+  footprint — rectangles keep their true aspect, relative positions are
+  exact, and the frame never re-scales mid-exploration. Fog rules: unvisited
+  rooms never appear; an unvisited CORRIDOR adjacent to explored space draws
+  faint — real geometry pointing into the dark without revealing the room
+  beyond it. Opacity is the fog on screen: the current room near-opaque,
+  explored space translucent, frontiers barely there — overlapping stories
+  stay legible through the alpha.
 - **One detection, two consumers**: `LevelManager::update_room_culling`'s
   room-change detection both re-culls and emits `room_changed` (deferred —
   the handler binds back into LevelManager for the graph). GameManager
-  visits the room in RunState (`visit_room`, per-level state) and pushes a
-  fresh view to the HUD **only on a first visit** — the map redraws per new
-  room, never per frame.
-- `MapPanel` (void-nodes/ui) is pure presentation: cached packed arrays, a
-  custom `draw()`, `queue_redraw` on push.
+  visits the room in RunState (`visit_room`) and re-pushes the view on
+  EVERY room change — the fog only lifts on first visits, but the current
+  marker must follow the player through known rooms too (playtest
+  2026-07-04: it stuck on the last new room).
+- **The live player marker**: each push carries the world→unit projection
+  (`level_map::map_projection`, the same normalization as the rects), and
+  MapPanel draws a heading triangle at the ship's actual position each
+  frame it is visible. North-up map, turning arrow — the 6DOF-friendly
+  convention (rotating a rectilinear map reads as soup; the genre's full
+  answer, a rotating 3D automap screen, is a future feature).
+- `MapPanel` (void-nodes/ui) is otherwise pure presentation: cached packed
+  arrays, a custom `draw()`, `queue_redraw` on push (plus per-frame while
+  visible, for the marker only).
 
 ## Testing altitude (both features)
 

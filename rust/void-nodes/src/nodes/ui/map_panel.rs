@@ -1,29 +1,33 @@
 use godot::prelude::*;
-use godot::classes::{Control, IControl};
+use godot::classes::{Control, IControl, Node3D};
+
+use crate::nodes::constants::{groups, map_flags};
 
 /// Corner inset (px) between the panel border and the drawn map.
 const MAP_MARGIN: f32 = 10.0;
-/// Side length (px) of a drawn room square.
-const ROOM_SIZE: f32 = 8.0;
+/// Player heading-arrow size (px).
+const MARKER_SIZE: f32 = 7.0;
 
 /// The recon-map widget (the FogMap unlock): a corner panel drawing the
-/// rooms the player has visited and frontier stubs where unexplored
-/// corridors leave them. Pure presentation — GameManager derives the view
-/// from the retained LevelGraph in void-logic (`level_map::map_view`) and
-/// pushes it here as packed arrays in unit-square coordinates; a redraw
-/// happens only when a new room is visited, never per frame.
+/// level's REAL rectilinear footprints — every visited room and corridor as
+/// its top-down rectangle, uniformly scaled (playtest 2026-07-04: abstract
+/// dots were useless). The current room draws near-opaque, explored space
+/// translucent, frontier corridors faint — overlapping stories stay legible
+/// through the alpha. Pure presentation — GameManager derives the rects
+/// from the retained LevelGraph (`level_map::map_rects`) and pushes them as
+/// packed arrays in unit-square coordinates; a redraw happens only when a
+/// new room is visited, never per frame.
 #[derive(GodotClass)]
 #[class(base=Control)]
 pub struct MapPanel {
     base: Base<Control>,
-    /// Room centers (unit square).
-    rooms: PackedVector2Array,
-    /// Per room: bit0 = the player's current room.
-    room_flags: PackedByteArray,
-    /// Edge endpoint pairs (unit square): [from0, to0, from1, to1, …].
-    edges: PackedVector2Array,
-    /// Per edge: bit0 = frontier stub (unexplored corridor).
-    edge_flags: PackedByteArray,
+    /// Footprints, stride 4: `[x, z, w, d]` per node (unit square).
+    rects: PackedFloat32Array,
+    /// Per node: `constants::map_flags` bits (current / corridor / frontier).
+    flags: PackedByteArray,
+    /// World→unit XZ transform `[scale, off_x, off_z]` — places the LIVE
+    /// player marker between room-change pushes.
+    projection: PackedFloat32Array,
 }
 
 #[godot_api]
@@ -31,76 +35,122 @@ impl IControl for MapPanel {
     fn init(base: Base<Control>) -> Self {
         Self {
             base,
-            rooms: PackedVector2Array::new(),
-            room_flags: PackedByteArray::new(),
-            edges: PackedVector2Array::new(),
-            edge_flags: PackedByteArray::new(),
+            rects: PackedFloat32Array::new(),
+            flags: PackedByteArray::new(),
+            projection: PackedFloat32Array::new(),
+        }
+    }
+
+    fn process(&mut self, _delta: f64) {
+        // The map rects change per room, but the player marker rides the
+        // ship — redraw while shown (a corner panel of tens of rects).
+        if self.base().is_visible_in_tree() && !self.projection.is_empty() {
+            self.base_mut().queue_redraw();
         }
     }
 
     fn draw(&mut self) {
         let size = self.base().get_size();
-        let scale = Vector2::new(size.x - 2.0 * MAP_MARGIN, size.y - 2.0 * MAP_MARGIN);
-        if scale.x <= 0.0 || scale.y <= 0.0 {
+        let scale = (size.x - 2.0 * MAP_MARGIN).min(size.y - 2.0 * MAP_MARGIN);
+        if scale <= 0.0 {
             return;
         }
-        let place = |unit: Vector2| Vector2::new(MAP_MARGIN, MAP_MARGIN) + unit * scale;
+        let origin = Vector2::new(MAP_MARGIN, MAP_MARGIN);
 
-        // Faint backdrop so the map reads against the world behind it.
-        let rooms = self.rooms.clone();
-        let room_flags = self.room_flags.clone();
-        let edges = self.edges.clone();
-        let edge_flags = self.edge_flags.clone();
+        let rects = self.rects.clone();
+        let flags = self.flags.clone();
         let mut base = self.base_mut();
-        base.draw_rect(Rect2::new(Vector2::ZERO, size), Color::from_rgba(0.0, 0.05, 0.08, 0.45));
+        // Faint backdrop so the map reads against the world behind it.
+        base.draw_rect(Rect2::new(Vector2::ZERO, size), Color::from_rgba(0.0, 0.05, 0.08, 0.5));
 
-        // Corridors first, under the rooms. Frontier stubs read amber —
-        // "something unexplored leaves here" — full corridors cool grey-blue.
-        for i in 0..edge_flags.len() {
-            let (Some(from), Some(to)) = (edges.get(2 * i), edges.get(2 * i + 1)) else { continue };
-            let frontier = edge_flags[i] & 1 != 0;
-            let color = if frontier {
-                Color::from_rgba(1.0, 0.75, 0.25, 0.9)
-            } else {
-                Color::from_rgba(0.45, 0.6, 0.75, 0.8)
+        for i in 0..flags.len() {
+            let Some(x) = rects.get(4 * i) else { continue };
+            let (Some(z), Some(w), Some(d)) =
+                (rects.get(4 * i + 1), rects.get(4 * i + 2), rects.get(4 * i + 3))
+            else {
+                continue;
             };
-            base.draw_line_ex(place(from), place(to), color).width(2.0).done();
-        }
+            let flag = flags[i];
+            let current = flag & map_flags::CURRENT != 0;
+            let corridor = flag & map_flags::CORRIDOR != 0;
+            let frontier = flag & map_flags::FRONTIER != 0;
 
-        for i in 0..rooms.len() {
-            let Some(pos) = rooms.get(i) else { continue };
-            let center = place(pos);
-            let half = ROOM_SIZE / 2.0;
-            let rect = Rect2::new(center - Vector2::new(half, half), Vector2::new(ROOM_SIZE, ROOM_SIZE));
-            base.draw_rect(rect, Color::from_rgba(0.35, 0.85, 0.8, 0.95));
-            let is_current = room_flags.get(i).unwrap_or(0) & 1 != 0;
-            if is_current {
-                let ring = rect.grow(3.0);
-                base.draw_rect_ex(ring, Color::from_rgba(1.0, 1.0, 1.0, 0.95))
+            // Opacity is the fog: the room you stand in is nearly solid,
+            // explored space shows through, the frontier barely glows.
+            let color = if current {
+                Color::from_rgba(0.85, 0.95, 1.0, 0.95)
+            } else if frontier {
+                Color::from_rgba(1.0, 0.75, 0.25, 0.25)
+            } else if corridor {
+                Color::from_rgba(0.45, 0.6, 0.75, 0.4)
+            } else {
+                Color::from_rgba(0.35, 0.85, 0.8, 0.45)
+            };
+            let rect = Rect2::new(
+                origin + Vector2::new(x, z) * scale,
+                Vector2::new(w, d) * scale,
+            );
+            base.draw_rect(rect, color);
+            if current {
+                base.draw_rect_ex(rect.grow(2.0), Color::from_rgba(1.0, 1.0, 1.0, 0.95))
                     .filled(false)
                     .width(2.0)
                     .done();
             }
+        }
+        drop(base);
+
+        // The live player marker: a heading triangle at the ship's actual
+        // position (north-up map, the 6DOF-friendly convention — the arrow
+        // turns, the map doesn't).
+        if let Some((unit, yaw)) = self.player_map_pose() {
+            let center = origin + Vector2::new(unit[0], unit[1]) * scale;
+            // Ship forward is -Z rotated by yaw: (-sin, -cos) on the XZ
+            // plane, which is exactly screen (x right, z down).
+            let dir = Vector2::new(-yaw.sin(), -yaw.cos());
+            let side = Vector2::new(-dir.y, dir.x);
+            let points = PackedVector2Array::from(&[
+                center + dir * MARKER_SIZE,
+                center - dir * MARKER_SIZE * 0.6 + side * MARKER_SIZE * 0.6,
+                center - dir * MARKER_SIZE * 0.6 - side * MARKER_SIZE * 0.6,
+            ][..]);
+            let mut base = self.base_mut();
+            base.draw_colored_polygon(&points, Color::from_rgb(1.0, 1.0, 1.0));
         }
     }
 }
 
 #[godot_api]
 impl MapPanel {
-    /// Cache the freshly derived view and redraw. Called by the HUD when
-    /// GameManager pushes a new-room update.
+    /// Cache the freshly derived footprints and redraw. Called by the HUD
+    /// when GameManager pushes a new-room update.
     #[func]
     pub fn update_map(
         &mut self,
-        rooms: PackedVector2Array,
-        room_flags: PackedByteArray,
-        edges: PackedVector2Array,
-        edge_flags: PackedByteArray,
+        rects: PackedFloat32Array,
+        flags: PackedByteArray,
+        projection: PackedFloat32Array,
     ) {
-        self.rooms = rooms;
-        self.room_flags = room_flags;
-        self.edges = edges;
-        self.edge_flags = edge_flags;
+        self.rects = rects;
+        self.flags = flags;
+        self.projection = projection;
         self.base_mut().queue_redraw();
+    }
+
+    /// The player's map-space pose: unit-square position + yaw, or None
+    /// without a projection or a player in the tree.
+    fn player_map_pose(&self) -> Option<([f32; 2], f32)> {
+        if self.projection.len() < 3 {
+            return None;
+        }
+        let (s, ox, oz) = (self.projection[0], self.projection[1], self.projection[2]);
+        let player = self
+            .base()
+            .get_tree()
+            .get_first_node_in_group(groups::PLAYER)?
+            .try_cast::<Node3D>()
+            .ok()?;
+        let p = player.get_global_position();
+        Some(([p.x * s + ox, p.z * s + oz], player.get_rotation().y))
     }
 }

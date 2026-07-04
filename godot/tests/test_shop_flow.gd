@@ -4,14 +4,14 @@ extends GutTest
 ## funds, the laser table, extra lives, and the two death flows (a spare life
 ## routes Death -> Shop -> same level; the last life ends the run).
 ##
-## Item ids mirror void_logic::shop::ShopItemId: stat kinds 0-4 in
-## UpgradeKind::ALL order (Thrust, Rotation, Armor, Fire Rate, Damage),
-## then Laser = 5, ExtraLife = 6.
+## Item ids mirror void_logic::shop::ShopItemId: stat kinds 0-5 in
+## UpgradeKind::ALL order (Thrust, Rotation, Armor, Fire Rate, Damage,
+## Shields), then Laser = 6, ExtraLife = 7.
 
 const THRUST_ID := 0      # costs 2_000 at base
-const LASER_ID := 5       # first laser (Orange) costs 10_000
-const EXTRA_LIFE_ID := 6  # first life costs 10_000
-const RADAR_ID := 7       # Unlock::Radar, 300 organics
+const LASER_ID := 6       # first laser (Orange) costs 10_000
+const EXTRA_LIFE_ID := 7  # first life costs 10_000
+const RADAR_ID := 8       # Unlock::Radar, 300 organics
 const RADAR_UNLOCK := 0   # Unlock::id of Radar
 const KIND_COMPONENTS := 0
 const KIND_ORGANICS := 1
@@ -263,9 +263,9 @@ func test_one_press_on_the_level_2_summary_lands_in_the_shop_not_past_it():
 	await wait_process_frames(2)
 
 	# Leave the level-1 shop the way a player does: walk to Continue (a
-	# fresh catalog has 8 rows — 5 stats, laser, life, radar) and press it.
+	# fresh catalog has 9 rows — 6 stats, laser, life, radar) and press it.
 	# This is what used to park the cursor on Continue for the next visit.
-	for _i in range(8):
+	for _i in range(9):
 		Input.action_press("menu_down")
 		await wait_process_frames(2)
 		Input.action_release("menu_down")

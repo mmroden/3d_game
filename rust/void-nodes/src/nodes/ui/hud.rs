@@ -63,6 +63,11 @@ pub struct HUD {
     /// The radar-arrow pool, children of `safe_area` so the SBS band confines
     /// them structurally.
     radar_arrows: LiveVec<Polygon2D>,
+    /// Enemy instance ids in radar scope — the lit neighborhood, computed by
+    /// LevelManager (RADAR_ROOM_DEPTH) and pushed by GameManager on room
+    /// changes. The HUD draws ONLY these; empty means silent (playtest
+    /// 2026-07-04: level-wide arrows are noise).
+    radar_contacts: std::collections::HashSet<i64>,
     /// The recon-map corner widget (FogMap unlock), child of `safe_area`.
     map_panel: Option<LiveRef<MapPanel>>,
 }
@@ -89,6 +94,7 @@ impl ICanvasLayer for HUD {
             radar_unlocked: false,
             map_unlocked: false,
             radar_arrows: LiveVec::new(),
+            radar_contacts: std::collections::HashSet::new(),
             map_panel: None,
         }
     }
@@ -184,6 +190,26 @@ impl HUD {
         self.map_unlocked = map;
     }
 
+    /// The radar's scope, pushed by GameManager on every room change: the
+    /// instance ids of enemies in the lit neighborhood (LevelManager's
+    /// `radar_contacts`, RADAR_ROOM_DEPTH). The HUD never widens this.
+    #[func]
+    pub fn set_radar_contacts(&mut self, ids: PackedInt64Array) {
+        self.radar_contacts = ids.as_slice().iter().copied().collect();
+    }
+
+    /// Apply the HUD type ladder: an `ui_style` size plus the dark outline
+    /// every HUD label wears so it reads against the scene behind it.
+    fn style_hud_text(label: &mut Gd<Label>, size: i32) {
+        label.add_theme_font_size_override(theme::FONT_SIZE, size);
+        label.add_theme_constant_override(theme::OUTLINE_SIZE, ui_style::HUD_OUTLINE);
+        let c = ui_style::HUD_OUTLINE_COLOR;
+        label.add_theme_color_override(
+            theme::FONT_OUTLINE_COLOR,
+            Color::from_rgb(c[0], c[1], c[2]),
+        );
+    }
+
     /// Pre-build the fixed arrow pool, dormant, under the safe band: the SBS
     /// confinement is structural (band-local coordinates), and play only
     /// flips visibility.
@@ -219,9 +245,10 @@ impl HUD {
         panel.set_anchor(Side::RIGHT, 0.0);
         panel.set_anchor(Side::TOP, 1.0);
         panel.set_anchor(Side::BOTTOM, 1.0);
+        // Sized for legibility (playtest 2026-07-04: 200px was useless).
         panel.set_offset(Side::LEFT, 16.0);
-        panel.set_offset(Side::RIGHT, 216.0);
-        panel.set_offset(Side::TOP, -216.0);
+        panel.set_offset(Side::RIGHT, 356.0);
+        panel.set_offset(Side::TOP, -356.0);
         panel.set_offset(Side::BOTTOM, -16.0);
         panel.set_visible(false);
         safe_area.with(|sa| sa.add_child(&panel));
@@ -233,18 +260,12 @@ impl HUD {
     #[func]
     pub fn update_map(
         &mut self,
-        rooms: PackedVector2Array,
-        room_flags: PackedByteArray,
-        edges: PackedVector2Array,
-        edge_flags: PackedByteArray,
+        rects: PackedFloat32Array,
+        flags: PackedByteArray,
+        projection: PackedFloat32Array,
     ) {
         self.map_panel.with(|panel| {
-            panel.bind_mut().update_map(
-                rooms.clone(),
-                room_flags.clone(),
-                edges.clone(),
-                edge_flags.clone(),
-            );
+            panel.bind_mut().update_map(rects.clone(), flags.clone(), projection.clone());
         });
     }
 
@@ -281,6 +302,9 @@ impl HUD {
         let mut placements: Vec<(radar::ArrowPlacement, f32)> = Vec::new();
         for node in tree.get_nodes_in_group(groups::ENEMIES).iter_shared() {
             let Ok(enemy) = node.try_cast::<Node3D>() else { continue };
+            if !self.radar_contacts.contains(&enemy.instance_id().to_i64()) {
+                continue; // outside the lit neighborhood — out of radar scope
+            }
             if !enemy.is_visible_in_tree() {
                 continue; // dormant minion or room-culled — not on the radar
             }
@@ -419,7 +443,7 @@ impl HUD {
 
         let mut health_label = Label::new_alloc();
         health_label.set_text("100/100");
-        health_label.add_theme_font_size_override(theme::FONT_SIZE, 30);
+        Self::style_hud_text(&mut health_label, ui_style::FONT_HUD_PRIMARY);
         health_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.9, 0.9, 0.9));
         health_row.add_child(&health_label);
 
@@ -446,7 +470,7 @@ impl HUD {
 
         let mut shield_label = Label::new_alloc();
         shield_label.set_text("50/50");
-        shield_label.add_theme_font_size_override(theme::FONT_SIZE, 26);
+        Self::style_hud_text(&mut shield_label, ui_style::FONT_HUD_LABEL);
         shield_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.5, 0.7, 1.0));
         shield_row.add_child(&shield_label);
 
@@ -458,7 +482,7 @@ impl HUD {
         // Power mode indicator (below shield bar)
         let mut power_mode_label = Label::new_alloc();
         power_mode_label.set_text("");
-        power_mode_label.add_theme_font_size_override(theme::FONT_SIZE, 22);
+        Self::style_hud_text(&mut power_mode_label, ui_style::FONT_HUD_FINE);
         power_mode_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgba(0.5, 0.5, 0.5, 0.5));
         top_left.add_child(&power_mode_label);
         self.power_mode_label = Some(LiveRef::new(&power_mode_label));
@@ -466,7 +490,7 @@ impl HUD {
         // Components (in-run currency)
         let mut components_label = Label::new_alloc();
         components_label.set_text("Components: 0");
-        components_label.add_theme_font_size_override(theme::FONT_SIZE, 26);
+        Self::style_hud_text(&mut components_label, ui_style::FONT_HUD_LABEL);
         components_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_COMPONENTS));
         top_left.add_child(&components_label);
         self.components_label = Some(LiveRef::new(&components_label));
@@ -474,7 +498,7 @@ impl HUD {
         // Lives, alongside the salvage they'll be spent protecting.
         let mut lives_label = Label::new_alloc();
         lives_label.set_text("Lives: 1");
-        lives_label.add_theme_font_size_override(theme::FONT_SIZE, 26);
+        Self::style_hud_text(&mut lives_label, ui_style::FONT_HUD_LABEL);
         lives_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_SECONDARY));
         top_left.add_child(&lives_label);
         self.lives_label = Some(LiveRef::new(&lives_label));
@@ -482,7 +506,7 @@ impl HUD {
         // Organics (permanent currency)
         let mut organics_label = Label::new_alloc();
         organics_label.set_text("Organics: 0");
-        organics_label.add_theme_font_size_override(theme::FONT_SIZE, 26);
+        Self::style_hud_text(&mut organics_label, ui_style::FONT_HUD_LABEL);
         organics_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_ORGANICS));
         top_left.add_child(&organics_label);
         self.organics_label = Some(LiveRef::new(&organics_label));
@@ -513,7 +537,7 @@ impl HUD {
 
         let mut laser_label = Label::new_alloc();
         laser_label.set_text("Laser: Red");
-        laser_label.add_theme_font_size_override(theme::FONT_SIZE, 26);
+        Self::style_hud_text(&mut laser_label, ui_style::FONT_HUD_LABEL);
         laser_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(1.0, 0.2, 0.2));
         laser_row.add_child(&laser_label);
         self.laser_label = Some(LiveRef::new(&laser_label));
@@ -523,7 +547,7 @@ impl HUD {
         // Level
         let mut level_label = Label::new_alloc();
         level_label.set_text("Level 1");
-        level_label.add_theme_font_size_override(theme::FONT_SIZE, 26);
+        Self::style_hud_text(&mut level_label, ui_style::FONT_HUD_LABEL);
         level_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_SECONDARY));
         top_right.add_child(&level_label);
         self.level_label = Some(LiveRef::new(&level_label));
@@ -539,7 +563,7 @@ impl HUD {
 
         let mut controls = Label::new_alloc();
         controls.set_text("WASD: Move | Arrows: Look | Space: Fire | R/F: Up/Down");
-        controls.add_theme_font_size_override(theme::FONT_SIZE, 22);
+        Self::style_hud_text(&mut controls, ui_style::FONT_HUD_FINE);
         controls.add_theme_color_override(theme::FONT_COLOR, Color::from_rgba(
             ui_style::TEXT_UNSELECTED[0], ui_style::TEXT_UNSELECTED[1], ui_style::TEXT_UNSELECTED[2], 0.7,
         ));
@@ -589,7 +613,7 @@ impl HUD {
         slow_label.set_anchors_preset(LayoutPreset::CENTER_TOP);
         slow_label.set_offset(godot::builtin::Side::TOP, 80.0);
         slow_label.set_text("SLOWED");
-        slow_label.add_theme_font_size_override(theme::FONT_SIZE, 30);
+        Self::style_hud_text(&mut slow_label, ui_style::FONT_HUD_PRIMARY);
         slow_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(1.0, 0.4, 0.4));
         slow_label.set_visible(false);
         safe_area.add_child(&slow_label);
