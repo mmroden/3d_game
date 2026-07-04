@@ -26,6 +26,7 @@ window/size/viewport_height=1080
 
 [physics]
 
+3d/physics_engine="Jolt Physics"
 common/physics_ticks_per_second=120
 common/physics_interpolation=true
 3d/default_gravity=0.0

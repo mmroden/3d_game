@@ -5,6 +5,7 @@ use godot::classes::{
     QuadMesh, StandardMaterial3D, SubViewport, SubViewportContainer, TextureRect,
     base_material_3d::{ShadingMode, Transparency, CullMode, Flags},
     display_server::WindowMode,
+    node::PhysicsInterpolationMode,
     texture_rect::StretchMode,
     sub_viewport::UpdateMode,
     viewport::Msaa,
@@ -302,6 +303,12 @@ impl ViewManager {
 
         let mut left_cam = Camera3D::new_alloc();
         left_cam.set_name("LeftCamera");
+        // Driven per rendered frame (sync_eye_cameras) — the engine's own
+        // physics interpolation would re-blend the last two set poses and
+        // smear the rig a frame behind the world (the residual chase-view
+        // jitter, playtest 2026-07-04). The eyes and the UI plane opt out
+        // and move as one rigid unit.
+        left_cam.set_physics_interpolation_mode(PhysicsInterpolationMode::OFF);
 
         left_viewport.add_child(&left_cam);
         left_container.add_child(&left_viewport);
@@ -324,6 +331,7 @@ impl ViewManager {
 
         let mut right_cam = Camera3D::new_alloc();
         right_cam.set_name("RightCamera");
+        right_cam.set_physics_interpolation_mode(PhysicsInterpolationMode::OFF);
 
         right_viewport.add_child(&right_cam);
         right_container.add_child(&right_viewport);
@@ -420,6 +428,9 @@ impl ViewManager {
 
         let mut ui_plane = MeshInstance3D::new_alloc();
         ui_plane.set_name("UIPlane");
+        // Same per-frame-driven rig as the eye cameras: no engine re-blend,
+        // or the whole HUD swims against the view in SBS.
+        ui_plane.set_physics_interpolation_mode(PhysicsInterpolationMode::OFF);
         ui_plane.set_mesh(&quad_mesh);
         ui_plane.set_visible(false);
 
