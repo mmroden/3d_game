@@ -61,6 +61,7 @@ pub mod methods {
     pub const DISARM: &str = "disarm";
     pub const SET_MONITORING: &str = "set_monitoring";
     pub const SET_BOSS_PORTAL_ACTIVE: &str = "set_boss_portal_active";
+    pub const PUSH_MUSIC_BED: &str = "push_music_bed";
     pub const ACTIVATE_ESCORTS: &str = "activate_escorts";
     pub const ON_BODY_ENTERED: &str = "on_body_entered";
     pub const RESOLVE_HIT: &str = "resolve_hit";

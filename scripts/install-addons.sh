@@ -377,13 +377,32 @@ SFX_SRC="$ASSETS_DIR/sfx"
 
 if [ -d "$MUSIC_SRC" ]; then
     echo "  Installing music..."
-    mkdir -p "$AUDIO_DIR/music"
-    for wav in "$MUSIC_SRC"/*.wav; do
+    # Four beds (owner's layout 2026-07-05): ambient (the original wavs —
+    # menu + reserve), per-level loopable backgrounds (1-30 so far), combat
+    # stingers (11-19, random per fight), boss tracks (1-6). Numbered
+    # sources install under stable numeric names the catalog derives.
+    mkdir -p "$AUDIO_DIR/music/ambient" "$AUDIO_DIR/music/levels" \
+             "$AUDIO_DIR/music/combat" "$AUDIO_DIR/music/boss"
+    for wav in "$MUSIC_SRC/Ambient"/*.wav; do
         [ -f "$wav" ] || continue
-        # Sanitize filename: strip "juanjo_sound - " prefix, lowercase, spaces→underscores
         base="$(basename "$wav" .wav)"
         clean="$(echo "$base" | sed 's/^juanjo_sound - //' | tr '[:upper:]' '[:lower:]' | tr ' ' '_')"
-        cp "$wav" "$AUDIO_DIR/music/${clean}.wav"
+        cp "$wav" "$AUDIO_DIR/music/ambient/${clean}.wav"
+    done
+    for mp3 in "$MUSIC_SRC/Level Backgrounds"/*.mp3; do
+        [ -f "$mp3" ] || continue
+        num="$(basename "$mp3" | sed 's/^\([0-9]*\)\..*/\1/')"
+        cp "$mp3" "$AUDIO_DIR/music/levels/level_$(printf '%02d' "$num").mp3"
+    done
+    for mp3 in "$MUSIC_SRC/combat"/*.mp3; do
+        [ -f "$mp3" ] || continue
+        num="$(basename "$mp3" | sed 's/^\([0-9]*\)\..*/\1/')"
+        cp "$mp3" "$AUDIO_DIR/music/combat/combat_${num}.mp3"
+    done
+    for mp3 in "$MUSIC_SRC/Boss Music Tracks"/*.mp3; do
+        [ -f "$mp3" ] || continue
+        num="$(basename "$mp3" | sed 's/^\([0-9]*\)\..*/\1/')"
+        cp "$mp3" "$AUDIO_DIR/music/boss/boss_${num}.mp3"
     done
     chmod -R u+w "$AUDIO_DIR/music"
     echo "  Music installed ($(ls "$AUDIO_DIR/music" | wc -l | tr -d ' ') tracks)."

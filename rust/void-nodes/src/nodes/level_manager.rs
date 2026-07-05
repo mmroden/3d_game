@@ -287,6 +287,28 @@ impl LevelManager {
         ids
     }
 
+    /// Does a live enemy share the player's room? Drives the Combat music
+    /// bed (GameManager's conductor re-derives on every input change).
+    /// "Live" = visible (dormant staging is invisible, `apply_dormancy`)
+    /// and not already queued for freeing (a corpse mid-death-report must
+    /// not hold the combat bed). Same position→room resolution as
+    /// `radar_contacts`.
+    pub fn live_enemies_in_current_room(&self) -> bool {
+        let Some(current) = self.current_room else { return false };
+        let tree = self.base().get_tree();
+        for node in tree.get_nodes_in_group(groups::ENEMIES).iter_shared() {
+            let Ok(enemy) = node.try_cast::<Node3D>() else { continue };
+            if !enemy.is_visible() || enemy.is_queued_for_deletion() {
+                continue;
+            }
+            let p = enemy.get_global_position();
+            if level_assembly::room_at([p.x, p.y, p.z], &self.room_bounds) == Some(current) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// World-space center of room `i` (midpoint of its bounds). Drives room
     /// culling from a known interior point. Returns `ZERO` for an out-of-range
     /// index. NOTE: the Y is the vertical *midpoint*, not the floor — use

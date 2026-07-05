@@ -20,7 +20,7 @@ use rand::RngExt;
 
 use super::constants::{actions, groups, map_flags, signals, methods, nodes, properties};
 use super::godot_util;
-use void_logic::audio_catalog::SfxEvent;
+use void_logic::audio_catalog::{self, MusicBed, SfxEvent};
 use void_logic::bestiary::{self, BestiaryKind};
 use void_logic::boss_fight::BossFight;
 use void_logic::enemy_type::EnemyType;
@@ -353,6 +353,7 @@ impl GameManager {
                 }
             }
         }
+        self.queue_music_push();
     }
 
     /// The staged fight's current beat for the GDScript crossing:
@@ -389,7 +390,7 @@ impl GameManager {
         }
         godot_print!("Boss fight engaged — the arena seals");
         self.set_boss_seal(true);
-        self.set_boss_music(true);
+        self.queue_music_push();
         // Every enemy gets the engage fan-out; `activate_escorts` is a no-op
         // for drones without OnEngage minions, so no type filtering here.
         let tree = self.base().get_tree();
@@ -417,12 +418,47 @@ impl GameManager {
         }
     }
 
-    /// Switch the music bed between the boss context and the gameplay
-    /// shuffle (the Boss pool falls back to Gameplay until tracks land).
-    fn set_boss_music(&self, active: bool) {
+    /// The music conductor: derive the bed from the FULL input set (phase,
+    /// fight beat, live enemies in the player's room — see
+    /// `audio_catalog::music_bed`) and push it to the AudioManager. ONE
+    /// derivation, re-run at every input change; the AudioManager holds no
+    /// music lifecycle of its own (the old boss_mode flag rotted across
+    /// death-with-life and save-and-exit precisely because it did).
+    #[func]
+    fn push_music_bed(&mut self) {
+        let boss = self.boss_fight.map(|f| f.state());
+        let enemies = self
+            .base()
+            .get_parent()
+            .and_then(|p| p.try_get_node_as::<LevelManager>(nodes::LEVEL_MANAGER))
+            .map(|lm| lm.bind().live_enemies_in_current_room())
+            .unwrap_or(false);
+        let bed = audio_catalog::music_bed(self.phase, boss, enemies);
+        let track = match bed {
+            MusicBed::Menu => audio_catalog::menu_track().to_string(),
+            MusicBed::Combat => String::new(), // the AudioManager rolls the stinger
+            MusicBed::Level => match &self.level_spec {
+                Some(spec) => spec.background.clone(),
+                None => return, // pre-spec boot frame: nothing to play yet
+            },
+            MusicBed::Boss => match self.level_spec.as_ref().and_then(|s| s.boss.as_ref()) {
+                Some(staging) => staging.track.clone(),
+                None => return,
+            },
+        };
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
-            audio.bind_mut().set_boss_music(active);
+            audio
+                .bind_mut()
+                .set_music_bed(bed.id(), GString::from(track.as_str()));
         }
+    }
+
+    /// Queue a bed re-derivation for after the message-queue flush: the
+    /// inputs settle through that same queue (corpse frees, dormancy
+    /// flips), so the conductor must read the world AFTER they land.
+    fn queue_music_push(&mut self) {
+        self.base_mut()
+            .call_deferred(methods::PUSH_MUSIC_BED, &[]);
     }
 
     /// Called when player enters the portal. The continuable-run snapshot is
@@ -772,6 +808,7 @@ impl GameManager {
         self.run_state.visit_room(room as usize);
         self.push_map_view();
         self.push_radar_contacts();
+        self.queue_music_push();
     }
 
     /// Scope the radar to the lit neighborhood: pull the contact set from
@@ -1040,7 +1077,7 @@ impl GameManager {
             godot_print!("Boss reward collected — the arena opens");
             self.set_boss_seal(false);
             self.set_boss_portal(true);
-            self.set_boss_music(false);
+            self.queue_music_push();
         }
         self.update_hud();
     }
@@ -1213,6 +1250,7 @@ impl GameManager {
 
         let phase_name: GString = GString::from(format!("{:?}", next).as_str());
         self.base_mut().emit_signal(signals::PHASE_CHANGED, &[phase_name.to_variant()]);
+        self.queue_music_push();
 
         // The phase machine owns lifecycle effects: entering Playing
         // means a fresh level for the current RunState — except when
@@ -1848,5 +1886,6 @@ impl GameManager {
         // emitter to the mediator once, here, replacing the deleted per-frame
         // scan. Idempotent, so a later rebuild rewires nothing already connected.
         self.wire_level_signals();
+        self.queue_music_push();
     }
 }

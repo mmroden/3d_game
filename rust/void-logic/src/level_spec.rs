@@ -31,6 +31,9 @@ pub enum Paradigm {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BossStaging {
     pub kind: BossKind,
+    /// The fight's music track (never relooped — a fight outlasting it
+    /// continues on combat stingers).
+    pub track: String,
     /// `Some(hull)` = the drop is the red container granting this hull;
     /// `None` = the consolation pile drops.
     pub hull_reward: Option<ShipType>,
@@ -66,6 +69,8 @@ pub struct LevelSpec {
     /// The bestiary horizon: the roster closed over death-spawns.
     pub coverage: Vec<EnemyType>,
     pub boss: Option<BossStaging>,
+    /// The level's loopable background music.
+    pub background: String,
     /// The planet-arrival interstitial, on planet boundaries only.
     pub banner: Option<(String, String)>,
 }
@@ -131,6 +136,9 @@ impl LevelSpec {
             };
             BossStaging {
                 kind,
+                track: crate::audio_catalog::boss_track(
+                    crate::boss::is_planet_final(level),
+                ),
                 hull_reward,
                 pile,
                 adds: crate::boss::boss_adds(level),
@@ -151,6 +159,7 @@ impl LevelSpec {
             roster,
             coverage,
             boss,
+            background: crate::audio_catalog::level_background(level),
             banner: crate::planet::arrival_banner(level),
         }
     }
@@ -176,6 +185,8 @@ mod tests {
         assert_eq!(spec.roster, vec![EnemyType::SentryDrone],
             "level 1 fields the sentry alone");
         assert_eq!(spec.boss, None, "no fight staged");
+        assert!(spec.background.ends_with("level_01.mp3"),
+            "each level carries its own background");
         assert_eq!(spec.banner, None, "planet 1 needs no introduction");
     }
 
@@ -238,6 +249,7 @@ mod tests {
         let spec3 = fresh(3);
         let staging = spec3.boss.expect("rel-3 stages the mid-boss");
         assert_eq!(staging.kind, BossKind::Brute);
+        assert!(staging.track.ends_with("boss_1.mp3"), "mid-boss music");
         assert_eq!(staging.hull_reward, None, "mid-bosses drop the pile");
         assert_eq!(staging.pile.len(), 3, "the pile of three stages with it");
         assert_eq!(staging.drop_count(), 4, "bound cache + the pile of three");
@@ -246,6 +258,7 @@ mod tests {
         let spec6 = fresh(6);
         let staging = spec6.boss.expect("rel-6 stages the planet final");
         assert_eq!(staging.kind, BossKind::Latcher);
+        assert!(staging.track.ends_with("boss_2.mp3"), "planet-final music");
         assert!(staging.hull_reward.is_some(),
             "a fresh profile's planet final stages the red container");
         assert!(staging.pile.is_empty(), "the container replaces the pile");

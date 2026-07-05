@@ -68,8 +68,25 @@ func test_menu_music_file_exists():
 		pass_test("Audio addons not installed, skipping")
 		return
 	assert_true(
-		ResourceLoader.exists("res://addons/audio/music/frozen_whispers.wav"),
+		ResourceLoader.exists("res://addons/audio/music/ambient/frozen_whispers.wav"),
 		"Menu music file should exist")
+
+func test_each_music_bed_family_is_installed():
+	# The installer lays out the four bed families (ambient, per-level
+	# backgrounds, combat stingers, boss tracks) under stable numeric
+	# names — one representative per family pins the pipeline.
+	if not DirAccess.dir_exists_absolute("res://addons/audio/music"):
+		pass_test("Audio addons not installed, skipping")
+		return
+	for path in [
+		"res://addons/audio/music/levels/level_01.mp3",
+		"res://addons/audio/music/levels/level_30.mp3",
+		"res://addons/audio/music/combat/combat_11.mp3",
+		"res://addons/audio/music/combat/combat_19.mp3",
+		"res://addons/audio/music/boss/boss_1.mp3",
+		"res://addons/audio/music/boss/boss_2.mp3",
+	]:
+		assert_true(ResourceLoader.exists(path), "%s should be installed" % path)
 
 func test_laser_sfx_files_exist():
 	if not DirAccess.dir_exists_absolute("res://addons/audio/sfx"):
