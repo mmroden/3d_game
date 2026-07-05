@@ -17,7 +17,7 @@ use crate::currency::{CurrencyKind, NotEnough};
 use crate::laser::LaserLevel;
 use crate::run_state::RunState;
 use crate::unlocks::Unlock;
-use crate::upgrade::{Upgrade, UpgradeKind};
+use crate::upgrade::{UpgradeKind, STAT_UPGRADE_MULTIPLIER};
 
 /// Everything the shop can sell. Ids cross to GDScript: stat kinds map
 /// through [`UpgradeKind::id`] (0..=4), then Laser and ExtraLife, then the
@@ -82,7 +82,7 @@ pub struct ShopOffer {
 /// What a successful purchase changed — the shell pushes this to consumers.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Receipt {
-    UpgradeAdded(Upgrade),
+    UpgradeAdded(UpgradeKind),
     LaserChanged(LaserLevel),
     /// Lives after the purchase.
     LifeAdded(u32),
@@ -101,7 +101,6 @@ pub enum Refusal {
 }
 
 /// Fixed multiplier every stat purchase grants.
-const STAT_UPGRADE_MULTIPLIER: f32 = 1.10;
 /// Cost growth per already-owned upgrade of the same kind.
 const STAT_COST_GROWTH: f32 = 1.6;
 /// First extra life; each purchase adds a flat step (linear, not
@@ -129,7 +128,7 @@ fn stat_base_cost(kind: UpgradeKind) -> u32 {
 /// Current price of the next `kind` upgrade: base × 1.6^owned, rounded to
 /// the nearest hundred. The growth curve is the soft cap — no hard limit.
 fn stat_cost(run: &RunState, kind: UpgradeKind) -> u32 {
-    let owned = run.loadout.upgrades.iter().filter(|u| u.kind == kind).count() as i32;
+    let owned = run.loadout.upgrades.iter().filter(|k| **k == kind).count() as i32;
     let raw = stat_base_cost(kind) as f32 * STAT_COST_GROWTH.powi(owned);
     ((raw / 100.0).round() as u32).saturating_mul(100)
 }
@@ -143,13 +142,23 @@ fn life_cost(run: &RunState) -> u32 {
 /// The full catalog priced against `run`, in display order: the five stat
 /// upgrades, the laser, then the extra life. Unpurchasable stock (a maxed
 /// laser) stays listed so the menu never reshuffles under the cursor.
+/// Row label for a stat purchase, derived from the one policy constant —
+/// the text can never advertise a different number than the effect.
+fn stat_label(kind: UpgradeKind) -> String {
+    format!(
+        "{} +{:.0}%",
+        kind.label(),
+        (STAT_UPGRADE_MULTIPLIER - 1.0) * 100.0
+    )
+}
+
 pub fn offers(run: &RunState) -> Vec<ShopOffer> {
     let mut out: Vec<ShopOffer> = UpgradeKind::ALL.iter().map(|kind| {
         let cost = stat_cost(run, *kind);
         let now = run.loadout.stat_multiplier(*kind);
         ShopOffer {
             id: ShopItemId::Stat(*kind),
-            label: format!("{} +10%", kind.label()),
+            label: stat_label(*kind),
             detail: format!("now ×{:.2} → ×{:.2}", now, now * STAT_UPGRADE_MULTIPLIER),
             cost,
             currency: CurrencyKind::Components,
@@ -196,7 +205,7 @@ pub fn offers(run: &RunState) -> Vec<ShopOffer> {
     // Shield Surge refills: blue, and only stocked once the green item is
     // owned (the item explains the trigger at purchase; refills need no
     // second tutorial).
-    if run.unlocks.contains(Unlock::ShieldBurst) {
+    if run.profile.unlocks.contains(Unlock::ShieldBurst) {
         let full = run.shield_charges >= SHIELD_CHARGE_CAP;
         out.push(ShopOffer {
             id: ShopItemId::ShieldCharge,
@@ -214,7 +223,7 @@ pub fn offers(run: &RunState) -> Vec<ShopOffer> {
     // unlocks leave the catalog for good — unlike the maxed laser, they can
     // never come back on offer, so there is no row to keep stable.
     for unlock in Unlock::ALL {
-        if run.unlocks.contains(*unlock) || !run.unlocks.available(*unlock) {
+        if run.profile.unlocks.contains(*unlock) || !run.profile.unlocks.available(*unlock) {
             continue;
         }
         let cost = unlock.organic_cost();
@@ -226,7 +235,7 @@ pub fn offers(run: &RunState) -> Vec<ShopOffer> {
             detail: format!("{} | {}", unlock.blurb(), unlock.trigger_hint()),
             cost,
             currency: CurrencyKind::Organics,
-            affordable: run.organics.can_afford(cost),
+            affordable: run.profile.organics.can_afford(cost),
             purchasable: true,
         });
     }
@@ -241,18 +250,13 @@ pub fn purchase(run: &mut RunState, id: ShopItemId) -> Result<Receipt, Refusal> 
         ShopItemId::Stat(kind) => {
             let cost = stat_cost(run, kind);
             run.components.spend(cost).map_err(Refusal::NotEnough)?;
-            let upgrade = Upgrade {
-                name: format!("{} +10%", kind.label()),
-                kind,
-                multiplier: STAT_UPGRADE_MULTIPLIER,
-            };
-            run.loadout.add_upgrade(upgrade.clone());
+            run.loadout.add_upgrade(kind);
             if kind == UpgradeKind::ShieldCapacity {
                 // The shield envelope lives on RunState, not the loadout —
                 // re-derive it so the purchase takes effect immediately.
                 run.refresh_shield();
             }
-            Ok(Receipt::UpgradeAdded(upgrade))
+            Ok(Receipt::UpgradeAdded(kind))
         }
         ShopItemId::Laser => {
             let next = run.laser_level.next().ok_or(Refusal::NotPurchasable)?;
@@ -269,11 +273,11 @@ pub fn purchase(run: &mut RunState, id: ShopItemId) -> Result<Receipt, Refusal> 
             Ok(Receipt::LifeAdded(run.lives))
         }
         ShopItemId::Unlock(unlock) => {
-            if run.unlocks.contains(unlock) || !run.unlocks.available(unlock) {
+            if run.profile.unlocks.contains(unlock) || !run.profile.unlocks.available(unlock) {
                 return Err(Refusal::NotPurchasable);
             }
-            run.organics.spend(unlock.organic_cost()).map_err(Refusal::NotEnough)?;
-            run.unlocks.grant(unlock);
+            run.profile.organics.spend(unlock.organic_cost()).map_err(Refusal::NotEnough)?;
+            run.profile.unlocks.grant(unlock);
             if unlock == Unlock::ShieldBurst {
                 // The item arrives stocked.
                 run.shield_charges = crate::run_state::SHIELD_BURST_STARTING_CHARGES;
@@ -281,7 +285,7 @@ pub fn purchase(run: &mut RunState, id: ShopItemId) -> Result<Receipt, Refusal> 
             Ok(Receipt::UnlockGranted(unlock))
         }
         ShopItemId::ShieldCharge => {
-            if !run.unlocks.contains(Unlock::ShieldBurst)
+            if !run.profile.unlocks.contains(Unlock::ShieldBurst)
                 || run.shield_charges >= SHIELD_CHARGE_CAP
             {
                 return Err(Refusal::NotPurchasable);
@@ -369,11 +373,12 @@ mod tests {
         let before = run.components.balance;
         let thrust_before = run.loadout.thrust_power();
         let receipt = purchase(&mut run, ShopItemId::Stat(UpgradeKind::Thrust)).expect("affordable");
-        let Receipt::UpgradeAdded(upgrade) = receipt else {
+        let Receipt::UpgradeAdded(kind) = receipt else {
             panic!("a stat purchase yields an upgrade receipt");
         };
-        assert_eq!(upgrade.kind, UpgradeKind::Thrust);
-        assert!((upgrade.multiplier - 1.10).abs() < 1e-6, "fixed +10%, no RNG");
+        assert_eq!(kind, UpgradeKind::Thrust);
+        assert!((STAT_UPGRADE_MULTIPLIER - 1.10).abs() < 1e-6,
+            "fixed +10% policy — ONE constant, never per-instance");
         assert!(run.components.balance < before, "the purchase deducts components");
         let thrust_after = run.loadout.thrust_power();
         assert!((thrust_after / thrust_before - 1.10).abs() < 1e-3,
@@ -447,7 +452,7 @@ mod tests {
         assert!(radar.purchasable);
 
         let mut owned = RunState::new(Seed::new(42));
-        owned.unlocks.grant(Unlock::Radar);
+        owned.profile.unlocks.grant(Unlock::Radar);
         let catalog = offers(&owned);
         assert!(!catalog.iter().any(|o| o.id == ShopItemId::Unlock(Unlock::Radar)),
             "an owned unlock leaves the catalog — it cannot be bought twice");
@@ -463,8 +468,8 @@ mod tests {
 
         let receipt = purchase(&mut run, ShopItemId::Unlock(Unlock::Radar)).expect("affordable");
         assert_eq!(receipt, Receipt::UnlockGranted(Unlock::Radar));
-        assert!(run.unlocks.contains(Unlock::Radar));
-        assert_eq!(run.organics.balance, 400 - Unlock::Radar.organic_cost(),
+        assert!(run.profile.unlocks.contains(Unlock::Radar));
+        assert_eq!(run.profile.organics.balance, 400 - Unlock::Radar.organic_cost(),
             "the radar costs organics");
         assert_eq!(run.components.balance, 100_000, "components are never touched");
 
@@ -473,7 +478,7 @@ mod tests {
         let result = purchase(&mut run, ShopItemId::Unlock(Unlock::FogMap));
         assert!(matches!(result, Err(Refusal::NotEnough(_))),
             "green purchases are refused on the green balance, got {result:?}");
-        assert!(!run.unlocks.contains(Unlock::FogMap));
+        assert!(!run.profile.unlocks.contains(Unlock::FogMap));
     }
 
     #[test]
@@ -486,7 +491,7 @@ mod tests {
             Err(Refusal::NotPurchasable)));
 
         run.collect_cache(CurrencyKind::Organics, 2_000);
-        run.unlocks.grant(Unlock::Radar);
+        run.profile.unlocks.grant(Unlock::Radar);
         purchase(&mut run, ShopItemId::Unlock(Unlock::ShieldBurst))
             .expect("radar owned, 2k affords the 1k surge item");
         assert_eq!(run.shield_charges, 3, "the item arrives stocked");
@@ -538,9 +543,9 @@ mod tests {
     #[test]
     fn every_offer_explains_itself() {
         let mut run = RunState::new(Seed::new(42));
-        run.unlocks.grant(Unlock::Radar);
-        run.unlocks.grant(Unlock::FogMap);
-        run.unlocks.grant(Unlock::Valkyrie); // the fleet is on offer too
+        run.profile.unlocks.grant(Unlock::Radar);
+        run.profile.unlocks.grant(Unlock::FogMap);
+        run.profile.unlocks.grant(Unlock::Valkyrie); // the fleet is on offer too
         for offer in offers(&run) {
             assert!(!offer.detail.is_empty(),
                 "{:?} needs a detail line — a row must say what buying it does", offer.id);
@@ -604,9 +609,9 @@ mod tests {
         // those left the shop for the planet-final bosses' red containers
         // (owner's call 2026-07-04).
         let mut veteran = RunState::new(Seed::new(42));
-        veteran.unlocks.grant(Unlock::Radar);
-        veteran.unlocks.grant(Unlock::FogMap);
-        veteran.unlocks.grant(Unlock::Valkyrie);
+        veteran.profile.unlocks.grant(Unlock::Radar);
+        veteran.profile.unlocks.grant(Unlock::FogMap);
+        veteran.profile.unlocks.grant(Unlock::Valkyrie);
         let green: Vec<_> = offers(&veteran).iter()
             .filter(|o| o.currency == CurrencyKind::Organics)
             .map(|o| o.id)
@@ -630,7 +635,7 @@ mod tests {
         let result = purchase(&mut run, ShopItemId::Unlock(Unlock::Ship(ShipType::Talon)));
         assert!(matches!(result, Err(Refusal::NotPurchasable)),
             "hulls are gated behind the Valkyrie, got {result:?}");
-        assert_eq!(run.organics.balance, 100_000, "nothing deducted");
+        assert_eq!(run.profile.organics.balance, 100_000, "nothing deducted");
     }
 
     #[test]
@@ -639,9 +644,9 @@ mod tests {
         let mut run = RunState::new(Seed::new(42));
         run.collect_cache(CurrencyKind::Organics, 10_000);
         // Even with the whole spine owned and a full purse …
-        run.unlocks.grant(Unlock::Radar);
-        run.unlocks.grant(Unlock::FogMap);
-        run.unlocks.grant(Unlock::Valkyrie);
+        run.profile.unlocks.grant(Unlock::Radar);
+        run.profile.unlocks.grant(Unlock::FogMap);
+        run.profile.unlocks.grant(Unlock::Valkyrie);
 
         let offer_ids: Vec<_> = offers(&run).iter().map(|o| o.id).collect();
         assert!(!offer_ids.iter().any(|id| matches!(id, ShopItemId::Unlock(Unlock::Ship(_)))),
@@ -650,8 +655,8 @@ mod tests {
         // A stale/forged purchase id is refused, not honored.
         let result = purchase(&mut run, ShopItemId::Unlock(Unlock::Ship(ShipType::Talon)));
         assert!(result.is_err(), "a hull purchase must be refused");
-        assert!(!run.unlocks.owns_ship(ShipType::Talon));
-        assert_eq!(run.organics.balance, 10_000, "nothing deducted");
+        assert!(!run.profile.unlocks.owns_ship(ShipType::Talon));
+        assert_eq!(run.profile.organics.balance, 10_000, "nothing deducted");
     }
 
     #[test]
@@ -659,11 +664,11 @@ mod tests {
         let mut run = RunState::new(Seed::new(42));
         run.collect_cache(CurrencyKind::Organics, 10_000);
         purchase(&mut run, ShopItemId::Unlock(Unlock::Radar)).expect("first buy");
-        let balance_after = run.organics.balance;
+        let balance_after = run.profile.organics.balance;
         let result = purchase(&mut run, ShopItemId::Unlock(Unlock::Radar));
         assert!(matches!(result, Err(Refusal::NotPurchasable)),
             "owning it makes it unpurchasable, got {result:?}");
-        assert_eq!(run.organics.balance, balance_after, "no double charge");
+        assert_eq!(run.profile.organics.balance, balance_after, "no double charge");
     }
 
     #[test]

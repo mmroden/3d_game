@@ -17,7 +17,7 @@ use void_logic::loadout::Loadout;
 use void_logic::power_routing::PowerMode;
 use void_logic::armament::{cluster, subdrone, valkyrie, WeaponKind};
 use void_logic::ship_type::ShipType;
-use void_logic::upgrade::{Upgrade, UpgradeKind};
+use void_logic::upgrade::UpgradeKind;
 use void_logic::audio_catalog::SfxEvent;
 use void_logic::weapon::{WeaponState, FireResult};
 
@@ -614,18 +614,13 @@ impl ShipController {
     }
 
     #[func]
-    pub fn apply_upgrade(&mut self, name: GString, kind_id: i32, multiplier: f32) {
+    pub fn apply_upgrade(&mut self, kind_id: i32) {
         let Some(kind) = UpgradeKind::from_id(kind_id) else {
             godot_warn!("Unknown upgrade kind: {kind_id}");
             return;
         };
-        let upgrade = Upgrade {
-            name: name.to_string(),
-            kind,
-            multiplier,
-        };
-        godot_print!("Applied upgrade: {} (x{:.2})", upgrade.name, upgrade.multiplier);
-        self.loadout.add_upgrade(upgrade);
+        godot_print!("Applied upgrade: {}", kind.label());
+        self.loadout.add_upgrade(kind);
         // Re-derive the engine envelope from the updated loadout.
         self.apply_envelope();
     }

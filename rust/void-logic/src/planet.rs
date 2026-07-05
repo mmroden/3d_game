@@ -63,19 +63,13 @@ pub fn arrival_banner(level: u32) -> Option<(String, String)> {
     if planet < 2 || planet_relative(level) != 1 {
         return None;
     }
-    let flavor = ARRIVAL_FLAVOR
-        .get((planet - 2) as usize)
-        .copied()
-        .unwrap_or("Further than anyone has salvaged.");
-    Some((format!("PLANET {planet}"), flavor.to_string()))
+    // The schedule (WHEN a banner shows) lives here; the words live in
+    // the narrative module (lore owns every story string).
+    Some((
+        format!("PLANET {planet}"),
+        crate::lore::arrival_flavor(planet).to_string(),
+    ))
 }
-
-/// Placeholder flavor per planet until the story lands. Index 0 = planet 2.
-const ARRIVAL_FLAVOR: &[&str] = &[
-    "The wreckage changes here. Something else built this.",
-    "Deeper. Older. The panels do not remember floors.",
-    "No signal reaches this far. Keep what you can carry.",
-];
 
 #[cfg(test)]
 mod tests {

@@ -11,6 +11,7 @@ use crate::shield::ShieldState;
 use crate::ship::ShipColor;
 use crate::ship_type::ShipType;
 use crate::unlocks::PermanentUnlocks;
+use serde::{Deserialize, Serialize};
 
 /// Which defensive layer absorbed a hit. Drives impact SFX: a held shield
 /// plays the energy zap, a hull hit plays the heavy metal clang.
@@ -27,6 +28,19 @@ pub const SHIELD_BURST_AMOUNT: f32 = 50.0;
 /// Charges the Surge item carries when handed over fresh.
 pub const SHIELD_BURST_STARTING_CHARGES: u32 = 3;
 
+/// Everything that survives run-over, quits, and new sectors — the
+/// permanent half of the player. ONE declaration answers "is this fact
+/// permanent?"; persistence and run-boundary resets copy this struct
+/// whole, never field lists.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Profile {
+    pub organics: OrganicAccount,
+    /// Permanent bestiary: every enemy type sighted across all runs.
+    pub seen_enemies: SeenEnemies,
+    /// Permanent unlocks (radar, map, …).
+    pub unlocks: PermanentUnlocks,
+}
+
 /// Tracks the state of a single roguelike run.
 #[derive(Debug)]
 pub struct RunState {
@@ -41,8 +55,12 @@ pub struct RunState {
     pub run_seed: Seed,
     /// In-run currency from mechanical kills; lost on death.
     pub components: ComponentAccount,
-    /// Permanent currency from barrels; survives death.
-    pub organics: OrganicAccount,
+    /// Everything permanent — organics, bestiary, unlocks — declared in ONE
+    /// struct (audit 2026-07-05: the profile/run split used to be implied by
+    /// four hand-maintained copy lists in save_game; now "is this fact
+    /// permanent?" is answered at field-declaration time, and persistence
+    /// copies one struct through one door).
+    pub profile: Profile,
     pub kills: KillTracker,
     pub laser_level: LaserLevel,
     pub current_level: u32,
@@ -56,12 +74,6 @@ pub struct RunState {
     /// Lives bought this run — the shop's price-ratchet key, so dying (which
     /// lowers `lives`) never discounts the next life.
     pub lives_purchased: u32,
-    /// Enemy types catalogued in the bestiary. Permanent: an enemy is marked on
-    /// first sighting and survives death, like organics.
-    pub seen_enemies: SeenEnemies,
-    /// Permanent unlocks bought with organics (radar, map, …). Survive
-    /// run-over like the organics that paid for them.
-    pub unlocks: PermanentUnlocks,
     /// Shield Surge charges in the rack. The ITEM is green-permanent; the
     /// charges ride the run (snapshot-saved, refilled blue at the shop, and
     /// the rack restocks to its starting three wherever the item would be
@@ -110,7 +122,7 @@ impl RunState {
             score: 0,
             run_seed: seed,
             components: ComponentAccount::new(),
-            organics: OrganicAccount::new(),
+            profile: Profile::default(),
             kills: KillTracker::new(),
             laser_level: LaserLevel::Red,
             current_level: 1,
@@ -118,8 +130,6 @@ impl RunState {
             ship_color,
             lives: 1,
             lives_purchased: 0,
-            seen_enemies: SeenEnemies::new(),
-            unlocks: PermanentUnlocks::new(),
             shield_charges: 0,
         }
     }
@@ -249,7 +259,7 @@ impl RunState {
     pub fn collect_cache(&mut self, kind: CurrencyKind, amount: u32) {
         match kind {
             CurrencyKind::Components => self.components.earn(amount),
-            CurrencyKind::Organics => self.organics.earn(amount),
+            CurrencyKind::Organics => self.profile.organics.earn(amount),
             // The hull container is not a balance: GameManager routes it to
             // `boss::roll_hull_reward` BEFORE this call and only forwards the
             // components fallback when every hull is already owned.
@@ -260,7 +270,7 @@ impl RunState {
     /// Catalogue an enemy on sighting. Returns `true` the first time this type
     /// is seen, so the caller can persist the freshly-grown bestiary.
     pub fn mark_enemy_seen(&mut self, enemy_type: EnemyType) -> bool {
-        self.seen_enemies.mark(enemy_type)
+        self.profile.seen_enemies.mark(enemy_type)
     }
 
     /// Current laser damage per beam.
@@ -282,7 +292,7 @@ impl RunState {
         self.lives_purchased = 0;
         // The Surge item is green-permanent and arrives stocked on a fresh
         // run; unbought, the rack stays empty.
-        self.shield_charges = if self.unlocks.contains(crate::unlocks::Unlock::ShieldBurst) {
+        self.shield_charges = if self.profile.unlocks.contains(crate::unlocks::Unlock::ShieldBurst) {
             SHIELD_BURST_STARTING_CHARGES
         } else {
             0
@@ -425,7 +435,7 @@ mod tests {
     #[test]
     fn run_over_restocks_the_owned_rack() {
         let mut run = RunState::new(Seed::new(42));
-        run.unlocks.grant(crate::unlocks::Unlock::ShieldBurst);
+        run.profile.unlocks.grant(crate::unlocks::Unlock::ShieldBurst);
         run.shield_charges = 0;
         run.apply_death_penalty();
         assert_eq!(run.shield_charges, 3,
@@ -440,11 +450,7 @@ mod tests {
     fn shield_upgrades_raise_the_envelope() {
         let mut run = RunState::new(Seed::new(42));
         let base_cap = run.shield.max_capacity.as_f32();
-        run.loadout.add_upgrade(crate::upgrade::Upgrade {
-            name: "Shields +10%".to_string(),
-            kind: crate::upgrade::UpgradeKind::ShieldCapacity,
-            multiplier: 1.10,
-        });
+        run.loadout.add_upgrade(crate::upgrade::UpgradeKind::ShieldCapacity);
         run.refresh_shield();
         assert!((run.shield.max_capacity.as_f32() - base_cap * 1.10).abs() < 0.01,
             "one shield upgrade is +10% capacity, got {} from {}",
@@ -495,7 +501,7 @@ mod tests {
     fn starts_with_zero_components_and_organics() {
         let run = RunState::new(Seed::new(42));
         assert_eq!(run.components.balance, 0);
-        assert_eq!(run.organics.balance, 0);
+        assert_eq!(run.profile.organics.balance, 0);
     }
 
     #[test]
@@ -524,9 +530,9 @@ mod tests {
         let mut run = RunState::new(Seed::new(42));
         run.collect_cache(CurrencyKind::Components, 800);
         assert_eq!(run.components.balance, 800);
-        assert_eq!(run.organics.balance, 0, "a blue cache never credits organics");
+        assert_eq!(run.profile.organics.balance, 0, "a blue cache never credits organics");
         run.collect_cache(CurrencyKind::Organics, 50);
-        assert_eq!(run.organics.balance, 50);
+        assert_eq!(run.profile.organics.balance, 50);
         assert_eq!(run.components.balance, 800, "a green cache never credits components");
     }
 
@@ -591,16 +597,16 @@ mod tests {
         let mut run = RunState::new(Seed::new(42));
         assert!(run.mark_enemy_seen(EnemyType::GunDrone), "first sighting is new");
         assert!(!run.mark_enemy_seen(EnemyType::GunDrone), "repeat sighting is not new");
-        assert!(run.seen_enemies.contains(EnemyType::GunDrone));
+        assert!(run.profile.seen_enemies.contains(EnemyType::GunDrone));
     }
 
     #[test]
     fn unlocks_survive_run_over() {
         use crate::unlocks::Unlock;
         let mut run = RunState::new(Seed::new(42));
-        run.unlocks.grant(Unlock::Radar);
+        run.profile.unlocks.grant(Unlock::Radar);
         run.apply_death_penalty();
-        assert!(run.unlocks.contains(Unlock::Radar),
+        assert!(run.profile.unlocks.contains(Unlock::Radar),
             "permanent unlocks survive run-over, like the organics that paid for them");
     }
 
@@ -609,7 +615,7 @@ mod tests {
         let mut run = RunState::new(Seed::new(42));
         run.mark_enemy_seen(EnemyType::QuadShell);
         run.apply_death_penalty();
-        assert!(run.seen_enemies.contains(EnemyType::QuadShell),
+        assert!(run.profile.seen_enemies.contains(EnemyType::QuadShell),
             "the bestiary survives death, like organics");
     }
 
@@ -620,7 +626,7 @@ mod tests {
         run.collect_cache(CurrencyKind::Organics, 40);
         run.apply_death_penalty();
         assert_eq!(run.components.balance, 0, "components are lost on death");
-        assert_eq!(run.organics.balance, 40, "organics are permanent");
+        assert_eq!(run.profile.organics.balance, 40, "organics are permanent");
     }
 
     #[test]
@@ -654,11 +660,7 @@ mod tests {
         let mut run = RunState::new(Seed::new(42));
         run.lives = 3;
         run.collect_cache(CurrencyKind::Components, 12_000);
-        run.loadout.add_upgrade(crate::upgrade::Upgrade {
-            name: "Thrust +10%".to_string(),
-            kind: crate::upgrade::UpgradeKind::Thrust,
-            multiplier: 1.10,
-        });
+        run.loadout.add_upgrade(crate::upgrade::UpgradeKind::Thrust);
         run.laser_level = LaserLevel::Green;
         run.current_level = 5;
         run.take_damage(Damage::new(120.0)); // through the shield into the hull
@@ -678,11 +680,7 @@ mod tests {
     #[test]
     fn run_over_clears_bought_upgrades() {
         let mut run = RunState::new(Seed::new(42));
-        run.loadout.add_upgrade(crate::upgrade::Upgrade {
-            name: "Armor +10%".to_string(),
-            kind: crate::upgrade::UpgradeKind::MaxHealth,
-            multiplier: 1.10,
-        });
+        run.loadout.add_upgrade(crate::upgrade::UpgradeKind::MaxHealth);
         run.apply_death_penalty();
         assert!(run.loadout.upgrades.is_empty(),
             "blue purchases die with the run — the salvage is lost");

@@ -5,28 +5,16 @@
 //! gated on the snapshot's presence — a run that never finished a level is
 //! not continuable.
 
-use crate::bestiary::SeenEnemies;
-use crate::currency::{ComponentAccount, OrganicAccount};
+use crate::currency::ComponentAccount;
 use crate::laser::LaserLevel;
 use crate::loadout::Loadout;
 use crate::newtypes::Health;
-use crate::run_state::RunState;
+use crate::run_state::{Profile, RunState};
 use crate::seed::Seed;
 use crate::shield::ShieldState;
 use crate::ship::ShipColor;
 use crate::ship_type::ShipType;
-use crate::unlocks::PermanentUnlocks;
 use serde::{Deserialize, Serialize};
-
-/// Permanent progression: survives run-over, quits, everything.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Profile {
-    pub organics: OrganicAccount,
-    /// Permanent bestiary: every enemy type sighted across all runs.
-    pub seen_enemies: SeenEnemies,
-    /// Permanent unlocks (radar, map, …).
-    pub unlocks: PermanentUnlocks,
-}
 
 /// A continuable run, frozen at the start of its current level.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -73,11 +61,7 @@ impl SaveGame {
     /// level start once the run is continuable.
     pub fn from_run_state(run: &RunState) -> Self {
         Self {
-            profile: Profile {
-                organics: run.organics,
-                seen_enemies: run.seen_enemies.clone(),
-                unlocks: run.unlocks.clone(),
-            },
+            profile: run.profile.clone(),
             run: Some(RunSnapshot {
                 laser_level: run.laser_level,
                 loadout: run.loadout.clone(),
@@ -99,11 +83,7 @@ impl SaveGame {
     /// A profile with no continuable run (fresh install, or after run-over).
     pub fn profile_only(run: &RunState) -> Self {
         Self {
-            profile: Profile {
-                organics: run.organics,
-                seen_enemies: run.seen_enemies.clone(),
-                unlocks: run.unlocks.clone(),
-            },
+            profile: run.profile.clone(),
             run: None,
         }
     }
@@ -117,9 +97,7 @@ impl SaveGame {
     /// stored run snapshot: green pickups and bestiary growth are permanent
     /// the moment they happen, but the run stays frozen at its level start.
     pub fn update_profile(&mut self, run: &RunState) {
-        self.profile.organics = run.organics;
-        self.profile.seen_enemies = run.seen_enemies.clone();
-        self.profile.unlocks = run.unlocks.clone();
+        self.profile = run.profile.clone();
     }
 
     /// Drop the run snapshot (run-over): the profile survives, Continue goes.
@@ -131,9 +109,7 @@ impl SaveGame {
     /// when present (otherwise the fresh run keeps its defaults). Ephemeral
     /// per-level state resets either way.
     pub fn apply_to(&self, run: &mut RunState) {
-        run.organics = self.profile.organics;
-        run.seen_enemies = self.profile.seen_enemies.clone();
-        run.unlocks = self.profile.unlocks.clone();
+        run.profile = self.profile.clone();
         if let Some(snapshot) = &self.run {
             run.set_ship_type(snapshot.ship_type);
             run.laser_level = snapshot.laser_level;
@@ -151,7 +127,7 @@ impl SaveGame {
         }
         // A profile-only load hands the owned Surge item over freshly
         // stocked (a snapshot's rack, restored above, wins when present).
-        if self.run.is_none() && run.unlocks.contains(crate::unlocks::Unlock::ShieldBurst) {
+        if self.run.is_none() && run.profile.unlocks.contains(crate::unlocks::Unlock::ShieldBurst) {
             run.shield_charges = crate::run_state::SHIELD_BURST_STARTING_CHARGES;
         }
         // Reset ephemeral state
@@ -235,12 +211,12 @@ mod tests {
         save.apply_to(&mut fresh);
         assert_eq!(fresh.laser_level, LaserLevel::Green);
         assert_eq!(fresh.components.balance, 5_000);
-        assert_eq!(fresh.organics.balance, 120);
+        assert_eq!(fresh.profile.organics.balance, 120);
         assert_eq!(fresh.current_level, 4);
         assert_eq!(fresh.run_seed, Seed::new(42), "the seed comes back — same layouts");
         assert_eq!(fresh.lives, 3);
         assert_eq!(fresh.lives_purchased, 2);
-        assert!(fresh.seen_enemies.contains(EnemyType::Bomber));
+        assert!(fresh.profile.seen_enemies.contains(EnemyType::Bomber));
     }
 
     #[test]
@@ -249,8 +225,8 @@ mod tests {
         save.clear_run();
         let mut fresh = RunState::new(Seed::new(99));
         save.apply_to(&mut fresh);
-        assert_eq!(fresh.organics.balance, 120, "profile organics apply");
-        assert!(fresh.seen_enemies.contains(EnemyType::Bomber), "profile bestiary applies");
+        assert_eq!(fresh.profile.organics.balance, 120, "profile organics apply");
+        assert!(fresh.profile.seen_enemies.contains(EnemyType::Bomber), "profile bestiary applies");
         assert_eq!(fresh.components.balance, 0, "no run to restore");
         assert_eq!(fresh.current_level, 1, "a fresh run starts at level 1");
         assert_eq!(fresh.run_seed, Seed::new(99), "the fresh run keeps its own seed");
@@ -271,7 +247,7 @@ mod tests {
     #[test]
     fn the_chosen_hull_rides_the_snapshot() {
         let mut run = seasoned_run();
-        run.unlocks.grant(crate::unlocks::Unlock::Ship(ShipType::Hive));
+        run.profile.unlocks.grant(crate::unlocks::Unlock::Ship(ShipType::Hive));
         run.set_ship_type(ShipType::Hive);
         let save = SaveGame::from_run_state(&run);
         let mut fresh = RunState::new(Seed::new(99));
@@ -283,11 +259,11 @@ mod tests {
     fn unlocks_ride_the_profile() {
         use crate::unlocks::Unlock;
         let mut run = seasoned_run();
-        run.unlocks.grant(Unlock::Radar);
+        run.profile.unlocks.grant(Unlock::Radar);
         let mut save = SaveGame::from_run_state(&run);
         assert!(save.profile.unlocks.contains(Unlock::Radar), "the snapshot carries unlocks");
 
-        run.unlocks.grant(Unlock::FogMap);
+        run.profile.unlocks.grant(Unlock::FogMap);
         save.update_profile(&run);
         assert!(save.profile.unlocks.contains(Unlock::FogMap),
             "a profile update carries a freshly bought unlock");
@@ -295,7 +271,7 @@ mod tests {
         save.clear_run();
         let mut fresh = RunState::new(Seed::new(99));
         save.apply_to(&mut fresh);
-        assert!(fresh.unlocks.contains(Unlock::Radar) && fresh.unlocks.contains(Unlock::FogMap),
+        assert!(fresh.profile.unlocks.contains(Unlock::Radar) && fresh.profile.unlocks.contains(Unlock::FogMap),
             "unlocks restore from the profile even with no continuable run");
     }
 

@@ -369,7 +369,7 @@ impl GameManager {
         ShipType::ALL
             .iter()
             .filter(|s| {
-                s.spec().organic_cost.is_some() && self.run_state.unlocks.owns_ship(**s)
+                s.spec().organic_cost.is_some() && self.run_state.profile.unlocks.owns_ship(**s)
             })
             .count() as i32
     }
@@ -472,14 +472,12 @@ impl GameManager {
                 // mid-shop rewinds to the level start, purchase and price
                 // alike (nothing is lost, nothing is ratcheted).
                 match &receipt {
-                    Receipt::UpgradeAdded(upgrade) => {
+                    Receipt::UpgradeAdded(kind) => {
                         // Push to ShipController's cache, like any loadout sync.
                         if let Some(parent) = self.base().get_parent() {
                             if let Some(mut player) = parent.try_get_node_as::<Node>(nodes::PLAYER) {
                                 player.call(methods::APPLY_UPGRADE, &[
-                                    Variant::from(GString::from(&upgrade.name)),
-                                    Variant::from(upgrade.kind.id()),
-                                    Variant::from(upgrade.multiplier),
+                                    Variant::from(kind.id()),
                                 ]);
                             }
                         }
@@ -583,7 +581,7 @@ impl GameManager {
     #[func]
     pub fn on_ship_type_selected(&mut self, ship_type_id: i32) {
         let Some(ship) = ShipType::from_id(ship_type_id) else { return };
-        if !self.run_state.unlocks.owns_ship(ship) {
+        if !self.run_state.profile.unlocks.owns_ship(ship) {
             // Expected guard: the UI greys locked hulls; the authority backs it.
             godot_print!("on_ship_type_selected: {ship:?} is not owned — ignored");
             return;
@@ -643,7 +641,7 @@ impl GameManager {
         if self.phase != GamePhase::Bestiary {
             return;
         }
-        let total = bestiary::entries(&self.run_state.seen_enemies).len();
+        let total = bestiary::entries(&self.run_state.profile.seen_enemies).len();
         self.bestiary_index = bestiary::paged_index(self.bestiary_index, delta, total);
         self.refresh_bestiary();
     }
@@ -665,7 +663,7 @@ impl GameManager {
     /// turntable (the model to spin). GameManager owns the paging so the UI and
     /// the 3D display never drift apart.
     fn refresh_bestiary(&self) {
-        let entries = bestiary::entries(&self.run_state.seen_enemies);
+        let entries = bestiary::entries(&self.run_state.profile.seen_enemies);
         let Some(entry) = entries.get(self.bestiary_index) else { return };
         let Some(parent) = self.base().get_parent() else { return };
 
@@ -701,7 +699,7 @@ impl GameManager {
         let Some(parent) = self.base().get_parent() else { return };
         if let Some(mut ui) = Self::find_ui_node(&parent, nodes::SHIP_SELECT_UI) {
             let owned: PackedByteArray = ShipType::ALL.iter()
-                .map(|ship| self.run_state.unlocks.owns_ship(*ship) as u8)
+                .map(|ship| self.run_state.profile.unlocks.owns_ship(*ship) as u8)
                 .collect();
             ui.call(methods::SHOW_SHIP_SELECT, &[
                 Variant::from(self.run_state.ship_type.id()),
@@ -805,7 +803,7 @@ impl GameManager {
                     lm.graph(),
                     &self.run_state.rooms_visited,
                     self.run_state.current_room,
-                    self.run_state.unlocks.contains(Unlock::RouteScanner),
+                    self.run_state.profile.unlocks.contains(Unlock::RouteScanner),
                 ),
                 level_map::map_projection(
                     lm.graph(),
@@ -1014,7 +1012,7 @@ impl GameManager {
                 .and_then(|b| b.hull_reward)
             {
                 Some(hull) => {
-                    self.run_state.unlocks.grant(Unlock::Ship(hull));
+                    self.run_state.profile.unlocks.grant(Unlock::Ship(hull));
                     self.persist_profile();
                     godot_print!(
                         "RED CONTAINER: the {} joins the fleet",
@@ -1081,7 +1079,7 @@ impl GameManager {
 
     #[func]
     pub fn get_organics(&self) -> i64 {
-        self.run_state.organics.balance as i64
+        self.run_state.profile.organics.balance as i64
     }
 
     #[func]
@@ -1167,7 +1165,7 @@ impl GameManager {
     #[func]
     pub fn has_unlock(&self, unlock_id: i32) -> bool {
         Unlock::from_id(unlock_id)
-            .is_some_and(|unlock| self.run_state.unlocks.contains(unlock))
+            .is_some_and(|unlock| self.run_state.profile.unlocks.contains(unlock))
     }
 
     /// The chosen hull's id (ShipType::id).
@@ -1414,12 +1412,8 @@ impl GameManager {
             let level = self.run_state.laser_level as i32;
             player.call(methods::SET_LASER_LEVEL, &[Variant::from(level)]);
             // Re-apply all upgrades from RunState's loadout
-            for upgrade in &self.run_state.loadout.upgrades {
-                player.call(methods::APPLY_UPGRADE, &[
-                    Variant::from(GString::from(&upgrade.name)),
-                    Variant::from(upgrade.kind.id()),
-                    Variant::from(upgrade.multiplier),
-                ]);
+            for kind in &self.run_state.loadout.upgrades {
+                player.call(methods::APPLY_UPGRADE, &[Variant::from(kind.id())]);
             }
             // Push the chosen hull and trim (model, body-style texture,
             // accent) and the combined thrust tradeoff.
@@ -1433,7 +1427,7 @@ impl GameManager {
             // Arm (or disarm) the Valkyrie from the profile — RESET_LOADOUT
             // above wiped the node's cache, and ownership is green state the
             // node must never read from disk itself.
-            let valkyrie = self.run_state.unlocks.contains(Unlock::Valkyrie);
+            let valkyrie = self.run_state.profile.unlocks.contains(Unlock::Valkyrie);
             player.call(methods::SET_VALKYRIE_OWNED, &[Variant::from(valkyrie)]);
         }
     }
@@ -1507,7 +1501,7 @@ impl GameManager {
 
             shop.call(method, &[
                 Variant::from(self.run_state.components.balance as i64),
-                Variant::from(self.run_state.organics.balance as i64),
+                Variant::from(self.run_state.profile.organics.balance as i64),
                 Variant::from(ids),
                 Variant::from(labels),
                 Variant::from(details),
@@ -1793,7 +1787,7 @@ impl GameManager {
                 Variant::from(self.run_state.shield_charges as i32),
             ]);
             hud.call(methods::UPDATE_ORGANICS, &[
-                Variant::from(self.run_state.organics.balance as i64),
+                Variant::from(self.run_state.profile.organics.balance as i64),
             ]);
             hud.call(methods::UPDATE_LASER, &[
                 Variant::from(GString::from(self.run_state.laser_level.display_name())),
@@ -1803,9 +1797,9 @@ impl GameManager {
                 Variant::from(self.run_state.current_level as i32),
             ]);
             hud.call(methods::SET_UNLOCK_FLAGS, &[
-                Variant::from(self.run_state.unlocks.contains(Unlock::Radar)),
-                Variant::from(self.run_state.unlocks.contains(Unlock::FogMap)),
-                Variant::from(self.run_state.unlocks.contains(Unlock::ThreatTracker)),
+                Variant::from(self.run_state.profile.unlocks.contains(Unlock::Radar)),
+                Variant::from(self.run_state.profile.unlocks.contains(Unlock::FogMap)),
+                Variant::from(self.run_state.profile.unlocks.contains(Unlock::ThreatTracker)),
             ]);
         }
     }
@@ -1830,7 +1824,7 @@ impl GameManager {
         let spec = LevelSpec::for_level(
             self.run_state.run_seed,
             self.run_state.current_level,
-            &self.run_state.unlocks,
+            &self.run_state.profile.unlocks,
         );
         self.boss_fight = spec.boss.as_ref().map(|_| BossFight::new());
         self.level_spec = Some(spec.clone());

@@ -1,42 +1,20 @@
-//! Discovery log: the slowly-unfolding story of excavating the ruins,
-//! shown on the level-load screen while shaders warm up.
-//!
-//! The copy here is PLACEHOLDER — the narrative is written later. What's
-//! stable is the contract: every level maps to a blurb, themed by the
-//! chapter it falls in (4 chapters of 10 levels — asteroids, Mars,
-//! Earth, Venus; see the game-design notes).
+//! The narrative module: every player-facing story word lives here, keyed
+//! by PLANET — the campaign's one world-partition (planets of six levels;
+//! the old 4-chapters-of-10 partition died with the planet redesign,
+//! audit 2026-07-05). `planet::arrival_banner` asks this module for its
+//! flavor line; future beats (retrieval story, stay-or-go epilogue) land
+//! here too. All copy is PLACEHOLDER until the owner writes the story.
 
-/// The chapter (0..=3) a level belongs to. Levels run 1..=40.
-pub fn chapter_of(level: u32) -> u32 {
-    (level.saturating_sub(1) / 10).min(3)
-}
-
-/// A discovery-log blurb for `level`, shown on the load screen.
-/// Placeholder copy; the level → blurb mapping is the stable contract.
-pub fn level_blurb(level: u32) -> String {
-    let (place, note) = match chapter_of(level) {
-        0 => (
-            "the asteroid aeries",
-            "The builders flew. These chambers have no proper floors — \
-             only perches, and the long fall between them.",
-        ),
-        1 => (
-            "the Martian bunkers",
-            "Buried military tech, hastily sealed. They were preparing \
-             for something they did not expect to survive.",
-        ),
-        2 => (
-            "the Yucatan strata",
-            "The impact layer. Whatever they feared came here first, and \
-             the bunkers below it were already occupied.",
-        ),
-        _ => (
-            "the Venusian back-channels",
-            "A peace faction's hidden portals, held open across 65 \
-             million years. Someone meant for these to be found.",
-        ),
-    };
-    format!("DISCOVERY LOG — Site {level}, {place}.\n\n[placeholder] {note}")
+/// The interstitial flavor line for arriving at `planet` (2+). One line,
+/// Hades-style sparse — the banner's title carries the where, this
+/// carries the why-it-feels-different.
+pub fn arrival_flavor(planet: u32) -> &'static str {
+    match planet {
+        2 => "The wreckage changes here. Something else built this.",
+        3 => "Deeper. Older. The panels do not remember floors.",
+        4 => "No signal reaches this far. Keep what you can carry.",
+        _ => "Further than anyone has salvaged.",
+    }
 }
 
 #[cfg(test)]
@@ -44,43 +22,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn chapters_partition_the_forty_levels() {
-        assert_eq!(chapter_of(1), 0);
-        assert_eq!(chapter_of(10), 0);
-        assert_eq!(chapter_of(11), 1);
-        assert_eq!(chapter_of(20), 1);
-        assert_eq!(chapter_of(21), 2);
-        assert_eq!(chapter_of(30), 2);
-        assert_eq!(chapter_of(31), 3);
-        assert_eq!(chapter_of(40), 3);
-        // Out-of-range levels clamp to the last chapter, never panic.
-        assert_eq!(chapter_of(99), 3);
-        assert_eq!(chapter_of(0), 0);
-    }
-
-    #[test]
-    fn every_level_has_a_blurb_naming_its_site() {
-        for level in 1..=40u32 {
-            let blurb = level_blurb(level);
-            assert!(!blurb.is_empty());
-            assert!(
-                blurb.contains(&format!("Site {level}")),
-                "blurb for level {level} should name the site"
-            );
+    fn every_planet_has_a_distinct_arrival_line() {
+        // Consumed by planet::arrival_banner — the production caller that
+        // makes this a contract rather than a self-referential pin.
+        let lines: Vec<&str> = (2..=5).map(arrival_flavor).collect();
+        for line in &lines {
+            assert!(!line.is_empty());
         }
+        assert_ne!(lines[0], lines[1], "planets read differently");
+        assert_ne!(lines[1], lines[2]);
     }
 
     #[test]
-    fn chapters_have_distinct_settings() {
-        // The four chapters read differently, so the load screen isn't
-        // the same text for 40 levels.
-        let a = level_blurb(1);
-        let b = level_blurb(11);
-        let c = level_blurb(21);
-        let d = level_blurb(31);
-        assert!(a.contains("aeries"));
-        assert!(b.contains("Martian"));
-        assert!(c.contains("Yucatan"));
-        assert!(d.contains("Venusian"));
+    fn planets_beyond_the_written_table_still_get_a_line() {
+        assert!(!arrival_flavor(99).is_empty(), "no planet arrives silent");
     }
 }

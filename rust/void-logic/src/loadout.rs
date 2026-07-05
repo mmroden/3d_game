@@ -1,6 +1,6 @@
 use crate::kinetics::Retention;
 use crate::newtypes::{Health, Damage};
-use crate::upgrade::{Upgrade, UpgradeKind};
+use crate::upgrade::{UpgradeKind, STAT_UPGRADE_MULTIPLIER};
 use serde::{Deserialize, Serialize};
 
 /// Base stats for the ship before upgrades.
@@ -35,7 +35,7 @@ impl Default for BaseStats {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Loadout {
     pub base: BaseStats,
-    pub upgrades: Vec<Upgrade>,
+    pub upgrades: Vec<UpgradeKind>,
 }
 
 impl Loadout {
@@ -43,8 +43,8 @@ impl Loadout {
         Self::default()
     }
 
-    pub fn add_upgrade(&mut self, upgrade: Upgrade) {
-        self.upgrades.push(upgrade);
+    pub fn add_upgrade(&mut self, kind: UpgradeKind) {
+        self.upgrades.push(kind);
     }
 
     /// The total multiplier the loadout applies to `kind` (1.0 = stock).
@@ -52,12 +52,11 @@ impl Loadout {
         self.effective(kind, 1.0)
     }
 
-    /// Compute effective stat by applying all relevant upgrade multipliers.
+    /// Compute effective stat: the fixed policy step, compounded once per
+    /// purchase of `kind` (the loadout stores WHICH, policy stores HOW MUCH).
     fn effective(&self, kind: UpgradeKind, base_value: f32) -> f32 {
-        self.upgrades
-            .iter()
-            .filter(|u| u.kind == kind)
-            .fold(base_value, |val, u| val * u.multiplier)
+        let count = self.upgrades.iter().filter(|k| **k == kind).count();
+        base_value * STAT_UPGRADE_MULTIPLIER.powi(count as i32)
     }
 
     pub fn thrust_power(&self) -> f32 {
@@ -106,14 +105,10 @@ mod tests {
     }
 
     #[test]
-    fn single_upgrade_applies() {
+    fn single_upgrade_applies_the_policy_step() {
         let mut loadout = Loadout::new();
-        loadout.add_upgrade(Upgrade {
-            name: "Test Booster".to_string(),
-            kind: UpgradeKind::Thrust,
-            multiplier: 1.5,
-        });
-        assert_eq!(loadout.thrust_power(), 60.0);
+        loadout.add_upgrade(UpgradeKind::Thrust);
+        assert_eq!(loadout.thrust_power(), 40.0 * STAT_UPGRADE_MULTIPLIER);
         // Other stats unaffected
         assert_eq!(loadout.rotation_speed(), 6.0);
     }
@@ -123,11 +118,7 @@ mod tests {
         // These stats have no upgrade kind (retired with the free-drop
         // economy): whatever the loadout collects, they stay at base.
         let mut loadout = Loadout::new();
-        loadout.add_upgrade(Upgrade {
-            name: "Everything Booster".to_string(),
-            kind: UpgradeKind::Thrust,
-            multiplier: 2.0,
-        });
+        loadout.add_upgrade(UpgradeKind::Thrust);
         assert_eq!(loadout.damping().factor(), Loadout::new().damping().factor());
         assert_eq!(loadout.projectile_speed(), Loadout::new().projectile_speed());
     }
@@ -135,16 +126,12 @@ mod tests {
     #[test]
     fn multiple_upgrades_stack_multiplicatively() {
         let mut loadout = Loadout::new();
-        loadout.add_upgrade(Upgrade {
-            name: "Boost A".to_string(),
-            kind: UpgradeKind::Thrust,
-            multiplier: 1.5,
-        });
-        loadout.add_upgrade(Upgrade {
-            name: "Boost B".to_string(),
-            kind: UpgradeKind::Thrust,
-            multiplier: 2.0,
-        });
-        assert_eq!(loadout.thrust_power(), 120.0); // 40 * 1.5 * 2.0
+        loadout.add_upgrade(UpgradeKind::Thrust);
+        loadout.add_upgrade(UpgradeKind::Thrust);
+        assert_eq!(
+            loadout.thrust_power(),
+            40.0 * STAT_UPGRADE_MULTIPLIER * STAT_UPGRADE_MULTIPLIER,
+            "each purchase compounds the ONE policy step"
+        );
     }
 }

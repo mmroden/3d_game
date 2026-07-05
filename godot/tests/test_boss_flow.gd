@@ -193,3 +193,18 @@ func test_the_planet_final_boss_drops_the_hull_container():
 	assert_eq(_gm.boss_fight_state(), 3, "the reward closes the fight")
 	assert_eq(_gm.owned_hull_count(), 1,
 		"the red container granted a hull, persisted to the profile")
+
+	# --- The granted hull is flyable at the next loadout screen ---
+	_gm.on_portal_entered()
+	_gm.advance_to_shop()
+	_gm.advance_to_next_level()
+	assert_eq(_gm.get_phase_name(), "ShipSelect", "the loadout screen follows")
+	var granted_ship := 0
+	for unlock_id in range(3, 6):  # Unlock ids: Talon 3, Hive 4, Reaver 5
+		if _gm.has_unlock(unlock_id):
+			granted_ship = unlock_id - 2  # ShipType ids: Talon 1, Hive 2, Reaver 3
+			break
+	assert_gt(granted_ship, 0, "one purchasable hull is owned")
+	_gm.on_ship_type_selected(granted_ship)
+	assert_eq(_gm.get_ship_type_id(), granted_ship,
+		"the boss-granted hull is selectable at the loadout")

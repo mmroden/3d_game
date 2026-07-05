@@ -49,14 +49,12 @@ impl UpgradeKind {
     }
 }
 
-/// A single upgrade instance, bought at the between-level shop.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Upgrade {
-    pub name: String,
-    pub kind: UpgradeKind,
-    /// Multiplicative modifier (1.0 = no change, 1.1 = +10%).
-    pub multiplier: f32,
-}
+/// Every stat purchase applies the same multiplicative step — the effect
+/// size is upgrade-domain POLICY, owned here alone (audit 2026-07-05: the
+/// old per-instance record serialized a copy of this into every save, so
+/// retuning it forked old saves from the shop's advertising). The loadout
+/// stores only WHICH kinds were bought; labels and multipliers derive.
+pub const STAT_UPGRADE_MULTIPLIER: f32 = 1.10;
 
 #[cfg(test)]
 mod tests {

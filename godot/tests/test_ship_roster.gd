@@ -68,14 +68,15 @@ func test_locked_hull_cannot_be_selected_until_bought():
 	assert_eq(gm.get_organics(), 5000 - 300 - 500 - 800,
 		"the refused hull deducted nothing")
 
-	# Hulls arrive through the red container's collect path (the production
-	# signal handler). Each grant is a random unowned hull; three containers
-	# complete the fleet, so the Talon is owned whichever order they roll.
-	for _i in range(3):
-		gm.on_cache_collected(KIND_HULL_REWARD, 12000, true)
+	# Since the LevelSpec (B12), a hull container grants only what the
+	# level's spec STAGED — a forged red collect on an ordinary level is
+	# refused outright, which this pins. The real grant→selectable arc
+	# lives in test_boss_flow (level-6 walk → red container → ShipSelect).
+	gm.on_cache_collected(KIND_HULL_REWARD, 12000, true)
+	assert_eq(gm.owned_hull_count(), 0,
+		"an unstaged hull container grants nothing — no forgery door")
 	gm.on_ship_type_selected(TALON_SHIP_ID)
-	assert_eq(gm.get_ship_type_id(), TALON_SHIP_ID,
-		"a boss-granted hull is selectable")
+	assert_eq(gm.get_ship_type_id(), 0, "the hull stays locked")
 
 
 func test_buying_the_valkyrie_arms_the_flying_ship():
