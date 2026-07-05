@@ -98,7 +98,7 @@ func test_profile_continue_restarts_sector_1_with_greens_kept():
 	var gm: GameManager = s["gm"]
 	gm.start_new_game()
 	_into_playing(gm)
-	gm.on_cache_collected(1, 700)  # green — enough for the 300 radar
+	gm.on_cache_collected(1, 700, false)  # green — enough for the 300 radar
 	gm.on_portal_entered()
 	gm.advance_to_shop()
 	assert_true(gm.buy_shop_item(8), "own the radar so the profile has teeth")
@@ -190,7 +190,7 @@ func test_new_game_wipes_the_save_completely():
 	var gm: GameManager = s["gm"]
 	gm.start_new_game()
 	_into_playing(gm)
-	gm.on_cache_collected(1, 700)  # green — enough for the 300 radar
+	gm.on_cache_collected(1, 700, false)  # green — enough for the 300 radar
 	gm.on_portal_entered()
 	gm.advance_to_shop()
 	assert_true(gm.buy_shop_item(8), "own the radar so there is a profile to lose")

@@ -333,9 +333,16 @@ impl GameManager {
             // A boss death advances the fight — but opens NOTHING: the gate
             // stays sealed until the reward is taken (see on_cache_collected).
             if matches!(enemy_type, EnemyType::BossBrute | EnemyType::BossLatcher) {
+                let drops = void_logic::boss::boss_drop_count(
+                    self.run_state.run_seed,
+                    self.run_state.current_level,
+                    &self.run_state.unlocks,
+                );
                 if let Some(fight) = &mut self.boss_fight {
-                    if fight.defeat() {
-                        godot_print!("Boss down — collect the reward to open the arena");
+                    if fight.defeat(drops) {
+                        godot_print!(
+                            "Boss down — gather all {drops} drops to open the arena"
+                        );
                     }
                 }
             }
@@ -983,7 +990,7 @@ impl GameManager {
     /// either account without this pickup. Green is permanent the moment it
     /// is banked, so it writes the profile immediately.
     #[func]
-    pub fn on_cache_collected(&mut self, kind_id: i32, amount: i64) {
+    pub fn on_cache_collected(&mut self, kind_id: i32, amount: i64, boss_loot: bool) {
         let Some(kind) = CurrencyKind::from_id(kind_id) else { return };
         if kind == CurrencyKind::HullReward {
             // The red container: a hull, not a balance. Same deterministic
@@ -1010,14 +1017,15 @@ impl GameManager {
         if kind == CurrencyKind::Organics {
             self.persist_profile();
         }
-        // A pickup while the boss lies defeated is its reward (the arena is
-        // sealed — no other cache is reachable): the fight closes, the gate
-        // opens, the portal lights. The FSM refuses this from any other beat.
-        let collected = self
-            .boss_fight
-            .as_mut()
-            .map(|f| f.collect_reward())
-            .unwrap_or(false);
+        // Boss loot: the fight closes only when the COMPLETE drop set is
+        // gathered (the FSM counts what `defeat` staged) — an ordinary cache
+        // never advances it. The stamp crosses with the signal.
+        let collected = boss_loot
+            && self
+                .boss_fight
+                .as_mut()
+                .map(|f| f.collect_boss_loot())
+                .unwrap_or(false);
         if collected {
             godot_print!("Boss reward collected — the arena opens");
             self.set_boss_seal(false);

@@ -146,13 +146,20 @@ impl BossTrigger {
         self.extents = extents;
     }
 
+    /// Sensor shutdown: direct flip, invoked via `call_deferred` from the
+    /// in/out callback (the house dormancy pattern — a property
+    /// `set_deferred("monitoring")` silently never lands).
+    #[func]
+    fn disarm(&mut self) {
+        self.base_mut().set_monitoring(false);
+    }
+
     #[func]
     fn on_body_entered(&mut self, body: Gd<Node3D>) {
         if body.is_in_group(groups::PLAYER) {
             self.base_mut()
                 .emit_signal(signals::BOSS_ARENA_ENTERED, &[]);
-            self.base_mut()
-                .set_deferred("monitoring", &Variant::from(false));
+            self.base_mut().call_deferred(methods::DISARM, &[]);
         }
     }
 }

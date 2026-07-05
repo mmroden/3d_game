@@ -260,11 +260,13 @@ impl IRigidBody3D for EnemyDrone {
             // Ram is resolved by physics contact; SpawnDrones is a boss stub.
             Attack::None | Attack::Ram | Attack::SpawnDrones { .. } => {}
         }
+        // The Latcher's drain early-returns for every other type — no
+        // archetype coupling to keep in sync.
+        self.tick_drain(delta as f32, my_pos, player_pos);
         // Swarmers bog the player down while latched — re-tag periodically so the
         // slow compounds toward a crawl (see SWARM_* constants and SlowDebuff).
         if self.ai.config.archetype == Archetype::Swarmer {
             self.tick_swarm_slow(delta as f32, my_pos, player_pos);
-            self.tick_drain(delta as f32, my_pos, player_pos);
         }
         // Turn the model to face the player, and billboard the health bar.
         // Both are transform writes, so they belong in the physics tick (engine

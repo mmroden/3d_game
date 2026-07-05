@@ -59,6 +59,8 @@ pub mod methods {
     pub const STAGE_RED_CONTAINER: &str = "stage_red_container";
     pub const SET_SEALED: &str = "set_sealed";
     pub const SET_DORMANT: &str = "set_dormant";
+    pub const DISARM: &str = "disarm";
+    pub const SET_MONITORING: &str = "set_monitoring";
     pub const SET_BOSS_PORTAL_ACTIVE: &str = "set_boss_portal_active";
     pub const ACTIVATE_ESCORTS: &str = "activate_escorts";
     pub const ON_BODY_ENTERED: &str = "on_body_entered";

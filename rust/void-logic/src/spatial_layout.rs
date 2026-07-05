@@ -210,13 +210,10 @@ fn boss_room_template(pitch: crate::planet::Pitch) -> RoomTemplate {
         enemy_spawns: vec![crate::room_template::SpawnPoint {
             position: [center_x, 2.0, center_z],
         }],
-        // The reward drops at the quarter point, NOT the center: the exit
-        // portal materializes at the room center (`portal_position`), and a
-        // reward on the same spot would hurl the player into it the moment
-        // it activates.
-        loot_spawns: vec![crate::room_template::SpawnPoint {
-            position: [center_x * 0.5, 0.75, center_z],
-        }],
+        // NO loot spawns: every arena cache is boss loot dropped at the
+        // corpse (bound cache + consolation pile) — the all-loot-gathered
+        // opening must never share the floor with ordinary containers.
+        loot_spawns: vec![],
         extents: [BOSS_ROOM_XZ, BOSS_ROOM_STORIES, BOSS_ROOM_XZ],
     }
 }
@@ -548,14 +545,19 @@ mod tests {
     }
 
     #[test]
-    fn the_arena_carries_a_boss_spawn_and_a_reward_spot() {
-        // One enemy spawn (the boss — B5's manifest places it) and one loot
-        // spawn (the red/consolation container — B7) — both near the center.
+    fn the_arena_carries_the_boss_and_no_container_furniture() {
+        // One enemy spawn (the boss — B5's manifest places it) and NO loot
+        // spawns: every cache in the arena is boss loot dropped at the
+        // corpse (bound cache + pile). A template loot spawn would
+        // materialize an ordinary green cache — a decoy the all-loot-
+        // gathered opening must never have to reason about (review finding
+        // 2026-07-05).
         let (mut level, entry) = pinned_boss_level();
         let boss = attach_boss_room(&mut level, entry, TEST_PITCH).expect("attach");
         let template = &level.room(boss).unwrap().template;
         assert_eq!(template.enemy_spawns.len(), 1, "exactly the boss spawns here");
-        assert_eq!(template.loot_spawns.len(), 1, "exactly the reward drops here");
+        assert!(template.loot_spawns.is_empty(),
+            "no container furniture — arena caches are boss drops only");
     }
 
     #[test]

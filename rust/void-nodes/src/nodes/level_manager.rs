@@ -526,9 +526,17 @@ impl LevelManager {
                         }
                     }
 
+                    let is_boss = matches!(
+                        spawn.enemy_type,
+                        enemy_type::EnemyType::BossBrute | enemy_type::EnemyType::BossLatcher
+                    );
                     let mut level_mgr: Gd<Node3D> = self.base().clone().cast();
-                    if let Some(cache_node) = Self::build_cache(&mut loader, &mut level_mgr) {
+                    if let Some(mut cache_node) = Self::build_cache(&mut loader, &mut level_mgr) {
                         parent.bind_mut().bind_cache(&cache_node);
+                        // A boss's bound cache is part of its staged drop
+                        // set — the stamp crosses with cache_collected so
+                        // the fight FSM counts exactly these.
+                        cache_node.bind_mut().set_boss_loot(is_boss);
                         // Track it so a rebuild frees it (tier-1, one life/level).
                         self.caches.push(&cache_node, ());
                     }
@@ -537,18 +545,14 @@ impl LevelManager {
                     // everything it can shed exists before the fight):
                     // the red hull container when GameManager staged one,
                     // otherwise the consolation pile as extra bound caches.
-                    let is_boss = matches!(
-                        spawn.enemy_type,
-                        enemy_type::EnemyType::BossBrute | enemy_type::EnemyType::BossLatcher
-                    );
                     if is_boss {
                         if self.red_container_staged {
                             parent.bind_mut().set_cache_kind(CurrencyKind::HullReward);
                         } else {
                             for (kind, amount) in boss::consolation_pile(level_number) {
-                                let mut level_mgr: Gd<Node3D> = self.base().clone().cast();
-                                if let Some(bonus) = Self::build_cache(&mut loader, &mut level_mgr) {
+                                if let Some(mut bonus) = Self::build_cache(&mut loader, &mut level_mgr) {
                                     parent.bind_mut().bind_bonus_cache(&bonus, kind, amount);
+                                    bonus.bind_mut().set_boss_loot(true);
                                     self.caches.push(&bonus, ());
                                 }
                             }

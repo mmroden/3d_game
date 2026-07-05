@@ -57,7 +57,7 @@ func test_locked_hull_cannot_be_selected_until_bought():
 		if gm.get_phase_name() == "Playing":
 			break
 		gm.advance_from_bestiary()
-	gm.on_cache_collected(KIND_ORGANICS, 5000)
+	gm.on_cache_collected(KIND_ORGANICS, 5000, false)
 	gm.on_portal_entered()
 	gm.advance_to_shop()
 	assert_true(gm.buy_shop_item(RADAR_ITEM), "the radar is the first rung")
@@ -72,7 +72,7 @@ func test_locked_hull_cannot_be_selected_until_bought():
 	# signal handler). Each grant is a random unowned hull; three containers
 	# complete the fleet, so the Talon is owned whichever order they roll.
 	for _i in range(3):
-		gm.on_cache_collected(KIND_HULL_REWARD, 12000)
+		gm.on_cache_collected(KIND_HULL_REWARD, 12000, true)
 	gm.on_ship_type_selected(TALON_SHIP_ID)
 	assert_eq(gm.get_ship_type_id(), TALON_SHIP_ID,
 		"a boss-granted hull is selectable")
@@ -92,7 +92,7 @@ func test_buying_the_valkyrie_arms_the_flying_ship():
 		gm.advance_from_bestiary()
 	assert_false(player.is_valkyrie_owned(), "a fresh profile flies without the cannon")
 
-	gm.on_cache_collected(KIND_ORGANICS, 2000)
+	gm.on_cache_collected(KIND_ORGANICS, 2000, false)
 	gm.on_portal_entered()
 	gm.advance_to_shop()
 	assert_true(gm.buy_shop_item(RADAR_ITEM), "rung one")

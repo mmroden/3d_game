@@ -328,25 +328,19 @@ pub fn manifest(graph: &LevelGraph, pitch: Pitch, seed: Seed, level: u32) -> Lev
         graph
             .room_indices()
             .position(|idx| Some(idx) == graph.boss_room())
-            .map(|pos| (pos, kind.enemy_type()))
+            .map(|pos| (pos, kind))
     });
 
     let rooms = rooms_assembly
         .iter()
         .enumerate()
         .map(|(room_pos, room)| {
-            if let Some((arena_pos, boss_type)) = boss_arena {
+            if let Some((arena_pos, boss_kind)) = boss_arena {
                 if room_pos == arena_pos {
+                    let boss_type = boss_kind.enemy_type();
                     let adds = crate::boss::boss_adds(level);
-                    let (minion_type, trigger) = match boss_type.escorts() {
-                        Some((t, _)) => (t, MinionTrigger::OnEngage),
-                        None => {
-                            let (t, _) = boss_type
-                                .death_spawn()
-                                .expect("every boss fields minions on one trigger");
-                            (t, MinionTrigger::OnDeath)
-                        }
-                    };
+                    // Total by construction — no probing, no panic path.
+                    let (minion_type, trigger) = boss_kind.minions();
                     let enemies = room
                         .enemies
                         .iter()

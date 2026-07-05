@@ -26,11 +26,18 @@ pub enum BossFightState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BossFight {
     state: BossFightState,
+    /// Boss drops still on the arena floor. Staged by `defeat`; the fight
+    /// closes only when the COMPLETE set is gathered (owner's call
+    /// 2026-07-05) — a layered condition, not a single trip-wire.
+    outstanding_loot: u8,
 }
 
 impl BossFight {
     pub fn new() -> Self {
-        Self { state: BossFightState::Dormant }
+        Self {
+            state: BossFightState::Dormant,
+            outstanding_loot: 0,
+        }
     }
 
     pub fn state(&self) -> BossFightState {
@@ -42,14 +49,32 @@ impl BossFight {
         self.advance(BossFightState::Dormant, BossFightState::Engaged)
     }
 
-    /// The boss died.
-    pub fn defeat(&mut self) -> bool {
-        self.advance(BossFightState::Engaged, BossFightState::Defeated)
+    /// The boss died, staging its complete drop set (`loot_count` caches).
+    /// A zero-drop defeat is refused outright — it could never open.
+    pub fn defeat(&mut self, loot_count: u8) -> bool {
+        if loot_count == 0 {
+            return false;
+        }
+        if self.advance(BossFightState::Engaged, BossFightState::Defeated) {
+            self.outstanding_loot = loot_count;
+            true
+        } else {
+            false
+        }
     }
 
-    /// The reward cache was picked up.
-    pub fn collect_reward(&mut self) -> bool {
-        self.advance(BossFightState::Defeated, BossFightState::RewardCollected)
+    /// One piece of boss loot was picked up. Returns `true` when it was the
+    /// LAST one — the fight closes and the arena opens.
+    pub fn collect_boss_loot(&mut self) -> bool {
+        if self.state != BossFightState::Defeated {
+            return false;
+        }
+        self.outstanding_loot = self.outstanding_loot.saturating_sub(1);
+        if self.outstanding_loot == 0 {
+            self.advance(BossFightState::Defeated, BossFightState::RewardCollected)
+        } else {
+            false
+        }
     }
 
     /// Whether the arena gate is solid right now: from the moment the fight
@@ -116,15 +141,45 @@ mod tests {
         assert!(f.is_sealed(), "the gate slams behind the player");
         assert!(!f.portal_active());
 
-        assert!(f.defeat(), "the boss falls");
+        assert!(f.defeat(1), "the boss falls, staging its one drop");
         assert_eq!(f.state(), BossFightState::Defeated);
         assert!(f.is_sealed(), "the kill is not the end — the pickup is");
         assert!(!f.portal_active());
 
-        assert!(f.collect_reward(), "the reward closes the fight");
+        assert!(f.collect_boss_loot(), "the last drop closes the fight");
         assert_eq!(f.state(), BossFightState::RewardCollected);
         assert!(!f.is_sealed(), "the arena opens");
         assert!(f.portal_active(), "the way to the next level appears");
+    }
+
+    #[test]
+    fn the_arena_opens_only_when_all_boss_loot_is_gathered() {
+        // The mid-boss drops a PILE (bound blue + consolation caches). One
+        // pickup is not the reward beat — the whole drop set is (owner's
+        // call 2026-07-05): a layered condition, not a single trip-wire.
+        let mut f = BossFight::new();
+        f.engage();
+        assert!(f.defeat(4), "the pile stages four drops");
+        assert!(!f.collect_boss_loot(), "1 of 4 — the arena stays sealed");
+        assert_eq!(f.state(), BossFightState::Defeated);
+        assert!(f.is_sealed());
+        assert!(!f.collect_boss_loot(), "2 of 4");
+        assert!(!f.collect_boss_loot(), "3 of 4");
+        assert!(f.is_sealed(), "still sealed with loot on the floor");
+        assert!(f.collect_boss_loot(), "4 of 4 — NOW the fight closes");
+        assert_eq!(f.state(), BossFightState::RewardCollected);
+        assert!(!f.is_sealed());
+        assert!(f.portal_active());
+    }
+
+    #[test]
+    fn a_dropless_defeat_is_refused() {
+        // Zero staged drops would deadlock the arena (nothing could ever
+        // open it) — the transition itself refuses the nonsense.
+        let mut f = BossFight::new();
+        f.engage();
+        assert!(!f.defeat(0), "a boss always drops something");
+        assert_eq!(f.state(), BossFightState::Engaged);
     }
 
     #[test]
@@ -138,24 +193,25 @@ mod tests {
     #[test]
     fn illegal_transitions_are_refused_and_preserve_state() {
         let mut f = BossFight::new();
-        assert!(!f.defeat(), "nothing to defeat before engagement");
-        assert!(!f.collect_reward(), "nothing to collect before engagement");
+        assert!(!f.defeat(1), "nothing to defeat before engagement");
+        assert!(!f.collect_boss_loot(), "nothing to collect before engagement");
         assert_eq!(f.state(), BossFightState::Dormant);
 
         f.engage();
         assert!(!f.engage(), "a second trigger touch is a no-op");
-        assert!(!f.collect_reward(), "no reward exists while the boss lives");
+        assert!(!f.collect_boss_loot(), "no drops exist while the boss lives");
         assert_eq!(f.state(), BossFightState::Engaged);
 
-        f.defeat();
+        f.defeat(2);
         assert!(!f.engage(), "the fight never rewinds");
-        assert!(!f.defeat(), "a duplicate death report is a no-op");
+        assert!(!f.defeat(2), "a duplicate death report is a no-op");
         assert_eq!(f.state(), BossFightState::Defeated);
 
-        f.collect_reward();
-        assert!(!f.engage());
-        assert!(!f.defeat());
-        assert!(!f.collect_reward());
+        f.collect_boss_loot();
+        f.collect_boss_loot();
         assert_eq!(f.state(), BossFightState::RewardCollected);
+        assert!(!f.engage());
+        assert!(!f.defeat(1));
+        assert!(!f.collect_boss_loot(), "no over-collection past the close");
     }
 }

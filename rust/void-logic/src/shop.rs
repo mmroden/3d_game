@@ -611,7 +611,6 @@ mod tests {
             .filter(|o| o.currency == CurrencyKind::Organics)
             .map(|o| o.id)
             .collect();
-        use crate::ship_type::ShipType;
         assert_eq!(green.len(), 3,
             "the spine done: the two map branches and the surge — no hulls: {green:?}");
         assert!(!green.iter().any(|id| matches!(id, ShopItemId::Unlock(Unlock::Ship(_)))),
@@ -621,7 +620,6 @@ mod tests {
         assert!(green.contains(&ShopItemId::Unlock(Unlock::ThreatTracker)));
         assert!(green.contains(&ShopItemId::Unlock(Unlock::ShieldBurst)),
             "owning the radar put the surge on offer");
-        let _ = ShipType::Vanguard; // fleet types stay referenced below
     }
 
     #[test]

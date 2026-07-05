@@ -24,6 +24,9 @@ pub struct CurrencyCache {
 
     /// Which account this cache credits. Stamped by `drop_at`.
     kind: CurrencyKind,
+    /// Part of a boss's staged drop set (bound cache or consolation pile) —
+    /// stamped by the LevelManager at build; crosses with `cache_collected`.
+    boss_loot: bool,
     /// How much it credits. Stamped by `drop_at`.
     amount: u32,
     /// The glow light, kept so `drop_at` can retint it to the kind's color.
@@ -43,6 +46,7 @@ impl IArea3D for CurrencyCache {
             bob_speed: 2.0,
             bob_amplitude: 0.3,
             kind: CurrencyKind::Components,
+            boss_loot: false,
             amount: 0,
             glow: None,
             time: 0.0,
@@ -101,7 +105,7 @@ impl IArea3D for CurrencyCache {
 #[godot_api]
 impl CurrencyCache {
     #[signal]
-    fn cache_collected(kind_id: i32, amount: i64);
+    fn cache_collected(kind_id: i32, amount: i64, boss_loot: bool);
 
     #[func]
     fn on_body_entered(&mut self, body: Gd<Node3D>) {
@@ -129,11 +133,17 @@ impl CurrencyCache {
 
         godot_print!("Collected cache: {} ({:?})", self.amount, self.kind);
 
-        // Emit signal — GameManager credits the matching account.
-        let (kind_id, amount) = (self.kind.id(), self.amount as i64);
+        // Emit signal — GameManager credits the matching account; the
+        // boss-loot stamp lets the fight FSM count ONLY the boss's drop set
+        // (an ordinary cache never advances the arena).
+        let (kind_id, amount, boss_loot) = (self.kind.id(), self.amount as i64, self.boss_loot);
         self.base_mut().emit_signal(
             signals::CACHE_COLLECTED,
-            &[Variant::from(kind_id), Variant::from(amount)],
+            &[
+                Variant::from(kind_id),
+                Variant::from(amount),
+                Variant::from(boss_loot),
+            ],
         );
 
         // Tier-1 pool contract (Faucet Principle): a collected cache goes
@@ -149,6 +159,11 @@ impl CurrencyCache {
     /// (resetting interpolation so it doesn't streak across the map). This is
     /// the one structural drop path; nothing is instantiated here — the cache
     /// was pre-built during the load.
+    /// Mark this cache as part of a boss's staged drop set. Build-time only.
+    pub fn set_boss_loot(&mut self, boss_loot: bool) {
+        self.boss_loot = boss_loot;
+    }
+
     pub fn drop_at(&mut self, pos: Vector3, kind: CurrencyKind, amount: u32) {
         self.kind = kind;
         self.amount = amount;

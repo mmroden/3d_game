@@ -115,10 +115,11 @@ impl Portal {
                 audio.bind_mut().play_event_at(SfxEvent::PortalEnter, pos);
             }
             self.base_mut().emit_signal(signals::PORTAL_ENTERED, &[]);
-            // Disable further collisions (deferred: this runs inside the
-            // body_entered in/out signal, where direct flips are blocked).
+            // Disable further collisions — call_deferred of the setter (the
+            // house dormancy pattern; a property set_deferred("monitoring")
+            // silently never lands).
             self.base_mut()
-                .set_deferred("monitoring", &Variant::from(false));
+                .call_deferred(methods::SET_MONITORING, &[Variant::from(false)]);
         }
     }
 }

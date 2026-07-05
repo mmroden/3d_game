@@ -65,6 +65,13 @@ func _portal() -> Node:
 	var portals := _lm.find_children("*", "Portal", true, false)
 	return portals.front() if not portals.is_empty() else null
 
+func _live_caches() -> Array:
+	var out := []
+	for c in _lm.find_children("*", "CurrencyCache", false, false):
+		if c.visible:
+			out.append(c)
+	return out
+
 func _teleport(pos: Vector3) -> void:
 	_player.global_position = pos
 	_player.linear_velocity = Vector3.ZERO
@@ -119,19 +126,26 @@ func test_the_boss_fight_walks_seal_kill_collect_open():
 	if portal != null:
 		assert_false(portal.monitoring, "no exit before the reward")
 
-	# --- Collecting the reward closes the fight ---
-	var cache: Node3D = null
-	for c in _lm.find_children("*", "CurrencyCache", false, false):
-		if c.visible:
-			cache = c
-			break
-	assert_not_null(cache, "the boss dropped its reward cache")
-	if cache == null:
+	# --- ALL boss loot gathered closes the fight — not any one pickup ---
+	# The mid-boss sheds a pile: its bound blue cache plus the consolation
+	# caches. Grabbing SOME of it must leave the arena sealed (owner's call
+	# 2026-07-05); only the complete set opens the way.
+	var drops := _live_caches()
+	assert_eq(drops.size(), 4, "the mid-boss pile is four caches")
+	if drops.is_empty():
 		return
-	_teleport(cache.global_position)
-	await wait_physics_frames(10, "the pickup must register")
+	_teleport(drops[0].global_position)
+	await wait_physics_frames(10, "the first pickup must register")
+	await wait_process_frames(2)
+	assert_eq(_gm.boss_fight_state(), 2,
+		"one drop of the pile is not the reward beat — still Defeated")
+	assert_true(gate.is_sealed(), "the arena stays sealed over the rest")
+
+	for c in _live_caches():
+		_teleport(c.global_position)
+		await wait_physics_frames(10, "each pickup must register")
 	await wait_process_frames(2)  # the arena-open flips ride call_deferred
-	assert_eq(_gm.boss_fight_state(), 3, "the reward closes the fight")
+	assert_eq(_gm.boss_fight_state(), 3, "the WHOLE pile closes the fight")
 	assert_false(gate.is_sealed(), "the arena opens")
 	if portal != null:
 		assert_true(portal.monitoring, "the way onward appears")

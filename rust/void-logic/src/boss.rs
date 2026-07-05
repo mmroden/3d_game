@@ -45,6 +45,17 @@ impl BossKind {
             Self::Latcher => crate::enemy_type::EnemyType::BossLatcher,
         }
     }
+
+    /// What this boss fields and when — total by construction, so the
+    /// manifest never probes `escorts()`/`death_spawn()` and panics on a
+    /// mismatch. Pinned against the `EnemyType` tables in tests.
+    pub fn minions(self) -> (crate::enemy_type::EnemyType, crate::level_assembly::MinionTrigger) {
+        use crate::level_assembly::MinionTrigger;
+        match self {
+            Self::Brute => (crate::enemy_type::EnemyType::SpawnDrone, MinionTrigger::OnDeath),
+            Self::Latcher => (crate::enemy_type::EnemyType::SpawnDrone, MinionTrigger::OnEngage),
+        }
+    }
 }
 
 /// How many minions a boss fields at this level: the base trio grows by one
@@ -81,6 +92,23 @@ pub fn roll_hull_reward(
     const HULL_SALT: u64 = 0x0b05_5000_4001;
     let mut rng = SmallRng::seed_from_u64(seed.for_level(level).value() ^ HULL_SALT);
     Some(candidates[rng.random_range(0..candidates.len())])
+}
+
+/// How many caches this level's boss sheds in total — the complete drop
+/// set the arena stays sealed for (owner's call 2026-07-05: ALL boss loot
+/// gathered opens the room, not any one pickup). Planet-final with hulls
+/// left = the red container alone; otherwise the bound blue cache plus the
+/// consolation pile.
+pub fn boss_drop_count(
+    seed: crate::seed::Seed,
+    level: u32,
+    unlocks: &crate::unlocks::PermanentUnlocks,
+) -> u8 {
+    if is_planet_final(level) && roll_hull_reward(seed, level, unlocks).is_some() {
+        1
+    } else {
+        1 + consolation_pile(level).len() as u8
+    }
 }
 
 /// The mid-boss drop (and the planet-final drop once every hull is owned):
@@ -148,6 +176,22 @@ mod tests {
     }
 
     #[test]
+    fn boss_minions_agree_with_the_roster_tables() {
+        use crate::level_assembly::MinionTrigger;
+        // Consistency pin: the total mapping and the EnemyType tables can
+        // never drift apart.
+        let (brute_kind, brute_trigger) = BossKind::Brute.minions();
+        assert_eq!(Some((brute_kind, 3)),
+            BossKind::Brute.enemy_type().death_spawn().map(|(t, _)| (t, 3)));
+        assert_eq!(brute_trigger, MinionTrigger::OnDeath);
+
+        let (latcher_kind, latcher_trigger) = BossKind::Latcher.minions();
+        assert_eq!(Some(latcher_kind),
+            BossKind::Latcher.enemy_type().escorts().map(|(t, _)| t));
+        assert_eq!(latcher_trigger, MinionTrigger::OnEngage);
+    }
+
+    #[test]
     fn the_red_container_grants_only_unowned_hulls() {
         use crate::seed::Seed;
         use crate::ship_type::ShipType;
@@ -185,6 +229,32 @@ mod tests {
         let b = roll_hull_reward(Seed::new(7), 6, &owned);
         assert_eq!(a, b, "same run, same level, same hull");
         assert!(a.is_some(), "an empty fleet always yields a hull");
+    }
+
+    #[test]
+    fn the_drop_count_is_the_container_alone_or_the_whole_pile() {
+        use crate::seed::Seed;
+        use crate::ship_type::ShipType;
+        use crate::unlocks::{PermanentUnlocks, Unlock};
+
+        let fresh = PermanentUnlocks::new();
+        assert_eq!(boss_drop_count(Seed::new(1), 6, &fresh), 1,
+            "a planet final with hulls left sheds exactly the red container");
+        assert_eq!(
+            boss_drop_count(Seed::new(1), 3, &fresh) as usize,
+            1 + consolation_pile(3).len(),
+            "a mid-boss sheds its bound cache plus the whole pile"
+        );
+
+        let mut full = PermanentUnlocks::new();
+        for ship in [ShipType::Talon, ShipType::Hive, ShipType::Reaver] {
+            full.grant(Unlock::Ship(ship));
+        }
+        assert_eq!(
+            boss_drop_count(Seed::new(1), 6, &full) as usize,
+            1 + consolation_pile(6).len(),
+            "a complete fleet turns the final drop into the pile too"
+        );
     }
 
     #[test]

@@ -47,7 +47,7 @@ func _playing_game() -> GameManager:
 
 ## Portal out of the level and into the shop with `funds` components banked.
 func _shop_with_funds(gm: GameManager, funds: int) -> void:
-	gm.on_cache_collected(0, funds)  # kind 0 = components
+	gm.on_cache_collected(0, funds, false)  # kind 0 = components
 	gm.on_portal_entered()
 	gm.advance_to_shop()
 	assert_eq(gm.get_phase_name(), "Shop", "must reach the shop")
@@ -107,7 +107,7 @@ func test_spare_life_routes_death_through_shop_back_to_the_same_level():
 
 func test_last_life_ends_the_run_and_burns_the_salvage():
 	var gm := _playing_game()
-	gm.on_cache_collected(0, 5_000)
+	gm.on_cache_collected(0, 5_000, false)
 	assert_eq(gm.get_lives(), 1, "a fresh run has the one life")
 
 	gm.on_player_damaged(1000000.0, Vector3.ZERO)
@@ -118,8 +118,8 @@ func test_last_life_ends_the_run_and_burns_the_salvage():
 
 func test_unlock_purchase_spends_organics_and_survives_run_over():
 	var gm := _playing_game()
-	gm.on_cache_collected(KIND_ORGANICS, 400)
-	gm.on_cache_collected(KIND_COMPONENTS, 5_000)
+	gm.on_cache_collected(KIND_ORGANICS, 400, false)
+	gm.on_cache_collected(KIND_COMPONENTS, 5_000, false)
 	gm.on_portal_entered()
 	gm.advance_to_shop()
 
@@ -301,7 +301,7 @@ func test_one_press_on_the_level_2_summary_lands_in_the_shop_not_past_it():
 
 	# And the shop is USABLE: the next press buys the top row (Thrust,
 	# 2000 — affordable with the level's salvage untouched by upgrades).
-	gm.on_cache_collected(KIND_COMPONENTS, 2_000)
+	gm.on_cache_collected(KIND_COMPONENTS, 2_000, false)
 	var components_before: int = gm.get_components()
 	Input.action_press("menu_select")
 	await wait_process_frames(2)
@@ -318,7 +318,7 @@ func test_save_and_exit_banks_the_run_at_the_next_level():
 	# the player lands on the main menu with Continue armed.
 	var gm := _playing_game()
 	await wait_process_frames(3)
-	gm.on_cache_collected(KIND_COMPONENTS, 30_000)
+	gm.on_cache_collected(KIND_COMPONENTS, 30_000, false)
 	gm.on_portal_entered()
 	gm.advance_to_shop()
 	assert_true(gm.buy_shop_item(THRUST_ID), "bank a purchase before leaving")
@@ -339,8 +339,8 @@ func test_the_shield_surge_stocks_charges_and_spends_on_the_trigger():
 	# 5k blue, and the item trigger spends one for instant shields.
 	var gm := _playing_game()
 	await wait_process_frames(3)
-	gm.on_cache_collected(KIND_ORGANICS, 2_000)
-	gm.on_cache_collected(KIND_COMPONENTS, 30_000)
+	gm.on_cache_collected(KIND_ORGANICS, 2_000, false)
+	gm.on_cache_collected(KIND_COMPONENTS, 30_000, false)
 	gm.on_portal_entered()
 	gm.advance_to_shop()
 	assert_true(gm.buy_shop_item(RADAR_ID), "the radar opens the surge branch")
