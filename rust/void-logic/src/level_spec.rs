@@ -9,8 +9,8 @@
 //! profile and produces the immutable per-level value every stage consumes.
 
 use crate::asset_catalog::PanelSet;
-use crate::enemy_type::EnemyType;
 use crate::level_assembly::MinionTrigger;
+use crate::roster::EnemyId;
 use crate::planet::Pitch;
 use crate::seed::Seed;
 use crate::ship_type::ShipType;
@@ -30,10 +30,10 @@ pub enum Paradigm {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BossStaging {
     /// The enemy def this boss fights as (declared on the boss slot).
-    pub boss: EnemyType,
+    pub boss: EnemyId,
     /// The escort kind and its rise trigger (declared on the boss slot);
     /// the COUNT is the level-scaled `boss::boss_adds` formula.
-    pub escorts: (EnemyType, MinionTrigger),
+    pub escorts: (EnemyId, MinionTrigger),
     /// The fight's music track (never relooped — a fight outlasting it
     /// continues on combat stingers).
     pub track: String,
@@ -67,10 +67,10 @@ pub struct LevelSpec {
     pub paradigm: Paradigm,
     /// Target room count for generation.
     pub room_budget: usize,
-    /// The direct-spawn pool: every type the schedule admits by this level.
-    pub roster: Vec<EnemyType>,
-    /// The bestiary horizon: the roster closed over death-spawns.
-    pub coverage: Vec<EnemyType>,
+    /// The direct-spawn pool: exactly what this level's declared list fields.
+    pub roster: Vec<EnemyId>,
+    /// The bestiary horizon: the roster closed over bound minions.
+    pub coverage: Vec<EnemyId>,
     pub boss: Option<BossStaging>,
     /// The level's loopable background music.
     pub background: String,
@@ -85,35 +85,23 @@ impl LevelSpec {
     /// remain). Immutable for the level's lifetime.
     pub fn for_level(run_seed: Seed, level: u32, unlocks: &PermanentUnlocks) -> Self {
         let grammar = crate::roster::roster();
-        let roster: Vec<EnemyType> = grammar
-            .roster_for_level(level)
-            .iter()
-            .map(|id| {
-                EnemyType::from_id(grammar.enemy(*id).crossing_id as i32)
-                    .expect("crossing ids round-trip")
-            })
-            .collect();
+        let roster: Vec<EnemyId> = grammar.roster_for_level(level);
 
-        // The bestiary horizon: the roster closed over death-spawns, in
-        // ALL order, deduplicated.
-        let mut seen = [false; EnemyType::ALL.len()];
-        for t in &roster {
-            seen[t.id() as usize] = true;
-            for (minion, _, _) in t.minions() {
-                seen[minion.id() as usize] = true;
+        // The bestiary horizon: the roster closed over bound minions, in
+        // declaration order, deduplicated.
+        let mut seen = vec![false; grammar.enemies.len()];
+        for id in &roster {
+            seen[id.0] = true;
+            for m in &grammar.enemy(*id).minions {
+                seen[m.enemy.0] = true;
             }
         }
-        let coverage = EnemyType::ALL
-            .iter()
-            .copied()
-            .filter(|t| seen[t.id() as usize])
+        let coverage: Vec<EnemyId> = grammar
+            .enemy_ids()
+            .filter(|id| seen[id.0])
             .collect();
 
         let boss = grammar.boss_slot_for_level(level).map(|slot| {
-            let to_type = |id: crate::roster::EnemyId| {
-                EnemyType::from_id(grammar.enemy(id).crossing_id as i32)
-                    .expect("crossing ids round-trip")
-            };
             // The red container hangs off the slot's DECLARED reward
             // policy — a hull while unowned ones remain, else the pile.
             let hull_reward = if slot.reward
@@ -129,8 +117,8 @@ impl LevelSpec {
                 crate::boss::consolation_pile(level)
             };
             BossStaging {
-                boss: to_type(slot.boss),
-                escorts: (to_type(slot.escorts.0), slot.escorts.1),
+                boss: slot.boss,
+                escorts: slot.escorts,
                 track: crate::audio_catalog::boss_track(slot.track as u32),
                 hull_reward,
                 pile,
@@ -168,6 +156,10 @@ mod tests {
         LevelSpec::for_level(Seed::new(1), level, &PermanentUnlocks::new())
     }
 
+    fn eid(key: &str) -> crate::roster::EnemyId {
+        crate::roster::roster().enemy_by_key(key).expect(key)
+    }
+
     #[test]
     fn level_one_is_the_terrestrial_opening() {
         let spec = fresh(1);
@@ -176,7 +168,7 @@ mod tests {
         assert_eq!((spec.pitch.tile, spec.pitch.story), (4.0, 5.0));
         assert_eq!(spec.paradigm, Paradigm::Layered);
         assert_eq!(spec.room_budget, 8);
-        assert_eq!(spec.roster, vec![EnemyType::SentryDrone],
+        assert_eq!(spec.roster, vec![eid("sentry_drone")],
             "level 1 fields the sentry alone");
         assert_eq!(spec.boss, None, "no fight staged");
         assert!(spec.background.ends_with("level_01.mp3"),
@@ -189,34 +181,34 @@ mod tests {
         // Owner's correction (playtest 2026-07-05, twice): planet 2 fields
         // the WHITE SPHERE fleet — the Quaternius machines belong to planet
         // 1 and retire at its final boss. Replacement, never mix-in.
-        assert!(!fresh(6).roster.contains(&EnemyType::SphereGunner),
+        assert!(!fresh(6).roster.contains(&eid("sphere_gunner")),
             "no white spheres anywhere on planet 1");
-        assert!(fresh(7).roster.contains(&EnemyType::SphereGunner));
-        assert!(!fresh(7).roster.contains(&EnemyType::SphereStriker));
-        assert!(fresh(8).roster.contains(&EnemyType::SphereStriker));
-        assert!(!fresh(8).roster.contains(&EnemyType::AlienTroop));
-        assert!(fresh(9).roster.contains(&EnemyType::AlienTroop));
-        assert!(!fresh(10).roster.contains(&EnemyType::SphereCarrier));
-        assert!(fresh(11).roster.contains(&EnemyType::SphereCarrier));
-        for veteran in [EnemyType::SentryDrone, EnemyType::Bomber,
-                        EnemyType::EyeDrone, EnemyType::QuadShell] {
+        assert!(fresh(7).roster.contains(&eid("sphere_gunner")));
+        assert!(!fresh(7).roster.contains(&eid("sphere_striker")));
+        assert!(fresh(8).roster.contains(&eid("sphere_striker")));
+        assert!(!fresh(8).roster.contains(&eid("alien_troop")));
+        assert!(fresh(9).roster.contains(&eid("alien_troop")));
+        assert!(!fresh(10).roster.contains(&eid("sphere_carrier")));
+        assert!(fresh(11).roster.contains(&eid("sphere_carrier")));
+        for veteran in [eid("sentry_drone"), eid("bomber"),
+                        eid("eye_drone"), eid("quad_shell")] {
             assert!(!fresh(7).roster.contains(&veteran),
                 "{veteran:?} retired with planet 1");
         }
         // Planets past the sphere fleet's home keep fielding it until new
         // kits arrive — a planet is never enemy-less.
-        assert!(fresh(13).roster.contains(&EnemyType::SphereGunner),
+        assert!(fresh(13).roster.contains(&eid("sphere_gunner")),
             "planet 3 inherits the newest fleet");
-        assert!(!fresh(13).roster.contains(&EnemyType::SentryDrone));
+        assert!(!fresh(13).roster.contains(&eid("sentry_drone")));
     }
 
     #[test]
     fn the_reserves_never_enter_any_roster() {
         for level in 1..=24 {
             let spec = fresh(level);
-            for reserve in [EnemyType::GunDrone, EnemyType::QuadOrb,
-                            EnemyType::BossBrute, EnemyType::BossLatcher,
-                            EnemyType::SpawnDrone] {
+            for reserve in [eid("gun_drone"), eid("quad_orb"),
+                            eid("boss_brute"), eid("boss_latcher"),
+                            eid("spawn_drone")] {
                 assert!(!spec.roster.contains(&reserve),
                     "level {level}: {reserve:?} is not pool stock");
             }
@@ -225,18 +217,18 @@ mod tests {
 
     #[test]
     fn coverage_closes_the_roster_over_death_spawns() {
-        assert!(!fresh(1).coverage.contains(&EnemyType::SpawnDrone),
+        assert!(!fresh(1).coverage.contains(&eid("spawn_drone")),
             "level 1 cannot produce a SpawnDrone");
-        assert!(fresh(2).coverage.contains(&EnemyType::SpawnDrone),
+        assert!(fresh(2).coverage.contains(&eid("spawn_drone")),
             "the EyeDrone's death spawn enters the bestiary horizon with it");
         // Coverage is a superset of the roster …
         let spec = fresh(11);
         for direct in &spec.roster {
             assert!(spec.coverage.contains(direct));
         }
-        // … and is ALL-ordered and deduplicated (bestiary contract).
+        // … and is declaration-ordered and deduplicated (bestiary contract).
         let coverage = fresh(11).coverage.clone();
-        let ids: Vec<i32> = coverage.iter().map(|t| t.id()).collect();
+        let ids: Vec<usize> = coverage.iter().map(|id| id.0).collect();
         let mut sorted = ids.clone();
         sorted.sort_unstable();
         sorted.dedup();
@@ -247,7 +239,7 @@ mod tests {
     fn boss_staging_resolves_kind_drop_and_hull_in_one_place() {
         let spec3 = fresh(3);
         let staging = spec3.boss.expect("rel-3 stages the mid-boss");
-        assert_eq!(staging.boss, EnemyType::BossBrute);
+        assert_eq!(staging.boss, eid("boss_brute"));
         assert!(staging.track.ends_with("boss_1.mp3"), "mid-boss music");
         assert_eq!(staging.hull_reward, None, "mid-bosses drop the pile");
         assert_eq!(staging.pile.len(), 3, "the pile of three stages with it");
@@ -256,7 +248,7 @@ mod tests {
 
         let spec6 = fresh(6);
         let staging = spec6.boss.expect("rel-6 stages the planet final");
-        assert_eq!(staging.boss, EnemyType::BossLatcher);
+        assert_eq!(staging.boss, eid("boss_latcher"));
         assert!(staging.track.ends_with("boss_2.mp3"), "planet-final music");
         assert!(staging.hull_reward.is_some(),
             "a fresh profile's planet final stages the red container");

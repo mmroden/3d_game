@@ -45,6 +45,11 @@ fn trigger_line(t: MinionTrigger) -> (&'static str, &'static str) {
     match t {
         MinionTrigger::OnDeath => ("on_death", "bound minions rise from the corpse"),
         MinionTrigger::OnEngage => ("on_engage", "bound minions rise the moment the fight starts"),
+        MinionTrigger::Every(_) => (
+            "{ every_seconds = N }",
+            "a batch of `count` rises every N seconds while the parent lives, \
+             drawn from a pre-built ring of `cap` (dead minions return to it)",
+        ),
     }
 }
 
@@ -124,6 +129,7 @@ pub fn vocabulary() -> String {
         &[
             trigger_line(MinionTrigger::OnDeath),
             trigger_line(MinionTrigger::OnEngage),
+            trigger_line(MinionTrigger::Every(0.0)),
         ],
     );
     section(

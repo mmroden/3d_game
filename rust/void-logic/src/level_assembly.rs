@@ -1,6 +1,6 @@
 //! Level assembly: builds meshes, lights, enemies, and collision boxes from a LevelGraph.
 
-use crate::enemy_type::EnemyType;
+use crate::roster::{roster, EnemyId};
 use crate::level_graph::LevelGraph;
 use crate::planet::Pitch;
 use crate::seed::Seed;
@@ -230,25 +230,55 @@ pub fn spawn_list_full(
     rooms
 }
 
-/// When a parent enemy's dormant minions flip live.
-/// Deserializes from the roster grammar (`trigger = "on_engage"`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+/// When a parent enemy's bound minions flip live.
+/// Deserializes from the roster grammar (`trigger = "on_engage"`); the
+/// timed form arrives as `{ every_seconds = N }` via the schema's
+/// `TriggerRaw` (untagged strings-or-table).
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MinionTrigger {
     /// Activate when the parent dies.
     OnDeath,
-    /// Activate the moment the parent engages (`EnemyType::escorts`) — the
-    /// BossLatcher's circling guard is up for the whole fight.
+    /// Activate the moment the parent engages — a boss's circling guard
+    /// is up for the whole fight.
     OnEngage,
+    /// A batch activates every N seconds while the parent lives, drawn
+    /// from a capped pre-built ring (dead minions return to it — Faucet).
+    #[serde(skip)]
+    Every(f32),
+}
+
+/// Accumulating interval clock for timed minion emitters
+/// (`trigger = {{ every_seconds = N }}`) — pure, so the cadence is testable
+/// without an engine tick. Catch-up safe: a long frame yields every
+/// interval it spanned.
+#[derive(Debug, Clone, Copy)]
+pub struct EmitterTimer {
+    interval: f32,
+    elapsed: f32,
+}
+
+impl EmitterTimer {
+    pub fn new(interval: f32) -> Self {
+        Self { interval: interval.max(f32::EPSILON), elapsed: 0.0 }
+    }
+
+    /// Advance by `dt`; returns how many intervals elapsed.
+    pub fn tick(&mut self, dt: f32) -> u32 {
+        self.elapsed += dt.max(0.0);
+        let fires = (self.elapsed / self.interval) as u32;
+        self.elapsed -= fires as f32 * self.interval;
+        fires
+    }
 }
 
 /// One dormant minion the manifest reserves for a parent enemy. The spawn
 /// count is already expanded into one entry per minion, so the shell
 /// pre-instantiates exactly `parent.minions.len()` bodies under the parent's
 /// room and activates each on its trigger.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MinionSpawn {
-    pub enemy_type: EnemyType,
+    pub enemy_type: EnemyId,
     pub trigger: MinionTrigger,
 }
 
@@ -256,7 +286,7 @@ pub struct MinionSpawn {
 /// minions its death or engagement will rouse (the def's `minions` list).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnemySpawn {
-    pub enemy_type: EnemyType,
+    pub enemy_type: EnemyId,
     pub position: [f32; 3],
     pub minions: Vec<MinionSpawn>,
 }
@@ -295,21 +325,17 @@ impl LevelManifest {
     /// order. This is what the bestiary marks as seen, so a death-only type (the
     /// SpawnDrone) enters the catalog the moment a level can produce it, which
     /// `enemies_for_level` (direct-only) could never surface.
-    pub fn enemy_coverage(&self) -> Vec<EnemyType> {
-        let mut seen = [false; EnemyType::ALL.len()];
+    pub fn enemy_coverage(&self) -> Vec<EnemyId> {
+        let mut seen = vec![false; roster().enemies.len()];
         for room in &self.rooms {
             for enemy in &room.enemies {
-                seen[enemy.enemy_type.id() as usize] = true;
+                seen[enemy.enemy_type.0] = true;
                 for minion in &enemy.minions {
-                    seen[minion.enemy_type.id() as usize] = true;
+                    seen[minion.enemy_type.0] = true;
                 }
             }
         }
-        EnemyType::ALL
-            .iter()
-            .copied()
-            .filter(|t| seen[t.id() as usize])
-            .collect()
+        roster().enemy_ids().filter(|id| seen[id.0]).collect()
     }
 }
 
@@ -364,16 +390,18 @@ pub fn manifest(
                     let enemy_type = *available
                         .choose(&mut enemy_rng)
                         .expect("available_enemies is non-empty for any valid level");
-                    // Every declared minion, with ITS declared trigger —
-                    // the grammar's list is the reservation (on_death rises
-                    // from the corpse, on_engage with the fight).
-                    let minions = enemy_type
-                        .minions()
-                        .into_iter()
-                        .flat_map(|(minion_type, count, trigger)| {
-                            (0..count).map(move |_| MinionSpawn {
-                                enemy_type: minion_type,
-                                trigger,
+                    // Every declared minion entry reserves its RING (cap
+                    // slots; one-shot entries have cap == count) with its
+                    // declared trigger — the grammar's list is the Faucet
+                    // reservation, timed emitters included.
+                    let minions = roster()
+                        .enemy(enemy_type)
+                        .minions
+                        .iter()
+                        .flat_map(|m| {
+                            (0..m.cap).map(move |_| MinionSpawn {
+                                enemy_type: m.enemy,
+                                trigger: m.trigger,
                             })
                         })
                         .collect();
@@ -422,6 +450,34 @@ pub fn spawn_pose(graph: &LevelGraph, pitch: Pitch) -> ([f32; 3], f32) {
 
 
 #[cfg(test)]
+mod emitter_tests {
+    use super::EmitterTimer;
+
+    #[test]
+    fn the_emitter_fires_on_its_cadence_and_not_before() {
+        let mut t = EmitterTimer::new(10.0);
+        assert_eq!(t.tick(9.9), 0, "no early fire");
+        assert_eq!(t.tick(0.1), 1, "fires exactly on the interval");
+        assert_eq!(t.tick(9.9), 0, "the clock reset — no residue fire");
+    }
+
+    #[test]
+    fn a_long_frame_yields_every_interval_it_spanned() {
+        let mut t = EmitterTimer::new(5.0);
+        assert_eq!(t.tick(17.5), 3, "catch-up: three intervals in one frame");
+        assert_eq!(t.tick(2.5), 1, "the 2.5s remainder carried over");
+    }
+
+    #[test]
+    fn degenerate_inputs_never_wedge_the_clock() {
+        let mut t = EmitterTimer::new(0.0); // clamped to epsilon internally
+        assert!(t.tick(0.016) > 0, "a zero interval still fires");
+        let mut t = EmitterTimer::new(10.0);
+        assert_eq!(t.tick(-1.0), 0, "negative dt is ignored, not banked");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     /// Attribute spec for tests: fresh profile, pinned run seed. The
     /// GENERATION seed still travels separately.
@@ -444,6 +500,10 @@ mod tests {
         crate::planet::Pitch { tile: 4.0, story: 5.0 };
 
     use super::*;
+
+    fn eid(key: &str) -> EnemyId {
+        roster().enemy_by_key(key).expect(key)
+    }
     use crate::generator::{generate, GeneratorConfig};
     use crate::level_graph::{EdgeKind, RENDER_ROOM_DEPTH};
     use crate::room_template::ConnectorFacing;
@@ -923,21 +983,22 @@ mod tests {
             let m = manifest(&graph, &spec_for(2), Seed::new(seed));
             for room in &m.rooms {
                 for enemy in &room.enemies {
-                    let declared = enemy.enemy_type.minions();
+                    let declared = &roster().enemy(enemy.enemy_type).minions;
                     match declared.first() {
-                        Some((minion_type, count, _trigger)) => {
+                        Some(first) => {
                             let total: usize =
-                                declared.iter().map(|(_, c, _)| *c as usize).sum();
+                                declared.iter().map(|m| m.cap as usize).sum();
                             assert_eq!(enemy.minions.len(), total);
-                            let _ = count;
-                            assert!(enemy.minions.iter().all(|mn| mn.enemy_type == *minion_type
-                                || declared.iter().any(|(t, _, _)| t == &mn.enemy_type)));
-                            if enemy.enemy_type == EnemyType::EyeDrone {
+                            let _ = first;
+                            assert!(enemy.minions.iter().all(|mn| declared
+                                .iter()
+                                .any(|m| m.enemy == mn.enemy_type)));
+                            if enemy.enemy_type == eid("eye_drone") {
                                 saw_eye_drone = true;
                                 assert_eq!(
                                     enemy.minions,
                                     vec![MinionSpawn {
-                                        enemy_type: EnemyType::SpawnDrone,
+                                        enemy_type: eid("spawn_drone"),
                                         trigger: MinionTrigger::OnDeath,
                                     }],
                                 );
@@ -978,10 +1039,10 @@ mod tests {
         let arena = &m.rooms[arena_position(&graph)];
         assert_eq!(arena.enemies.len(), 1, "the arena holds the boss, nothing else");
         let boss = &arena.enemies[0];
-        assert_eq!(boss.enemy_type, EnemyType::BossBrute, "rel-3 stages the Brute");
+        assert_eq!(boss.enemy_type, eid("boss_brute"), "rel-3 stages the Brute");
         assert_eq!(boss.minions.len(), 3, "planet 1 fields the base drone trio");
         assert!(boss.minions.iter().all(|mn| {
-            mn.enemy_type == EnemyType::SpawnDrone && mn.trigger == MinionTrigger::OnDeath
+            mn.enemy_type == eid("spawn_drone") && mn.trigger == MinionTrigger::OnDeath
         }), "the Brute's trio rises when it falls");
     }
 
@@ -990,10 +1051,10 @@ mod tests {
         let graph = pinned_boss_graph(6);
         let m = manifest(&graph, &spec_for(6), Seed::new(1));
         let boss = &m.rooms[arena_position(&graph)].enemies[0];
-        assert_eq!(boss.enemy_type, EnemyType::BossLatcher, "rel-6 stages the Latcher");
+        assert_eq!(boss.enemy_type, eid("boss_latcher"), "rel-6 stages the Latcher");
         assert_eq!(boss.minions.len(), 3);
         assert!(boss.minions.iter().all(|mn| {
-            mn.enemy_type == EnemyType::SpawnDrone && mn.trigger == MinionTrigger::OnEngage
+            mn.enemy_type == eid("spawn_drone") && mn.trigger == MinionTrigger::OnEngage
         }), "the escort is up from first contact, not on death");
     }
 
@@ -1002,7 +1063,7 @@ mod tests {
         let graph = pinned_boss_graph(9); // planet 2's mid-boss
         let m = manifest(&graph, &spec_for(9), Seed::new(1));
         let boss = &m.rooms[arena_position(&graph)].enemies[0];
-        assert_eq!(boss.enemy_type, EnemyType::BossBrute);
+        assert_eq!(boss.enemy_type, eid("boss_brute"));
         assert_eq!(boss.minions.len(), 4, "planet 2 adds one to the trio");
     }
 
@@ -1017,8 +1078,8 @@ mod tests {
             }
             for enemy in &room.enemies {
                 assert!(
-                    enemy.enemy_type != EnemyType::BossBrute
-                        && enemy.enemy_type != EnemyType::BossLatcher,
+                    enemy.enemy_type != eid("boss_brute")
+                        && enemy.enemy_type != eid("boss_latcher"),
                     "room {pos}: bosses live in the arena only"
                 );
             }
@@ -1035,8 +1096,8 @@ mod tests {
         for room in &m.rooms {
             for enemy in &room.enemies {
                 assert!(
-                    enemy.enemy_type != EnemyType::BossBrute
-                        && enemy.enemy_type != EnemyType::BossLatcher,
+                    enemy.enemy_type != eid("boss_brute")
+                        && enemy.enemy_type != eid("boss_latcher"),
                     "no arena marker — no boss"
                 );
             }
@@ -1047,7 +1108,7 @@ mod tests {
     fn the_boss_enters_bestiary_coverage_on_its_level() {
         let graph = pinned_boss_graph(3);
         let m = manifest(&graph, &spec_for(3), Seed::new(1));
-        assert!(m.enemy_coverage().contains(&EnemyType::BossBrute),
+        assert!(m.enemy_coverage().contains(&eid("boss_brute")),
             "the bestiary logs the Siege Mech the level it can appear");
     }
 
@@ -1073,7 +1134,7 @@ mod tests {
             .expect("the pinned seed must generate");
         let m = manifest(&graph, &spec_for(3), seed);
         assert!(
-            m.rooms.iter().any(|r| r.enemies.iter().any(|e| e.enemy_type == EnemyType::EyeDrone)),
+            m.rooms.iter().any(|r| r.enemies.iter().any(|e| e.enemy_type == eid("eye_drone"))),
             "seed 1 must place an EyeDrone at level 3 — the GUT suite builds this exact level"
         );
     }
@@ -1120,9 +1181,9 @@ mod tests {
             let mut sorted = coverage.clone();
             sorted.dedup();
             assert_eq!(sorted, coverage, "coverage must be deduplicated");
-            if coverage.contains(&EnemyType::EyeDrone) {
+            if coverage.contains(&eid("eye_drone")) {
                 assert!(
-                    coverage.contains(&EnemyType::SpawnDrone),
+                    coverage.contains(&eid("spawn_drone")),
                     "seed {seed}: EyeDrone present but SpawnDrone missing from coverage",
                 );
                 covered_spawn_drone = true;
@@ -1139,11 +1200,11 @@ mod tests {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
             let coverage = manifest(&graph, &spec_for(1), Seed::new(seed)).enemy_coverage();
             assert!(
-                !coverage.contains(&EnemyType::SpawnDrone),
+                !coverage.contains(&eid("spawn_drone")),
                 "seed {seed}: SpawnDrone in coverage at level 1 (below its min_level)",
             );
             assert!(
-                !coverage.contains(&EnemyType::EyeDrone),
+                !coverage.contains(&eid("eye_drone")),
                 "seed {seed}: EyeDrone in coverage at level 1",
             );
         }

@@ -23,7 +23,6 @@ use super::godot_util;
 use void_logic::audio_catalog::{self, MusicBed, SfxEvent};
 use void_logic::bestiary::{self, BestiaryKind};
 use void_logic::boss_fight::BossFight;
-use void_logic::enemy_type::EnemyType;
 use void_logic::game_options::GameOptions;
 use void_logic::game_phase::GamePhase;
 use void_logic::input_method::InputMethod;
@@ -328,16 +327,24 @@ impl GameManager {
     /// Called when an enemy dies (connected to enemy_killed signal).
     #[func]
     pub fn on_enemy_killed(&mut self, type_id: i32) {
-        if let Some(enemy_type) = EnemyType::from_id(type_id) {
-            self.run_state.record_kill(enemy_type);
+        let grammar = void_logic::roster::roster();
+        if let Some(id) = grammar.enemy_by_crossing_id(type_id as u16) {
+            let def = grammar.enemy(id);
+            self.run_state.record_kill(def.crossing_id);
             godot_print!(
                 "Kill: {} | Cache dropped: {} components",
-                enemy_type.display_name(),
-                enemy_type.reward(),
+                def.name, def.reward,
             );
             // A boss death advances the fight — but opens NOTHING: the gate
             // stays sealed until the reward is taken (see on_cache_collected).
-            if matches!(enemy_type, EnemyType::BossBrute | EnemyType::BossLatcher) {
+            // "Is this the boss" is the STAGING's call, not a type check:
+            // the fight advances only for the enemy the slot staged.
+            let staged_boss = self
+                .level_spec
+                .as_ref()
+                .and_then(|s| s.boss.as_ref())
+                .map(|b| b.boss);
+            if staged_boss == Some(id) {
                 let drops = self
                     .level_spec
                     .as_ref()
@@ -706,7 +713,9 @@ impl GameManager {
         let (kind_id, enemy_id): (i32, i32) = match entry.kind {
             BestiaryKind::OrganicCache => (0, -1),
             BestiaryKind::ComponentCache => (1, -1),
-            BestiaryKind::Enemy(t) => (2, t.id()),
+            BestiaryKind::Enemy(t) => {
+                (2, void_logic::roster::roster().enemy(t).crossing_id as i32)
+            }
         };
         if let Some(mut turntable) = parent.try_get_node_as::<Node>(nodes::TURNTABLE) {
             turntable.call(
@@ -1172,8 +1181,13 @@ impl GameManager {
     #[func]
     pub fn get_kill_summary(&self) -> Dictionary<GString, i32> {
         let mut dict = Dictionary::new();
-        for (enemy_type, count) in self.run_state.kills.summary() {
-            dict.set(enemy_type.display_name(), count as i32);
+        let grammar = void_logic::roster::roster();
+        for (crossing_id, count) in self.run_state.kills.summary() {
+            // summary() lists only ids the grammar declares, so the def
+            // resolves; a retired id counts toward totals but is unlisted.
+            if let Some(id) = grammar.enemy_by_crossing_id(crossing_id) {
+                dict.set(grammar.enemy(id).name.as_str(), count as i32);
+            }
         }
         dict
     }
@@ -1299,8 +1313,9 @@ impl GameManager {
             .as_ref()
             .map(|s| s.coverage.clone())
             .unwrap_or_default();
+        let grammar = void_logic::roster::roster();
         for enemy in coverage {
-            if self.run_state.mark_enemy_seen(enemy) {
+            if self.run_state.mark_enemy_seen(grammar.enemy(enemy).crossing_id) {
                 grew = true;
             }
         }

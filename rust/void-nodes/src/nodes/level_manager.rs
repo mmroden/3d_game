@@ -28,7 +28,6 @@ use void_logic::level_graph::{LevelGraph, RENDER_ROOM_DEPTH};
 use void_logic::room_furnisher::LightState;
 use void_logic::room_assembler::{Collision, MeshPlacement};
 use void_logic::portal as portal_sys;
-use void_logic::enemy_type;
 use void_logic::seed::Seed;
 use void_logic::spatial_layout;
 
@@ -555,10 +554,10 @@ impl LevelManager {
                         }
                     }
 
-                    let is_boss = matches!(
-                        spawn.enemy_type,
-                        enemy_type::EnemyType::BossBrute | enemy_type::EnemyType::BossLatcher
-                    );
+                    // "Is this the boss" is the staging's call, not a type
+                    // check: exactly the enemy the level's slot staged.
+                    let is_boss =
+                        spec.boss.as_ref().map(|b| b.boss) == Some(spawn.enemy_type);
                     let mut level_mgr: Gd<Node3D> = self.base().clone().cast();
                     if let Some(mut cache_node) = Self::build_cache(&mut loader, &mut level_mgr) {
                         parent.bind_mut().bind_cache(&cache_node);
@@ -916,39 +915,43 @@ impl LevelManager {
         });
     }
 
-    /// Instantiate an enemy scene under `parent`, stamped with its type + level,
-    /// positioned. It self-drives as a RigidBody3D; the engine owns its motion.
-    /// Returns the live handle so the caller can bind its death-spawn minions and
-    /// blue cache (Faucet Principle, tier 1). `dormant` builds it invisible,
-    /// non-processing, non-colliding — that's how a reserved death-spawn minion
-    /// enters the tree, waiting for its parent to die.
+    /// Instantiate an enemy scene under `parent`, stamped with its def's
+    /// crossing id + level, positioned. It self-drives as a RigidBody3D; the
+    /// engine owns its motion. Returns the live handle so the caller can bind
+    /// its minions and blue cache (Faucet Principle, tier 1). `dormant`
+    /// builds it invisible, non-processing, non-colliding — that's how a
+    /// reserved minion enters the tree, waiting for its trigger.
     fn spawn_enemy(
         loader: &mut Gd<ResourceLoader>,
         parent: &mut Gd<Node3D>,
-        etype: enemy_type::EnemyType,
+        enemy_id: void_logic::roster::EnemyId,
         level: i32,
         pos: [f32; 3],
         dormant: bool,
     ) -> Option<Gd<EnemyDrone>> {
-        let scene_res = loader.load(etype.scene_path())?;
+        // Every enemy is the same node + collider scene; the def (via the
+        // crossing id stamped below) drives stats, model, and collider size.
+        let scene_res = loader.load("res://scenes/enemies/enemy.tscn")?;
         let packed: Gd<PackedScene> = scene_res.cast();
         let instance = packed.instantiate()?;
         let mut enemy = instance.try_cast::<EnemyDrone>().ok()?;
         // Stamp type + level before entering the tree so ready() configures it.
         {
             let mut g = enemy.bind_mut();
-            g.set_spawn_type(etype.id());
+            g.set_spawn_type(
+                void_logic::roster::roster().enemy(enemy_id).crossing_id as i32,
+            );
             g.set_spawn_level(level);
         }
         enemy.set_position(vec3(pos));
         // Parented under the room container (a cell inhabitant), so hiding or
-        // culling the room takes its enemies with it. Death-spawn minions parent
+        // culling the room takes its enemies with it. Reserved minions parent
         // under the SAME room as their parent-to-be, so they share its culling
         // and the one recursive signal wire.
         parent.add_child(&enemy);
         // ready() has now run (add_child is synchronous): a reserved minion is
         // fully built (model, hull, health bar) but must sit dormant until its
-        // parent dies. An active enemy resets interpolation for its placement.
+        // trigger. An active enemy resets interpolation for its placement.
         if dormant {
             enemy.bind_mut().deactivate_dormant();
         } else {

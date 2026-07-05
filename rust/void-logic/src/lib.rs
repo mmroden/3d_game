@@ -27,7 +27,6 @@ pub mod laser;
 pub mod bestiary;
 pub mod currency;
 pub mod debuff;
-pub mod enemy_type;
 pub mod kill_tracker;
 pub mod kinetics;
 pub mod game_phase;

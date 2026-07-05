@@ -1,6 +1,5 @@
 use crate::bestiary::SeenEnemies;
 use crate::currency::{ComponentAccount, CurrencyKind, OrganicAccount};
-use crate::enemy_type::EnemyType;
 use crate::kill_tracker::KillTracker;
 use crate::laser::LaserLevel;
 use crate::loadout::Loadout;
@@ -250,8 +249,8 @@ impl RunState {
 
     /// Record an enemy kill for the tally. Pays nothing: the kill's reward
     /// rides the cache the enemy drops, credited only via [`Self::collect_cache`].
-    pub fn record_kill(&mut self, enemy_type: EnemyType) {
-        self.kills.record_kill(enemy_type);
+    pub fn record_kill(&mut self, crossing_id: u16) {
+        self.kills.record_kill(crossing_id);
     }
 
     /// Credit a collected currency cache to the matching account. The only
@@ -269,8 +268,8 @@ impl RunState {
 
     /// Catalogue an enemy on sighting. Returns `true` the first time this type
     /// is seen, so the caller can persist the freshly-grown bestiary.
-    pub fn mark_enemy_seen(&mut self, enemy_type: EnemyType) -> bool {
-        self.profile.seen_enemies.mark(enemy_type)
+    pub fn mark_enemy_seen(&mut self, crossing_id: u16) -> bool {
+        self.profile.seen_enemies.mark(crossing_id)
     }
 
     /// Current laser damage per beam.
@@ -395,7 +394,7 @@ mod tests {
     fn advance_level_resets_per_level_state_and_keeps_the_run() {
         let mut run = RunState::new(Seed::new(42));
         run.collect_cache(CurrencyKind::Components, 7_000);
-        run.record_kill(EnemyType::GunDrone);
+        run.record_kill(0);
         run.clear_room(2);
         run.visit_room(2);
         run.take_damage(Damage::new(70.0)); // through the shield into the hull
@@ -509,8 +508,8 @@ mod tests {
         // The kill's reward rides the dropped cache — nothing is credited
         // without a pickup.
         let mut run = RunState::new(Seed::new(42));
-        run.record_kill(EnemyType::GunDrone);
-        assert_eq!(run.kills.count(EnemyType::GunDrone), 1);
+        run.record_kill(0);
+        assert_eq!(run.kills.count(0), 1);
         assert_eq!(run.components.balance, 0,
             "kills pay nothing directly; the reward is in the cache");
     }
@@ -518,9 +517,9 @@ mod tests {
     #[test]
     fn record_multiple_kills() {
         let mut run = RunState::new(Seed::new(42));
-        run.record_kill(EnemyType::GunDrone);
-        run.record_kill(EnemyType::GunDrone);
-        run.record_kill(EnemyType::QuadShell);
+        run.record_kill(0);
+        run.record_kill(0);
+        run.record_kill(4);
         assert_eq!(run.kills.total_kills(), 3);
         assert_eq!(run.components.balance, 0, "no kill is auto-credited");
     }
@@ -595,9 +594,9 @@ mod tests {
     #[test]
     fn marking_an_enemy_seen_reports_first_sighting() {
         let mut run = RunState::new(Seed::new(42));
-        assert!(run.mark_enemy_seen(EnemyType::GunDrone), "first sighting is new");
-        assert!(!run.mark_enemy_seen(EnemyType::GunDrone), "repeat sighting is not new");
-        assert!(run.profile.seen_enemies.contains(EnemyType::GunDrone));
+        assert!(run.mark_enemy_seen(0), "first sighting is new");
+        assert!(!run.mark_enemy_seen(0), "repeat sighting is not new");
+        assert!(run.profile.seen_enemies.contains(0));
     }
 
     #[test]
@@ -613,9 +612,9 @@ mod tests {
     #[test]
     fn bestiary_is_permanent_across_death() {
         let mut run = RunState::new(Seed::new(42));
-        run.mark_enemy_seen(EnemyType::QuadShell);
+        run.mark_enemy_seen(4);
         run.apply_death_penalty();
-        assert!(run.profile.seen_enemies.contains(EnemyType::QuadShell),
+        assert!(run.profile.seen_enemies.contains(4),
             "the bestiary survives death, like organics");
     }
 
@@ -636,7 +635,7 @@ mod tests {
         let mut run = RunState::new(Seed::new(42));
         run.laser_level = LaserLevel::Violet; // the very top
         run.components.earn(50_000);
-        run.record_kill(EnemyType::GunDrone);
+        run.record_kill(0);
         run.current_level = 5;
 
         run.apply_death_penalty();

@@ -144,6 +144,13 @@ roster-vocab:
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && $(CARGO) test -p void_logic regenerate_vocabulary_reference -- --ignored
 
+# Regenerate rosters/TEMPLATE.toml — the complete authoring scaffold (every
+# field of every entry kind, defaults spelled out; itself a loadable
+# grammar, test-enforced).
+roster-template:
+	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
+		cd $(RUST_DIR) && $(CARGO) test -p void_logic regenerate_template -- --ignored
+
 # Runs GUT against the currently installed dylib (no rebuild). Optional filters
 # for the fast inner loop (skip the full suite): F selects scripts by filename
 # substring, T narrows to a single test by name. With neither set, runs all:

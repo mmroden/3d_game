@@ -71,6 +71,8 @@ pub struct EnemyRaw {
     /// The GDScript/save crossing — append-only, never renumbered.
     pub id: u16,
     pub name: String,
+    /// Bestiary lore — every enemy is catalogued.
+    pub blurb: String,
     pub model: String,
     pub size: f32,
     pub yaw_offset_deg: f32,
@@ -104,8 +106,22 @@ fn default_true() -> bool {
 #[serde(deny_unknown_fields)]
 pub struct MinionRaw {
     pub enemy: String,
+    /// One-shot triggers: the whole brood. Timed triggers: the BATCH per
+    /// interval (owner 2026-07-05: "6 minions every 10 seconds").
     pub count: u8,
-    pub trigger: MinionTrigger,
+    pub trigger: TriggerRaw,
+    /// Timed triggers only (required there, rejected elsewhere): the ring
+    /// size — the most minions from this entry alive at once. Pre-built at
+    /// level creation; dead ones return to the ring (Faucet).
+    pub cap: Option<u8>,
+}
+
+/// `trigger = "on_death"` / `"on_engage"` / `{ every_seconds = 10.0 }`.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(untagged)]
+pub enum TriggerRaw {
+    Named(MinionTrigger),
+    Timed { every_seconds: f32 },
 }
 
 #[derive(Debug, Deserialize)]

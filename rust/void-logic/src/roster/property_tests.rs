@@ -65,6 +65,7 @@ fn generate(seed: u64) -> Generated {
         }
         enemies_toml.push_str(&format!(
             "[[enemy]]\nkey = \"{key}\"\nid = {}\nname = \"Enemy {i}\"\n\
+             blurb = \"Generated hazard {i}.\"\n\
              model = \"res://addons/enemies/e{i}.glb\"\nsize = {:.1}\n\
              yaw_offset_deg = {}\nai = \"{}\"\nreward = {}\n",
             ids[i],
@@ -82,11 +83,24 @@ fn generate(seed: u64) -> Generated {
         if i >= enemy_count / 2 && enemy_count >= 2 && rng.random_range(0..3u32) == 0 {
             let target = rng.random_range(0..enemy_count / 2);
             if target != i {
-                let trigger = if rng.random_range(0..2u32) == 0 { "on_death" } else { "on_engage" };
-                enemies_toml.push_str(&format!(
-                    "minions = [{{ enemy = \"enemy_{target}\", count = {}, trigger = \"{trigger}\" }}]\n",
-                    rng.random_range(1..4u32),
-                ));
+                // One-shot, or a timed emitter with its ring cap — the full
+                // trigger vocabulary gets generated coverage.
+                let count = rng.random_range(1..4u32);
+                let entry = match rng.random_range(0..3u32) {
+                    0 => format!(
+                        "{{ enemy = \"enemy_{target}\", count = {count}, trigger = \"on_death\" }}"
+                    ),
+                    1 => format!(
+                        "{{ enemy = \"enemy_{target}\", count = {count}, trigger = \"on_engage\" }}"
+                    ),
+                    _ => format!(
+                        "{{ enemy = \"enemy_{target}\", count = {count}, \
+                         trigger = {{ every_seconds = {:.1} }}, cap = {} }}",
+                        rng.random_range(2.0..30.0f32),
+                        count + rng.random_range(0..6u32),
+                    ),
+                };
+                enemies_toml.push_str(&format!("minions = [{entry}]\n"));
             }
         }
         enemies_toml.push_str(&format!(

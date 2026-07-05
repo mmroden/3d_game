@@ -12,6 +12,7 @@
 //! consumers to this door and deletes the enum tables.
 
 pub mod schema;
+pub mod template;
 pub mod vocabulary;
 
 use schema::{
@@ -72,6 +73,17 @@ pub struct Scaling {
     pub hp: CurveId,
 }
 
+/// One bound-minion entry: for one-shot triggers `count` is the whole
+/// brood (`cap == count`); for timed triggers `count` is the batch per
+/// interval and `cap` the pre-built ring it draws from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MinionDef {
+    pub enemy: EnemyId,
+    pub count: u8,
+    pub trigger: MinionTrigger,
+    pub cap: u8,
+}
+
 #[derive(Debug, Clone)]
 pub struct EnemyDef {
     pub key: String,
@@ -84,11 +96,53 @@ pub struct EnemyDef {
     pub ai: Archetype,
     pub reward: u32,
     pub spawns_directly: bool,
-    /// Pre-staged bound minions: (kind, count, when they rise).
-    pub minions: Vec<(EnemyId, u8, MinionTrigger)>,
+    /// Pre-staged bound minions and their rise rules.
+    pub minions: Vec<MinionDef>,
+    /// Bestiary lore.
+    pub blurb: String,
     pub stats: Stats,
     pub scaling: Scaling,
     pub behavior: Behavior,
+}
+
+impl EnemyDef {
+    /// The AI configuration: ranges from the stats, archetype parameters
+    /// from the resolved behaviour switches.
+    pub fn ai_config(&self) -> crate::enemy_ai::DroneConfig {
+        crate::enemy_ai::DroneConfig {
+            archetype: self.ai,
+            detection_range: self.stats.detection,
+            attack_range: self.stats.attack_range,
+            disengage_range: self.behavior.disengage,
+            health: crate::newtypes::Health::new(self.stats.hp),
+            attack_cooldown: self.stats.cooldown,
+            standoff_range: self.behavior.standoff,
+            fuse_seconds: self.behavior.fuse_seconds,
+            blast_radius: self.behavior.blast_radius,
+            shield: (self.behavior.shield > 0.0)
+                .then(|| crate::newtypes::Shield::new(self.behavior.shield)),
+        }
+    }
+}
+
+impl Roster {
+    /// Per-level multipliers off a def's declared curves.
+    pub fn speed_multiplier(&self, id: EnemyId, level: u32) -> f32 {
+        self.curve(self.enemy(id).scaling.speed).eval(level)
+    }
+
+    pub fn cooldown_multiplier(&self, id: EnemyId, level: u32) -> f32 {
+        self.curve(self.enemy(id).scaling.cooldown).eval(level)
+    }
+
+    pub fn hp_multiplier(&self, id: EnemyId, level: u32) -> f32 {
+        self.curve(self.enemy(id).scaling.hp).eval(level)
+    }
+
+    /// Every enemy id in declaration order — THE catalog order.
+    pub fn enemy_ids(&self) -> impl Iterator<Item = EnemyId> + '_ {
+        (0..self.enemies.len()).map(EnemyId)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -485,9 +539,53 @@ fn link(
                     .minions
                     .iter()
                     .map(|m| {
-                        (enemy_by_key(&m.enemy, &mut errors, &at), m.count, m.trigger)
+                        let enemy = enemy_by_key(&m.enemy, &mut errors, &at);
+                        let (trigger, cap) = match (m.trigger, m.cap) {
+                            (schema::TriggerRaw::Named(t), None) => (t, m.count),
+                            (schema::TriggerRaw::Named(t), Some(_)) => {
+                                errors.push(format!(
+                                    "{at}: '{}' — cap is a TIMED-trigger field \
+                                     (one-shot broods are just count)",
+                                    m.enemy
+                                ));
+                                (t, m.count)
+                            }
+                            (schema::TriggerRaw::Timed { every_seconds }, Some(cap)) => {
+                                if every_seconds <= 0.0 || !every_seconds.is_finite() {
+                                    errors.push(format!(
+                                        "{at}: '{}' — every_seconds must be finite and > 0",
+                                        m.enemy
+                                    ));
+                                }
+                                if cap < m.count {
+                                    errors.push(format!(
+                                        "{at}: '{}' — cap {cap} can't hold a batch of {}",
+                                        m.enemy, m.count
+                                    ));
+                                }
+                                (MinionTrigger::Every(every_seconds), cap)
+                            }
+                            (schema::TriggerRaw::Timed { .. }, None) => {
+                                errors.push(format!(
+                                    "{at}: '{}' — a timed emitter needs a cap (the \
+                                     pre-built ring it draws from)",
+                                    m.enemy
+                                ));
+                                (MinionTrigger::Every(1.0), m.count)
+                            }
+                        };
+                        if m.count == 0 {
+                            errors.push(format!("{at}: '{}' — a zero-count entry", m.enemy));
+                        }
+                        MinionDef { enemy, count: m.count, trigger, cap }
                     })
                     .collect(),
+                blurb: {
+                    if e.blurb.trim().is_empty() {
+                        errors.push(format!("{at}: empty blurb — every enemy is catalogued"));
+                    }
+                    e.blurb.clone()
+                },
                 stats: Stats {
                     hp: e.stats.hp,
                     speed: e.stats.speed,

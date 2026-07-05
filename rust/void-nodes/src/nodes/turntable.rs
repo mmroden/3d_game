@@ -3,7 +3,7 @@ use godot::classes::{Node3D, INode3D, MeshInstance3D, Engine, OmniLight3D};
 
 use void_logic::ship::{self, ShipColor};
 use void_logic::ship_type::ShipType;
-use void_logic::enemy_type::EnemyType;
+use void_logic::roster::roster;
 
 use super::constants::scenes;
 use super::godot_util;
@@ -161,7 +161,9 @@ impl Turntable {
             KIND_ORGANIC_CACHE => (Some(scenes::BARREL_MODEL), [0.2, 0.9, 0.2, 1.0]),
             KIND_COMPONENT_CACHE => (Some(scenes::BARREL_MODEL), [0.2, 0.5, 1.0, 1.0]),
             KIND_ENEMY => (
-                EnemyType::from_id(enemy_type_id).map(|t| t.model_path()),
+                roster()
+                    .enemy_by_crossing_id(enemy_type_id as u16)
+                    .map(|id| roster().enemy(id).model.as_str()),
                 // Neutral glow so the unlit enemy reads in the dark room.
                 [1.0, 1.0, 0.95, 1.0],
             ),
@@ -169,8 +171,9 @@ impl Turntable {
         };
         // The caches' barrel prop is radially symmetric — no front to correct.
         let front_yaw = match kind {
-            KIND_ENEMY => EnemyType::from_id(enemy_type_id)
-                .map(|t| t.model_yaw_offset())
+            KIND_ENEMY => roster()
+                .enemy_by_crossing_id(enemy_type_id as u16)
+                .map(|id| roster().enemy(id).yaw_offset_deg.to_radians())
                 .unwrap_or(0.0),
             _ => 0.0,
         };

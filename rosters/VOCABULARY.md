@@ -24,6 +24,7 @@ checked by the linker.
 
 - `"on_death"` — bound minions rise from the corpse
 - `"on_engage"` — bound minions rise the moment the fight starts
+- `"{ every_seconds = N }"` — a batch of `count` rises every N seconds while the parent lives, drawn from a pre-built ring of `cap` (dead minions return to it)
 
 ## Curve kinds
 
