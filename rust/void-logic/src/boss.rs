@@ -1,62 +1,8 @@
-//! Boss scheduling. Every planet stages two set-piece fights on a fixed
-//! rhythm (owner's call 2026-07-04, superseding the chance-based roll):
-//! the mid-planet boss drops a blue/green consolation pile, the
-//! planet-final boss drops the red hull container and its portal carries
-//! the player to the next planet.
-
-use crate::planet::planet_relative;
-
-/// The two staged fights. Brute = the evil_mech_03 bruiser (death-spawns
-/// drones); Latcher = the evil_mech_01 drainer with a circling escort.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum BossKind {
-    Brute,
-    Latcher,
-}
-
-/// Planet-relative level of the mid-planet boss (consolation pile).
-pub const MID_BOSS_AT: u32 = 3;
-/// Planet-relative level of the planet-final boss (red hull container +
-/// planet transition). Equals PLANET_LENGTH by design: the boss IS the exit.
-pub const FINAL_BOSS_AT: u32 = 6;
-
-/// Which boss, if any, a level stages. Deterministic — no seed: the rhythm
-/// itself is the design (players learn to bank blues before a rel-3 level).
-pub fn boss_for_level(level: u32) -> Option<BossKind> {
-    match planet_relative(level) {
-        MID_BOSS_AT => Some(BossKind::Brute),
-        FINAL_BOSS_AT => Some(BossKind::Latcher),
-        _ => None,
-    }
-}
-
-/// Whether this level's boss guards the planet exit (drops the red
-/// container while unowned hulls remain; the portal beyond changes planet).
-pub fn is_planet_final(level: u32) -> bool {
-    planet_relative(level) == FINAL_BOSS_AT
-}
-
-impl BossKind {
-    /// The roster entry staged for this boss (stats, model, archetype,
-    /// minion kind — all live on `EnemyType` like every other enemy).
-    pub fn enemy_type(self) -> crate::enemy_type::EnemyType {
-        match self {
-            Self::Brute => crate::enemy_type::EnemyType::BossBrute,
-            Self::Latcher => crate::enemy_type::EnemyType::BossLatcher,
-        }
-    }
-
-    /// What this boss fields and when — total by construction, so the
-    /// manifest never probes `escorts()`/`death_spawn()` and panics on a
-    /// mismatch. Pinned against the `EnemyType` tables in tests.
-    pub fn minions(self) -> (crate::enemy_type::EnemyType, crate::level_assembly::MinionTrigger) {
-        use crate::level_assembly::MinionTrigger;
-        match self {
-            Self::Brute => (crate::enemy_type::EnemyType::SpawnDrone, MinionTrigger::OnDeath),
-            Self::Latcher => (crate::enemy_type::EnemyType::SpawnDrone, MinionTrigger::OnEngage),
-        }
-    }
-}
+//! Boss composition formulas. WHICH boss a level stages, its escorts,
+//! track, and reward policy are DECLARED per boss slot in the roster
+//! grammar (rosters/planets/*.toml); this module keeps the level-scaled
+//! formulas the slots reference: add counts, the hull-reward roll, and
+//! the consolation-pile economy.
 
 /// How many minions a boss fields at this level: the base trio grows by one
 /// per planet past the first, capped — fights escalate without drowning the
@@ -120,56 +66,6 @@ pub fn consolation_pile(level: u32) -> Vec<(crate::currency::CurrencyKind, u32)>
 mod tests {
 
     use super::*;
-    use crate::planet::PLANET_LENGTH;
-
-    #[test]
-    fn no_boss_before_level_three() {
-        assert_eq!(boss_for_level(1), None);
-        assert_eq!(boss_for_level(2), None);
-    }
-
-    #[test]
-    fn every_planet_stages_brute_then_latcher() {
-        for planet in 0..4u32 {
-            let base = planet * PLANET_LENGTH;
-            for rel in 1..=PLANET_LENGTH {
-                let expected = match rel {
-                    MID_BOSS_AT => Some(BossKind::Brute),
-                    FINAL_BOSS_AT => Some(BossKind::Latcher),
-                    _ => None,
-                };
-                assert_eq!(boss_for_level(base + rel), expected,
-                    "level {} (planet {}, rel {})", base + rel, planet + 1, rel);
-            }
-        }
-    }
-
-    #[test]
-    fn the_final_boss_guards_the_planet_exit() {
-        assert!(!is_planet_final(3), "the mid-boss is not the exit");
-        assert!(is_planet_final(6));
-        assert!(!is_planet_final(7));
-        assert!(is_planet_final(12));
-    }
-
-    #[test]
-    fn boss_kinds_map_to_their_roster_entries() {
-        use crate::enemy_type::EnemyType;
-        assert_eq!(BossKind::Brute.enemy_type(), EnemyType::BossBrute);
-        assert_eq!(BossKind::Latcher.enemy_type(), EnemyType::BossLatcher);
-    }
-
-    #[test]
-    fn boss_composition_is_owned_here_alone() {
-        use crate::level_assembly::MinionTrigger;
-        // ONE truth for what a boss fields: the kind names the minion and
-        // trigger; the staging scales the count. The EnemyType tables stay
-        // silent (their death_spawn arms are None — pinned in enemy_type).
-        assert_eq!(BossKind::Brute.minions(),
-            (crate::enemy_type::EnemyType::SpawnDrone, MinionTrigger::OnDeath));
-        assert_eq!(BossKind::Latcher.minions(),
-            (crate::enemy_type::EnemyType::SpawnDrone, MinionTrigger::OnEngage));
-    }
 
     #[test]
     fn the_red_container_grants_only_unowned_hulls() {

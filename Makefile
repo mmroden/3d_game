@@ -138,6 +138,12 @@ test-rust:
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && $(CARGO) test $(FILTER) -- --nocapture
 
+# Regenerate rosters/VOCABULARY.md from the closed-vocabulary enums (the
+# golden test fails until this is rerun after any vocabulary change).
+roster-vocab:
+	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
+		cd $(RUST_DIR) && $(CARGO) test -p void_logic regenerate_vocabulary_reference -- --ignored
+
 # Runs GUT against the currently installed dylib (no rebuild). Optional filters
 # for the fast inner loop (skip the full suite): F selects scripts by filename
 # substring, T narrows to a single test by name. With neither set, runs all:

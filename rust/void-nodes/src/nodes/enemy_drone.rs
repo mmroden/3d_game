@@ -12,7 +12,6 @@ use super::live_handle::{LiveOpt, LiveRef, LiveVec};
 use super::currency_cache::CurrencyCache;
 use void_logic::enemy_ai::{strafe_velocity, Archetype, Attack, DroneAi, DroneConfig, Movement};
 use void_logic::audio_catalog::SfxEvent;
-use void_logic::difficulty;
 use void_logic::currency::CurrencyKind;
 use void_logic::debuff::DrainDebuff;
 use void_logic::enemy_type::EnemyType;
@@ -36,9 +35,6 @@ const SWARM_SLOW_DURATION: f32 = 2.0;
 const SWARM_SLOW_INTERVAL: f32 = 0.5;
 const SWARM_LATCH_RANGE: f32 = 2.0;
 
-/// Hull points per second the BossLatcher siphons while latched. Crossed to
-/// the player only in whole points via `DrainDebuff` — no float HP drift.
-const BOSS_DRAIN_DPS: f32 = 6.0;
 
 /// A hostile drone that chases and attacks the player. Motion and
 /// collision are Godot/Jolt's (docs/architecture/physics_ownership.md):
@@ -154,9 +150,10 @@ impl IRigidBody3D for EnemyDrone {
             self.attack_range = stats.attack_range;
             // EnemyType owns behaviour tuning (archetype + ranges + shield/fuse).
             self.ai = DroneAi::new(enemy_type.ai_config());
-            // The Latcher drinks hulls; everyone else just bumps and shoots.
-            self.drain = (enemy_type == EnemyType::BossLatcher)
-                .then(|| DrainDebuff::new(BOSS_DRAIN_DPS));
+            // The drain switch on the def (rosters/enemies.toml): today only
+            // the Lamprey Mech declares one; any swarmer may.
+            let drain_dps = enemy_type.drain_dps();
+            self.drain = (drain_dps > 0.0).then(|| DrainDebuff::new(drain_dps));
             // Build the visual model from the type's model_path, fit-scaled to
             // its target size. Models live in the catalog, not baked per-.tscn,
             // so a model swap is one string change and every drone re-fits the
@@ -195,11 +192,18 @@ impl IRigidBody3D for EnemyDrone {
             });
         }
 
-        // Scale speed and fire rate by level (health is left alone, so a single
-        // shot still kills no matter how quick later enemies get).
+        // Scale by level through the def's DECLARED curves (per-enemy
+        // grammar): speed and fire rate ramp; hp rides its own curve —
+        // flat on fodder (a single shot still kills), free to climb on
+        // whatever the owner points at a ramp.
         let level = self.level.max(1) as u32;
-        self.speed *= difficulty::speed_multiplier(level);
-        self.ai.config.attack_cooldown *= difficulty::cooldown_multiplier(level);
+        if let Some(enemy_type) = EnemyType::from_id(self.enemy_type_id) {
+            self.speed *= enemy_type.speed_multiplier(level);
+            self.ai.config.attack_cooldown *= enemy_type.cooldown_multiplier(level);
+            let hp_mul = enemy_type.hp_multiplier(level);
+            self.health *= hp_mul;
+            self.ai.health = Health::new(self.ai.health.as_f32() * hp_mul);
+        }
 
         // Engine owns motion: zero-g; damping is the decay; rotation is
         // locked so impacts don't tumble the drone. We chase with force,

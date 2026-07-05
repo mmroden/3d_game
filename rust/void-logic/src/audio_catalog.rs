@@ -117,11 +117,10 @@ pub fn combat_pool() -> Vec<String> {
         .collect()
 }
 
-/// The staged fight's track: 1 for mid-planet bosses, 2 for planet
-/// finals (owner: "tracks 1 and 2, up to 6" — 3-6 are installed and
-/// waiting for the planet-scaled widening).
-pub fn boss_track(planet_final: bool) -> String {
-    let n = if planet_final { 2 } else { 1 };
+/// The staged fight's track by index — declared per boss slot in the
+/// roster grammar (owner: "tracks 1 and 2, up to 6" — all six installed).
+pub fn boss_track(index: u32) -> String {
+    let n = index.clamp(1, 6);
     format!("res://addons/audio/music/boss/boss_{n}.mp3")
 }
 
@@ -282,8 +281,8 @@ pub fn all_audio_paths() -> Vec<String> {
         paths.push(level_background(level));
     }
     paths.extend(combat_pool());
-    paths.push(boss_track(false));
-    paths.push(boss_track(true));
+    paths.push(boss_track(1));
+    paths.push(boss_track(2));
 
     // SFX
     for event in ALL_SFX_EVENTS {
@@ -348,8 +347,10 @@ mod tests {
 
     #[test]
     fn boss_tracks_split_mid_and_final() {
-        assert_eq!(boss_track(false), "res://addons/audio/music/boss/boss_1.mp3");
-        assert_eq!(boss_track(true), "res://addons/audio/music/boss/boss_2.mp3");
+        assert_eq!(boss_track(1), "res://addons/audio/music/boss/boss_1.mp3");
+        assert_eq!(boss_track(2), "res://addons/audio/music/boss/boss_2.mp3");
+        assert_eq!(boss_track(9), "res://addons/audio/music/boss/boss_6.mp3",
+            "indices clamp to the installed set");
     }
 
     #[test]
@@ -399,7 +400,7 @@ mod tests {
         let mut music: Vec<String> = vec![menu_track().to_string()];
         music.push(level_background(1));
         music.extend(combat_pool());
-        music.push(boss_track(true));
+        music.push(boss_track(2));
         for path in music {
             assert!(path.starts_with("res://"),
                 "music path should start with res://: {path}");

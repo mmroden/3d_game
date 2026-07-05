@@ -1,0 +1,17 @@
+# INTERIM hand-measured kit manifest (B13 stage 1). Stage 3 replaces this
+# with kits.generated.toml EMITTED by the make assets probe — the probe's
+# measurements must AGREE with these values (that agreement is the pin that
+# retires this file). Pitch and paradigm derive from kits; nothing else in
+# the roster data may state a cell dimension.
+
+[kits.quaternius_megakit]
+paradigm = "layered"
+tile = 4.0
+story = 5.0
+install_dir = "godot/addons/quaternius/modularscifimegakit"
+
+[kits.sf_panels_vol1]
+paradigm = "panel"
+tile = 3.0
+story = 3.0 # cubic: no distinguished axis
+install_dir = "godot/addons/walls"

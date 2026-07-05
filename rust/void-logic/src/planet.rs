@@ -5,19 +5,20 @@
 //! world-building, and the reward split (consolation pile vs red hull
 //! container) hangs off the same schedule.
 
-/// Levels per planet. The portal after each planet's final boss carries the
-/// player to the next planet (new wall palette, new interstitial — B10).
-pub const PLANET_LENGTH: u32 = 6;
-
-/// 1-based planet index for a 1-based level: levels 1-6 → planet 1,
-/// 7-12 → planet 2, and so on.
+/// 1-based planet index for a 1-based level. Planet lengths are DECLARED
+/// per planet in rosters/planets/ (owner 2026-07-05); past the declared
+/// table the number keeps counting while the newest planet's shape repeats.
 pub fn planet_of(level: u32) -> u32 {
-    (level.saturating_sub(1)) / PLANET_LENGTH + 1
+    crate::roster::roster()
+        .planet_number_and_relative(level.max(1))
+        .0
 }
 
-/// 1-based position of a level within its planet (1..=PLANET_LENGTH).
+/// 1-based position of a level within its planet (1..=its declared length).
 pub fn planet_relative(level: u32) -> u32 {
-    (level.saturating_sub(1)) % PLANET_LENGTH + 1
+    crate::roster::roster()
+        .planet_number_and_relative(level.max(1))
+        .1
 }
 
 /// World-space quantization of a level: meters per grid tile and meters
@@ -33,25 +34,23 @@ pub struct Pitch {
 }
 
 impl Pitch {
+    /// The pitch DERIVES from the planet's declared kit (rosters/kits.toml,
+    /// measured by the make-assets probe once it lands) — nobody authors a
+    /// cell dimension anywhere else.
     pub fn for_level(level: u32) -> Self {
-        if panel_world(level) {
-            // Cubic cells: tile == story == the panel pitch — no
-            // distinguished axis (the 6DOF principle made physical).
-            let p = crate::asset_catalog::PANEL_SET_VOL01.pitch;
-            Self { tile: p, story: p }
-        } else {
-            Self {
-                tile: crate::asset_catalog::WALL_SET_ASTRA.tile_width,
-                story: crate::asset_catalog::WALL_SET_ASTRA.story_height,
-            }
-        }
+        let roster = crate::roster::roster();
+        let def = roster.planet_for_level(level.max(1));
+        let kit = &roster.kits[def.kits[0].0];
+        Self { tile: kit.tile, story: kit.story }
     }
 }
 
-/// Whether this level is built in the panel paradigm (planet 2+): cubic
-/// cells skinned from one panel pool, megakit left behind on planet 1.
+/// Whether this level is built in the panel paradigm: the planet's declared
+/// kit decides (cubic cells skinned from one panel pool vs layered megakit).
 pub fn panel_world(level: u32) -> bool {
-    planet_of(level) >= 2
+    let roster = crate::roster::roster();
+    let def = roster.planet_for_level(level.max(1));
+    roster.kits[def.kits[0].0].paradigm == crate::roster::schema::KitParadigm::Panel
 }
 
 /// The interstitial banner for a level entry: `Some((title, flavor))` when
@@ -138,7 +137,10 @@ mod tests {
     fn the_algebra_reconstructs_the_level() {
         // planet_of and planet_relative are a proper quotient/remainder pair.
         for level in 1..=36 {
-            let rebuilt = (planet_of(level) - 1) * PLANET_LENGTH + planet_relative(level);
+            // Both planets declare six levels today, so the algebra still
+            // reconstructs with a uniform stride; per-planet strides are the
+            // roster's business (locate), not a constant's.
+            let rebuilt = (planet_of(level) - 1) * 6 + planet_relative(level);
             assert_eq!(rebuilt, level);
         }
     }

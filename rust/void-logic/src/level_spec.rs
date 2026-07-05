@@ -3,15 +3,14 @@
 //! is the only constructor; every build stage consumes `&LevelSpec`; no
 //! consumer re-derives an attribute from a bare level number.
 //!
-//! Ownership rule: intrinsic facts live on the type (`EnemyType` stats,
-//! `BossKind::minions`), scheduling and composition facts live HERE — the
-//! roster schedule, the boss staging, the pitch, the paradigm. Joins that
-//! need both (what does this level's boss drop, given the profile?) are
-//! computed once, in the constructor.
+//! Ownership rule: intrinsic facts live on the enemy defs, scheduling and
+//! composition facts on the planet files — ALL in rosters/ (the grammar).
+//! This constructor is the join point: it reads the linked roster plus the
+//! profile and produces the immutable per-level value every stage consumes.
 
 use crate::asset_catalog::PanelSet;
-use crate::boss::BossKind;
 use crate::enemy_type::EnemyType;
+use crate::level_assembly::MinionTrigger;
 use crate::planet::Pitch;
 use crate::seed::Seed;
 use crate::ship_type::ShipType;
@@ -30,7 +29,11 @@ pub enum Paradigm {
 /// and how many caches the arena stays sealed for.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BossStaging {
-    pub kind: BossKind,
+    /// The enemy def this boss fights as (declared on the boss slot).
+    pub boss: EnemyType,
+    /// The escort kind and its rise trigger (declared on the boss slot);
+    /// the COUNT is the level-scaled `boss::boss_adds` formula.
+    pub escorts: (EnemyType, MinionTrigger),
     /// The fight's music track (never relooped — a fight outlasting it
     /// continues on combat stingers).
     pub track: String,
@@ -75,49 +78,19 @@ pub struct LevelSpec {
     pub banner: Option<(String, String)>,
 }
 
-/// WHEN each type joins the direct-spawn pool — the world design on one
-/// screen (owner's call: scheduling is a level fact, not an enemy fact).
-/// Cumulative: once admitted, never retired. Types absent here never enter
-/// pools at all (the boss-duty reserves and the death-spawn-only drone).
-// One fleet per planet — REPLACEMENT, never mix-in (owner's correction,
-// playtest 2026-07-05): the Quaternius machines retire with planet 1; the
-// white spheres own planet 2. Planets past the newest fleet's home keep
-// fielding it until new kits arrive.
-const PLANET_1_FLEET: &[(u32, EnemyType)] = &[
-    (1, EnemyType::SentryDrone),
-    (2, EnemyType::Bomber),
-    (2, EnemyType::EyeDrone),
-    (4, EnemyType::QuadShell),
-];
-const SPHERE_FLEET: &[(u32, EnemyType)] = &[
-    (7, EnemyType::SphereGunner),
-    (8, EnemyType::SphereStriker),
-    (9, EnemyType::AlienTroop),
-    (11, EnemyType::SphereCarrier),
-];
-
-fn fleet_for_planet(planet: u32) -> &'static [(u32, EnemyType)] {
-    if planet <= 1 {
-        PLANET_1_FLEET
-    } else {
-        SPHERE_FLEET
-    }
-}
-
 impl LevelSpec {
-    /// THE constructor — the one place level attributes are resolved.
-    /// `unlocks` joins the profile in (red-container staging needs to know
-    /// which hulls remain); it cannot change mid-level, so the spec is
-    /// immutable for the level's lifetime.
+    /// THE constructor — the one place level attributes are resolved: the
+    /// linked roster grammar (WHAT exists and WHERE it appears) joined with
+    /// the profile (red-container staging needs to know which hulls
+    /// remain). Immutable for the level's lifetime.
     pub fn for_level(run_seed: Seed, level: u32, unlocks: &PermanentUnlocks) -> Self {
-        let fleet = fleet_for_planet(crate::planet::planet_of(level));
-        let roster: Vec<EnemyType> = EnemyType::ALL
+        let grammar = crate::roster::roster();
+        let roster: Vec<EnemyType> = grammar
+            .roster_for_level(level)
             .iter()
-            .copied()
-            .filter(|t| {
-                fleet
-                    .iter()
-                    .any(|(entry, scheduled)| scheduled == t && *entry <= level)
+            .map(|id| {
+                EnemyType::from_id(grammar.enemy(*id).crossing_id as i32)
+                    .expect("crossing ids round-trip")
             })
             .collect();
 
@@ -126,7 +99,7 @@ impl LevelSpec {
         let mut seen = [false; EnemyType::ALL.len()];
         for t in &roster {
             seen[t.id() as usize] = true;
-            if let Some((minion, _)) = t.death_spawn() {
+            for (minion, _, _) in t.minions() {
                 seen[minion.id() as usize] = true;
             }
         }
@@ -136,8 +109,16 @@ impl LevelSpec {
             .filter(|t| seen[t.id() as usize])
             .collect();
 
-        let boss = crate::boss::boss_for_level(level).map(|kind| {
-            let hull_reward = if crate::boss::is_planet_final(level) {
+        let boss = grammar.boss_slot_for_level(level).map(|slot| {
+            let to_type = |id: crate::roster::EnemyId| {
+                EnemyType::from_id(grammar.enemy(id).crossing_id as i32)
+                    .expect("crossing ids round-trip")
+            };
+            // The red container hangs off the slot's DECLARED reward
+            // policy — a hull while unowned ones remain, else the pile.
+            let hull_reward = if slot.reward
+                == crate::roster::schema::BossRewardPolicy::HullContainer
+            {
                 crate::boss::roll_hull_reward(run_seed, level, unlocks)
             } else {
                 None
@@ -148,27 +129,27 @@ impl LevelSpec {
                 crate::boss::consolation_pile(level)
             };
             BossStaging {
-                kind,
-                track: crate::audio_catalog::boss_track(
-                    crate::boss::is_planet_final(level),
-                ),
+                boss: to_type(slot.boss),
+                escorts: (to_type(slot.escorts.0), slot.escorts.1),
+                track: crate::audio_catalog::boss_track(slot.track as u32),
                 hull_reward,
                 pile,
                 adds: crate::boss::boss_adds(level),
             }
         });
 
-        let planet = crate::planet::planet_of(level);
+        let planet_def = grammar.planet_for_level(level);
         Self {
             level,
-            planet,
+            planet: crate::planet::planet_of(level),
             pitch: Pitch::for_level(level),
             paradigm: if crate::planet::panel_world(level) {
                 Paradigm::Panel(&crate::asset_catalog::PANEL_SET_VOL01)
             } else {
                 Paradigm::Layered
             },
-            room_budget: crate::generator::rooms_for_level(level),
+            room_budget: (planet_def.rooms_base + level * planet_def.rooms_per_level)
+                as usize,
             roster,
             coverage,
             boss,
@@ -266,7 +247,7 @@ mod tests {
     fn boss_staging_resolves_kind_drop_and_hull_in_one_place() {
         let spec3 = fresh(3);
         let staging = spec3.boss.expect("rel-3 stages the mid-boss");
-        assert_eq!(staging.kind, BossKind::Brute);
+        assert_eq!(staging.boss, EnemyType::BossBrute);
         assert!(staging.track.ends_with("boss_1.mp3"), "mid-boss music");
         assert_eq!(staging.hull_reward, None, "mid-bosses drop the pile");
         assert_eq!(staging.pile.len(), 3, "the pile of three stages with it");
@@ -275,7 +256,7 @@ mod tests {
 
         let spec6 = fresh(6);
         let staging = spec6.boss.expect("rel-6 stages the planet final");
-        assert_eq!(staging.kind, BossKind::Latcher);
+        assert_eq!(staging.boss, EnemyType::BossLatcher);
         assert!(staging.track.ends_with("boss_2.mp3"), "planet-final music");
         assert!(staging.hull_reward.is_some(),
             "a fresh profile's planet final stages the red container");

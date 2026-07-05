@@ -1,0 +1,269 @@
+# The enemy grammar: identity (global) + tuning (level-bound curves).
+# FOUNDATIONAL TRANSCRIPTION (B13 stage 1, 2026-07-05): mirrors the Rust
+# tables byte-for-byte — golden-equivalence tests in roster/ hold this file
+# and the code identical until the enum tables die (stage 2). Model values
+# are res:// paths for now; stage 3 re-keys them into the measured kit
+# manifest (paths stop being authored).
+#
+# ids are the GDScript/save crossing: APPEND-ONLY, never renumbered.
+
+# ── Curves: how level-bound stats ride the level ─────────────────────────
+# A curve MULTIPLIES the enemy's baseline stat. kind = "flat" (constant
+# 1.0) | "ramp" (linear from at_level_1 to at_peak, flat past peak_level).
+# anchor defaults to "absolute" (game level, not entry level).
+
+[curves.flat]
+kind = "flat"
+
+# Speed: more = deadlier. Level-1 enemies crawl at 60% of baseline and
+# edge past it (115%) by level 10.
+[curves.speed_standard]
+kind = "ramp"
+at_level_1 = 0.6
+at_peak = 1.15
+peak_level = 10
+
+# Cooldown is the INTERVAL between attacks, so less = deadlier: level-1
+# enemies wait 1.4x their baseline between shots, 0.85x by level 10.
+[curves.cooldown_standard]
+kind = "ramp"
+at_level_1 = 1.4
+at_peak = 0.85
+peak_level = 10
+
+# Every enemy rides these unless it overrides in [enemy.scaling].
+[scaling_defaults]
+speed = "speed_standard"
+cooldown = "cooldown_standard"
+hp = "flat"
+
+# ── The roster ───────────────────────────────────────────────────────────
+
+[[enemy]]
+key = "gun_drone"
+id = 0
+name = "Gun Drone"
+model = "res://addons/enemies/evil_mech_03.glb"
+size = 2.0
+yaw_offset_deg = 180
+ai = "kiter"
+reward = 800
+spawns_directly = false # retired from all fleets; id kept (bestiary/saves)
+[enemy.stats]
+hp = 3.0
+speed = 10.0
+damage = 5.0
+detection = 25.0
+attack_range = 10.0
+cooldown = 1.0
+
+[[enemy]]
+key = "quad_orb"
+id = 1
+name = "Quad Orb"
+model = "res://addons/enemies/evil_mech_01.glb"
+size = 1.0
+yaw_offset_deg = 180
+ai = "swarmer"
+reward = 900
+spawns_directly = false # retired from all fleets; id kept (bestiary/saves)
+[enemy.stats]
+hp = 3.0
+speed = 12.0
+damage = 4.0
+detection = 25.0
+attack_range = 3.0
+cooldown = 1.0
+
+[[enemy]]
+key = "bomber"
+id = 2
+name = "Bomber"
+model = "res://addons/quaternius/essentials/enemies/Enemy_QuadOrb.gltf"
+size = 0.5
+yaw_offset_deg = 0
+ai = "bomber"
+reward = 1200
+[enemy.stats]
+hp = 4.0
+speed = 9.0
+damage = 16.0
+detection = 25.0
+attack_range = 5.0
+cooldown = 1.0
+
+[[enemy]]
+key = "eye_drone"
+id = 3
+name = "Eye Drone"
+model = "res://addons/quaternius/essentials/enemies/Enemy_EyeDrone.gltf"
+size = 0.5
+yaw_offset_deg = 0
+ai = "kiter"
+reward = 1500
+minions = [{ enemy = "spawn_drone", count = 1, trigger = "on_death" }]
+[enemy.stats]
+hp = 5.0
+speed = 7.0
+damage = 6.0
+detection = 30.0
+attack_range = 10.0
+cooldown = 1.2
+
+[[enemy]]
+key = "quad_shell"
+id = 4
+name = "Quad Shell"
+model = "res://addons/quaternius/essentials/enemies/Enemy_QuadShell.gltf"
+size = 0.5
+yaw_offset_deg = 0
+ai = "tank"
+reward = 2500
+[enemy.stats]
+hp = 12.0
+speed = 6.0
+damage = 7.0
+detection = 25.0
+attack_range = 6.0
+cooldown = 1.0
+
+[[enemy]]
+key = "spawn_drone"
+id = 5
+name = "Spawn Drone"
+model = "res://addons/quaternius/essentials/enemies/Enemy_GunDrone.gltf"
+size = 0.5
+yaw_offset_deg = 0
+ai = "kiter"
+reward = 400
+spawns_directly = false # only ever death-spawned / escort-bound
+[enemy.stats]
+hp = 2.0
+speed = 11.0
+damage = 3.0
+detection = 25.0
+attack_range = 8.0
+cooldown = 1.2
+
+[[enemy]]
+key = "sphere_gunner"
+id = 6
+name = "Sphere Gunner"
+model = "res://addons/enemies/sphere_ship_01.glb"
+size = 1.0
+yaw_offset_deg = 180
+ai = "shooter"
+reward = 800
+[enemy.stats]
+hp = 3.0
+speed = 9.0
+damage = 5.0
+detection = 25.0
+attack_range = 10.0
+cooldown = 1.0
+
+[[enemy]]
+key = "sphere_striker"
+id = 7
+name = "Sphere Striker"
+model = "res://addons/enemies/sphere_ship_02.glb"
+size = 1.0
+yaw_offset_deg = 180
+ai = "kiter"
+reward = 900
+[enemy.stats]
+hp = 3.0
+speed = 12.0
+damage = 4.0
+detection = 25.0
+attack_range = 10.0
+cooldown = 1.0
+
+[[enemy]]
+key = "sphere_carrier"
+id = 8
+name = "Sphere Carrier"
+model = "res://addons/enemies/sphere_ship_03.glb"
+size = 1.4
+yaw_offset_deg = 180
+ai = "tank"
+reward = 2200
+minions = [{ enemy = "spawn_drone", count = 2, trigger = "on_death" }]
+[enemy.stats]
+hp = 10.0
+speed = 6.0
+damage = 6.0
+detection = 25.0
+attack_range = 8.0
+cooldown = 1.2
+
+[[enemy]]
+key = "alien_troop"
+id = 9
+name = "Alien Troop"
+model = "res://addons/enemies/alien_troop_01.glb"
+size = 1.0
+yaw_offset_deg = 180
+ai = "swarmer"
+reward = 1000
+[enemy.stats]
+hp = 3.0
+speed = 12.0
+damage = 4.0
+detection = 25.0
+attack_range = 3.0
+cooldown = 1.0
+
+[[enemy]]
+key = "sentry_drone"
+id = 10
+name = "Sentry Drone"
+model = "res://addons/quaternius/essentials/enemies/Enemy_Raptor.gltf"
+size = 0.5
+yaw_offset_deg = 0
+ai = "shooter"
+reward = 800
+[enemy.stats]
+hp = 3.0
+speed = 9.0
+damage = 5.0
+detection = 25.0
+attack_range = 10.0
+cooldown = 1.0
+
+[[enemy]]
+key = "boss_brute"
+id = 11
+name = "Siege Mech"
+model = "res://addons/enemies/evil_mech_03.glb"
+size = 4.0
+yaw_offset_deg = 180
+ai = "kiter"
+reward = 10000
+spawns_directly = false # staged by boss slots, never rolled into rooms
+[enemy.stats]
+hp = 60.0
+speed = 8.0
+damage = 16.0
+detection = 45.0
+attack_range = 14.0
+cooldown = 1.4
+
+[[enemy]]
+key = "boss_latcher"
+id = 12
+name = "Lamprey Mech"
+model = "res://addons/enemies/evil_mech_01.glb"
+size = 3.0
+yaw_offset_deg = 180
+ai = "swarmer"
+reward = 12000
+spawns_directly = false # staged by boss slots, never rolled into rooms
+drain_dps = 6.0 # hull drain while latched — any swarmer may carry this
+[enemy.stats]
+hp = 80.0
+speed = 10.0
+damage = 6.0
+detection = 45.0
+attack_range = 3.0
+cooldown = 1.0

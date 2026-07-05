@@ -231,9 +231,11 @@ pub fn spawn_list_full(
 }
 
 /// When a parent enemy's dormant minions flip live.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Deserializes from the roster grammar (`trigger = "on_engage"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MinionTrigger {
-    /// Activate when the parent dies (`EnemyType::death_spawn`).
+    /// Activate when the parent dies.
     OnDeath,
     /// Activate the moment the parent engages (`EnemyType::escorts`) — the
     /// BossLatcher's circling guard is up for the whole fight.
@@ -251,7 +253,7 @@ pub struct MinionSpawn {
 }
 
 /// One direct enemy spawn: its resolved type, world position, and the dormant
-/// minions its death will cough up (empty for types with no `death_spawn`).
+/// minions its death or engagement will rouse (the def's `minions` list).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnemySpawn {
     pub enemy_type: EnemyType,
@@ -271,7 +273,7 @@ pub struct RoomManifest {
 /// A seed-deterministic enumeration of everything a level can *contain* — the
 /// Faucet Principle's model half (`void-logic`), consumed by the shell's tier-1
 /// pools (`void-nodes`). It resolves each direct enemy's type (the roll the
-/// shell used to make inline), expands every `death_spawn` into dormant minion
+/// shell used to make inline), expands every declared minion into a dormant
 /// entries bound to their parent, and — since a level drops one blue cache per
 /// enemy — knows the exact cache bound. Nothing here touches Godot; the same
 /// seed yields the same manifest, so the pool sizes and the bestiary coverage
@@ -337,10 +339,10 @@ pub fn manifest(
         .map(|(room_pos, room)| {
             if let Some((arena_pos, staging)) = boss_arena {
                 if room_pos == arena_pos {
-                    let boss_type = staging.kind.enemy_type();
+                    let boss_type = staging.boss;
                     let adds = staging.adds;
-                    // Total by construction — no probing, no panic path.
-                    let (minion_type, trigger) = staging.kind.minions();
+                    // Declared on the boss slot; count is the staged adds.
+                    let (minion_type, trigger) = staging.escorts;
                     let enemies = room
                         .enemies
                         .iter()
@@ -362,17 +364,19 @@ pub fn manifest(
                     let enemy_type = *available
                         .choose(&mut enemy_rng)
                         .expect("available_enemies is non-empty for any valid level");
+                    // Every declared minion, with ITS declared trigger —
+                    // the grammar's list is the reservation (on_death rises
+                    // from the corpse, on_engage with the fight).
                     let minions = enemy_type
-                        .death_spawn()
-                        .map(|(minion_type, count)| {
-                            (0..count)
-                                .map(|_| MinionSpawn {
-                                    enemy_type: minion_type,
-                                    trigger: MinionTrigger::OnDeath,
-                                })
-                                .collect()
+                        .minions()
+                        .into_iter()
+                        .flat_map(|(minion_type, count, trigger)| {
+                            (0..count).map(move |_| MinionSpawn {
+                                enemy_type: minion_type,
+                                trigger,
+                            })
                         })
-                        .unwrap_or_default();
+                        .collect();
                     EnemySpawn { enemy_type, position: *pos, minions }
                 })
                 .collect();
@@ -906,10 +910,11 @@ mod tests {
     }
 
     /// Every EyeDrone the manifest places carries exactly one dormant SpawnDrone
-    /// minion (its `death_spawn`); every type with no death spawn carries none.
-    /// This is the expansion the shell pre-instantiates under the parent's room.
+    /// minions (the def's declared list, with each entry's trigger); every
+    /// type declaring none carries none. This is the expansion the shell
+    /// pre-instantiates under the parent's room.
     #[test]
-    fn manifest_expands_death_spawn_minions() {
+    fn manifest_expands_declared_minions() {
         // Level 2 admits the EyeDrone (its min_level); run enough seeds that at
         // least one EyeDrone is placed, and check the expansion on every enemy.
         let mut saw_eye_drone = false;
@@ -918,10 +923,15 @@ mod tests {
             let m = manifest(&graph, &spec_for(2), Seed::new(seed));
             for room in &m.rooms {
                 for enemy in &room.enemies {
-                    match enemy.enemy_type.death_spawn() {
-                        Some((minion_type, count)) => {
-                            assert_eq!(enemy.minions.len(), count as usize);
-                            assert!(enemy.minions.iter().all(|mn| mn.enemy_type == minion_type));
+                    let declared = enemy.enemy_type.minions();
+                    match declared.first() {
+                        Some((minion_type, count, _trigger)) => {
+                            let total: usize =
+                                declared.iter().map(|(_, c, _)| *c as usize).sum();
+                            assert_eq!(enemy.minions.len(), total);
+                            let _ = count;
+                            assert!(enemy.minions.iter().all(|mn| mn.enemy_type == *minion_type
+                                || declared.iter().any(|(t, _, _)| t == &mn.enemy_type)));
                             if enemy.enemy_type == EnemyType::EyeDrone {
                                 saw_eye_drone = true;
                                 assert_eq!(

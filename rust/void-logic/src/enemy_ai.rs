@@ -18,7 +18,10 @@ pub enum DroneState {
 }
 
 /// Behavioural archetype. Selects how an enemy moves and attacks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Deserializes from the roster grammar (`ai = "shooter"`): the game enum
+/// IS the closed vocabulary — a typo is a parse error, never a runtime limp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Archetype {
     /// Chase to attack range and fire (the original behaviour).
     Shooter,
