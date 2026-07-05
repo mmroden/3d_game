@@ -127,8 +127,7 @@ pub fn assemble_panels_from_grid(
     use std::f32::consts::{FRAC_PI_2, PI};
 
     // Salted stream (seed-hygiene standard): never the raw room seed.
-    const PANEL_SALT: u64 = 0x9a6e_1c00_5eed_0002;
-    let mut rng = SmallRng::seed_from_u64(room_seed ^ PANEL_SALT);
+    let mut rng = SmallRng::seed_from_u64(room_seed ^ crate::seed::salt::PANEL);
 
     let p = panel_set.pitch;
     let half = p * 0.5;

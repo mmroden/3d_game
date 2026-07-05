@@ -93,7 +93,10 @@ pub fn spawn_list_full(
         let origin = room.world_position(pitch.tile, pitch.story);
 
         let mut grid = CellGrid::new(&room.template, &active, origin, pitch.tile, pitch.story);
-        let room_seed = seed.value().wrapping_add(room_idx as u64).wrapping_mul(2654435761);
+        let room_seed = seed
+            .value()
+            .wrapping_add(room_idx as u64)
+            .wrapping_mul(crate::seed::salt::ROOM_MIX);
         // Step 1 data — the room's shell. One paradigm per planet: the
         // megakit's layered walls on planet 1, the panel pool from planet 2
         // (cubic cells; see planet::panel_world and the B11 plan).

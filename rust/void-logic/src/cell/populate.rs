@@ -28,7 +28,7 @@ impl CellGrid {
         // Dynamic props get their own full tumble in the node shell; this is for
         // the static free-standing ones (e.g. teleporters, holograms) that would
         // otherwise all face the same way.
-        let mut orient = SmallRng::seed_from_u64(seed ^ 0x9E37_79B9_7F4A_7C15);
+        let mut orient = SmallRng::seed_from_u64(seed ^ crate::seed::salt::PROP_ORIENT);
 
         // Collect ConnectorGap positions so we can skip columns adjacent to entrances.
         let gap_positions: std::collections::HashSet<[i32; 3]> = self.cells.iter()

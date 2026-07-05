@@ -43,6 +43,25 @@ impl Seed {
     }
 }
 
+/// Domain salts — THE registry (review nit 2026-07-05: salts were
+/// scattering across modules). Every `SmallRng` stream derived from a seed
+/// mixes a named salt so no two domains consume the same bit-stream; a new
+/// randomness domain adds its constant HERE, never inline. (The generator/
+/// manifest/mesh-variant trio still consume the raw level seed — salting
+/// them reshuffles every pinned level, so that lands as its own re-anchored
+/// pass in B9.)
+pub mod salt {
+    /// The planet-final boss's hull roll (`boss::roll_hull_reward`).
+    pub const HULL: u64 = 0x0b05_5000_4001;
+    /// Panel-world face skins (`room_assembler::assemble_panels_from_grid`).
+    pub const PANEL: u64 = 0x9a6e_1c00_5eed_0002;
+    /// Free-standing prop orientation (`cell::populate`).
+    pub const PROP_ORIENT: u64 = 0x9e37_79b9_7f4a_7c15;
+    /// Knuth multiplicative mix deriving per-room sub-seeds from the level
+    /// seed (`level_assembly::spawn_list_full`) — a mixer, not an XOR salt.
+    pub const ROOM_MIX: u64 = 2_654_435_761;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

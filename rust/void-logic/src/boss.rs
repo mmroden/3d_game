@@ -89,8 +89,8 @@ pub fn roll_hull_reward(
     }
     // Salted off the level seed so the pick never correlates with the
     // manifest rolls made from the same run seed.
-    const HULL_SALT: u64 = 0x0b05_5000_4001;
-    let mut rng = SmallRng::seed_from_u64(seed.for_level(level).value() ^ HULL_SALT);
+    let mut rng =
+        SmallRng::seed_from_u64(seed.for_level(level).value() ^ crate::seed::salt::HULL);
     Some(candidates[rng.random_range(0..candidates.len())])
 }
 

@@ -268,27 +268,29 @@ impl EnemyType {
             .expect("EnemyType::ALL must contain every variant") as i32
     }
 
-    /// Minimum level at which this enemy type first appears. Rosters are
-    /// planet-scoped (a planet = six levels): planet 1 (levels 1-6) is the
-    /// Quaternius fleet; the white cgtrader spheres mix in on planet 2
-    /// (levels 7+) without retiring the veterans.
-    pub fn min_level(&self) -> u32 {
+    /// Minimum level at which this enemy type first appears in the pools —
+    /// `None` for the boss-duty reserves, which have no pool tier at all
+    /// (`spawns_directly` alone owns "never pooled"; no sentinel values).
+    /// Rosters are planet-scoped (a planet = six levels): planet 1
+    /// (levels 1-6) is the Quaternius fleet; the white cgtrader spheres mix
+    /// in on planet 2 (levels 7+) without retiring the veterans.
+    pub fn min_level(&self) -> Option<u32> {
         match self {
             // Planet 1: the sentry walks its beat from level 1; level 2 adds
             // pressure (Bomber, EyeDrone), level 4 the shielded tank.
-            Self::SentryDrone => 1,
-            Self::Bomber | Self::EyeDrone => 2,
+            Self::SentryDrone => Some(1),
+            Self::Bomber | Self::EyeDrone => Some(2),
             // Appears (via EyeDrone/Carrier death) from level 3.
-            Self::SpawnDrone => 3,
-            Self::QuadShell => 4,
+            Self::SpawnDrone => Some(3),
+            Self::QuadShell => Some(4),
             // Planet 2: the white sphere fleet arrives one tier per level.
-            Self::SphereGunner => 7,
-            Self::SphereStriker => 8,
-            Self::AlienTroop => 9,
-            Self::SphereCarrier => 11,
-            // Boss duty: never placed by level pools (spawns_directly = false).
+            Self::SphereGunner => Some(7),
+            Self::SphereStriker => Some(8),
+            Self::AlienTroop => Some(9),
+            Self::SphereCarrier => Some(11),
+            // Boss duty: placed by the schedule, never by pools.
             Self::GunDrone | Self::QuadOrb
-            | Self::BossBrute | Self::BossLatcher => u32::MAX,
+            | Self::BossBrute | Self::BossLatcher => None,
         }
     }
 }
@@ -298,7 +300,7 @@ impl EnemyType {
 pub fn enemies_for_level(level: u32) -> Vec<EnemyType> {
     EnemyType::ALL
         .iter()
-        .filter(|e| e.spawns_directly() && e.min_level() <= level)
+        .filter(|e| e.spawns_directly() && e.min_level().is_some_and(|m| m <= level))
         .copied()
         .collect()
 }
@@ -573,6 +575,28 @@ mod tests {
     }
 
     // --- Bosses (B5) ---
+
+    #[test]
+    fn min_level_speaks_only_for_pool_relevant_types() {
+        // Review nit (2026-07-05): no sentinel values — `spawns_directly`
+        // alone owns "never pooled"; `min_level` is None for the reserves
+        // and a real tier for everyone the pools (or coverage) care about.
+        for e in EnemyType::ALL {
+            match e {
+                EnemyType::GunDrone | EnemyType::QuadOrb
+                | EnemyType::BossBrute | EnemyType::BossLatcher => {
+                    assert_eq!(e.min_level(), None,
+                        "{e:?} is boss duty — no pool tier, no sentinel");
+                }
+                _ => {
+                    let tier = e.min_level()
+                        .unwrap_or_else(|| panic!("{e:?} needs a pool tier"));
+                    assert!((1..=11).contains(&tier),
+                        "{e:?} tier {tier} is a real level, not a sentinel");
+                }
+            }
+        }
+    }
 
     #[test]
     fn bosses_never_enter_the_level_pools() {
