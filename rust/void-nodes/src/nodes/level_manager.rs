@@ -791,6 +791,10 @@ impl LevelManager {
         let mut col = CollisionShape3D::new_alloc();
         col.set_shape(&shape);
         let mut body = StaticBody3D::new_alloc();
+        // Named for diagnostics: an anonymous @StaticBody3D@N in a contact
+        // report reads as an ad-hoc body; this is the container's ONE fused
+        // shell (the only static collision constructor in the build).
+        body.set_name("FusedShell");
         body.add_child(&col);
         room_node.add_child(&body);
     }

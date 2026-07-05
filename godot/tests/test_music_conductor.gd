@@ -92,6 +92,11 @@ func test_the_conductor_walks_level_combat_and_boss_beds():
 	assert_true(String(_audio.music_track()).ends_with("level_01.mp3"),
 		"level 1 plays its own background track")
 
+	# Bookmark the background mid-track: combat must not rewind it.
+	for p in _audio.get_children():
+		if p is AudioStreamPlayer and p.playing:
+			p.seek(42.0)
+
 	# --- Sharing a room with a live enemy starts a combat stinger ---
 	var enemies := _visible_enemies()
 	assert_true(enemies.size() > 0, "level 1 spawns live enemies")
@@ -104,7 +109,8 @@ func test_the_conductor_walks_level_combat_and_boss_beds():
 	assert_true(String(_audio.music_track()).contains("combat_"),
 		"the stinger comes from the combat pool")
 
-	# --- All enemies dead: fade back to the level background ---
+	# --- All enemies dead: fade back to the level background, WHERE IT
+	# WAS — the fight bookmarks the background, never rewinds it ---
 	for e in _visible_enemies():
 		e.take_damage(100000.0)
 	await wait_physics_frames(5, "the death reports must land")
@@ -112,6 +118,12 @@ func test_the_conductor_walks_level_combat_and_boss_beds():
 	assert_eq(_audio.music_bed_id(), 1, "a cleared room falls back to the level bed")
 	assert_true(String(_audio.music_track()).ends_with("level_01.mp3"),
 		"the same level background resumes")
+	var resumed := 0.0
+	for p in _audio.get_children():
+		if p is AudioStreamPlayer and p.playing and resumed < p.get_playback_position():
+			resumed = p.get_playback_position()
+	assert_gt(resumed, 40.0,
+		"the background picks up from its bookmark (got %0.1f s)" % resumed)
 
 	# --- Level 3, the mid-boss: entering the ARENA raises the boss bed ---
 	_advance_one_level()

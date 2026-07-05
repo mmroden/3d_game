@@ -44,6 +44,10 @@ pub struct AudioManager {
     /// What is actually audible right now — diverges from `current_track`
     /// when a bed's continuation swaps the stream (Boss → combat stinger).
     audible_track: String,
+    /// Where the level background stood when a fight interrupted it — the
+    /// bed resumes there, not from the top (owner, playtest 2026-07-05).
+    level_resume_track: String,
+    level_resume_pos: f32,
     crossfade_timer: f32,
     crossfade_target_vol: f32,
     is_crossfading: bool,
@@ -63,6 +67,8 @@ impl INode for AudioManager {
             current_bed: MusicBed::Menu,
             current_track: menu_track().to_string(),
             audible_track: String::new(),
+            level_resume_track: String::new(),
+            level_resume_pos: 0.0,
             crossfade_timer: 0.0,
             crossfade_target_vol: MENU_MUSIC_VOL,
             is_crossfading: false,
@@ -146,7 +152,7 @@ impl AudioManager {
         self.current_phase = phase;
         // Volume ducking only — WHICH bed plays is GameManager's single
         // derivation (set_music_bed), never inferred from phases here.
-        let vol = self.volume_for_phase();
+        let vol = self.target_volume();
         if self.is_crossfading {
             self.crossfade_target_vol = vol;
         } else {
@@ -179,10 +185,30 @@ impl AudioManager {
         if track.is_empty() {
             return;
         }
+        // A fight interrupting the level background bookmarks it; coming
+        // back to the SAME background picks up where it left off rather
+        // than restarting (owner, playtest 2026-07-05).
+        if self.current_bed == MusicBed::Level && bed != MusicBed::Level {
+            self.level_resume_track = self.current_track.clone();
+            self.level_resume_pos = self
+                .active_music_player()
+                .with(|p| p.get_playback_position())
+                .unwrap_or(0.0);
+        }
+        if bed == MusicBed::Menu {
+            // The menu is a run boundary — a fresh run's level_01 must not
+            // resume a dead run's bookmark.
+            self.level_resume_track.clear();
+            self.level_resume_pos = 0.0;
+        }
         self.current_bed = bed;
         self.current_track = track.clone();
-        let vol = self.volume_for_phase();
+        let vol = self.target_volume();
         self.crossfade_to(&track, vol);
+        if bed == MusicBed::Level && track == self.level_resume_track {
+            let pos = self.level_resume_pos;
+            self.active_music_player().with(|p| p.seek(pos));
+        }
     }
 
     /// Track-end continuation, per bed (owner's design 2026-07-05): menu
@@ -191,7 +217,7 @@ impl AudioManager {
     /// the boss track never reloops.
     #[func]
     fn on_music_finished(&mut self) {
-        let vol = self.volume_for_phase();
+        let vol = self.target_volume();
         match self.current_bed {
             MusicBed::Menu | MusicBed::Level => {
                 let track = self.current_track.clone();
@@ -295,6 +321,12 @@ impl AudioManager {
     fn pick_variant(event: SfxEvent) -> &'static str {
         let variants = event.variants();
         variants.choose(&mut rand::rng()).copied().unwrap_or(variants[0])
+    }
+
+    /// The active bed's playback volume: phase ducking × the bed's own
+    /// gain (fight music rides ~20% over exploration — owner's call).
+    fn target_volume(&self) -> f32 {
+        self.volume_for_phase() * self.current_bed.gain()
     }
 
     fn volume_for_phase(&self) -> f32 {

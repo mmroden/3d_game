@@ -39,7 +39,21 @@ pub enum MusicBed {
     Boss,
 }
 
+/// Fight-music loudness over the exploration baseline (owner's call,
+/// playtest 2026-07-05: "combat music should be played louder — maybe 20%").
+pub const FIGHT_MUSIC_GAIN: f32 = 1.2;
+
 impl MusicBed {
+    /// Loudness multiplier layered on the phase volume: fight beds (combat
+    /// stingers AND the boss track — whose continuations ARE combat
+    /// stingers) ride above the exploration baseline.
+    pub fn gain(self) -> f32 {
+        match self {
+            Self::Combat | Self::Boss => FIGHT_MUSIC_GAIN,
+            Self::Menu | Self::Level => 1.0,
+        }
+    }
+
     /// GDScript crossing (append-only law).
     pub fn id(self) -> i32 {
         match self {
@@ -286,6 +300,18 @@ pub fn all_audio_paths() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fight_beds_play_louder_than_the_rest() {
+        // Owner's call (playtest 2026-07-05): combat music noticeably louder
+        // than exploration — about 20%. Boss rides the same fight gain so its
+        // combat-stinger continuations hold one loudness.
+        assert_eq!(MusicBed::Combat.gain(), FIGHT_MUSIC_GAIN);
+        assert_eq!(MusicBed::Boss.gain(), FIGHT_MUSIC_GAIN);
+        assert_eq!(MusicBed::Level.gain(), 1.0, "exploration is the baseline");
+        assert_eq!(MusicBed::Menu.gain(), 1.0);
+        assert!((FIGHT_MUSIC_GAIN - 1.2).abs() < f32::EPSILON);
+    }
 
     #[test]
     fn the_bed_derivation_ranks_boss_over_combat_over_level() {
