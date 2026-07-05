@@ -294,8 +294,18 @@ impl DroneAi {
             // In range and firing: HOLD. The old slow creep walked shooters
             // into the player's face, where rays starting inside their hull
             // can't hit them (playtest 2026-07-04). The Chasing/Attacking
-            // hysteresis re-closes if the player pulls away.
-            DroneState::Attacking => Movement::Hold,
+            // hysteresis re-closes if the player pulls away. The hold is
+            // earned BY the shot: sight-blocked (a neighbor drone, a prop),
+            // it circles for an angle — no shot, no standing (playtest
+            // 2026-07-05: blind shooters were statues).
+            DroneState::Attacking => {
+                if has_line_of_sight {
+                    Movement::Hold
+                } else {
+                    self.tick_orbit_blockage();
+                    Movement::Strafe { speed_mul: 0.7 }
+                }
+            }
             DroneState::Idle | DroneState::Dead => Movement::Hold,
         };
         AiTick { movement, attack }
@@ -530,13 +540,30 @@ mod tests {
         // "Chase TO attack range and fire" — the old slow-creep in Attacking
         // walked shooters into the player's face, where rays that start
         // inside their hull can't hit them (playtest 2026-07-04: hugging
-        // enemies were unkillable).
+        // enemies were unkillable). The hold is earned BY the shot: it
+        // applies only while the shooter can actually see the player.
         let mut ai = default_ai();
         let chasing = ai.update(20.0, true, 0.016);
         assert_eq!(chasing.movement, Movement::Chase { speed_mul: 1.0 });
         let attacking = ai.update(4.0, true, 0.016);
         assert_eq!(attacking.movement, Movement::Hold,
             "in range and firing: hold, never creep into the target");
+    }
+
+    #[test]
+    fn a_blind_shooter_hunts_an_angle_instead_of_standing() {
+        // Playtest 2026-07-05 (planet 2): shooters in range but sight-blocked
+        // (a neighbor drone, a prop) held position AND held fire — statues
+        // that only rotated. No shot, no hold: a blind shooter repositions.
+        let mut ai = default_ai();
+        ai.update(20.0, true, 0.016); // → Chasing
+        ai.update(4.0, true, 0.016); // → Attacking, sighted: holds
+        let blind = ai.update(4.0, false, 0.016);
+        assert_eq!(blind.movement, Movement::Strafe { speed_mul: 0.7 },
+            "sight lost: circle for a firing angle, never stand blind");
+        let sighted = ai.update(4.0, true, 0.016);
+        assert_eq!(sighted.movement, Movement::Hold,
+            "sight regained: the hold (and the shot) come back");
     }
 
     // --- Line of sight ---

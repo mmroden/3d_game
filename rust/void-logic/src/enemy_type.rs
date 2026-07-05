@@ -126,8 +126,15 @@ impl EnemyType {
                 config.fuse_seconds = 1.0;
                 config.blast_radius = s.attack_range * 1.5;
             }
-            Archetype::Tank => config.shield = Some(Shield::new(s.hp.as_f32() * 0.5)),
-            Archetype::Shooter | Archetype::Swarmer => {}
+            Archetype::Tank => {
+                config.shield = Some(Shield::new(s.hp.as_f32() * 0.5));
+                // Tanks and Shooters strafe when sight-blocked; the standoff
+                // keeps that orbit at firing distance instead of spiraling
+                // into the player's face (the 2026-07-04 hugging regression).
+                config.standoff_range = s.attack_range * 0.6;
+            }
+            Archetype::Shooter => config.standoff_range = s.attack_range * 0.6,
+            Archetype::Swarmer => {}
         }
         config
     }

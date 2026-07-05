@@ -79,18 +79,30 @@ pub struct LevelSpec {
 /// screen (owner's call: scheduling is a level fact, not an enemy fact).
 /// Cumulative: once admitted, never retired. Types absent here never enter
 /// pools at all (the boss-duty reserves and the death-spawn-only drone).
-const ROSTER_SCHEDULE: &[(u32, EnemyType)] = &[
-    // ── Planet 1: the Quaternius fleet ──────────────────────────────
+// One fleet per planet — REPLACEMENT, never mix-in (owner's correction,
+// playtest 2026-07-05): the Quaternius machines retire with planet 1; the
+// white spheres own planet 2. Planets past the newest fleet's home keep
+// fielding it until new kits arrive.
+const PLANET_1_FLEET: &[(u32, EnemyType)] = &[
     (1, EnemyType::SentryDrone),
     (2, EnemyType::Bomber),
     (2, EnemyType::EyeDrone),
     (4, EnemyType::QuadShell),
-    // ── Planet 2: the white sphere fleet mixes in ───────────────────
+];
+const SPHERE_FLEET: &[(u32, EnemyType)] = &[
     (7, EnemyType::SphereGunner),
     (8, EnemyType::SphereStriker),
     (9, EnemyType::AlienTroop),
     (11, EnemyType::SphereCarrier),
 ];
+
+fn fleet_for_planet(planet: u32) -> &'static [(u32, EnemyType)] {
+    if planet <= 1 {
+        PLANET_1_FLEET
+    } else {
+        SPHERE_FLEET
+    }
+}
 
 impl LevelSpec {
     /// THE constructor — the one place level attributes are resolved.
@@ -98,11 +110,12 @@ impl LevelSpec {
     /// which hulls remain); it cannot change mid-level, so the spec is
     /// immutable for the level's lifetime.
     pub fn for_level(run_seed: Seed, level: u32, unlocks: &PermanentUnlocks) -> Self {
+        let fleet = fleet_for_planet(crate::planet::planet_of(level));
         let roster: Vec<EnemyType> = EnemyType::ALL
             .iter()
             .copied()
             .filter(|t| {
-                ROSTER_SCHEDULE
+                fleet
                     .iter()
                     .any(|(entry, scheduled)| scheduled == t && *entry <= level)
             })
@@ -191,10 +204,10 @@ mod tests {
     }
 
     #[test]
-    fn the_roster_schedule_admits_cumulatively() {
-        // The old per-type tier pins, transposed onto the schedule table:
-        // planet 1 is the Quaternius fleet; the white spheres mix in on
-        // planet 2 without retiring anyone.
+    fn rosters_are_planet_scoped_not_mixed() {
+        // Owner's correction (playtest 2026-07-05, twice): planet 2 fields
+        // the WHITE SPHERE fleet — the Quaternius machines belong to planet
+        // 1 and retire at its final boss. Replacement, never mix-in.
         assert!(!fresh(6).roster.contains(&EnemyType::SphereGunner),
             "no white spheres anywhere on planet 1");
         assert!(fresh(7).roster.contains(&EnemyType::SphereGunner));
@@ -206,9 +219,14 @@ mod tests {
         assert!(fresh(11).roster.contains(&EnemyType::SphereCarrier));
         for veteran in [EnemyType::SentryDrone, EnemyType::Bomber,
                         EnemyType::EyeDrone, EnemyType::QuadShell] {
-            assert!(fresh(7).roster.contains(&veteran),
-                "{veteran:?} keeps spawning on planet 2");
+            assert!(!fresh(7).roster.contains(&veteran),
+                "{veteran:?} retired with planet 1");
         }
+        // Planets past the sphere fleet's home keep fielding it until new
+        // kits arrive — a planet is never enemy-less.
+        assert!(fresh(13).roster.contains(&EnemyType::SphereGunner),
+            "planet 3 inherits the newest fleet");
+        assert!(!fresh(13).roster.contains(&EnemyType::SentryDrone));
     }
 
     #[test]
