@@ -184,7 +184,7 @@ pub const MAX_BOSS_CORRIDOR: u32 = 32;
 /// (only the approach corridor's side gets wired; the assembler seals the
 /// rest), one enemy spawn for the boss and one loot spawn for the reward
 /// container, both centered.
-fn boss_room_template() -> RoomTemplate {
+fn boss_room_template(pitch: crate::planet::Pitch) -> RoomTemplate {
     use ConnectorFacing::*;
 
     let ex = BOSS_ROOM_XZ as i32;
@@ -198,9 +198,9 @@ fn boss_room_template() -> RoomTemplate {
         Connector { offset: [mid_x, 0, ez - 1], facing: PosZ, frame: FrameStyle::Door },
     ];
 
-    // Same local-coordinate convention as the generator's auto spawns:
-    // cell_size 4.0, loot near the floor so the container rests in view.
-    let cell_size = 4.0_f32;
+    // Same local-coordinate convention as the generator's auto spawns;
+    // loot near the floor so the container rests in view.
+    let cell_size = pitch.tile;
     let center_x = BOSS_ROOM_XZ as f32 * cell_size / 2.0;
     let center_z = BOSS_ROOM_XZ as f32 * cell_size / 2.0;
 
@@ -233,9 +233,10 @@ fn boss_room_template() -> RoomTemplate {
 pub fn attach_boss_room(
     level: &mut LevelGraph,
     entry: petgraph::graph::NodeIndex,
+    pitch: crate::planet::Pitch,
 ) -> Option<petgraph::graph::NodeIndex> {
     let far = level.farthest_room_from(entry)?;
-    let arena = boss_room_template();
+    let arena = boss_room_template(pitch);
 
     let horizontal: Vec<(usize, ConnectorFacing)> = level
         .room(far)?
@@ -477,6 +478,7 @@ mod tests {
         let config = GeneratorConfig::standard(
             crate::seed::Seed::new(1),
             crate::generator::rooms_for_level(3),
+            3,
         );
         let level = crate::generator::generate(&config).expect("pinned seed generates");
         let entry = level.room_indices().next().expect("level has rooms");
@@ -487,7 +489,7 @@ mod tests {
     fn the_boss_arena_attaches_and_is_marked() {
         let (mut level, entry) = pinned_boss_level();
         let before = level.room_count();
-        let boss = attach_boss_room(&mut level, entry)
+        let boss = attach_boss_room(&mut level, entry, TEST_PITCH)
             .expect("the pinned level must take a boss arena");
         assert_eq!(level.boss_room(), Some(boss), "the graph carries the marker");
         assert!(level.room_count() >= before + 2, "arena + approach corridor added");
@@ -497,7 +499,7 @@ mod tests {
     #[test]
     fn the_arena_dwarfs_regular_rooms() {
         let (mut level, entry) = pinned_boss_level();
-        let boss = attach_boss_room(&mut level, entry).expect("attach");
+        let boss = attach_boss_room(&mut level, entry, TEST_PITCH).expect("attach");
         let room = level.room(boss).expect("boss room exists");
         assert_eq!(room.template.kind, TemplateKind::Room);
         assert!(
@@ -512,7 +514,7 @@ mod tests {
     #[test]
     fn the_approach_is_a_long_corridor() {
         let (mut level, entry) = pinned_boss_level();
-        let boss = attach_boss_room(&mut level, entry).expect("attach");
+        let boss = attach_boss_room(&mut level, entry, TEST_PITCH).expect("attach");
         let neighbors: Vec<_> = level.neighbors(boss).collect();
         assert_eq!(neighbors.len(), 1, "the arena has exactly one way in");
         let corridor = level.room(neighbors[0]).expect("approach exists");
@@ -527,7 +529,7 @@ mod tests {
     #[test]
     fn the_arena_becomes_the_farthest_room_so_the_portal_follows() {
         let (mut level, entry) = pinned_boss_level();
-        let boss = attach_boss_room(&mut level, entry).expect("attach");
+        let boss = attach_boss_room(&mut level, entry, TEST_PITCH).expect("attach");
         assert_eq!(level.farthest_room_from(entry), Some(boss),
             "portal_position keys off the farthest room — it must be the arena");
 
@@ -550,7 +552,7 @@ mod tests {
         // One enemy spawn (the boss — B5's manifest places it) and one loot
         // spawn (the red/consolation container — B7) — both near the center.
         let (mut level, entry) = pinned_boss_level();
-        let boss = attach_boss_room(&mut level, entry).expect("attach");
+        let boss = attach_boss_room(&mut level, entry, TEST_PITCH).expect("attach");
         let template = &level.room(boss).unwrap().template;
         assert_eq!(template.enemy_spawns.len(), 1, "exactly the boss spawns here");
         assert_eq!(template.loot_spawns.len(), 1, "exactly the reward drops here");
@@ -560,8 +562,8 @@ mod tests {
     fn boss_attachment_is_deterministic() {
         let (mut a, entry_a) = pinned_boss_level();
         let (mut b, entry_b) = pinned_boss_level();
-        let boss_a = attach_boss_room(&mut a, entry_a).expect("attach a");
-        let boss_b = attach_boss_room(&mut b, entry_b).expect("attach b");
+        let boss_a = attach_boss_room(&mut a, entry_a, TEST_PITCH).expect("attach a");
+        let boss_b = attach_boss_room(&mut b, entry_b, TEST_PITCH).expect("attach b");
         assert_eq!(a.room(boss_a).unwrap().grid_pos, b.room(boss_b).unwrap().grid_pos);
     }
 
@@ -698,6 +700,7 @@ mod tests {
 
         for seed in 0..10 {
             let config = GeneratorConfig {
+                pitch: crate::planet::Pitch { tile: 4.0, story: 5.0 },
                 seed: crate::seed::Seed::new(seed),
                 max_rooms: 10,
                 min_room_xz: 3,
@@ -724,6 +727,7 @@ mod tests {
         // With 15 rooms requested, at least 12 should survive spatial placement.
         for seed in 0..20 {
             let config = GeneratorConfig {
+                pitch: crate::planet::Pitch { tile: 4.0, story: 5.0 },
                 seed: crate::seed::Seed::new(seed),
                 max_rooms: 15,
                 min_room_xz: 3,
@@ -748,6 +752,7 @@ mod tests {
         let mut any_vertical = false;
         for seed in 0..20 {
             let config = GeneratorConfig {
+                pitch: crate::planet::Pitch { tile: 4.0, story: 5.0 },
                 seed: crate::seed::Seed::new(seed),
                 max_rooms: 10,
                 min_room_xz: 3,
@@ -785,6 +790,7 @@ mod tests {
     fn result_is_fully_connected() {
         let mut rng = SmallRng::seed_from_u64(42);
         let config = GeneratorConfig {
+            pitch: crate::planet::Pitch { tile: 4.0, story: 5.0 },
             seed: crate::seed::Seed::new(42),
 
             max_rooms: 0,

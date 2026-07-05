@@ -365,10 +365,11 @@ impl LevelManager {
     /// player would fly through.
     fn build_level(&mut self, seed: i64, target_rooms: u32, structure_only: bool) {
         let seed = Seed::from_i64(seed);
+        let level_number = self.current_level.max(1) as u32;
         // The canonical parameters live in void-logic (GeneratorConfig::
         // standard) so seed-property pins in the model tests can never drift
         // from what the shell actually builds.
-        let config = GeneratorConfig::standard(seed, target_rooms as usize);
+        let config = GeneratorConfig::standard(seed, target_rooms as usize, level_number);
 
         let mut graph = match generate(&config) {
             Ok(g) => g,
@@ -382,11 +383,10 @@ impl LevelManager {
         // corridor off the farthest room ending in the sealed-off arena. The
         // arena becomes the new farthest room, so the portal and exit-room
         // accents follow with zero changes. The backdrop build stays bossless.
-        let level_number = self.current_level.max(1) as u32;
         if !structure_only && boss::boss_for_level(level_number).is_some() {
             let entry = graph.room_indices().next();
-            let attached =
-                entry.and_then(|e| spatial_layout::attach_boss_room(&mut graph, e));
+            let attached = entry
+                .and_then(|e| spatial_layout::attach_boss_room(&mut graph, e, self.pitch()));
             if attached.is_none() {
                 godot_warn!("Boss arena failed to attach; level runs bossless");
             }
@@ -395,7 +395,7 @@ impl LevelManager {
         // Assemble each room's content, grouped into the three build steps the
         // shell mirrors: structure, then non-enemy inhabitants (props +
         // containers), then enemies.
-        let rooms = level_assembly::spawn_list_full(&graph, self.pitch(), seed);
+        let rooms = level_assembly::spawn_list_full(&graph, self.pitch(), seed, level_number);
 
         // The level manifest (Faucet Principle, tier-1 model): resolves each
         // enemy's type, expands its death-spawn minions, and binds one blue

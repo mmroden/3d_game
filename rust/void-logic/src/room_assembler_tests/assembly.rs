@@ -30,7 +30,7 @@ fn every_xz_sealed_boundary_has_wall_or_corner() {
 
     for (template, active) in &test_cases {
         let placements = assemble_default(template, active, [0.0, 0.0, 0.0]);
-        let grid = CellGrid::new(template, active, [0.0, 0.0, 0.0], asset_catalog::WALL_SET_ASTRA.tile_width);
+        let grid = CellGrid::new(template, active, [0.0, 0.0, 0.0], asset_catalog::WALL_SET_ASTRA.tile_width, asset_catalog::WALL_SET_ASTRA.story_height);
 
         for cell in grid.cells() {
             // Only check cells that have at least one XZ sealed face.
@@ -68,7 +68,7 @@ fn y_only_sealed_cells_have_floor_ceiling_not_walls() {
     use crate::cell::CellGrid;
 
     // 3x1x3 sealed room: center cell (1,0,1) has only NegY+PosY sealed faces.
-    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], asset_catalog::WALL_SET_ASTRA.tile_width);
+    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], asset_catalog::WALL_SET_ASTRA.tile_width, asset_catalog::WALL_SET_ASTRA.story_height);
     let placements = assemble_default(&room_3x3(), &[], [0.0, 0.0, 0.0]);
 
     let center = grid.cell_at(1, 0, 1).expect("center cell should exist");
@@ -631,7 +631,7 @@ fn ceiling_tile_emits_flipped_platform() {
 fn no_geometry_at_interior_positions() {
     use crate::cell::CellGrid;
     let ws = &asset_catalog::WALL_SET_ASTRA;
-    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], ws.tile_width);
+    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], ws.tile_width, ws.story_height);
     let placements = assemble_default(&room_3x3(), &[], [0.0, 0.0, 0.0]);
 
     // Center cell (1,0,1) is interior — should have no wall/corner geometry at its center.
@@ -716,7 +716,7 @@ fn floor_tiles_at_corner_cells_are_at_cell_center() {
     use crate::cell::CellGrid;
     let ws = &asset_catalog::WALL_SET_ASTRA;
     let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], ws);
-    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], ws.tile_width);
+    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], ws.tile_width, ws.story_height);
 
     // Collect all cell centers
     let cell_centers: Vec<(i32, i32)> = grid.cells().iter()
@@ -745,7 +745,7 @@ fn ceiling_tiles_at_corner_cells_are_at_cell_center() {
     use crate::cell::CellGrid;
     let ws = &asset_catalog::WALL_SET_ASTRA;
     let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], ws);
-    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], ws.tile_width);
+    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], ws.tile_width, ws.story_height);
 
     let cell_centers: Vec<(i32, i32)> = grid.cells().iter()
         .map(|c| ((c.world_center[0] * 100.0) as i32, (c.world_center[2] * 100.0) as i32))

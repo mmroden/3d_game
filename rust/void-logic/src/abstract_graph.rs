@@ -143,6 +143,7 @@ mod tests {
 
     fn test_config() -> GeneratorConfig {
         GeneratorConfig {
+            pitch: crate::planet::Pitch { tile: 4.0, story: 5.0 },
             seed: crate::seed::Seed::new(42),
             max_rooms: 0,
             min_room_xz: 3,

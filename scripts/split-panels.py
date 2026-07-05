@@ -32,6 +32,14 @@ meshes = [o for o in bpy.data.objects if o.type == "MESH"]
 os.makedirs(out_dir, exist_ok=True)
 
 for obj in sorted(meshes, key=lambda o: o.name):
+    # Kit objects sit spread out in a showroom grid; each panel must export
+    # origin-centered so a placement position IS the panel center.
+    bpy.ops.object.select_all(action="DESELECT")
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.origin_set(type="ORIGIN_GEOMETRY", center="BOUNDS")
+    obj.location = (0.0, 0.0, 0.0)
+
     tris = sum(len(p.vertices) - 2 for p in obj.data.polygons)
     if tris > target_tris:
         mod = obj.modifiers.new("decimate", "DECIMATE")

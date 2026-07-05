@@ -46,11 +46,12 @@ pub struct Cell {
 pub struct CellGrid {
     cells: Vec<Cell>,
     pub extents: [usize; 3],
+    /// Story height (m) this grid was built at — the level's pitch, carried
+    /// so population math can never diverge from cell placement.
+    pub story: f32,
 }
 
 impl CellGrid {
-    pub(crate) const DEFAULT_STORY_HEIGHT: f32 = 5.0; // TODO: pass from WallSet
-
     /// Build a cell grid from a room template, classifying each cell by its
     /// boundary structure and active connectors.
     pub fn new(
@@ -58,6 +59,7 @@ impl CellGrid {
         active_connectors: &[Connector],
         world_origin: [f32; 3],
         cell_size: f32,
+        story_height: f32,
     ) -> Self {
         let ex = template.extents[0] as i32;
         let ey = template.extents[1] as i32;
@@ -70,7 +72,7 @@ impl CellGrid {
                 for cz in 0..ez {
                     let world_center = [
                         world_origin[0] + (cx as f32 + 0.5) * cell_size,
-                        world_origin[1] + cy as f32 * Self::DEFAULT_STORY_HEIGHT,
+                        world_origin[1] + cy as f32 * story_height,
                         world_origin[2] + (cz as f32 + 0.5) * cell_size,
                     ];
 
@@ -126,6 +128,7 @@ impl CellGrid {
         Self {
             cells,
             extents: [ex as usize, ey as usize, ez as usize],
+            story: story_height,
         }
     }
 

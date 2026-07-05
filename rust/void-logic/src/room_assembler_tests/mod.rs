@@ -5,6 +5,7 @@ use crate::room_template::*;
 mod placement;
 mod assembly;
 mod corners;
+mod panels;
 mod theming;
 
 /// Convenience wrapper: assemble with default Astra wall set.

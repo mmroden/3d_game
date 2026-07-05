@@ -729,11 +729,13 @@ mod tests {
         use crate::generator::{generate, GeneratorConfig};
 
         let config_a = GeneratorConfig {
+            pitch: crate::planet::Pitch { tile: 4.0, story: 5.0 },
             seed: RunState::new(Seed::new(42)).level_seed(),
             max_rooms: 10, min_room_xz: 3, max_room_xz: 6,
             min_room_y: 1, max_room_y: 6,
         };
         let config_b = GeneratorConfig {
+            pitch: crate::planet::Pitch { tile: 4.0, story: 5.0 },
             seed: RunState::new(Seed::new(999)).level_seed(),
             max_rooms: 10, min_room_xz: 3, max_room_xz: 6,
             min_room_y: 1, max_room_y: 6,

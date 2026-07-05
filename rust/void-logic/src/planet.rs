@@ -34,14 +34,24 @@ pub struct Pitch {
 
 impl Pitch {
     pub fn for_level(level: u32) -> Self {
-        // Planet-aware plumbing, planet-invariant values: 2+ flips to
-        // 3 m cubes when the panel assembler lands (B11 step 3).
-        let _ = planet_of(level);
-        Self {
-            tile: crate::asset_catalog::WALL_SET_ASTRA.tile_width,
-            story: crate::asset_catalog::WALL_SET_ASTRA.story_height,
+        if panel_world(level) {
+            // Cubic cells: tile == story == the panel pitch — no
+            // distinguished axis (the 6DOF principle made physical).
+            let p = crate::asset_catalog::PANEL_SET_VOL01.pitch;
+            Self { tile: p, story: p }
+        } else {
+            Self {
+                tile: crate::asset_catalog::WALL_SET_ASTRA.tile_width,
+                story: crate::asset_catalog::WALL_SET_ASTRA.story_height,
+            }
         }
     }
+}
+
+/// Whether this level is built in the panel paradigm (planet 2+): cubic
+/// cells skinned from one panel pool, megakit left behind on planet 1.
+pub fn panel_world(level: u32) -> bool {
+    planet_of(level) >= 2
 }
 
 /// The interstitial banner for a level entry: `Some((title, flavor))` when
@@ -103,10 +113,12 @@ mod tests {
             assert_eq!(p.tile, astra.tile_width, "level {level} tile");
             assert_eq!(p.story, astra.story_height, "level {level} story");
         }
-        // Planet 2+ keeps the megakit pitch UNTIL the panel assembler lands
-        // (B11 step 3) — this pin flips to 3 m cubes with it.
+        // Planet 2+: cubic panel cells — tile == story, pinned against the
+        // panel set so the plates and the cells can never drift apart.
+        let panel = crate::asset_catalog::PANEL_SET_VOL01;
         let p2 = Pitch::for_level(7);
-        assert_eq!((p2.tile, p2.story), (astra.tile_width, astra.story_height));
+        assert_eq!((p2.tile, p2.story), (panel.pitch, panel.pitch),
+            "planet 2 is cubic at the panel pitch");
     }
 
     #[test]

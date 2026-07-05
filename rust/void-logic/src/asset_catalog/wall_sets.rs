@@ -248,3 +248,42 @@ pub const ALL_WALL_SETS: &[WallSet] = &[
 
 /// The door frame asset — structural, not themed.
 pub const DOOR: &str = megakit_platform!("Door_Frame_Square.gltf");
+
+// ── Panel sets (B11 cubic-cell panel worlds) ────────────────────────────
+
+/// A panel world's face pool: ONE list serving every cell face — floor,
+/// wall, ceiling are terrestrial words with no meaning here; a face is a
+/// face and rotation is the only difference (the 6DOF principle). Panels
+/// are flat plates authored `pitch × pitch` in XZ, thin in Y, split from
+/// the source kit by `scripts/split-panels.py`.
+#[derive(Debug, Clone, Copy)]
+pub struct PanelSet {
+    pub id: &'static str,
+    /// Every panel spans exactly one cell face at this pitch (meters).
+    pub pitch: f32,
+    pub panels: &'static [&'static str],
+}
+
+macro_rules! wall_panel {
+    ($name:expr) => {
+        concat!("res://addons/walls/", $name)
+    };
+}
+
+/// Planet 2's kit: the 3 m plates of cgtrader Sci-Fi Parts Kit Vol 01
+/// (wider plates in the kit are reserved for props / multi-cell faces).
+pub const PANEL_SET_VOL01: PanelSet = PanelSet {
+    id: "vol01",
+    pitch: 3.0,
+    panels: &[
+        wall_panel!("sf_pp01_a_001.glb"),
+        wall_panel!("sf_pp01_a_006.glb"),
+        wall_panel!("sf_pp01_b_001.glb"),
+        wall_panel!("sf_pp01_b_002.glb"),
+        wall_panel!("sf_pp01_c_001.glb"),
+        wall_panel!("sf_pp01_c_002.glb"),
+        wall_panel!("sf_pp01_c_003.glb"),
+        wall_panel!("sf_pp01_d_001.glb"),
+        wall_panel!("sf_pp01_f_001.glb"),
+    ],
+};

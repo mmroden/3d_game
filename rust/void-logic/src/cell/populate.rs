@@ -58,7 +58,7 @@ impl CellGrid {
                         let collision = Collision::for_prop(prop.scene);
                         if is_column {
                             // Stack columns at every story level for this XZ position.
-                            let story_height = Self::DEFAULT_STORY_HEIGHT;
+                            let story_height = self.story;
                             let ey = self.extents[1];
                             let base_y = cell.world_center[1] - cell.grid_pos[1] as f32 * story_height;
                             let placements: Vec<MeshPlacement> = (0..ey).map(|cy| {

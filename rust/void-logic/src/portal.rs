@@ -44,10 +44,10 @@ mod tests {
     const CELL: f32 = 4.0;
 
     fn pinned_boss_graph() -> LevelGraph {
-        let config = GeneratorConfig::standard(Seed::new(1), rooms_for_level(3));
+        let config = GeneratorConfig::standard(Seed::new(1), rooms_for_level(3), 3);
         let mut graph = generate(&config).expect("pinned seed generates");
         let entry = graph.room_indices().next().expect("has rooms");
-        attach_boss_room(&mut graph, entry).expect("arena attaches");
+        attach_boss_room(&mut graph, entry, TEST_PITCH).expect("arena attaches");
         graph
     }
 
@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn regular_levels_keep_the_center_portal() {
-        let config = GeneratorConfig::standard(Seed::new(1), rooms_for_level(1));
+        let config = GeneratorConfig::standard(Seed::new(1), rooms_for_level(1), 1);
         let graph = generate(&config).expect("generates");
         let first = graph.room_indices().next().expect("rooms");
         let far = graph.farthest_room_from(first).expect("farthest");

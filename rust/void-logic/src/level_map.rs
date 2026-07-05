@@ -191,7 +191,7 @@ mod tests {
 
     /// The pinned GUT seed's level, through the shell's exact build path.
     fn level() -> LevelGraph {
-        generate(&GeneratorConfig::standard(Seed::from_i64(1), 8))
+        generate(&GeneratorConfig::standard(Seed::from_i64(1), 8, 1))
             .expect("the pinned seed must generate")
     }
 

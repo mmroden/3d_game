@@ -56,10 +56,11 @@ pub fn spawn_list(
     graph: &LevelGraph,
     pitch: Pitch,
     seed: Seed,
+    level: u32,
 ) -> (Vec<MeshPlacement>, Vec<LightSource>) {
     let mut meshes = Vec::new();
     let mut lights = Vec::new();
-    for room in spawn_list_full(graph, pitch, seed) {
+    for room in spawn_list_full(graph, pitch, seed, level) {
         meshes.extend(room.structure);
         meshes.extend(room.props);
         lights.extend(room.lights);
@@ -74,6 +75,7 @@ pub fn spawn_list_full(
     graph: &LevelGraph,
     pitch: Pitch,
     seed: Seed,
+    level: u32,
 ) -> Vec<RoomAssembly> {
     use crate::cell::CellGrid;
     use crate::level_graph::RENDER_ROOM_DEPTH;
@@ -90,16 +92,25 @@ pub fn spawn_list_full(
         // the Pitch/wall-set agreement is pinned in planet.rs.
         let origin = room.world_position(pitch.tile, pitch.story);
 
-        let mut grid = CellGrid::new(&room.template, &active, origin, pitch.tile);
-        // Step 1 data — the room's shell.
-        let mut structure = crate::room_assembler::assemble_from_grid(
-            &grid,
-            &room.template,
-            &active,
-            theme.wall_set,
-        );
-
+        let mut grid = CellGrid::new(&room.template, &active, origin, pitch.tile, pitch.story);
         let room_seed = seed.value().wrapping_add(room_idx as u64).wrapping_mul(2654435761);
+        // Step 1 data — the room's shell. One paradigm per planet: the
+        // megakit's layered walls on planet 1, the panel pool from planet 2
+        // (cubic cells; see planet::panel_world and the B11 plan).
+        let mut structure = if crate::planet::panel_world(level) {
+            crate::room_assembler::assemble_panels_from_grid(
+                &grid,
+                &crate::asset_catalog::PANEL_SET_VOL01,
+                room_seed,
+            )
+        } else {
+            crate::room_assembler::assemble_from_grid(
+                &grid,
+                &room.template,
+                &active,
+                theme.wall_set,
+            )
+        };
         grid.populate(theme, room_seed);
         // Step 2 data — furnished fixtures (cell-rolled). The start room's
         // spawn square stays empty: the player materializes there and
@@ -307,7 +318,7 @@ pub fn manifest(graph: &LevelGraph, pitch: Pitch, seed: Seed, level: u32) -> Lev
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
 
-    let rooms_assembly = spawn_list_full(graph, pitch, seed);
+    let rooms_assembly = spawn_list_full(graph, pitch, seed, level);
     let available = crate::enemy_type::enemies_for_level(level);
     let mut enemy_rng = SmallRng::seed_from_u64(seed.value());
 
@@ -465,7 +476,7 @@ mod tests {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
             let cell = 4.0;
             let (pos, _) = spawn_pose(&graph, TEST_PITCH);
-            let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed));
+            let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed), 1);
             let start = &rooms[0];
             let half = cell * 0.5;
             for p in &start.props {
@@ -495,6 +506,7 @@ mod tests {
 
         'seeds: for seed in 0..30u64 {
             let config = GeneratorConfig {
+                pitch: crate::planet::Pitch { tile: 4.0, story: 5.0 },
                 seed: Seed::new(seed),
                 max_rooms: 30,
                 min_room_xz: 3,
@@ -503,7 +515,7 @@ mod tests {
                 max_room_y: 6,
             };
             let Ok(graph) = generate(&config) else { continue };
-            let assemblies = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed));
+            let assemblies = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed), 1);
 
             for (i, idx) in graph.room_indices().enumerate() {
                 let room = graph.room(idx).unwrap();
@@ -551,6 +563,7 @@ mod tests {
 
         for seed in 0..30u64 {
             let config = GeneratorConfig {
+                pitch: crate::planet::Pitch { tile: 4.0, story: 5.0 },
                 seed: Seed::new(seed),
                 max_rooms: 20,
                 min_room_xz: 3,
@@ -559,7 +572,7 @@ mod tests {
                 max_room_y: 6,
             };
             let Ok(graph) = generate(&config) else { continue };
-            let (meshes, _lights) = spawn_list(&graph, TEST_PITCH, Seed::new(seed));
+            let (meshes, _lights) = spawn_list(&graph, TEST_PITCH, Seed::new(seed), 1);
 
             for (a, _b, kind) in graph.edges() {
                 let EdgeKind::Adjacent { from_connector, .. } = kind else {
@@ -619,6 +632,7 @@ mod tests {
 
     fn test_config(seed: u64) -> GeneratorConfig {
         GeneratorConfig {
+            pitch: crate::planet::Pitch { tile: 4.0, story: 5.0 },
             seed: Seed::new(seed),
             max_rooms: 20,
             min_room_xz: 3,
@@ -631,7 +645,7 @@ mod tests {
     #[test]
     fn one_assembly_per_room() {
         let graph = generate(&test_config(7)).expect("generation");
-        let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(7));
+        let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(7), 1);
         assert_eq!(rooms.len(), graph.room_count());
     }
 
@@ -646,7 +660,7 @@ mod tests {
         let mut any_enemy = false;
         for seed in 0..30u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed));
+            let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed), 1);
             for room in &rooms {
                 assert!(!room.structure.is_empty(), "seed {seed}: a room had no structure");
                 any_container |= !room.containers.is_empty();
@@ -665,7 +679,7 @@ mod tests {
         // spawn — even though its template may define enemy spawns.
         for seed in 0..30u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed));
+            let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed), 1);
             if let Some(start) = rooms.first() {
                 assert!(start.enemies.is_empty(), "seed {seed}: start room has enemies");
             }
@@ -677,7 +691,7 @@ mod tests {
         // Each room's bounds must be a non-degenerate box derived from
         // its geometry — the stub (min == max) fails this.
         let graph = generate(&test_config(7)).expect("generation");
-        let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(7));
+        let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(7), 1);
         for (i, room) in rooms.iter().enumerate() {
             for a in 0..3 {
                 assert!(
@@ -693,7 +707,7 @@ mod tests {
     #[test]
     fn room_at_locates_interior_points_and_rejects_distant_ones() {
         let graph = generate(&test_config(7)).expect("generation");
-        let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(7));
+        let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(7), 1);
         let bounds: Vec<_> = rooms.iter().map(|r| r.bounds.clone()).collect();
 
         for room in &rooms {
@@ -727,7 +741,7 @@ mod tests {
 
         for seed in 0..30u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed));
+            let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed), 1);
             if rooms.is_empty() {
                 continue;
             }
@@ -792,7 +806,7 @@ mod tests {
         // would be warm-white (red ≈ 1.0), so this pins the wiring.
         for seed in 0..30u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed));
+            let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed), 1);
             if rooms.is_empty() || rooms[0].lights.is_empty() {
                 continue;
             }
@@ -819,6 +833,51 @@ mod tests {
     /// inputs are byte-identical, so the pool sizes and enemy mix the shell
     /// builds are reproducible.
     #[test]
+    fn planet_two_rooms_are_skinned_with_panels_not_megakit() {
+        // B11: planet 2+ structure comes from the panel pool — wholesale,
+        // no megakit walls (one paradigm per planet, owner's call).
+        let config = GeneratorConfig::standard(
+            Seed::new(1),
+            crate::generator::rooms_for_level(7),
+            7,
+        );
+        let graph = generate(&config).expect("generates");
+        let pitch = crate::planet::Pitch::for_level(7);
+        let rooms = spawn_list_full(&graph, pitch, Seed::new(1), 7);
+        let mut any_panel = false;
+        for room in &rooms {
+            for m in &room.structure {
+                // Light FIXTURES (props) may stay megakit for now — the ban
+                // is on structural skin: walls, platforms, corners, trims.
+                assert!(
+                    !m.scene.contains("megakit/walls")
+                        && !m.scene.contains("megakit/platforms"),
+                    "planet 2 must not place megakit structure: {}",
+                    m.scene
+                );
+                if m.scene.contains("addons/walls/") {
+                    any_panel = true;
+                }
+            }
+        }
+        assert!(any_panel, "planet 2 rooms are skinned from the panel pool");
+    }
+
+    #[test]
+    fn planet_one_keeps_the_megakit() {
+        let config = GeneratorConfig::standard(
+            Seed::new(1),
+            crate::generator::rooms_for_level(1),
+            1,
+        );
+        let graph = generate(&config).expect("generates");
+        let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(1), 1);
+        let any_megakit = rooms.iter().flat_map(|r| &r.structure)
+            .any(|m| m.scene.contains("quaternius"));
+        assert!(any_megakit, "planet 1 stays terrestrial megakit");
+    }
+
+    #[test]
     fn manifest_is_seed_deterministic() {
         for seed in 0..20u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
@@ -835,7 +894,7 @@ mod tests {
     fn manifest_covers_every_assembly_enemy_position() {
         for seed in 0..20u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let assembly = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed));
+            let assembly = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed), 1);
             let m = manifest(&graph, TEST_PITCH, Seed::new(seed), 5);
             assert_eq!(m.rooms.len(), assembly.len(), "seed {seed}: room count differs");
             for (room, room_asm) in m.rooms.iter().zip(&assembly) {
@@ -890,10 +949,11 @@ mod tests {
         let config = GeneratorConfig::standard(
             Seed::new(1),
             crate::generator::rooms_for_level(level),
+            level,
         );
         let mut graph = generate(&config).expect("pinned seed generates");
         let entry = graph.room_indices().next().expect("has rooms");
-        crate::spatial_layout::attach_boss_room(&mut graph, entry).expect("arena attaches");
+        crate::spatial_layout::attach_boss_room(&mut graph, entry, TEST_PITCH).expect("arena attaches");
         graph
     }
 
@@ -965,6 +1025,7 @@ mod tests {
         let config = GeneratorConfig::standard(
             Seed::new(1),
             crate::generator::rooms_for_level(3),
+            3,
         );
         let graph = generate(&config).expect("generates");
         let m = manifest(&graph, TEST_PITCH, Seed::new(1), 3);
@@ -1005,7 +1066,7 @@ mod tests {
     #[test]
     fn pinned_gut_seed_places_an_eye_drone() {
         let seed = Seed::from_i64(1);
-        let graph = generate(&crate::generator::GeneratorConfig::standard(seed, 8))
+        let graph = generate(&crate::generator::GeneratorConfig::standard(seed, 8, 1))
             .expect("the pinned seed must generate");
         let m = manifest(&graph, TEST_PITCH, seed, 3);
         assert!(
@@ -1021,9 +1082,9 @@ mod tests {
     fn pinned_gut_run_seed_places_a_loot_container() {
         use crate::generator::rooms_for_level;
         let level_seed = Seed::from_i64(1).for_level(1);
-        let graph = generate(&crate::generator::GeneratorConfig::standard(level_seed, rooms_for_level(1)))
+        let graph = generate(&crate::generator::GeneratorConfig::standard(level_seed, rooms_for_level(1), 1))
             .expect("the pinned seed must generate");
-        let rooms = spawn_list_full(&graph, TEST_PITCH, level_seed);
+        let rooms = spawn_list_full(&graph, TEST_PITCH, level_seed, 1);
         assert!(
             rooms.iter().any(|r| !r.containers.is_empty()),
             "run seed 1 must place a green cache on level 1 — the GUT suite drives this run"
