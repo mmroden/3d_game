@@ -57,11 +57,20 @@ impl ICanvasLayer for LoadingUI {
 
 #[godot_api]
 impl LoadingUI {
-    /// Raise the veil for a build of `level`.
+    /// Raise the veil for a build of `level`. Crossing onto a new planet
+    /// turns the veil into the arrival interstitial — title plus the flavor
+    /// line that carries the story beats (B10; text swaps in when the
+    /// narrative lands in `planet::ARRIVAL_FLAVOR`).
     #[func]
     pub fn show_loading(&mut self, level: i32) {
         if let Some(label) = &self.label {
-            label.with(|l| l.set_text(&format!("ENTERING SECTOR {level}…")));
+            let text = match void_logic::planet::arrival_banner(level.max(1) as u32) {
+                Some((title, flavor)) => {
+                    format!("{title}\n\n{flavor}\n\nENTERING SECTOR {level}…")
+                }
+                None => format!("ENTERING SECTOR {level}…"),
+            };
+            label.with(|l| l.set_text(&text));
         }
         self.base_mut().set_visible(true);
     }

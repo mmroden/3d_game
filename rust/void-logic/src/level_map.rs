@@ -38,12 +38,12 @@ pub struct MapProjection {
 
 /// Derive the world→unit projection matching [`map_rects`]' normalization:
 /// grid coords are world / cell, so `unit = world·(s/cell) + (offset − min·s)`.
-pub fn map_projection(graph: &LevelGraph, cell_size: f32) -> MapProjection {
+pub fn map_projection(graph: &LevelGraph, pitch: crate::planet::Pitch) -> MapProjection {
     let Some((min, scale, offset)) = grid_frame(graph) else {
         return MapProjection { scale: 0.0, offset: [0.0; 2] };
     };
     MapProjection {
-        scale: scale / cell_size,
+        scale: scale / pitch.tile,
         offset: [offset[0] - min[0] * scale, offset[1] - min[1] * scale],
     }
 }
@@ -180,6 +180,10 @@ fn collect_rects(
 
 #[cfg(test)]
 mod tests {
+    /// The planet-1 pitch, spelled out: tests may hold literals.
+    const TEST_PITCH: crate::planet::Pitch =
+        crate::planet::Pitch { tile: 4.0, story: 5.0 };
+
     use super::*;
     use crate::generator::{generate, GeneratorConfig};
     use crate::room_template::TemplateKind;
@@ -279,7 +283,7 @@ mod tests {
         let graph = level();
         let cell = 4.0;
         let view = map_rects(&graph, &all_nodes(&graph), 0, true);
-        let proj = map_projection(&graph, cell);
+        let proj = map_projection(&graph, TEST_PITCH);
         let nodes: Vec<_> = graph.room_indices().collect();
         let story = crate::asset_catalog::WALL_SET_ASTRA.story_height;
         for r in &view {

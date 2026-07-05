@@ -1,30 +1,30 @@
 //! Portal position logic for level exit placement.
 
 use crate::level_graph::LevelGraph;
+use crate::planet::Pitch;
 
 /// Returns the world-space center of the farthest room from the start as the
 /// portal position, at hover height (1.5m above floor). In a boss arena the
 /// portal shifts to the BACK third — away from the doorway, past the fight —
 /// because the boss's reward cache drops at the corpse (usually mid-arena)
 /// and a center portal would arm straight into the collecting player.
-pub fn portal_position(graph: &LevelGraph, cell_size: f32) -> Option<[f32; 3]> {
+pub fn portal_position(graph: &LevelGraph, pitch: Pitch) -> Option<[f32; 3]> {
     let first_idx = graph.room_indices().next()?;
     let farthest_idx = graph.farthest_room_from(first_idx)?;
     let room = graph.room(farthest_idx)?;
-    let story_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
-    let origin = room.world_position(cell_size, story_height);
+    let origin = room.world_position(pitch.tile, pitch.story);
     let ex = room.template.extents[0] as f32;
     let ez = room.template.extents[2] as f32;
     let mut pos = [
-        origin[0] + (ex * cell_size) / 2.0,
+        origin[0] + (ex * pitch.tile) / 2.0,
         origin[1] + 1.5, // hover height
-        origin[2] + (ez * cell_size) / 2.0,
+        origin[2] + (ez * pitch.tile) / 2.0,
     ];
     if graph.boss_room() == Some(farthest_idx) {
         if let Some(conn) = graph.active_connectors(farthest_idx).first() {
             let dir = conn.facing.grid_offset();
-            pos[0] -= dir[0] as f32 * ex * cell_size / 3.0;
-            pos[2] -= dir[2] as f32 * ez * cell_size / 3.0;
+            pos[0] -= dir[0] as f32 * ex * pitch.tile / 3.0;
+            pos[2] -= dir[2] as f32 * ez * pitch.tile / 3.0;
         }
     }
     Some(pos)
@@ -32,6 +32,10 @@ pub fn portal_position(graph: &LevelGraph, cell_size: f32) -> Option<[f32; 3]> {
 
 #[cfg(test)]
 mod tests {
+    /// The planet-1 pitch, spelled out: tests may hold literals.
+    const TEST_PITCH: crate::planet::Pitch =
+        crate::planet::Pitch { tile: 4.0, story: 5.0 };
+
     use super::*;
     use crate::generator::{generate, rooms_for_level, GeneratorConfig};
     use crate::seed::Seed;
@@ -62,7 +66,7 @@ mod tests {
         let center_x = origin[0] + ex as f32 * CELL / 2.0;
         let center_z = origin[2] + ez as f32 * CELL / 2.0;
 
-        let portal = portal_position(&graph, CELL).expect("portal placed");
+        let portal = portal_position(&graph, TEST_PITCH).expect("portal placed");
 
         let off_center = (portal[0] - center_x).abs() + (portal[2] - center_z).abs();
         assert!(off_center > CELL,
@@ -96,7 +100,7 @@ mod tests {
         let story = crate::asset_catalog::WALL_SET_ASTRA.story_height;
         let origin = room.world_position(CELL, story);
         let [ex, _ey, ez] = room.template.extents;
-        let portal = portal_position(&graph, CELL).expect("portal placed");
+        let portal = portal_position(&graph, TEST_PITCH).expect("portal placed");
         assert!((portal[0] - (origin[0] + ex as f32 * CELL / 2.0)).abs() < 1e-4);
         assert!((portal[2] - (origin[2] + ez as f32 * CELL / 2.0)).abs() < 1e-4);
     }

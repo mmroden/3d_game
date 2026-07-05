@@ -794,7 +794,7 @@ impl GameManager {
                     self.run_state.current_room,
                     self.run_state.unlocks.contains(Unlock::RouteScanner),
                 ),
-                level_map::map_projection(lm.graph(), lm.cell_size()),
+                level_map::map_projection(lm.graph(), void_logic::planet::Pitch::for_level(self.run_state.current_level)),
             )
         };
 

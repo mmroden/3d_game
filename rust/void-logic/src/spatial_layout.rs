@@ -416,6 +416,10 @@ fn cells_for_at(template: &RoomTemplate, origin: [i32; 3]) -> Vec<[i32; 3]> {
 
 #[cfg(test)]
 mod tests {
+    /// The planet-1 pitch, spelled out: tests may hold literals.
+    const TEST_PITCH: crate::planet::Pitch =
+        crate::planet::Pitch { tile: 4.0, story: 5.0 };
+
     use super::*;
     use crate::abstract_graph::{self, ConnectorPair};
     use crate::generator::GeneratorConfig;
@@ -528,7 +532,7 @@ mod tests {
             "portal_position keys off the farthest room — it must be the arena");
 
         let cell_size = 4.0;
-        let portal = crate::portal::portal_position(&level, cell_size)
+        let portal = crate::portal::portal_position(&level, TEST_PITCH)
             .expect("portal placed");
         let room = level.room(boss).unwrap();
         let story_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;

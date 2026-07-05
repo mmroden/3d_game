@@ -318,6 +318,24 @@ else
     echo "  spheres not found, skipping sphere enemies."
 fi
 
+# ========== Planet-2 wall panels (CGTrader parts kit -> per-panel glB) ==========
+# B11 cubic-cell panel worlds: the "Sci-Fi Parts Kit Vol 01" GLB carries 32
+# flat panels as sibling objects; split-panels.py decimates each to game
+# weight and exports one stable-named .glb per panel. Panels serve ANY cell
+# face — there are no floors or ceilings in 6DOF (see the B11 plan).
+WALLS_SRC="$ASSETS_DIR/more_walls"
+VOL01=$(find "$WALLS_SRC" -maxdepth 1 -name "*Vol*01*.glb" 2>/dev/null | head -1)
+if [ -n "$VOL01" ]; then
+    echo "  Splitting planet-2 wall panels (target 800 tris each)..."
+    mkdir -p "$GODOT_DIR/addons/walls"
+    "$BLENDER" --background --python "$(dirname "$0")/split-panels.py" -- \
+        "$VOL01" "$GODOT_DIR/addons/walls" 800 >/dev/null 2>&1 || \
+        echo "  WARNING: panel split failed"
+    echo "  Wall panels installed: $(ls "$GODOT_DIR/addons/walls" | wc -l | tr -d ' ')"
+else
+    echo "  more_walls kit not found, skipping planet-2 panels."
+fi
+
 # ========== Jump gate (CGTrader OBJ -> decimated glB) ==========
 # The end-of-level exit portal model. Ships as a ~78k-tri OBJ + .mtl + loose PBR
 # maps; the same headless Blender pass that decimates the enemy mechs collapses

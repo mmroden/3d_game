@@ -2,6 +2,7 @@
 
 use crate::enemy_type::EnemyType;
 use crate::level_graph::LevelGraph;
+use crate::planet::Pitch;
 use crate::seed::Seed;
 use crate::room_assembler::MeshPlacement;
 use crate::room_furnisher::{LightAccent, LightSource};
@@ -53,12 +54,12 @@ pub struct RoomAssembly {
 /// and return all mesh placements plus light sources for the level.
 pub fn spawn_list(
     graph: &LevelGraph,
-    cell_size: f32,
+    pitch: Pitch,
     seed: Seed,
 ) -> (Vec<MeshPlacement>, Vec<LightSource>) {
     let mut meshes = Vec::new();
     let mut lights = Vec::new();
-    for room in spawn_list_full(graph, cell_size, seed) {
+    for room in spawn_list_full(graph, pitch, seed) {
         meshes.extend(room.structure);
         meshes.extend(room.props);
         lights.extend(room.lights);
@@ -71,7 +72,7 @@ pub fn spawn_list(
 /// identity the shell needs to parent and cull per room.
 pub fn spawn_list_full(
     graph: &LevelGraph,
-    cell_size: f32,
+    pitch: Pitch,
     seed: Seed,
 ) -> Vec<RoomAssembly> {
     use crate::cell::CellGrid;
@@ -85,10 +86,11 @@ pub fn spawn_list_full(
         let Some(room) = graph.room(idx) else { continue };
         let active = graph.active_connectors(idx);
         let theme = room_theme::theme_for_room(seed.value(), room_idx);
-        let story_height = theme.wall_set.story_height;
-        let origin = room.world_position(cell_size, story_height);
+        // The level's pitch, not the wall set's: the single source (B11) —
+        // the Pitch/wall-set agreement is pinned in planet.rs.
+        let origin = room.world_position(pitch.tile, pitch.story);
 
-        let mut grid = CellGrid::new(&room.template, &active, origin, cell_size);
+        let mut grid = CellGrid::new(&room.template, &active, origin, pitch.tile);
         // Step 1 data — the room's shell.
         let mut structure = crate::room_assembler::assemble_from_grid(
             &grid,
@@ -104,8 +106,8 @@ pub fn spawn_list_full(
         // shares it with nothing (playtest 2026-07-04).
         let mut props = grid.prop_placements();
         if room_idx == 0 {
-            let (spawn, _) = spawn_pose(graph, cell_size);
-            let half = cell_size * 0.5;
+            let (spawn, _) = spawn_pose(graph, pitch);
+            let half = pitch.tile * 0.5;
             props.retain(|p| {
                 (p.position[0] - spawn[0]).abs() > half
                     || (p.position[2] - spawn[2]).abs() > half
@@ -113,7 +115,7 @@ pub fn spawn_list_full(
         }
 
         let mut lights = Vec::new();
-        for (mesh, light) in room_furnisher::light_fixtures(&room.template, &active, origin, cell_size, room_seed) {
+        for (mesh, light) in room_furnisher::light_fixtures(&room.template, &active, origin, pitch.tile, room_seed) {
             // Light fixtures are part of the shell: they render in the structure
             // step and are passable, so they never join the merged collider.
             structure.push(mesh);
@@ -134,8 +136,8 @@ pub fn spawn_list_full(
             ])
             .collect();
         if room_idx == 0 {
-            let (spawn, _) = spawn_pose(graph, cell_size);
-            let half = cell_size * 0.5;
+            let (spawn, _) = spawn_pose(graph, pitch);
+            let half = pitch.tile * 0.5;
             containers.retain(|c| {
                 (c[0] - spawn[0]).abs() > half || (c[2] - spawn[2]).abs() > half
             });
@@ -158,7 +160,7 @@ pub fn spawn_list_full(
         // World bounds = union of this room's cell AABBs (each cell spans
         // [floor, floor + story_height] in Y, ±half-cell in XZ). A
         // point-in-room test only needs to enclose the flyable interior.
-        let half_cell = cell_size / 2.0;
+        let half_cell = pitch.tile / 2.0;
         let mut min = [f32::INFINITY; 3];
         let mut max = [f32::NEG_INFINITY; 3];
         let mut any = false;
@@ -168,7 +170,7 @@ pub fn spawn_list_full(
             min[0] = min[0].min(c[0] - half_cell);
             max[0] = max[0].max(c[0] + half_cell);
             min[1] = min[1].min(c[1]);
-            max[1] = max[1].max(c[1] + story_height);
+            max[1] = max[1].max(c[1] + pitch.story);
             min[2] = min[2].min(c[2] - half_cell);
             max[2] = max[2].max(c[2] + half_cell);
         }
@@ -300,12 +302,12 @@ impl LevelManifest {
     }
 }
 
-pub fn manifest(graph: &LevelGraph, cell_size: f32, seed: Seed, level: u32) -> LevelManifest {
+pub fn manifest(graph: &LevelGraph, pitch: Pitch, seed: Seed, level: u32) -> LevelManifest {
     use rand::seq::IndexedRandom;
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
 
-    let rooms_assembly = spawn_list_full(graph, cell_size, seed);
+    let rooms_assembly = spawn_list_full(graph, pitch, seed);
     let available = crate::enemy_type::enemies_for_level(level);
     let mut enemy_rng = SmallRng::seed_from_u64(seed.value());
 
@@ -379,16 +381,15 @@ pub fn manifest(graph: &LevelGraph, cell_size: f32, seed: Seed, level: u32) -> L
 /// Where the run begins: the center of the start room's ground story at
 /// flight height, yawed to face the room's first doorway. A first-cell,
 /// corner-facing spawn reads as disorientation (playtest 2026-07-04).
-pub fn spawn_pose(graph: &LevelGraph, cell_size: f32) -> ([f32; 3], f32) {
-    let story_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+pub fn spawn_pose(graph: &LevelGraph, pitch: Pitch) -> ([f32; 3], f32) {
     let Some(idx) = graph.room_indices().next() else { return ([0.0; 3], 0.0) };
     let Some(room) = graph.room(idx) else { return ([0.0; 3], 0.0) };
-    let origin = room.world_position(cell_size, story_height);
+    let origin = room.world_position(pitch.tile, pitch.story);
     let [ex, _ey, ez] = room.template.extents;
     let pos = [
-        origin[0] + ex as f32 * cell_size * 0.5,
+        origin[0] + ex as f32 * pitch.tile * 0.5,
         origin[1] + 1.5,
-        origin[2] + ez as f32 * cell_size * 0.5,
+        origin[2] + ez as f32 * pitch.tile * 0.5,
     ];
     // Face the first doorway: -Z rotated by yaw must point from the spawn
     // toward the connector cell.
@@ -396,8 +397,8 @@ pub fn spawn_pose(graph: &LevelGraph, cell_size: f32) -> ([f32; 3], f32) {
         .active_connectors(idx)
         .first()
         .map(|c| {
-            let cx = origin[0] + (c.offset[0] as f32 + 0.5) * cell_size;
-            let cz = origin[2] + (c.offset[2] as f32 + 0.5) * cell_size;
+            let cx = origin[0] + (c.offset[0] as f32 + 0.5) * pitch.tile;
+            let cz = origin[2] + (c.offset[2] as f32 + 0.5) * pitch.tile;
             let (dx, dz) = (cx - pos[0], cz - pos[2]);
             if dx.abs() + dz.abs() < 1e-3 {
                 0.0
@@ -413,6 +414,10 @@ pub fn spawn_pose(graph: &LevelGraph, cell_size: f32) -> ([f32; 3], f32) {
 
 #[cfg(test)]
 mod tests {
+    /// The planet-1 pitch, spelled out: tests may hold literals.
+    const TEST_PITCH: crate::planet::Pitch =
+        crate::planet::Pitch { tile: 4.0, story: 5.0 };
+
     use super::*;
     use crate::generator::{generate, GeneratorConfig};
     use crate::level_graph::{EdgeKind, RENDER_ROOM_DEPTH};
@@ -424,7 +429,7 @@ mod tests {
         for seed in 0..10u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
             let cell = 4.0;
-            let (pos, yaw) = spawn_pose(&graph, cell);
+            let (pos, yaw) = spawn_pose(&graph, TEST_PITCH);
 
             // Centered on the start room's footprint, at flight height.
             let idx = graph.room_indices().next().unwrap();
@@ -459,8 +464,8 @@ mod tests {
         for seed in 0..10u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
             let cell = 4.0;
-            let (pos, _) = spawn_pose(&graph, cell);
-            let rooms = spawn_list_full(&graph, cell, Seed::new(seed));
+            let (pos, _) = spawn_pose(&graph, TEST_PITCH);
+            let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed));
             let start = &rooms[0];
             let half = cell * 0.5;
             for p in &start.props {
@@ -485,7 +490,6 @@ mod tests {
     /// not a rendering gap.
     #[test]
     fn generated_vertical_shafts_are_square_and_rim_lit() {
-        let cell = 4.0_f32;
         let mut square_shaft_seen = false;
         let mut rim_lit_shaft_seen = false;
 
@@ -499,7 +503,7 @@ mod tests {
                 max_room_y: 6,
             };
             let Ok(graph) = generate(&config) else { continue };
-            let assemblies = spawn_list_full(&graph, cell, Seed::new(seed));
+            let assemblies = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed));
 
             for (i, idx) in graph.room_indices().enumerate() {
                 let room = graph.room(idx).unwrap();
@@ -555,7 +559,7 @@ mod tests {
                 max_room_y: 6,
             };
             let Ok(graph) = generate(&config) else { continue };
-            let (meshes, _lights) = spawn_list(&graph, cell, Seed::new(seed));
+            let (meshes, _lights) = spawn_list(&graph, TEST_PITCH, Seed::new(seed));
 
             for (a, _b, kind) in graph.edges() {
                 let EdgeKind::Adjacent { from_connector, .. } = kind else {
@@ -627,7 +631,7 @@ mod tests {
     #[test]
     fn one_assembly_per_room() {
         let graph = generate(&test_config(7)).expect("generation");
-        let rooms = spawn_list_full(&graph, 4.0, Seed::new(7));
+        let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(7));
         assert_eq!(rooms.len(), graph.room_count());
     }
 
@@ -642,7 +646,7 @@ mod tests {
         let mut any_enemy = false;
         for seed in 0..30u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let rooms = spawn_list_full(&graph, 4.0, Seed::new(seed));
+            let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed));
             for room in &rooms {
                 assert!(!room.structure.is_empty(), "seed {seed}: a room had no structure");
                 any_container |= !room.containers.is_empty();
@@ -661,7 +665,7 @@ mod tests {
         // spawn — even though its template may define enemy spawns.
         for seed in 0..30u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let rooms = spawn_list_full(&graph, 4.0, Seed::new(seed));
+            let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed));
             if let Some(start) = rooms.first() {
                 assert!(start.enemies.is_empty(), "seed {seed}: start room has enemies");
             }
@@ -673,7 +677,7 @@ mod tests {
         // Each room's bounds must be a non-degenerate box derived from
         // its geometry — the stub (min == max) fails this.
         let graph = generate(&test_config(7)).expect("generation");
-        let rooms = spawn_list_full(&graph, 4.0, Seed::new(7));
+        let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(7));
         for (i, room) in rooms.iter().enumerate() {
             for a in 0..3 {
                 assert!(
@@ -689,7 +693,7 @@ mod tests {
     #[test]
     fn room_at_locates_interior_points_and_rejects_distant_ones() {
         let graph = generate(&test_config(7)).expect("generation");
-        let rooms = spawn_list_full(&graph, 4.0, Seed::new(7));
+        let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(7));
         let bounds: Vec<_> = rooms.iter().map(|r| r.bounds.clone()).collect();
 
         for room in &rooms {
@@ -723,7 +727,7 @@ mod tests {
 
         for seed in 0..30u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let rooms = spawn_list_full(&graph, 4.0, Seed::new(seed));
+            let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed));
             if rooms.is_empty() {
                 continue;
             }
@@ -788,7 +792,7 @@ mod tests {
         // would be warm-white (red ≈ 1.0), so this pins the wiring.
         for seed in 0..30u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let rooms = spawn_list_full(&graph, 4.0, Seed::new(seed));
+            let rooms = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed));
             if rooms.is_empty() || rooms[0].lights.is_empty() {
                 continue;
             }
@@ -818,8 +822,8 @@ mod tests {
     fn manifest_is_seed_deterministic() {
         for seed in 0..20u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let a = manifest(&graph, 4.0, Seed::new(seed), 5);
-            let b = manifest(&graph, 4.0, Seed::new(seed), 5);
+            let a = manifest(&graph, TEST_PITCH, Seed::new(seed), 5);
+            let b = manifest(&graph, TEST_PITCH, Seed::new(seed), 5);
             assert_eq!(a, b, "seed {seed}: manifest not deterministic");
         }
     }
@@ -831,8 +835,8 @@ mod tests {
     fn manifest_covers_every_assembly_enemy_position() {
         for seed in 0..20u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let assembly = spawn_list_full(&graph, 4.0, Seed::new(seed));
-            let m = manifest(&graph, 4.0, Seed::new(seed), 5);
+            let assembly = spawn_list_full(&graph, TEST_PITCH, Seed::new(seed));
+            let m = manifest(&graph, TEST_PITCH, Seed::new(seed), 5);
             assert_eq!(m.rooms.len(), assembly.len(), "seed {seed}: room count differs");
             for (room, room_asm) in m.rooms.iter().zip(&assembly) {
                 let positions: Vec<_> = room.enemies.iter().map(|e| e.position).collect();
@@ -851,7 +855,7 @@ mod tests {
         let mut saw_eye_drone = false;
         for seed in 0..40u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let m = manifest(&graph, 4.0, Seed::new(seed), 2);
+            let m = manifest(&graph, TEST_PITCH, Seed::new(seed), 2);
             for room in &m.rooms {
                 for enemy in &room.enemies {
                     match enemy.enemy_type.death_spawn() {
@@ -903,7 +907,7 @@ mod tests {
     #[test]
     fn the_mid_boss_manifest_stages_the_brute_alone_in_the_arena() {
         let graph = pinned_boss_graph(3);
-        let m = manifest(&graph, 4.0, Seed::new(1), 3);
+        let m = manifest(&graph, TEST_PITCH, Seed::new(1), 3);
         let arena = &m.rooms[arena_position(&graph)];
         assert_eq!(arena.enemies.len(), 1, "the arena holds the boss, nothing else");
         let boss = &arena.enemies[0];
@@ -917,7 +921,7 @@ mod tests {
     #[test]
     fn the_planet_final_manifest_stages_the_latcher_with_engage_escorts() {
         let graph = pinned_boss_graph(6);
-        let m = manifest(&graph, 4.0, Seed::new(1), 6);
+        let m = manifest(&graph, TEST_PITCH, Seed::new(1), 6);
         let boss = &m.rooms[arena_position(&graph)].enemies[0];
         assert_eq!(boss.enemy_type, EnemyType::BossLatcher, "rel-6 stages the Latcher");
         assert_eq!(boss.minions.len(), 3);
@@ -929,7 +933,7 @@ mod tests {
     #[test]
     fn boss_adds_grow_with_the_planet() {
         let graph = pinned_boss_graph(9); // planet 2's mid-boss
-        let m = manifest(&graph, 4.0, Seed::new(1), 9);
+        let m = manifest(&graph, TEST_PITCH, Seed::new(1), 9);
         let boss = &m.rooms[arena_position(&graph)].enemies[0];
         assert_eq!(boss.enemy_type, EnemyType::BossBrute);
         assert_eq!(boss.minions.len(), 4, "planet 2 adds one to the trio");
@@ -938,7 +942,7 @@ mod tests {
     #[test]
     fn regular_rooms_stay_boss_free_on_boss_levels() {
         let graph = pinned_boss_graph(3);
-        let m = manifest(&graph, 4.0, Seed::new(1), 3);
+        let m = manifest(&graph, TEST_PITCH, Seed::new(1), 3);
         let arena_pos = arena_position(&graph);
         for (pos, room) in m.rooms.iter().enumerate() {
             if pos == arena_pos {
@@ -963,7 +967,7 @@ mod tests {
             crate::generator::rooms_for_level(3),
         );
         let graph = generate(&config).expect("generates");
-        let m = manifest(&graph, 4.0, Seed::new(1), 3);
+        let m = manifest(&graph, TEST_PITCH, Seed::new(1), 3);
         for room in &m.rooms {
             for enemy in &room.enemies {
                 assert!(
@@ -978,7 +982,7 @@ mod tests {
     #[test]
     fn the_boss_enters_bestiary_coverage_on_its_level() {
         let graph = pinned_boss_graph(3);
-        let m = manifest(&graph, 4.0, Seed::new(1), 3);
+        let m = manifest(&graph, TEST_PITCH, Seed::new(1), 3);
         assert!(m.enemy_coverage().contains(&EnemyType::BossBrute),
             "the bestiary logs the Siege Mech the level it can appear");
     }
@@ -1003,7 +1007,7 @@ mod tests {
         let seed = Seed::from_i64(1);
         let graph = generate(&crate::generator::GeneratorConfig::standard(seed, 8))
             .expect("the pinned seed must generate");
-        let m = manifest(&graph, 4.0, seed, 3);
+        let m = manifest(&graph, TEST_PITCH, seed, 3);
         assert!(
             m.rooms.iter().any(|r| r.enemies.iter().any(|e| e.enemy_type == EnemyType::EyeDrone)),
             "seed 1 must place an EyeDrone at level 3 — the GUT suite builds this exact level"
@@ -1019,7 +1023,7 @@ mod tests {
         let level_seed = Seed::from_i64(1).for_level(1);
         let graph = generate(&crate::generator::GeneratorConfig::standard(level_seed, rooms_for_level(1)))
             .expect("the pinned seed must generate");
-        let rooms = spawn_list_full(&graph, 4.0, level_seed);
+        let rooms = spawn_list_full(&graph, TEST_PITCH, level_seed);
         assert!(
             rooms.iter().any(|r| !r.containers.is_empty()),
             "run seed 1 must place a green cache on level 1 — the GUT suite drives this run"
@@ -1030,7 +1034,7 @@ mod tests {
     fn manifest_cache_bound_is_one_per_enemy() {
         for seed in 0..20u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let m = manifest(&graph, 4.0, Seed::new(seed), 5);
+            let m = manifest(&graph, TEST_PITCH, Seed::new(seed), 5);
             let direct: usize = m.rooms.iter().map(|r| r.enemies.len()).sum();
             assert_eq!(m.enemy_count(), direct);
         }
@@ -1046,7 +1050,7 @@ mod tests {
         let mut covered_spawn_drone = false;
         for seed in 0..40u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let m = manifest(&graph, 4.0, Seed::new(seed), 3);
+            let m = manifest(&graph, TEST_PITCH, Seed::new(seed), 3);
             let coverage = m.enemy_coverage();
             // Coverage is a subset of ALL, deduplicated and ALL-ordered.
             let mut sorted = coverage.clone();
@@ -1069,7 +1073,7 @@ mod tests {
     fn manifest_coverage_excludes_death_spawn_types_below_level() {
         for seed in 0..20u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let coverage = manifest(&graph, 4.0, Seed::new(seed), 1).enemy_coverage();
+            let coverage = manifest(&graph, TEST_PITCH, Seed::new(seed), 1).enemy_coverage();
             assert!(
                 !coverage.contains(&EnemyType::SpawnDrone),
                 "seed {seed}: SpawnDrone in coverage at level 1 (below its min_level)",

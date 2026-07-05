@@ -52,9 +52,6 @@ pub struct LevelManager {
     base: Base<Node3D>,
 
     #[export]
-    grid_cell_size: f32,
-
-    #[export]
     current_level: i32,
 
     telemetry: Telemetry,
@@ -119,7 +116,6 @@ impl INode3D for LevelManager {
     fn init(base: Base<Node3D>) -> Self {
         Self {
             base,
-            grid_cell_size: 4.0,
             current_level: 1_i32,
             telemetry: Telemetry::new(),
             room_nodes: LiveVec::new(),
@@ -213,10 +209,6 @@ impl LevelManager {
 
     /// The world grid's cell size — GameManager derives the map projection
     /// from it (one source; the exported field stays private).
-    pub fn cell_size(&self) -> f32 {
-        self.grid_cell_size
-    }
-
     /// World-space center of the boss arena at flight height —
     /// `Vector3::ZERO` when this level has none. Teleport/escort anchor.
     #[func]
@@ -227,13 +219,13 @@ impl LevelManager {
         let Some(room) = self.level_graph.room(boss_idx) else {
             return Vector3::ZERO;
         };
-        let story = void_logic::asset_catalog::WALL_SET_ASTRA.story_height;
-        let origin = room.world_position(self.grid_cell_size, story);
+        let pitch = self.pitch();
+        let origin = room.world_position(pitch.tile, pitch.story);
         let [ex, _ey, ez] = room.template.extents;
         Vector3::new(
-            origin[0] + ex as f32 * self.grid_cell_size * 0.5,
+            origin[0] + ex as f32 * pitch.tile * 0.5,
             origin[1] + 1.5,
-            origin[2] + ez as f32 * self.grid_cell_size * 0.5,
+            origin[2] + ez as f32 * pitch.tile * 0.5,
         )
     }
 
@@ -403,7 +395,7 @@ impl LevelManager {
         // Assemble each room's content, grouped into the three build steps the
         // shell mirrors: structure, then non-enemy inhabitants (props +
         // containers), then enemies.
-        let rooms = level_assembly::spawn_list_full(&graph, self.grid_cell_size, seed);
+        let rooms = level_assembly::spawn_list_full(&graph, self.pitch(), seed);
 
         // The level manifest (Faucet Principle, tier-1 model): resolves each
         // enemy's type, expands its death-spawn minions, and binds one blue
@@ -412,7 +404,7 @@ impl LevelManager {
         // that used to live inline here now lives in the manifest. Its rooms
         // align one-for-one with `rooms` (both from `spawn_list_full`).
         let level = self.current_level;
-        let manifest = level_assembly::manifest(&graph, self.grid_cell_size, seed, level as u32);
+        let manifest = level_assembly::manifest(&graph, self.pitch(), seed, level as u32);
 
         // Drop any room nodes from a previous level before rebuilding.
         self.room_nodes.for_each_live(|_, node, _| node.queue_free());
@@ -580,7 +572,7 @@ impl LevelManager {
         // level, flipped live when the fight's reward is collected).
         let boss_arena = if structure_only { None } else { graph.boss_room() };
         if !structure_only {
-            if let Some(portal_pos) = portal_sys::portal_position(&graph, self.grid_cell_size) {
+            if let Some(portal_pos) = portal_sys::portal_position(&graph, self.pitch()) {
                 if let Some(portal_scene) = loader.load(scenes::PORTAL) {
                     let packed: Gd<PackedScene> = portal_scene.cast();
                     if let Some(instance) = packed.instantiate() {
@@ -610,8 +602,8 @@ impl LevelManager {
         // (freed and culled with the room); both are dormancy-flip-only after
         // this point (Faucet Principle).
         if let Some(boss_idx) = graph.boss_room() {
-            let story = void_logic::asset_catalog::WALL_SET_ASTRA.story_height;
-            let cell = self.grid_cell_size;
+            let story = self.pitch().story;
+            let cell = self.pitch().tile;
             let arena_pos = graph.room_indices().position(|i| i == boss_idx);
             let arena_node = arena_pos.and_then(|i| self.room_nodes.get_live(i));
             let doorway = graph.room(boss_idx).and_then(|room| {
@@ -665,7 +657,7 @@ impl LevelManager {
 
         // Place the player in the first room's center. The ship is a
         // RigidBody3D and drives its own motion; we only position it.
-        let (spawn, spawn_yaw) = level_assembly::spawn_pose(&graph, self.grid_cell_size);
+        let (spawn, spawn_yaw) = level_assembly::spawn_pose(&graph, self.pitch());
         if let Some(parent) = self.base().get_parent() {
             if let Some(player) = parent.try_get_node_as::<ShipController>(nodes::PLAYER) {
                 let mut player_node = player.clone();
@@ -821,6 +813,13 @@ impl LevelManager {
     /// crossing).
     pub fn graph(&self) -> &LevelGraph {
         &self.level_graph
+    }
+
+    /// This level's world-space quantization — the ONE pitch source
+    /// (`planet::Pitch::for_level`); every conversion in this node and every
+    /// void-logic call goes through it.
+    fn pitch(&self) -> void_logic::planet::Pitch {
+        void_logic::planet::Pitch::for_level(self.current_level.max(1) as u32)
     }
 
     /// Show only the player's current room and its portal-neighbors;

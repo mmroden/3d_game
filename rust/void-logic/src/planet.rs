@@ -20,6 +20,53 @@ pub fn planet_relative(level: u32) -> u32 {
     (level.saturating_sub(1)) % PLANET_LENGTH + 1
 }
 
+/// World-space quantization of a level: meters per grid tile and meters
+/// per story. THE single pitch source (B11): every world-space conversion
+/// takes a `Pitch` — no consumer holds its own 4.0/5.0 literal. Planet 1
+/// is the megakit's terrestrial 4×5; planet 2+ flips to 3 m CUBES
+/// (tile == story, no distinguished axis) when the panel assembler lands
+/// (B11 step 3) — the plumbing is planet-aware now, the values flip then.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pitch {
+    pub tile: f32,
+    pub story: f32,
+}
+
+impl Pitch {
+    pub fn for_level(level: u32) -> Self {
+        // Planet-aware plumbing, planet-invariant values: 2+ flips to
+        // 3 m cubes when the panel assembler lands (B11 step 3).
+        let _ = planet_of(level);
+        Self {
+            tile: crate::asset_catalog::WALL_SET_ASTRA.tile_width,
+            story: crate::asset_catalog::WALL_SET_ASTRA.story_height,
+        }
+    }
+}
+
+/// The interstitial banner for a level entry: `Some((title, flavor))` when
+/// this level is the first step onto a NEW planet (planet 2+), `None` for
+/// every ordinary sector entry. The flavor line is the narrative channel —
+/// the story beats land here when the owner picks them (B10 note).
+pub fn arrival_banner(level: u32) -> Option<(String, String)> {
+    let planet = planet_of(level);
+    if planet < 2 || planet_relative(level) != 1 {
+        return None;
+    }
+    let flavor = ARRIVAL_FLAVOR
+        .get((planet - 2) as usize)
+        .copied()
+        .unwrap_or("Further than anyone has salvaged.");
+    Some((format!("PLANET {planet}"), flavor.to_string()))
+}
+
+/// Placeholder flavor per planet until the story lands. Index 0 = planet 2.
+const ARRIVAL_FLAVOR: &[&str] = &[
+    "The wreckage changes here. Something else built this.",
+    "Deeper. Older. The panels do not remember floors.",
+    "No signal reaches this far. Keep what you can carry.",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -43,6 +90,42 @@ mod tests {
         assert_eq!(planet_relative(7), 1, "planet 2 restarts the cycle");
         assert_eq!(planet_relative(9), 3);
         assert_eq!(planet_relative(12), 6);
+    }
+
+    #[test]
+    fn the_pitch_is_single_sourced_and_matches_the_megakit_on_planet_one() {
+        // Planet 1 rooms are ASSEMBLED from megakit pieces authored at
+        // 4 m × 5 m — the pitch and the wall set must agree or every wall
+        // gaps. Cross-pinned here so neither can drift alone.
+        let astra = crate::asset_catalog::WALL_SET_ASTRA;
+        for level in 1..=6 {
+            let p = Pitch::for_level(level);
+            assert_eq!(p.tile, astra.tile_width, "level {level} tile");
+            assert_eq!(p.story, astra.story_height, "level {level} story");
+        }
+        // Planet 2+ keeps the megakit pitch UNTIL the panel assembler lands
+        // (B11 step 3) — this pin flips to 3 m cubes with it.
+        let p2 = Pitch::for_level(7);
+        assert_eq!((p2.tile, p2.story), (astra.tile_width, astra.story_height));
+    }
+
+    #[test]
+    fn the_banner_greets_each_new_planet_and_only_then() {
+        for level in 1..=6 {
+            assert_eq!(arrival_banner(level), None,
+                "planet 1 needs no introduction (level {level})");
+        }
+        let (title, flavor) = arrival_banner(7).expect("planet 2 announces itself");
+        assert!(title.contains("PLANET 2"), "got {title:?}");
+        assert!(!flavor.is_empty(), "the flavor line is the story channel");
+        for level in 8..=12 {
+            assert_eq!(arrival_banner(level), None,
+                "mid-planet sectors are ordinary entries (level {level})");
+        }
+        let (title, _) = arrival_banner(13).expect("planet 3 announces itself");
+        assert!(title.contains("PLANET 3"));
+        assert!(arrival_banner(25).is_some(),
+            "planets past the flavor table still get a banner");
     }
 
     #[test]
