@@ -600,7 +600,9 @@ mod tests {
         assert_eq!(green, vec![ShopItemId::Unlock(Unlock::Radar)],
             "a fresh profile sees only the radar in the green section");
 
-        // Owning the whole spine opens the fleet.
+        // Owning the whole spine opens the branches — but NEVER the hulls:
+        // those left the shop for the planet-final bosses' red containers
+        // (owner's call 2026-07-04).
         let mut veteran = RunState::new(Seed::new(42));
         veteran.unlocks.grant(Unlock::Radar);
         veteran.unlocks.grant(Unlock::FogMap);
@@ -610,14 +612,16 @@ mod tests {
             .map(|o| o.id)
             .collect();
         use crate::ship_type::ShipType;
-        assert_eq!(green.len(), 6,
-            "the spine done: three hulls, the two map branches, the surge: {green:?}");
-        assert!(green.contains(&ShopItemId::Unlock(Unlock::Ship(ShipType::Talon))));
+        assert_eq!(green.len(), 3,
+            "the spine done: the two map branches and the surge — no hulls: {green:?}");
+        assert!(!green.iter().any(|id| matches!(id, ShopItemId::Unlock(Unlock::Ship(_)))),
+            "hulls are boss loot, never shop stock");
         assert!(green.contains(&ShopItemId::Unlock(Unlock::RouteScanner)),
             "owning the map put its upgrades on offer");
         assert!(green.contains(&ShopItemId::Unlock(Unlock::ThreatTracker)));
         assert!(green.contains(&ShopItemId::Unlock(Unlock::ShieldBurst)),
             "owning the radar put the surge on offer");
+        let _ = ShipType::Vanguard; // fleet types stay referenced below
     }
 
     #[test]
@@ -632,27 +636,24 @@ mod tests {
     }
 
     #[test]
-    fn hulls_sell_through_the_green_section() {
+    fn hulls_never_sell_and_a_hull_purchase_is_refused() {
         use crate::ship_type::ShipType;
         let mut run = RunState::new(Seed::new(42));
         run.collect_cache(CurrencyKind::Organics, 10_000);
-        // Walk the spine so the fleet is reachable.
+        // Even with the whole spine owned and a full purse …
         run.unlocks.grant(Unlock::Radar);
         run.unlocks.grant(Unlock::FogMap);
         run.unlocks.grant(Unlock::Valkyrie);
 
         let offer_ids: Vec<_> = offers(&run).iter().map(|o| o.id).collect();
-        assert!(offer_ids.contains(&ShopItemId::Unlock(Unlock::Ship(ShipType::Talon))),
-            "unowned hulls are on offer");
-        assert!(!offer_ids.contains(&ShopItemId::Unlock(Unlock::Ship(ShipType::Vanguard))),
-            "the starter is never on offer");
+        assert!(!offer_ids.iter().any(|id| matches!(id, ShopItemId::Unlock(Unlock::Ship(_)))),
+            "… no hull is ever on offer — bosses drop them");
 
-        let talon_cost = ShipType::Talon.spec().organic_cost.expect("Talon is purchasable");
-        let receipt = purchase(&mut run, ShopItemId::Unlock(Unlock::Ship(ShipType::Talon)))
-            .expect("10k organics affords the Talon");
-        assert_eq!(receipt, Receipt::UnlockGranted(Unlock::Ship(ShipType::Talon)));
-        assert!(run.unlocks.owns_ship(ShipType::Talon), "the hull is owned");
-        assert_eq!(run.organics.balance, 10_000 - talon_cost, "the Talon spends its spec price");
+        // A stale/forged purchase id is refused, not honored.
+        let result = purchase(&mut run, ShopItemId::Unlock(Unlock::Ship(ShipType::Talon)));
+        assert!(result.is_err(), "a hull purchase must be refused");
+        assert!(!run.unlocks.owns_ship(ShipType::Talon));
+        assert_eq!(run.organics.balance, 10_000, "nothing deducted");
     }
 
     #[test]

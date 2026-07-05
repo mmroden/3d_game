@@ -12,6 +12,7 @@ const MAP_ITEM := 9
 const VALKYRIE_ITEM := 10
 const TALON_UNLOCK_ITEM := 11
 const KIND_ORGANICS := 1
+const KIND_HULL_REWARD := 2     # CurrencyKind::id of the red container
 const VALKYRIE_UNLOCK := 2      # Unlock::id of Valkyrie
 
 const UiStub := preload("res://tests/helpers/ui_stub.gd")
@@ -49,9 +50,8 @@ func test_locked_hull_cannot_be_selected_until_bought():
 	assert_eq(gm.get_ship_type_id(), 0,
 		"an unowned hull is refused by the authority, whatever the UI sends")
 
-	# Earn green, reach the shop, and walk the tutorial ladder: no hull is
-	# purchasable until the radar, map, and Valkyrie are owned — however
-	# deep the wallet.
+	# B7: hulls left the shop — the green ladder never reaches them, however
+	# deep the wallet and whatever is owned. Bosses drop hulls now.
 	gm.advance_from_ship_select()
 	for _i in range(12):
 		if gm.get_phase_name() == "Playing":
@@ -60,18 +60,22 @@ func test_locked_hull_cannot_be_selected_until_bought():
 	gm.on_cache_collected(KIND_ORGANICS, 5000)
 	gm.on_portal_entered()
 	gm.advance_to_shop()
-	assert_false(gm.buy_shop_item(TALON_UNLOCK_ITEM),
-		"a hull before the Valkyrie is refused, whatever the balance")
 	assert_true(gm.buy_shop_item(RADAR_ITEM), "the radar is the first rung")
 	assert_true(gm.buy_shop_item(MAP_ITEM), "the radar opens the map")
 	assert_true(gm.buy_shop_item(VALKYRIE_ITEM), "the map opens the Valkyrie")
-	assert_true(gm.buy_shop_item(TALON_UNLOCK_ITEM),
-		"the Valkyrie opens the fleet — 3400 left affords the 3000 Talon")
-	assert_eq(gm.get_organics(), 400,
-		"the whole ladder costs 300+500+800+3000")
+	assert_false(gm.buy_shop_item(TALON_UNLOCK_ITEM),
+		"even the full spine never puts a hull on sale — bosses drop them")
+	assert_eq(gm.get_organics(), 5000 - 300 - 500 - 800,
+		"the refused hull deducted nothing")
 
+	# Hulls arrive through the red container's collect path (the production
+	# signal handler). Each grant is a random unowned hull; three containers
+	# complete the fleet, so the Talon is owned whichever order they roll.
+	for _i in range(3):
+		gm.on_cache_collected(KIND_HULL_REWARD, 12000)
 	gm.on_ship_type_selected(TALON_SHIP_ID)
-	assert_eq(gm.get_ship_type_id(), TALON_SHIP_ID, "the bought hull is selectable")
+	assert_eq(gm.get_ship_type_id(), TALON_SHIP_ID,
+		"a boss-granted hull is selectable")
 
 
 func test_buying_the_valkyrie_arms_the_flying_ship():

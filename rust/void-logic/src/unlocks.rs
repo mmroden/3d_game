@@ -144,7 +144,10 @@ impl PermanentUnlocks {
             Unlock::Radar => true,
             Unlock::FogMap => self.contains(Unlock::Radar),
             Unlock::Valkyrie => self.contains(Unlock::FogMap),
-            Unlock::Ship(_) => self.contains(Unlock::Valkyrie),
+            // Hulls left the shop (owner's call 2026-07-04): planet-final
+            // bosses drop them via the red container. Ids stay for the
+            // save/crossing; the OFFER is gone.
+            Unlock::Ship(_) => false,
             // Map upgrades BRANCH off the map — they never gate the spine.
             Unlock::RouteScanner | Unlock::ThreatTracker => self.contains(Unlock::FogMap),
             // The surge branches off the radar (the defensive intro).
@@ -244,13 +247,37 @@ mod tests {
 
         unlocks.grant(Unlock::FogMap);
         assert!(unlocks.available(Unlock::Valkyrie));
-        assert!(!unlocks.available(Unlock::Ship(ShipType::Hive)));
+    }
 
+    #[test]
+    fn hulls_are_boss_loot_never_shop_stock() {
+        // Hulls left the green shop (owner's call 2026-07-04): planet-final
+        // bosses drop them via the red container. Ids stay in ALL untouched
+        // (append-only law) — only the OFFER dies.
+        let mut unlocks = PermanentUnlocks::new();
+        unlocks.grant(Unlock::Radar);
+        unlocks.grant(Unlock::FogMap);
         unlocks.grant(Unlock::Valkyrie);
         for ship in [ShipType::Talon, ShipType::Hive, ShipType::Reaver] {
-            assert!(unlocks.available(Unlock::Ship(ship)),
-                "the Valkyrie opens the whole fleet ({ship:?})");
+            assert!(!unlocks.available(Unlock::Ship(ship)),
+                "{ship:?} must never be offered — bosses drop hulls now");
         }
+        // The Valkyrie itself stays green and purchasable.
+        assert!(Unlock::ALL.contains(&Unlock::Ship(ShipType::Talon)),
+            "hull ids stay in ALL for save/crossing stability");
+    }
+
+    #[test]
+    fn unlock_ids_are_pinned_for_the_gdscript_crossing() {
+        assert_eq!(Unlock::Radar.id(), 0);
+        assert_eq!(Unlock::FogMap.id(), 1);
+        assert_eq!(Unlock::Valkyrie.id(), 2);
+        assert_eq!(Unlock::Ship(ShipType::Talon).id(), 3);
+        assert_eq!(Unlock::Ship(ShipType::Hive).id(), 4);
+        assert_eq!(Unlock::Ship(ShipType::Reaver).id(), 5);
+        assert_eq!(Unlock::RouteScanner.id(), 6);
+        assert_eq!(Unlock::ThreatTracker.id(), 7);
+        assert_eq!(Unlock::ShieldBurst.id(), 8);
     }
 
     #[test]

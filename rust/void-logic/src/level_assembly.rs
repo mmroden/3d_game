@@ -219,13 +219,24 @@ pub fn spawn_list_full(
     rooms
 }
 
-/// One dormant death-spawn minion the manifest reserves for a parent enemy.
-/// `death_spawn`'s count is already expanded into one entry per minion, so the
-/// shell pre-instantiates exactly `parent.minions.len()` bodies under the
-/// parent's room and activates them all when the parent dies.
+/// When a parent enemy's dormant minions flip live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MinionTrigger {
+    /// Activate when the parent dies (`EnemyType::death_spawn`).
+    OnDeath,
+    /// Activate the moment the parent engages (`EnemyType::escorts`) — the
+    /// BossLatcher's circling guard is up for the whole fight.
+    OnEngage,
+}
+
+/// One dormant minion the manifest reserves for a parent enemy. The spawn
+/// count is already expanded into one entry per minion, so the shell
+/// pre-instantiates exactly `parent.minions.len()` bodies under the parent's
+/// room and activates each on its trigger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MinionSpawn {
     pub enemy_type: EnemyType,
+    pub trigger: MinionTrigger,
 }
 
 /// One direct enemy spawn: its resolved type, world position, and the dormant
@@ -298,9 +309,45 @@ pub fn manifest(graph: &LevelGraph, cell_size: f32, seed: Seed, level: u32) -> L
     let available = crate::enemy_type::enemies_for_level(level);
     let mut enemy_rng = SmallRng::seed_from_u64(seed.value());
 
+    // A staged boss claims its arena outright: the schedule names the kind,
+    // the graph marks the room, and no regular roll happens there.
+    let boss_arena = crate::boss::boss_for_level(level).and_then(|kind| {
+        graph
+            .room_indices()
+            .position(|idx| Some(idx) == graph.boss_room())
+            .map(|pos| (pos, kind.enemy_type()))
+    });
+
     let rooms = rooms_assembly
         .iter()
-        .map(|room| {
+        .enumerate()
+        .map(|(room_pos, room)| {
+            if let Some((arena_pos, boss_type)) = boss_arena {
+                if room_pos == arena_pos {
+                    let adds = crate::boss::boss_adds(level);
+                    let (minion_type, trigger) = match boss_type.escorts() {
+                        Some((t, _)) => (t, MinionTrigger::OnEngage),
+                        None => {
+                            let (t, _) = boss_type
+                                .death_spawn()
+                                .expect("every boss fields minions on one trigger");
+                            (t, MinionTrigger::OnDeath)
+                        }
+                    };
+                    let enemies = room
+                        .enemies
+                        .iter()
+                        .map(|pos| EnemySpawn {
+                            enemy_type: boss_type,
+                            position: *pos,
+                            minions: (0..adds)
+                                .map(|_| MinionSpawn { enemy_type: minion_type, trigger })
+                                .collect(),
+                        })
+                        .collect();
+                    return RoomManifest { enemies };
+                }
+            }
             let enemies = room
                 .enemies
                 .iter()
@@ -311,7 +358,12 @@ pub fn manifest(graph: &LevelGraph, cell_size: f32, seed: Seed, level: u32) -> L
                     let minions = enemy_type
                         .death_spawn()
                         .map(|(minion_type, count)| {
-                            (0..count).map(|_| MinionSpawn { enemy_type: minion_type }).collect()
+                            (0..count)
+                                .map(|_| MinionSpawn {
+                                    enemy_type: minion_type,
+                                    trigger: MinionTrigger::OnDeath,
+                                })
+                                .collect()
                         })
                         .unwrap_or_default();
                     EnemySpawn { enemy_type, position: *pos, minions }
@@ -810,7 +862,10 @@ mod tests {
                                 saw_eye_drone = true;
                                 assert_eq!(
                                     enemy.minions,
-                                    vec![MinionSpawn { enemy_type: EnemyType::SpawnDrone }],
+                                    vec![MinionSpawn {
+                                        enemy_type: EnemyType::SpawnDrone,
+                                        trigger: MinionTrigger::OnDeath,
+                                    }],
                                 );
                             }
                         }
@@ -821,6 +876,111 @@ mod tests {
             }
         }
         assert!(saw_eye_drone, "no EyeDrone placed across 40 seeds at level 2");
+    }
+
+    // --- Boss staging (B5) ---
+
+    /// Seed 1 with the arena attached — the exact graph the shell builds on a
+    /// boss level (B6's GUT scenario mirrors this construction).
+    fn pinned_boss_graph(level: u32) -> LevelGraph {
+        let config = GeneratorConfig::standard(
+            Seed::new(1),
+            crate::generator::rooms_for_level(level),
+        );
+        let mut graph = generate(&config).expect("pinned seed generates");
+        let entry = graph.room_indices().next().expect("has rooms");
+        crate::spatial_layout::attach_boss_room(&mut graph, entry).expect("arena attaches");
+        graph
+    }
+
+    fn arena_position(graph: &LevelGraph) -> usize {
+        graph
+            .room_indices()
+            .position(|i| Some(i) == graph.boss_room())
+            .expect("boss room is in the graph")
+    }
+
+    #[test]
+    fn the_mid_boss_manifest_stages_the_brute_alone_in_the_arena() {
+        let graph = pinned_boss_graph(3);
+        let m = manifest(&graph, 4.0, Seed::new(1), 3);
+        let arena = &m.rooms[arena_position(&graph)];
+        assert_eq!(arena.enemies.len(), 1, "the arena holds the boss, nothing else");
+        let boss = &arena.enemies[0];
+        assert_eq!(boss.enemy_type, EnemyType::BossBrute, "rel-3 stages the Brute");
+        assert_eq!(boss.minions.len(), 3, "planet 1 fields the base drone trio");
+        assert!(boss.minions.iter().all(|mn| {
+            mn.enemy_type == EnemyType::SpawnDrone && mn.trigger == MinionTrigger::OnDeath
+        }), "the Brute's trio rises when it falls");
+    }
+
+    #[test]
+    fn the_planet_final_manifest_stages_the_latcher_with_engage_escorts() {
+        let graph = pinned_boss_graph(6);
+        let m = manifest(&graph, 4.0, Seed::new(1), 6);
+        let boss = &m.rooms[arena_position(&graph)].enemies[0];
+        assert_eq!(boss.enemy_type, EnemyType::BossLatcher, "rel-6 stages the Latcher");
+        assert_eq!(boss.minions.len(), 3);
+        assert!(boss.minions.iter().all(|mn| {
+            mn.enemy_type == EnemyType::SpawnDrone && mn.trigger == MinionTrigger::OnEngage
+        }), "the escort is up from first contact, not on death");
+    }
+
+    #[test]
+    fn boss_adds_grow_with_the_planet() {
+        let graph = pinned_boss_graph(9); // planet 2's mid-boss
+        let m = manifest(&graph, 4.0, Seed::new(1), 9);
+        let boss = &m.rooms[arena_position(&graph)].enemies[0];
+        assert_eq!(boss.enemy_type, EnemyType::BossBrute);
+        assert_eq!(boss.minions.len(), 4, "planet 2 adds one to the trio");
+    }
+
+    #[test]
+    fn regular_rooms_stay_boss_free_on_boss_levels() {
+        let graph = pinned_boss_graph(3);
+        let m = manifest(&graph, 4.0, Seed::new(1), 3);
+        let arena_pos = arena_position(&graph);
+        for (pos, room) in m.rooms.iter().enumerate() {
+            if pos == arena_pos {
+                continue;
+            }
+            for enemy in &room.enemies {
+                assert!(
+                    enemy.enemy_type != EnemyType::BossBrute
+                        && enemy.enemy_type != EnemyType::BossLatcher,
+                    "room {pos}: bosses live in the arena only"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_arena_means_no_boss_even_on_a_boss_level() {
+        // The shell only attaches the arena on boss levels; if it didn't (or
+        // the attach failed), the manifest must not invent a boss.
+        let config = GeneratorConfig::standard(
+            Seed::new(1),
+            crate::generator::rooms_for_level(3),
+        );
+        let graph = generate(&config).expect("generates");
+        let m = manifest(&graph, 4.0, Seed::new(1), 3);
+        for room in &m.rooms {
+            for enemy in &room.enemies {
+                assert!(
+                    enemy.enemy_type != EnemyType::BossBrute
+                        && enemy.enemy_type != EnemyType::BossLatcher,
+                    "no arena marker — no boss"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_boss_enters_bestiary_coverage_on_its_level() {
+        let graph = pinned_boss_graph(3);
+        let m = manifest(&graph, 4.0, Seed::new(1), 3);
+        assert!(m.enemy_coverage().contains(&EnemyType::BossBrute),
+            "the bestiary logs the Siege Mech the level it can appear");
     }
 
     /// Cache bound = one per direct enemy = total enemy count. The minions

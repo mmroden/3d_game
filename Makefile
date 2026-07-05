@@ -170,13 +170,16 @@ build-release: require-rust
 	@cp $(RUST_DIR)/target/release/libvoid_scavenger.dylib $(GODOT_DIR)/libvoid_scavenger.dylib
 	@echo "Build complete (release)."
 
+# Dev knobs: `make run LEVEL=7` starts new games at level 7 (rendering /
+# roster / boss-staging inspection); `SEED=1` pins the run seed. F9/F10
+# hop levels in flight.
 run: build-release deps-godot
 	@echo "==> Launching game (release)..."
-	@$(GODOT) --path $(GODOT_DIR)
+	@$(GODOT) --path $(GODOT_DIR) $(if $(LEVEL)$(SEED),-- $(if $(LEVEL),--level=$(LEVEL)) $(if $(SEED),--seed=$(SEED)))
 
 demo: build deps-godot
 	@echo "==> Launching game (debug)..."
-	@$(GODOT) --path $(GODOT_DIR)
+	@$(GODOT) --path $(GODOT_DIR) $(if $(LEVEL)$(SEED),-- $(if $(LEVEL),--level=$(LEVEL)) $(if $(SEED),--seed=$(SEED)))
 
 # Godot editor: Debugger -> Monitors graphs the kinetics/* counters live.
 edit: build deps-godot

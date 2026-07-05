@@ -36,6 +36,9 @@ pub struct AudioManager {
     music_player_a: Option<LiveRef<AudioStreamPlayer>>,
     music_player_b: Option<LiveRef<AudioStreamPlayer>>,
     active_player: ActivePlayer,
+    /// A boss fight is engaged: the rotation draws from the Boss pool
+    /// (gameplay-shuffle fallback until tracks land) instead of the queue.
+    boss_mode: bool,
     crossfade_timer: f32,
     crossfade_target_vol: f32,
     is_crossfading: bool,
@@ -57,6 +60,7 @@ impl INode for AudioManager {
             music_player_a: None,
             music_player_b: None,
             active_player: ActivePlayer::A,
+            boss_mode: false,
             crossfade_timer: 0.0,
             crossfade_target_vol: MENU_MUSIC_VOL,
             is_crossfading: false,
@@ -169,6 +173,23 @@ impl AudioManager {
         }
     }
 
+    /// Enter or leave the boss music context (GameManager drives this off
+    /// the fight FSM). Crossfades immediately; the rotation follows suit.
+    #[func]
+    pub fn set_boss_music(&mut self, active: bool) {
+        if self.boss_mode == active {
+            return;
+        }
+        self.boss_mode = active;
+        let track = if active {
+            MusicContext::Boss.track_path()
+        } else {
+            self.next_gameplay_track()
+        };
+        let vol = self.volume_for_phase();
+        self.crossfade_to(track, vol);
+    }
+
     /// Called when the active music player finishes a track.
     #[func]
     fn on_music_finished(&mut self) {
@@ -271,6 +292,12 @@ impl AudioManager {
     }
 
     fn next_gameplay_track(&mut self) -> &'static str {
+        // During a boss fight the bed comes from the Boss pool (which falls
+        // back to the gameplay shuffle until Mark's tracks land in the
+        // catalog — see `MusicContext::Boss`).
+        if self.boss_mode {
+            return MusicContext::Boss.track_path();
+        }
         let track = self.gameplay_tracks[self.gameplay_track_index];
         self.gameplay_track_index = (self.gameplay_track_index + 1) % self.gameplay_tracks.len();
         if self.gameplay_track_index == 0 {

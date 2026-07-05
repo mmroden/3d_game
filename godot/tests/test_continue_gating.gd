@@ -11,8 +11,8 @@ const UiStub := preload("res://tests/helpers/ui_stub.gd")
 class MenuRecordingStub:
 	extends UiStub
 	var continue_available_pushes: Array = []
-	func set_continue_available(a: bool) -> void:
-		continue_available_pushes.append(a)
+	func set_continue_available(a: bool, restarts: bool) -> void:
+		continue_available_pushes.append([a, restarts])
 
 
 func _stack() -> Dictionary:
@@ -43,16 +43,19 @@ func _into_playing(gm: GameManager) -> void:
 	assert_eq(gm.get_phase_name(), "Playing", "must reach Playing")
 
 
-func test_run_becomes_continuable_only_after_finishing_a_level():
+func test_continue_resumes_only_after_finishing_a_level():
+	# B8: any persisted profile offers a Continue (restart mode) — but the
+	# RESUME mode arrives only with the snapshot, at the start of level 2+.
 	var s := _stack()
 	var gm: GameManager = s["gm"]
 
 	gm.start_new_game()
 	assert_false(gm.has_continuable_run(),
-		"a brand-new game has not finished a level — not continuable")
+		"a truly clean slate has nothing to continue")
 	_into_playing(gm)
-	assert_false(gm.has_continuable_run(),
-		"mid-level-1 is still not continuable")
+	if gm.has_continuable_run():
+		assert_true(gm.continue_restarts_run(),
+			"mid-level-1 any Continue is a restart — no snapshot exists yet")
 
 	# Finish level 1: portal -> summary -> shop -> ship select -> bestiary -> level 2.
 	gm.on_portal_entered()
@@ -62,9 +65,14 @@ func test_run_becomes_continuable_only_after_finishing_a_level():
 	assert_eq(gm.get_current_level(), 2, "the run reached level 2")
 	assert_true(gm.has_continuable_run(),
 		"finishing a level makes the run continuable (snapshot at level start)")
+	assert_false(gm.continue_restarts_run(),
+		"…and now Continue RESUMES the run instead of restarting")
 
 
-func test_run_over_clears_the_continuable_run():
+func test_run_over_switches_continue_to_restart_mode():
+	# B8 (owner's call): run-over kills the SNAPSHOT but not the Continue —
+	# the roguelite loop restarts sector 1 with the profile applied. The
+	# menu row flips to restart mode ("Continue — Restart Sector 1").
 	var s := _stack()
 	var gm: GameManager = s["gm"]
 	gm.start_new_game()
@@ -74,11 +82,41 @@ func test_run_over_clears_the_continuable_run():
 	gm.advance_to_next_level()
 	_into_playing(gm)
 	assert_true(gm.has_continuable_run(), "sanity: continuable after level 1")
+	assert_false(gm.continue_restarts_run(),
+		"a live snapshot resumes — no restart mode")
 
 	gm.on_player_damaged(1000000.0, Vector3.ZERO)  # last life: run over
 	assert_eq(gm.get_phase_name(), "Death", "the run ended")
-	assert_false(gm.has_continuable_run(),
-		"run-over clears the snapshot — nothing to continue")
+	assert_true(gm.has_continuable_run(),
+		"run-over keeps a Continue: the profile carries the roguelite loop")
+	assert_true(gm.continue_restarts_run(),
+		"…but it restarts sector 1, not the dead run")
+
+
+func test_profile_continue_restarts_sector_1_with_greens_kept():
+	var s := _stack()
+	var gm: GameManager = s["gm"]
+	gm.start_new_game()
+	_into_playing(gm)
+	gm.on_cache_collected(1, 700)  # green — enough for the 300 radar
+	gm.on_portal_entered()
+	gm.advance_to_shop()
+	assert_true(gm.buy_shop_item(8), "own the radar so the profile has teeth")
+	var organics_after_buy := gm.get_organics()
+	gm.advance_to_next_level()
+	_into_playing(gm)
+	assert_eq(gm.get_current_level(), 2, "the dead run had reached level 2")
+
+	gm.on_player_damaged(1000000.0, Vector3.ZERO)  # run over
+	assert_eq(gm.get_phase_name(), "Death")
+	gm.return_to_menu()
+
+	gm.continue_game()
+	assert_eq(gm.get_phase_name(), "Playing",
+		"the profile-continue starts a fresh run directly")
+	assert_eq(gm.get_current_level(), 1, "…at sector 1, not the dead run's level")
+	assert_eq(gm.get_organics(), organics_after_buy, "greens survive the run-over")
+	assert_true(gm.has_unlock(0), "the radar survives the run-over")
 
 
 func test_menu_receives_the_availability_push_on_show():
@@ -110,19 +148,26 @@ func test_main_menu_hides_and_shows_the_continue_row():
 	var menu := MainMenuUI.new()
 	root.add_child(menu)
 
-	menu.set_continue_available(false)
+	menu.set_continue_available(false, false)
 	var texts := _label_texts(menu)
 	assert_false(_any_contains(texts, "Continue"),
 		"no continuable run, no Continue row: %s" % [texts])
 	assert_true(_any_contains(texts, "> New Game"),
 		"New Game is the default selection without a run: %s" % [texts])
 
-	menu.set_continue_available(true)
+	menu.set_continue_available(true, false)
 	texts = _label_texts(menu)
 	assert_true(_any_contains(texts, "Continue"),
 		"a continuable run shows the Continue row: %s" % [texts])
+	assert_false(_any_contains(texts, "Restart Sector 1"),
+		"a live snapshot resumes — the row must not threaten a restart: %s" % [texts])
 	assert_true(_any_contains(texts, "> New Game"),
 		"the cursor still defaults to New Game: %s" % [texts])
+
+	menu.set_continue_available(true, true)
+	texts = _label_texts(menu)
+	assert_true(_any_contains(texts, "Continue — Restart Sector 1"),
+		"post-run-over the row says what it will do: %s" % [texts])
 
 func _label_texts(node: Node) -> Array:
 	var out := []
@@ -197,7 +242,7 @@ func test_continue_is_the_default_row_when_available():
 	await wait_process_frames(2)  # let GM's initial-phase push land
 
 	ui.visible = true
-	ui.set_continue_available(true)
+	ui.set_continue_available(true, false)
 	watch_signals(ui)
 	await wait_process_frames(1)
 	Input.action_press("menu_select")
@@ -210,7 +255,7 @@ func test_continue_is_the_default_row_when_available():
 		"and must not start a new game")
 
 	# Without a run, New Game leads and is the default.
-	ui.set_continue_available(false)
+	ui.set_continue_available(false, false)
 	await wait_process_frames(1)
 	Input.action_press("menu_select")
 	await wait_process_frames(2)

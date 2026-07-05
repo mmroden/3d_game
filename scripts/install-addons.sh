@@ -283,6 +283,41 @@ else
     echo "  evil_mechs not found, skipping enemy mechs."
 fi
 
+# ========== Enemy models (CGTrader spheres + alien troop: decimated FBX -> glB) ==========
+# The sphere ships are the basic enemy roster (the mechs graduated to bosses);
+# same FBX + loose "(Textures)" folder shape as the mechs, same Blender pass.
+
+SPHERES_SRC="$SHIPS_SRC/spheres"
+
+if [ -d "$SPHERES_SRC" ]; then
+    ENEMIES_DIR="$GODOT_DIR/addons/enemies"
+    mkdir -p "$ENEMIES_DIR"
+    if [ ! -x "$BLENDER" ]; then
+        echo "  WARNING: Blender not found at $BLENDER — run 'make deps'. Skipping sphere enemies."
+    else
+        echo "  Decimating sphere enemy models (target ${DECIMATE_TARGET} tris)..."
+        for n in 01 02 03; do
+            src="$(find "$SPHERES_SRC" -maxdepth 1 -iname "*Sphere_ship_${n}*.fbx" | head -1)"
+            [ -n "$src" ] || continue
+            tex="$(find "$SPHERES_SRC" -maxdepth 1 -type d -iname "*Sphere_ship_${n}*Textures*" | head -1)"
+            "$BLENDER" --background --python "$(dirname "$0")/decimate.py" -- \
+                "$src" "$ENEMIES_DIR/sphere_ship_${n}.glb" "$DECIMATE_TARGET" "$tex" 2>&1 \
+                | grep -i "decimate:" || echo "  (sphere ${n}: no decimation summary — check Blender output)"
+        done
+        src="$(find "$SPHERES_SRC" -maxdepth 1 -iname "*Alien_troop_01*.fbx" | head -1)"
+        if [ -n "$src" ]; then
+            tex="$(find "$SPHERES_SRC" -maxdepth 1 -type d -iname "*Alien_troop_01*Textures*" | head -1)"
+            "$BLENDER" --background --python "$(dirname "$0")/decimate.py" -- \
+                "$src" "$ENEMIES_DIR/alien_troop_01.glb" "$DECIMATE_TARGET" "$tex" 2>&1 \
+                | grep -i "decimate:" || echo "  (alien troop: no decimation summary — check Blender output)"
+        fi
+        chmod -R u+w "$ENEMIES_DIR"
+        echo "  Sphere enemy models installed."
+    fi
+else
+    echo "  spheres not found, skipping sphere enemies."
+fi
+
 # ========== Jump gate (CGTrader OBJ -> decimated glB) ==========
 # The end-of-level exit portal model. Ships as a ~78k-tri OBJ + .mtl + loose PBR
 # maps; the same headless Blender pass that decimates the enemy mechs collapses

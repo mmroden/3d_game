@@ -814,6 +814,10 @@ impl ShipController {
                 continue;
             };
             query.set_exclude(&array![self_rid]);
+            // Point-blank forgiveness: a hugging enemy surrounds the ray
+            // origin, and rays don't hit shapes they start inside unless
+            // told to — without this, an enemy in your face is unkillable.
+            query.set_hit_from_inside(true);
             let result = space.intersect_ray(&query);
             if result.is_empty() {
                 continue;

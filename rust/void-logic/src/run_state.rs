@@ -250,6 +250,10 @@ impl RunState {
         match kind {
             CurrencyKind::Components => self.components.earn(amount),
             CurrencyKind::Organics => self.organics.earn(amount),
+            // The hull container is not a balance: GameManager routes it to
+            // `boss::roll_hull_reward` BEFORE this call and only forwards the
+            // components fallback when every hull is already owned.
+            CurrencyKind::HullReward => self.components.earn(amount),
         }
     }
 
@@ -269,7 +273,9 @@ impl RunState {
     /// and the life-price ratchet. Organics are permanent and deliberately
     /// preserved, like the bestiary.
     pub fn apply_death_penalty(&mut self) {
-        self.laser_level = self.laser_level.downgrade();
+        // Run-over is a full blue reset (owner's call 2026-07-04): the
+        // laser drops to Red outright — greens/reds are what carry forward.
+        self.laser_level = LaserLevel::Red;
         self.components = ComponentAccount::new();
         self.loadout.upgrades.clear();
         self.lives = 1;
@@ -618,16 +624,18 @@ mod tests {
     }
 
     #[test]
-    fn death_penalty_halves_laser() {
+    fn run_over_resets_the_laser_fully_to_red() {
+        // Owner's call (2026-07-04): run-over is a full blue reset — the
+        // laser drops to Red outright, not one step. Greens/reds survive.
         let mut run = RunState::new(Seed::new(42));
-        run.laser_level = LaserLevel::Green; // level 4
+        run.laser_level = LaserLevel::Violet; // the very top
         run.components.earn(50_000);
         run.record_kill(EnemyType::GunDrone);
         run.current_level = 5;
 
         run.apply_death_penalty();
 
-        assert_eq!(run.laser_level, LaserLevel::Orange); // 4/2=2
+        assert_eq!(run.laser_level, LaserLevel::Red, "all the way down");
         assert_eq!(run.components.balance, 0);
         assert_eq!(run.kills.total_kills(), 0);
         assert_eq!(run.current_level, 1);

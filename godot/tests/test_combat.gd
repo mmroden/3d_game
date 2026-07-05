@@ -102,15 +102,16 @@ func test_enemy_fires_inside_the_full_game_stack():
 	assert_eq(gm.get_phase_name(), "Playing", "must reach Playing")
 	await wait_process_frames(2)
 
-	# Park the player right beside a SHOOTER (GunDrone id 0 — QuadOrbs swarm,
-	# they never fire). Node-transform teleport is what the AI reads.
+	# Park the player right beside a SHOOTER (SentryDrone id 10 — the level-1
+	# roster is sentries only, so the pinned level MUST field one; swarmers
+	# never fire). Node-transform teleport is what the AI reads.
 	var shooter: RigidBody3D = null
 	for e in lm.find_children("*", "EnemyDrone", true, false):
-		if e.enemy_type_id == 0:
+		if e.enemy_type_id == 10:
 			shooter = e
 			break
+	assert_not_null(shooter, "level 1 spawns only SentryDrones — one must exist")
 	if shooter == null:
-		pass_test("pinned seed placed no GunDrone at level 1 — skipped")
 		return
 	player.global_position = shooter.global_position + Vector3(0, 0, 5)
 	player.reset_physics_interpolation()
@@ -171,9 +172,32 @@ func test_player_trigger_damages_an_enemy_inside_the_full_game_stack():
 	if fill == null:
 		return
 
-	# Park in front of the target and aim down the -Z muzzle line.
-	player.global_position = enemy.global_position + Vector3(0, 0, 5)
-	player.look_at(enemy.global_position)
+	# Park in front of the target with a VERIFIED clear line of fire — the
+	# manifest decides where enemies stand, and a fixed offset can land
+	# behind a wall face.
+	var space := player.get_world_3d().direct_space_state
+	var target: Vector3 = enemy.global_position
+	var spot: Vector3 = target + Vector3(0, 0, 5)
+	var found_clear := false
+	for offset in [Vector3(0, 0, 5), Vector3(0, 0, -5), Vector3(5, 0, 0), Vector3(-5, 0, 0), Vector3(0, 0, 3), Vector3(3, 0, 0), Vector3(-3, 0, 0), Vector3(0, 0, -3)]:
+		var candidate: Vector3 = target + offset
+		# Cast OUTWARD from the enemy: a candidate inside a wall shows up as
+		# a front-face hit on the way there (a ray STARTING inside a wall
+		# can sneak out through backfaces and lie about being clear).
+		var query := PhysicsRayQueryParameters3D.create(target, candidate)
+		query.exclude = [enemy.get_rid()]
+		var hit := space.intersect_ray(query)
+		if hit.is_empty():
+			spot = candidate
+			found_clear = true
+			break
+	assert_true(found_clear, "the pinned level must offer one clear firing lane")
+	player.global_position = spot
+	# The hitscan line runs 0.5 m above the body origin (the camera/reticle
+	# height); aim the BODY at a point 0.5 below the target so the beam
+	# line crosses the enemy's center — exactly what aiming the reticle
+	# does in play.
+	player.look_at(enemy.global_position + Vector3.DOWN * 0.5)
 	player.reset_physics_interpolation()
 	await wait_physics_frames(2, "let the bar render at full health")
 	var full_width: float = fill.global_transform.basis.x.length()
@@ -189,7 +213,7 @@ func test_player_trigger_damages_an_enemy_inside_the_full_game_stack():
 			hurt = true
 			break
 		if i % 30 == 0 and is_instance_valid(enemy):  # the target drifts; re-aim
-			player.look_at(enemy.global_position)
+			player.look_at(enemy.global_position + Vector3.DOWN * 0.5)
 			player.reset_physics_interpolation()
 	Input.action_release("fire")
 	assert_true(hurt,
@@ -358,3 +382,32 @@ func test_item_trigger_reports_to_the_mediator():
 	await wait_process_frames(1)
 	assert_signal_emitted(player, "shield_burst_requested",
 		"the item trigger must reach the mediator")
+
+
+func test_sphere_gunner_hull_is_hittable():
+	# Roster migration pin: the new sphere models must build colliders the
+	# hitscan can find, exactly like the drones they replace.
+	var player = _spawn_player(Vector3.ZERO)
+	player.set_controls_enabled(true)
+	var enemy = load("res://scenes/enemies/enemy.tscn").instantiate()
+	enemy.enemy_type_id = 6  # SphereGunner
+	add_child_autofree(enemy)
+	enemy.global_position = Vector3(0, 0.5, -15)
+	enemy.freeze = true
+	await wait_physics_frames(2, "let the sphere build its hull and bar")
+
+	var fill = enemy.get_node_or_null("HealthBarFill")
+	assert_not_null(fill, "the sphere needs a health bar to observe")
+	if fill == null:
+		return
+	var full_width: float = fill.global_transform.basis.x.length()
+
+	Input.action_press("fire")
+	var hurt := false
+	for _i in range(120):
+		await get_tree().physics_frame
+		if fill.global_transform.basis.x.length() < full_width * 0.9:
+			hurt = true
+			break
+	Input.action_release("fire")
+	assert_true(hurt, "a sphere dead ahead must take hitscan damage")

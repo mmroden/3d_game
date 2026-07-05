@@ -43,10 +43,18 @@ pub enum CurrencyKind {
     Components,
     /// Green: permanent organics, kept across runs.
     Organics,
+    /// Red: a planet-final boss's hull container. Not a balance — collecting
+    /// it grants a random unowned hull (`boss::roll_hull_reward`); the
+    /// carried amount is the components fallback if no hull remains.
+    HullReward,
 }
 
 impl CurrencyKind {
-    pub const ALL: &[CurrencyKind] = &[CurrencyKind::Components, CurrencyKind::Organics];
+    pub const ALL: &[CurrencyKind] = &[
+        CurrencyKind::Components,
+        CurrencyKind::Organics,
+        CurrencyKind::HullReward,
+    ];
 
     pub fn id(&self) -> i32 {
         Self::ALL.iter().position(|k| k == self)
@@ -57,11 +65,13 @@ impl CurrencyKind {
         Self::ALL.get(id as usize).copied()
     }
 
-    /// Glow tint for the in-level cache pickup: blue components, green organics.
+    /// Glow tint for the in-level cache pickup: blue components, green
+    /// organics, red hull container.
     pub fn glow_color(&self) -> [f32; 3] {
         match self {
             Self::Components => [0.2, 0.5, 1.0],
             Self::Organics => [0.2, 0.9, 0.2],
+            Self::HullReward => [1.0, 0.15, 0.1],
         }
     }
 }

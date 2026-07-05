@@ -17,6 +17,28 @@ pub enum EnemyType {
     /// *new* enemy, not a clone of the one you just killed. Never placed
     /// directly; only spawned (see `spawns_directly`).
     SpawnDrone,
+    /// Basic sphere gunner — the front-line shooter from level 1 (the
+    /// evil-mech models graduated to bosses, 2026-07-04).
+    SphereGunner,
+    /// Strafing sphere — the kiting standoff role the GunDrone mech held.
+    SphereStriker,
+    /// Shielded sphere carrier — a tank that releases SpawnDrones on death
+    /// (later levels' spawn pressure).
+    SphereCarrier,
+    /// Alien latcher — the swarming slow-tagger role the QuadOrb mech held.
+    AlienTroop,
+    /// Planet 1's basic front-line gunner — the Quaternius fleet keeps the
+    /// early game (owner's call 2026-07-04); the white spheres are planet-2
+    /// machines. Wears the previously unused Raptor model.
+    SentryDrone,
+    /// Mid-planet boss: the evil_mech_03 bruiser at arena scale. Kites,
+    /// hits like a siege engine, and coughs up a drone trio on death.
+    /// Placed only by the boss schedule (planet-relative level 3).
+    BossBrute,
+    /// Planet-final boss: the evil_mech_01 drainer. Latches on with a hull
+    /// siphon and fights behind a circling SpawnDrone escort that rises the
+    /// moment the fight starts. Placed only at planet-relative level 6.
+    BossLatcher,
 }
 
 impl EnemyType {
@@ -29,6 +51,13 @@ impl EnemyType {
         EnemyType::EyeDrone,
         EnemyType::QuadShell,
         EnemyType::SpawnDrone,
+        EnemyType::SphereGunner,
+        EnemyType::SphereStriker,
+        EnemyType::SphereCarrier,
+        EnemyType::AlienTroop,
+        EnemyType::SentryDrone,
+        EnemyType::BossBrute,
+        EnemyType::BossLatcher,
     ];
 
     /// Compile-time stat table indexed by variant order in `ALL`.
@@ -45,8 +74,25 @@ impl EnemyType {
         EnemyStats { hp: Health::new(5.0),  speed: 7.0,  damage: Damage::new(6.0),  detection_range: 30.0, attack_range: 10.0, attack_cooldown: 1.2, archetype: Archetype::Kiter,   reward: 1_500 },
         // QuadShell — shielded tank: slow, durable, fires.
         EnemyStats { hp: Health::new(12.0), speed: 6.0,  damage: Damage::new(7.0),  detection_range: 25.0, attack_range: 6.0,  attack_cooldown: 1.0, archetype: Archetype::Tank,    reward: 2_500 },
-        // SpawnDrone — weaker, faster harasser; only ever EyeDrone-spawned.
+        // SpawnDrone — weaker, faster harasser; only ever death-spawned.
         EnemyStats { hp: Health::new(2.0),  speed: 11.0, damage: Damage::new(3.0),  detection_range: 25.0, attack_range: 8.0,  attack_cooldown: 1.2, archetype: Archetype::Kiter,   reward: 400 },
+        // SphereGunner — the basic front-line shooter, level 1 on.
+        EnemyStats { hp: Health::new(3.0),  speed: 9.0,  damage: Damage::new(5.0),  detection_range: 25.0, attack_range: 10.0, attack_cooldown: 1.0, archetype: Archetype::Shooter, reward: 800 },
+        // SphereStriker — nimble standoff kiter (the old GunDrone role).
+        EnemyStats { hp: Health::new(3.0),  speed: 12.0, damage: Damage::new(4.0),  detection_range: 25.0, attack_range: 10.0, attack_cooldown: 1.0, archetype: Archetype::Kiter,   reward: 900 },
+        // SphereCarrier — shielded tank; releases SpawnDrones on death.
+        EnemyStats { hp: Health::new(10.0), speed: 6.0,  damage: Damage::new(6.0),  detection_range: 25.0, attack_range: 8.0,  attack_cooldown: 1.2, archetype: Archetype::Tank,    reward: 2_200 },
+        // AlienTroop — swarming latcher (the old QuadOrb role).
+        EnemyStats { hp: Health::new(3.0),  speed: 12.0, damage: Damage::new(4.0),  detection_range: 25.0, attack_range: 3.0,  attack_cooldown: 1.0, archetype: Archetype::Swarmer, reward: 1_000 },
+        // SentryDrone — planet 1's basic front-line shooter.
+        EnemyStats { hp: Health::new(3.0),  speed: 9.0,  damage: Damage::new(5.0),  detection_range: 25.0, attack_range: 10.0, attack_cooldown: 1.0, archetype: Archetype::Shooter, reward: 800 },
+        // BossBrute — the siege engine: kites at range, huge pool, crushing
+        // shots. Detection spans the whole arena; there is no sneaking past.
+        EnemyStats { hp: Health::new(60.0), speed: 8.0,  damage: Damage::new(16.0), detection_range: 45.0, attack_range: 14.0, attack_cooldown: 1.4, archetype: Archetype::Kiter,   reward: 10_000 },
+        // BossLatcher — the planet warden: even deeper pool, closes and
+        // clamps; its real damage is the DrainDebuff wired through the
+        // swarm-latch check, so contact damage stays modest.
+        EnemyStats { hp: Health::new(80.0), speed: 10.0, damage: Damage::new(6.0),  detection_range: 45.0, attack_range: 3.0,  attack_cooldown: 1.0, archetype: Archetype::Swarmer, reward: 12_000 },
     ];
 
     pub fn stats(&self) -> EnemyStats {
@@ -90,15 +136,35 @@ impl EnemyType {
     pub fn death_spawn(&self) -> Option<(EnemyType, u8)> {
         match self {
             Self::EyeDrone => Some((Self::SpawnDrone, 1)),
+            Self::SphereCarrier => Some((Self::SpawnDrone, 2)),
+            // Killing the Brute starts phase two.
+            Self::BossBrute => Some((Self::SpawnDrone, 3)),
             Self::GunDrone | Self::QuadOrb | Self::Bomber | Self::QuadShell
-            | Self::SpawnDrone => None,
+            | Self::SpawnDrone | Self::SphereGunner | Self::SphereStriker
+            | Self::AlienTroop | Self::SentryDrone | Self::BossLatcher => None,
         }
     }
 
-    /// Whether this type is placed directly into a room's spawn list. Spawn-only
-    /// types (the SpawnDrone) appear solely as another drone's death spawn.
+    /// Escorts that activate the moment this enemy ENGAGES (vs `death_spawn`,
+    /// which activates on death). Pre-built dormant beside the parent by the
+    /// same minion machinery; only the trigger differs.
+    pub fn escorts(&self) -> Option<(EnemyType, u8)> {
+        match self {
+            Self::BossLatcher => Some((Self::SpawnDrone, 3)),
+            _ => None,
+        }
+    }
+
+    /// Whether this type is placed directly into a room's spawn list.
+    /// Spawn-only types (the SpawnDrone) appear solely as another drone's
+    /// death spawn; the evil-mech pair keep their ids but graduated to boss
+    /// duty (owner's call 2026-07-04) and never place directly again.
     pub fn spawns_directly(&self) -> bool {
-        !matches!(self, Self::SpawnDrone)
+        !matches!(
+            self,
+            Self::SpawnDrone | Self::GunDrone | Self::QuadOrb
+                | Self::BossBrute | Self::BossLatcher
+        )
     }
 
     pub fn display_name(&self) -> &'static str {
@@ -109,6 +175,13 @@ impl EnemyType {
             Self::EyeDrone => "Eye Drone",
             Self::QuadShell => "Quad Shell",
             Self::SpawnDrone => "Spawn Drone",
+            Self::SphereGunner => "Sphere Gunner",
+            Self::SphereStriker => "Sphere Striker",
+            Self::SphereCarrier => "Sphere Carrier",
+            Self::AlienTroop => "Alien Troop",
+            Self::SentryDrone => "Sentry Drone",
+            Self::BossBrute => "Siege Mech",
+            Self::BossLatcher => "Lamprey Mech",
         }
     }
 
@@ -133,6 +206,18 @@ impl EnemyType {
             Self::EyeDrone =>  "res://addons/quaternius/essentials/enemies/Enemy_EyeDrone.gltf",
             Self::QuadShell => "res://addons/quaternius/essentials/enemies/Enemy_QuadShell.gltf",
             Self::SpawnDrone => "res://addons/quaternius/essentials/enemies/Enemy_GunDrone.gltf",
+            // The sphere fleet: cgtrader FBX through the same decimation
+            // pipeline as the mechs (install-addons.sh spheres pass).
+            Self::SphereGunner => "res://addons/enemies/sphere_ship_01.glb",
+            Self::SphereStriker => "res://addons/enemies/sphere_ship_02.glb",
+            Self::SphereCarrier => "res://addons/enemies/sphere_ship_03.glb",
+            Self::AlienTroop => "res://addons/enemies/alien_troop_01.glb",
+            // Planet 1's basic gunner: the previously unused Quaternius
+            // Raptor, so it never reads as a SpawnDrone clone.
+            Self::SentryDrone => "res://addons/quaternius/essentials/enemies/Enemy_Raptor.gltf",
+            // The bosses inherit the mechs' models at arena scale.
+            Self::BossBrute => "res://addons/enemies/evil_mech_03.glb",
+            Self::BossLatcher => "res://addons/enemies/evil_mech_01.glb",
         }
     }
 
@@ -143,7 +228,13 @@ impl EnemyType {
         match self {
             Self::GunDrone => 2.0,
             Self::QuadOrb => 1.0,
-            Self::Bomber | Self::EyeDrone | Self::QuadShell | Self::SpawnDrone => 0.5,
+            Self::Bomber | Self::EyeDrone | Self::QuadShell | Self::SpawnDrone
+            | Self::SentryDrone => 0.5,
+            Self::SphereGunner | Self::SphereStriker | Self::AlienTroop => 1.0,
+            Self::SphereCarrier => 1.4,
+            // Arena scale: the Brute doubles the old GunDrone mech's 2m.
+            Self::BossBrute => 4.0,
+            Self::BossLatcher => 3.0,
         }
     }
 
@@ -157,8 +248,14 @@ impl EnemyType {
         match self {
             // The cgtrader mechs front along +Z, so look_at (which aims -Z at the
             // player) leaves them facing exactly backwards — a half turn fixes it.
-            Self::GunDrone | Self::QuadOrb => std::f32::consts::PI,
-            Self::Bomber | Self::EyeDrone | Self::QuadShell | Self::SpawnDrone => 0.0,
+            Self::GunDrone | Self::QuadOrb
+            | Self::BossBrute | Self::BossLatcher => std::f32::consts::PI,
+            Self::Bomber | Self::EyeDrone | Self::QuadShell | Self::SpawnDrone
+            | Self::SentryDrone => 0.0,
+            // cgtrader imports front along +Z like the mechs — the single
+            // knob to tune on the first visual pass if any face askew.
+            Self::SphereGunner | Self::SphereStriker | Self::SphereCarrier
+            | Self::AlienTroop => std::f32::consts::PI,
         }
     }
 
@@ -171,16 +268,27 @@ impl EnemyType {
             .expect("EnemyType::ALL must contain every variant") as i32
     }
 
-    /// Minimum level at which this enemy type first appears.
-    /// Level 1 is shooters only (GunDrone); level 2 introduces the QuadOrb
-    /// grabbers that slow the player so the shooters can land hits.
+    /// Minimum level at which this enemy type first appears. Rosters are
+    /// planet-scoped (a planet = six levels): planet 1 (levels 1-6) is the
+    /// Quaternius fleet; the white cgtrader spheres mix in on planet 2
+    /// (levels 7+) without retiring the veterans.
     pub fn min_level(&self) -> u32 {
         match self {
-            Self::GunDrone => 1,
-            Self::QuadOrb | Self::Bomber | Self::EyeDrone => 2,
-            // Appears (via EyeDrone death) from level 3; never placed directly.
+            // Planet 1: the sentry walks its beat from level 1; level 2 adds
+            // pressure (Bomber, EyeDrone), level 4 the shielded tank.
+            Self::SentryDrone => 1,
+            Self::Bomber | Self::EyeDrone => 2,
+            // Appears (via EyeDrone/Carrier death) from level 3.
             Self::SpawnDrone => 3,
             Self::QuadShell => 4,
+            // Planet 2: the white sphere fleet arrives one tier per level.
+            Self::SphereGunner => 7,
+            Self::SphereStriker => 8,
+            Self::AlienTroop => 9,
+            Self::SphereCarrier => 11,
+            // Boss duty: never placed by level pools (spawns_directly = false).
+            Self::GunDrone | Self::QuadOrb
+            | Self::BossBrute | Self::BossLatcher => u32::MAX,
         }
     }
 }
@@ -246,17 +354,15 @@ mod tests {
     }
 
     #[test]
-    fn rewards_scale_with_tier() {
-        // The directly-spawnable roster is tier-ordered; tougher kills drop
-        // richer caches. Strictly richer at the ends so flat tables fail.
-        let rewards: Vec<u32> = EnemyType::ALL.iter()
-            .filter(|e| e.spawns_directly())
-            .map(|e| e.reward()).collect();
-        for w in rewards.windows(2) {
-            assert!(w[1] >= w[0], "rewards should scale with tier: {} >= {}", w[1], w[0]);
-        }
-        assert!(EnemyType::QuadShell.reward() > EnemyType::GunDrone.reward(),
-            "the top of the roster must out-pay the bottom");
+    fn rewards_scale_with_toughness() {
+        // Ids are append-only, so ALL is no longer tier-ordered — the pin is
+        // per-pair: tougher kills drop richer caches.
+        assert!(EnemyType::QuadShell.reward() > EnemyType::SphereGunner.reward(),
+            "the tank out-pays the basic gunner");
+        assert!(EnemyType::SphereCarrier.reward() > EnemyType::SphereGunner.reward(),
+            "the carrier out-pays the basic gunner");
+        assert!(EnemyType::SphereCarrier.reward() > EnemyType::AlienTroop.reward(),
+            "the carrier out-pays the latcher");
     }
 
     #[test]
@@ -293,15 +399,13 @@ mod tests {
     }
 
     #[test]
-    fn hp_scales_with_tier() {
-        // The directly-spawnable roster is ordered by tier; the spawn-only
-        // SpawnDrone sits outside that progression.
-        let hps: Vec<f32> = EnemyType::ALL.iter()
-            .filter(|e| e.spawns_directly())
-            .map(|e| e.stats().hp.as_f32()).collect();
-        for w in hps.windows(2) {
-            assert!(w[1] >= w[0], "hp should scale: {} >= {}", w[1], w[0]);
-        }
+    fn hp_scales_with_toughness() {
+        // Per-pair pins (ALL is id-stable, not tier-ordered).
+        assert!(EnemyType::SphereCarrier.stats().hp.as_f32()
+            > EnemyType::SphereGunner.stats().hp.as_f32(),
+            "the carrier tank outlasts the basic gunner");
+        assert!(EnemyType::QuadShell.stats().hp.as_f32()
+            > EnemyType::SphereStriker.stats().hp.as_f32());
     }
 
     #[test]
@@ -345,23 +449,68 @@ mod tests {
     }
 
     #[test]
-    fn level_1_is_shooters_only() {
+    fn level_1_is_the_basic_sentry_only() {
         let enemies = enemies_for_level(1);
-        assert_eq!(enemies, vec![EnemyType::GunDrone],
-            "level 1 should spawn only the GunDrone shooter");
+        assert_eq!(enemies, vec![EnemyType::SentryDrone],
+            "level 1 should spawn only the basic sentry drone");
     }
 
     #[test]
-    fn level_2_introduces_the_grabber() {
-        let enemies = enemies_for_level(2);
-        assert!(enemies.contains(&EnemyType::GunDrone));
-        assert!(enemies.contains(&EnemyType::QuadOrb), "grabbers arrive at level 2");
-        assert!(!enemies.contains(&EnemyType::QuadShell));
+    fn the_mechs_never_spawn_in_the_regular_pools() {
+        // The evil-mech models graduated to bosses (owner's call 2026-07-04):
+        // GunDrone and QuadOrb keep their ids (bestiary/save compat) but
+        // never place directly again.
+        for level in 1..=12 {
+            let pool = enemies_for_level(level);
+            assert!(!pool.contains(&EnemyType::GunDrone),
+                "level {level}: GunDrone is a boss model now");
+            assert!(!pool.contains(&EnemyType::QuadOrb),
+                "level {level}: QuadOrb is a boss model now");
+        }
+    }
+
+    #[test]
+    fn the_white_spheres_arrive_on_planet_two() {
+        // Planet 1 (levels 1-6) is the Quaternius fleet; the white cgtrader
+        // spheres are planet-2 machines (owner's call 2026-07-04) and mix in
+        // from level 7 on.
+        assert!(!enemies_for_level(6).contains(&EnemyType::SphereGunner),
+            "no white spheres anywhere on planet 1");
+        assert!(enemies_for_level(7).contains(&EnemyType::SphereGunner),
+            "the sphere gunner opens planet 2");
+        assert!(!enemies_for_level(7).contains(&EnemyType::SphereStriker));
+        assert!(enemies_for_level(8).contains(&EnemyType::SphereStriker),
+            "the strafing striker arrives at level 8");
+        assert!(!enemies_for_level(8).contains(&EnemyType::AlienTroop));
+        assert!(enemies_for_level(9).contains(&EnemyType::AlienTroop),
+            "the alien latcher arrives at level 9");
+        assert!(!enemies_for_level(10).contains(&EnemyType::SphereCarrier));
+        assert!(enemies_for_level(11).contains(&EnemyType::SphereCarrier),
+            "the carrier arrives at level 11");
+    }
+
+    #[test]
+    fn planet_one_fleet_mixes_into_planet_two() {
+        // Planet 2 ADDS the spheres on top of the Quaternius fleet — it does
+        // not replace it (owner's call: escalating variety, not a swap).
+        let pool = enemies_for_level(7);
+        for veteran in [EnemyType::SentryDrone, EnemyType::Bomber,
+                        EnemyType::EyeDrone, EnemyType::QuadShell] {
+            assert!(pool.contains(&veteran),
+                "{veteran:?} keeps spawning on planet 2");
+        }
+    }
+
+    #[test]
+    fn the_carrier_releases_two_spawn_drones_on_death() {
+        assert_eq!(EnemyType::SphereCarrier.death_spawn(),
+            Some((EnemyType::SpawnDrone, 2)),
+            "later levels' spawn-drone pressure comes from the carrier");
     }
 
     #[test]
     fn enemies_for_level_high_includes_all_directly_spawnable() {
-        let enemies = enemies_for_level(8);
+        let enemies = enemies_for_level(11);
         let direct = EnemyType::ALL.iter().filter(|e| e.spawns_directly()).count();
         assert_eq!(enemies.len(), direct);
     }
@@ -395,20 +544,99 @@ mod tests {
     }
 
     #[test]
-    fn roster_is_five_direct_enemies_plus_the_spawn_drone() {
-        assert_eq!(EnemyType::ALL.len(), 6, "six types total");
+    fn roster_is_eight_direct_enemies_plus_the_reserves() {
+        // 13 variants: 8 direct (SentryDrone, Bomber, EyeDrone, QuadShell,
+        // the three spheres, the alien), the spawn-only SpawnDrone, the two
+        // retired mech ids, and the two schedule-placed bosses.
+        assert_eq!(EnemyType::ALL.len(), 13, "thirteen types total");
         let direct = EnemyType::ALL.iter().filter(|e| e.spawns_directly()).count();
-        assert_eq!(direct, 5, "five are placed directly; the SpawnDrone is spawn-only");
+        assert_eq!(direct, 8, "eight place directly");
     }
 
     #[test]
-    fn min_level_ordering_matches_all_ordering() {
-        // Only the directly-spawnable roster is tier-ordered.
-        let levels: Vec<u32> = EnemyType::ALL.iter()
-            .filter(|e| e.spawns_directly())
-            .map(|e| e.min_level()).collect();
-        for w in levels.windows(2) {
-            assert!(w[1] >= w[0], "min_level should be non-decreasing: {} >= {}", w[1], w[0]);
+    fn legacy_ids_are_stable() {
+        // Append-only law: ids never move (saves, bestiary, and the .tscn
+        // crossing depend on them). Every append extends this pin.
+        assert_eq!(EnemyType::GunDrone.id(), 0);
+        assert_eq!(EnemyType::QuadOrb.id(), 1);
+        assert_eq!(EnemyType::Bomber.id(), 2);
+        assert_eq!(EnemyType::EyeDrone.id(), 3);
+        assert_eq!(EnemyType::QuadShell.id(), 4);
+        assert_eq!(EnemyType::SpawnDrone.id(), 5);
+        assert_eq!(EnemyType::SphereGunner.id(), 6);
+        assert_eq!(EnemyType::SphereStriker.id(), 7);
+        assert_eq!(EnemyType::SphereCarrier.id(), 8);
+        assert_eq!(EnemyType::AlienTroop.id(), 9);
+        assert_eq!(EnemyType::SentryDrone.id(), 10);
+        assert_eq!(EnemyType::BossBrute.id(), 11);
+        assert_eq!(EnemyType::BossLatcher.id(), 12);
+    }
+
+    // --- Bosses (B5) ---
+
+    #[test]
+    fn bosses_never_enter_the_level_pools() {
+        for level in 1..=24 {
+            let pool = enemies_for_level(level);
+            assert!(!pool.contains(&EnemyType::BossBrute),
+                "level {level}: the Brute is placed by the boss schedule only");
+            assert!(!pool.contains(&EnemyType::BossLatcher),
+                "level {level}: the Latcher is placed by the boss schedule only");
+        }
+        assert!(!EnemyType::BossBrute.spawns_directly());
+        assert!(!EnemyType::BossLatcher.spawns_directly());
+    }
+
+    #[test]
+    fn bosses_wear_the_evil_mechs_at_boss_scale() {
+        // The mechs were "way too cool" for the line — they ARE the bosses.
+        assert_eq!(EnemyType::BossBrute.model_path(),
+            "res://addons/enemies/evil_mech_03.glb");
+        assert_eq!(EnemyType::BossLatcher.model_path(),
+            "res://addons/enemies/evil_mech_01.glb");
+        assert_eq!(EnemyType::BossBrute.model_size(), 4.0,
+            "twice the old GunDrone mech's 2m — the arena sells the scale");
+        assert!(EnemyType::BossLatcher.model_size() >= 2.5);
+    }
+
+    #[test]
+    fn boss_stats_dwarf_the_line_roster() {
+        let toughest_regular = EnemyType::QuadShell.stats();
+        for boss in [EnemyType::BossBrute, EnemyType::BossLatcher] {
+            let s = boss.stats();
+            assert!(s.hp.as_f32() >= toughest_regular.hp.as_f32() * 4.0,
+                "{boss:?} hp {} must dwarf the QuadShell's {}",
+                s.hp.as_f32(), toughest_regular.hp.as_f32());
+        }
+        assert!(EnemyType::BossBrute.stats().damage.as_f32()
+            >= toughest_regular.damage.as_f32() * 2.0,
+            "the Brute hits like a siege engine");
+    }
+
+    #[test]
+    fn the_brute_kites_and_death_spawns_a_drone_trio() {
+        assert_eq!(EnemyType::BossBrute.stats().archetype, Archetype::Kiter);
+        assert_eq!(EnemyType::BossBrute.death_spawn(),
+            Some((EnemyType::SpawnDrone, 3)),
+            "killing the Brute starts the second phase, not the celebration");
+        assert_eq!(EnemyType::BossBrute.escorts(), None);
+    }
+
+    #[test]
+    fn the_latcher_swarms_with_a_circling_escort() {
+        assert_eq!(EnemyType::BossLatcher.stats().archetype, Archetype::Swarmer);
+        assert_eq!(EnemyType::BossLatcher.escorts(),
+            Some((EnemyType::SpawnDrone, 3)),
+            "the escort is up the moment the fight starts, not on death");
+        assert_eq!(EnemyType::BossLatcher.death_spawn(), None);
+    }
+
+    #[test]
+    fn only_the_latcher_has_escorts() {
+        for enemy in EnemyType::ALL {
+            if *enemy != EnemyType::BossLatcher {
+                assert_eq!(enemy.escorts(), None, "{enemy:?} fights alone on engage");
+            }
         }
     }
 
@@ -421,6 +649,31 @@ mod tests {
         assert_eq!(EnemyType::Bomber.stats().archetype, Archetype::Bomber);
         assert_eq!(EnemyType::EyeDrone.stats().archetype, Archetype::Kiter);
         assert_eq!(EnemyType::QuadShell.stats().archetype, Archetype::Tank);
+        assert_eq!(EnemyType::SphereGunner.stats().archetype, Archetype::Shooter);
+        assert_eq!(EnemyType::SphereStriker.stats().archetype, Archetype::Kiter);
+        assert_eq!(EnemyType::SphereCarrier.stats().archetype, Archetype::Tank);
+        assert_eq!(EnemyType::AlienTroop.stats().archetype, Archetype::Swarmer);
+        assert_eq!(EnemyType::SentryDrone.stats().archetype, Archetype::Shooter);
+    }
+
+    #[test]
+    fn the_sentry_wears_the_unused_quaternius_raptor() {
+        // Planet 1's basic gunner reuses the Quaternius fleet (owner's call
+        // 2026-07-04) — the Raptor, so it never reads as a SpawnDrone clone.
+        assert_eq!(EnemyType::SentryDrone.model_path(),
+            "res://addons/quaternius/essentials/enemies/Enemy_Raptor.gltf");
+    }
+
+    #[test]
+    fn sphere_models_come_from_the_decimation_pipeline() {
+        assert_eq!(EnemyType::SphereGunner.model_path(),
+            "res://addons/enemies/sphere_ship_01.glb");
+        assert_eq!(EnemyType::SphereStriker.model_path(),
+            "res://addons/enemies/sphere_ship_02.glb");
+        assert_eq!(EnemyType::SphereCarrier.model_path(),
+            "res://addons/enemies/sphere_ship_03.glb");
+        assert_eq!(EnemyType::AlienTroop.model_path(),
+            "res://addons/enemies/alien_troop_01.glb");
     }
 
     #[test]

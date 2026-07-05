@@ -14,7 +14,9 @@ use void_logic::enemy_ai::{strafe_velocity, Archetype, Attack, DroneAi, DroneCon
 use void_logic::audio_catalog::SfxEvent;
 use void_logic::difficulty;
 use void_logic::currency::CurrencyKind;
+use void_logic::debuff::DrainDebuff;
 use void_logic::enemy_type::EnemyType;
+use void_logic::level_assembly::MinionTrigger;
 use void_logic::newtypes::{Health, Damage};
 use void_logic::ram_damage::{ram_damage, PLAYER_RAM_FRACTION};
 
@@ -33,6 +35,10 @@ const SWARM_SLOW_FACTOR: f32 = 0.7;
 const SWARM_SLOW_DURATION: f32 = 2.0;
 const SWARM_SLOW_INTERVAL: f32 = 0.5;
 const SWARM_LATCH_RANGE: f32 = 2.0;
+
+/// Hull points per second the BossLatcher siphons while latched. Crossed to
+/// the player only in whole points via `DrainDebuff` — no float HP drift.
+const BOSS_DRAIN_DPS: f32 = 6.0;
 
 /// A hostile drone that chases and attacks the player. Motion and
 /// collision are Godot/Jolt's (docs/architecture/physics_ownership.md):
@@ -68,6 +74,9 @@ pub struct EnemyDrone {
     /// Per-type correction (radians) for the model's imported front axis,
     /// applied on top of facing the player. Cached from `EnemyType` in `ready`.
     model_yaw_offset: f32,
+    /// Last tick's requested speed — the denominator of the movement
+    /// feedback ratio reported to the AI (walls show up as actual << desired).
+    last_desired_speed: f32,
     /// Countdown between swarmer slow re-tags while latched onto the player.
     swarm_reapply_timer: f32,
     health_bar_bg: Option<LiveRef<MeshInstance3D>>,
@@ -81,7 +90,21 @@ pub struct EnemyDrone {
     /// and activated all together when this drone dies. Bound at build time by
     /// the LevelManager, so there is no death-path instantiate. Weak handles
     /// (freed minions are skipped) — the crate forbids cached raw `Gd` fields.
-    minions: LiveVec<EnemyDrone>,
+    /// Each carries its activation trigger: OnDeath minions rise from the
+    /// corpse; OnEngage escorts rise when the boss fight starts.
+    minions: LiveVec<EnemyDrone, MinionTrigger>,
+    /// The BossLatcher's hull siphon: quantized whole-point drain while
+    /// latched (`None` for every other type). The fractional remainder is
+    /// forfeited when contact breaks — see `DrainDebuff`.
+    drain: Option<DrainDebuff>,
+    /// What the bound cache drops as. `Components` for the whole line
+    /// roster; the LevelManager stamps `HullReward` on a planet-final boss
+    /// (the red container).
+    cache_kind: CurrencyKind,
+    /// A boss's consolation pile (Faucet tier 1): extra caches pre-built
+    /// dormant under the level, bound here with their (kind, amount), and
+    /// scattered around the corpse on death. Empty for the line roster.
+    bonus_caches: LiveVec<CurrencyCache, (CurrencyKind, u32)>,
     /// The one blue currency cache this drone drops on death, pre-built dormant
     /// under the level during the load and bound here. Activated (dropped) at
     /// the corpse position carrying the type's component reward; there is no
@@ -107,11 +130,15 @@ impl IRigidBody3D for EnemyDrone {
             player: None,
             model_pivot: None,
             model_yaw_offset: 0.0,
+            last_desired_speed: 0.0,
             swarm_reapply_timer: 0.0,
             health_bar_bg: None,
             health_bar_fill: None,
             chase_force: Vector3::ZERO,
             minions: LiveVec::new(),
+            drain: None,
+            cache_kind: CurrencyKind::Components,
+            bonus_caches: LiveVec::new(),
             cache: None,
         }
     }
@@ -127,6 +154,9 @@ impl IRigidBody3D for EnemyDrone {
             self.attack_range = stats.attack_range;
             // EnemyType owns behaviour tuning (archetype + ranges + shield/fuse).
             self.ai = DroneAi::new(enemy_type.ai_config());
+            // The Latcher drinks hulls; everyone else just bumps and shoots.
+            self.drain = (enemy_type == EnemyType::BossLatcher)
+                .then(|| DrainDebuff::new(BOSS_DRAIN_DPS));
             // Build the visual model from the type's model_path, fit-scaled to
             // its target size. Models live in the catalog, not baked per-.tscn,
             // so a model swap is one string change and every drone re-fits the
@@ -234,6 +264,7 @@ impl IRigidBody3D for EnemyDrone {
         // slow compounds toward a crawl (see SWARM_* constants and SlowDebuff).
         if self.ai.config.archetype == Archetype::Swarmer {
             self.tick_swarm_slow(delta as f32, my_pos, player_pos);
+            self.tick_drain(delta as f32, my_pos, player_pos);
         }
         // Turn the model to face the player, and billboard the health bar.
         // Both are transform writes, so they belong in the physics tick (engine
@@ -287,14 +318,47 @@ impl EnemyDrone {
     /// Bind a pre-built dormant minion to this drone (Faucet Principle, tier 1).
     /// The LevelManager calls this once per manifest minion during the load;
     /// this drone activates all of them when it dies. Weak handle only.
-    pub fn bind_minion(&mut self, minion: &Gd<EnemyDrone>) {
-        self.minions.push(minion, ());
+    pub fn bind_minion(&mut self, minion: &Gd<EnemyDrone>, trigger: MinionTrigger) {
+        self.minions.push(minion, trigger);
+    }
+
+    /// Rise the OnEngage escort (the BossLatcher's circling guard) around
+    /// this drone's current position. Driven by GameManager when the fight
+    /// engages; a no-op for every drone without OnEngage minions, so the
+    /// mediator may safely fan it out to the whole enemy group.
+    #[func]
+    pub fn activate_escorts(&mut self) {
+        let pos = self.base().get_global_position();
+        let mut any = false;
+        self.minions.for_each_live(|_, minion, trigger| {
+            if *trigger == MinionTrigger::OnEngage {
+                minion.bind_mut().activate_at(pos);
+                any = true;
+            }
+        });
+        if any {
+            if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+                audio.bind_mut().play_event_at(SfxEvent::DroneSpawn, pos);
+            }
+        }
     }
 
     /// Bind the pre-built dormant cache this drone drops on death. One cache
     /// per enemy (the manifest's bound), reserved during the load.
     pub fn bind_cache(&mut self, cache: &Gd<CurrencyCache>) {
         self.cache = Some(LiveRef::new(cache));
+    }
+
+    /// Stamp what the bound cache drops as (the LevelManager marks a
+    /// planet-final boss's drop as the red hull container).
+    pub fn set_cache_kind(&mut self, kind: CurrencyKind) {
+        self.cache_kind = kind;
+    }
+
+    /// Bind one cache of a boss's consolation pile (pre-built dormant like
+    /// the main cache; scattered around the corpse on death).
+    pub fn bind_bonus_cache(&mut self, cache: &Gd<CurrencyCache>, kind: CurrencyKind, amount: u32) {
+        self.bonus_caches.push(cache, (kind, amount));
     }
 
     /// Components in the cache this drone drops on death — the single source is
@@ -421,6 +485,17 @@ impl EnemyDrone {
         if self.ai.is_dead() {
             return (Vector3::ZERO, Attack::None);
         }
+        // Close the loop the AI can't see: how much of last tick's desired
+        // speed physics actually delivered. Walls eating an orbit show up
+        // here, and the AI flips/retreats instead of parking in the corner.
+        let actual = self.base().get_linear_velocity().length();
+        let ratio = if self.last_desired_speed > 0.5 {
+            actual / self.last_desired_speed
+        } else {
+            1.0 // not asking to move — no verdict
+        };
+        self.ai.report_movement_feedback(ratio);
+
         let distance = my_pos.distance_to(player_pos);
         let tick = self.ai.update(distance, has_sight, delta);
 
@@ -443,9 +518,12 @@ impl EnemyDrone {
                     self.ai.config.standoff_range,
                     self.speed,
                 );
-                self.strafe_dir(direction) * v.tangent + direction * v.radial
+                // The AI owns the orbit handedness; a blocked orbit flips it.
+                self.strafe_dir(direction) * v.tangent * self.ai.orbit_sign()
+                    + direction * v.radial
             }
         };
+        self.last_desired_speed = desired.length();
         (desired, tick.attack)
     }
 
@@ -540,19 +618,36 @@ impl EnemyDrone {
         // is a placement + flip, never an instantiate — `drop_at` sets the
         // position before it goes live so its bob anchors at the corpse.
         let reward = EnemyType::from_id(type_id).map(|t| t.reward()).unwrap_or(0);
-        self.cache.with(|cache| cache.bind_mut().drop_at(pos, CurrencyKind::Components, reward));
+        let cache_kind = self.cache_kind;
+        self.cache.with(|cache| cache.bind_mut().drop_at(pos, cache_kind, reward));
+
+        // A boss's consolation pile scatters in a ring around the corpse so
+        // the pickups read as separate prizes, not one glowing blob.
+        let mut ring_index = 0_u32;
+        self.bonus_caches.for_each_live(|_, cache, (kind, amount)| {
+            let angle = ring_index as f32 * std::f32::consts::TAU / 3.0;
+            let offset = Vector3::new(angle.cos() * 2.5, 0.0, angle.sin() * 2.5);
+            cache.bind_mut().drop_at(pos + offset, *kind, *amount);
+            ring_index += 1;
+        });
 
         // Subsidiary-drone activation on death (e.g. EyeDrone → SpawnDrone): the
         // reserved minions were pre-instantiated dormant under the same room
         // container during the load; they arm up from the corpse now, over the
-        // parent's death explosion. Nothing is instantiated here.
-        if !self.minions.is_empty() {
+        // parent's death explosion. Nothing is instantiated here. OnEngage
+        // escorts rose at fight start (`activate_escorts`); `activate_at` is
+        // an idempotent flip, so re-touching an already-live escort is a no-op.
+        let mut any_spawned = false;
+        self.minions.for_each_live(|_, minion, trigger| {
+            if *trigger == MinionTrigger::OnDeath {
+                minion.bind_mut().activate_at(pos);
+                any_spawned = true;
+            }
+        });
+        if any_spawned {
             if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
                 audio.bind_mut().play_event_at(SfxEvent::DroneSpawn, pos);
             }
-            self.minions.for_each_live(|_, minion, _| {
-                minion.bind_mut().activate_at(pos);
-            });
         }
 
         self.base_mut().queue_free();
@@ -694,6 +789,28 @@ impl EnemyDrone {
                 );
             }
         });
+    }
+
+    /// The BossLatcher's hull siphon: while latched (same range as the slow),
+    /// whole drained points cross to the player's `take_damage`; breaking
+    /// contact forfeits the fraction so a re-grab never banks damage.
+    fn tick_drain(&mut self, delta: f32, my_pos: Vector3, player_pos: Vector3) {
+        let Some(drain) = &mut self.drain else { return };
+        if my_pos.distance_to(player_pos) > SWARM_LATCH_RANGE {
+            drain.reset();
+            return;
+        }
+        let damage = drain.tick(delta);
+        if damage > 0 {
+            self.player.with(|p| {
+                if p.has_method(methods::TAKE_DAMAGE) {
+                    p.call(
+                        methods::TAKE_DAMAGE,
+                        &[Variant::from(damage as f32), Variant::from(my_pos)],
+                    );
+                }
+            });
+        }
     }
 
     fn update_health_bar(&mut self, player_pos: Vector3) {

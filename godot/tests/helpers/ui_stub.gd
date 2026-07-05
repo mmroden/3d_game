@@ -39,7 +39,7 @@ signal bestiary_paged(delta: int)
 signal back_pressed
 
 
-func set_continue_available(_a: bool) -> void: pass
+func set_continue_available(_a: bool, _restarts: bool) -> void: pass
 func show_loading(_level: int) -> void: pass
 func hide_loading() -> void: pass
 func set_unlock_flags(_r: bool, _m: bool, _t: bool) -> void: pass
@@ -62,4 +62,5 @@ func update_charges(_c: int) -> void: pass
 func update_map(_rects: PackedFloat32Array, _flags: PackedByteArray, _projection: PackedFloat32Array) -> void: pass
 func update_organics(_o: int) -> void: pass
 func update_laser(_n: String, _c: Color) -> void: pass
+func update_slow(_a: bool) -> void: pass
 func update_level(_l: int) -> void: pass

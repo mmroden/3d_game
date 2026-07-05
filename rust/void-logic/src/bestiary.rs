@@ -134,8 +134,23 @@ trading itself for a hole in your shields. Kill it early or get clear.",
 other machines and herd them onto you — death by overwhelming odds.",
         EnemyType::QuadShell => "A shielded tank. Its plating soaks damage before its hull ever feels it; \
 patient fire, or a flank while it's busy, is the only way through.",
-        EnemyType::SpawnDrone => "A scrap-built picket an EyeDrone ejects as it dies. Lighter and quicker \
-than a gun drone but flimsy — it buys the swarm a few more seconds of fire.",
+        EnemyType::SpawnDrone => "A scrap-built picket ejected by a dying carrier. Lighter and quicker \
+than the fleet it defends but flimsy — it buys the swarm a few more seconds of fire.",
+        EnemyType::SphereGunner => "The fleet's standard picket sphere. It advances and fires in steady \
+volleys — nothing fancy, but there are always more of them.",
+        EnemyType::SphereStriker => "A stripped-down sphere built for the gap. It orbits at standoff \
+range and rakes you from the flank, never sitting still for a clean return shot.",
+        EnemyType::SphereCarrier => "An armored brood sphere. Its shell soaks fire, and cracking it \
+open releases the pickets it carries — killing it is the start of a fight, not the end.",
+        EnemyType::AlienTroop => "A grown thing among the machines. It closes and clamps on, dragging \
+your thrust down so the spheres get clean shots.",
+        EnemyType::SentryDrone => "The occupation's standard sentry. It walks its beat, spots you, \
+and shoots — the first machine every scavenger learns to kill.",
+        EnemyType::BossBrute => "A siege engine that guards the deep vaults. It holds the range, \
+shrugs off fire, and hits hard enough to crack a hull in moments — and killing it only wakes \
+what it carries.",
+        EnemyType::BossLatcher => "The planet warden. It clamps onto your hull and drinks it dry \
+while its escort circles — break its grip or die by inches. Beyond it lies the next world.",
     }
 }
 

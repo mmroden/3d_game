@@ -28,6 +28,10 @@ pub struct LevelGraph {
     graph: UnGraph<PlacedRoom, EdgeKind>,
     /// Tracks which grid cells are occupied to prevent overlap.
     occupied: HashMap<[i32; 3], NodeIndex>,
+    /// The staged boss arena, when this level has one — set once by
+    /// `spatial_layout::attach_boss_room` after generation, never mutated
+    /// during a run. `None` on regular levels.
+    pub(crate) boss_room: Option<NodeIndex>,
 }
 
 impl Default for LevelGraph {
@@ -35,6 +39,7 @@ impl Default for LevelGraph {
         Self {
             graph: UnGraph::new_undirected(),
             occupied: HashMap::new(),
+            boss_room: None,
         }
     }
 }
@@ -47,6 +52,13 @@ impl LevelGraph {
     /// Check whether a grid cell is free.
     pub fn is_free(&self, pos: [i32; 3]) -> bool {
         !self.occupied.contains_key(&pos)
+    }
+
+    /// The staged boss arena, when this level has one. `None` on regular
+    /// levels; the culling, map, and portal paths treat the arena as any
+    /// other room — only the boss-fight flow keys off this marker.
+    pub fn boss_room(&self) -> Option<NodeIndex> {
+        self.boss_room
     }
 
     /// Place a room at a grid position. Returns the node index.

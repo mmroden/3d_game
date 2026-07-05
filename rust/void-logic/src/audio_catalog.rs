@@ -24,9 +24,18 @@ macro_rules! sfx {
 pub enum MusicContext {
     Menu,
     Gameplay,
+    /// A staged boss fight is engaged. Its pool is empty until the boss
+    /// tracks land (Mark supplies) — selection falls back to the gameplay
+    /// shuffle so the context switch is wired and flips the moment tracks
+    /// are added here.
+    Boss,
 }
 
 const MENU_TRACK: &str = music!("frozen_whispers.wav");
+
+/// Boss-fight tracks. Deliberately empty for now; drop files in
+/// `assets/music/` and list them here to arm the Boss context.
+const BOSS_TRACKS: &[&str] = &[];
 
 const GAMEPLAY_TRACKS: &[&str] = &[
     music!("days_became_years.wav"),
@@ -44,17 +53,17 @@ const GAMEPLAY_TRACKS: &[&str] = &[
 impl MusicContext {
     /// The single track for this context (Menu) or the first track in the pool.
     pub fn track_path(self) -> &'static str {
-        match self {
-            Self::Menu => MENU_TRACK,
-            Self::Gameplay => GAMEPLAY_TRACKS[0],
-        }
+        self.track_pool()[0]
     }
 
-    /// The full pool of tracks for rotation. Menu returns a single-element slice.
+    /// The full pool of tracks for rotation. Menu returns a single-element
+    /// slice; an unarmed Boss pool falls back to the gameplay shuffle.
     pub fn track_pool(self) -> &'static [&'static str] {
         match self {
             Self::Menu => std::slice::from_ref(&MENU_TRACK),
             Self::Gameplay => GAMEPLAY_TRACKS,
+            Self::Boss if BOSS_TRACKS.is_empty() => GAMEPLAY_TRACKS,
+            Self::Boss => BOSS_TRACKS,
         }
     }
 }
@@ -229,6 +238,19 @@ pub fn all_audio_paths() -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Deliberate pin of the UNARMED state: while `BOSS_TRACKS` is empty the
+    /// Boss context plays the gameplay shuffle. When the boss tracks land,
+    /// flip this test to pin the armed pool instead.
+    #[test]
+    fn unarmed_boss_pool_falls_back_to_the_gameplay_shuffle() {
+        let pool = MusicContext::Boss.track_pool();
+        assert!(!pool.is_empty(), "the Boss context must always have music");
+        assert_eq!(pool, MusicContext::Gameplay.track_pool(),
+            "empty BOSS_TRACKS falls back to the gameplay shuffle");
+        assert_eq!(MusicContext::Boss.track_path(),
+            MusicContext::Gameplay.track_path());
+    }
 
     #[test]
     fn sfx_event_has_at_least_one_variant() {

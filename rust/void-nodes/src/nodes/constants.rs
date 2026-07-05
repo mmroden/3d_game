@@ -39,6 +39,7 @@ pub mod signals {
     pub const SAVE_EXIT_PRESSED: &str = "save_exit_pressed";
     pub const SHIELD_BURST_REQUESTED: &str = "shield_burst_requested";
     pub const RENDER_VIEWPORTS_CHANGED: &str = "render_viewports_changed";
+    pub const BOSS_ARENA_ENTERED: &str = "boss_arena_entered";
 }
 
 // ── Callable method names ─────────────────────────────────────────────
@@ -53,6 +54,13 @@ pub mod methods {
     pub const ON_OPTIONS_CHANGED: &str = "on_options_changed";
     pub const BROADCAST_OPTIONS: &str = "broadcast_options";
     pub const ON_RENDER_VIEWPORTS_CHANGED: &str = "on_render_viewports_changed";
+    pub const ON_BOSS_ARENA_ENTERED: &str = "on_boss_arena_entered";
+    pub const SEAL_BOSS_GATE: &str = "seal_boss_gate";
+    pub const STAGE_RED_CONTAINER: &str = "stage_red_container";
+    pub const SET_SEALED: &str = "set_sealed";
+    pub const SET_DORMANT: &str = "set_dormant";
+    pub const SET_BOSS_PORTAL_ACTIVE: &str = "set_boss_portal_active";
+    pub const ACTIVATE_ESCORTS: &str = "activate_escorts";
     pub const ON_BODY_ENTERED: &str = "on_body_entered";
     pub const RESOLVE_HIT: &str = "resolve_hit";
     pub const ADVANCE_TO_SHOP: &str = "advance_to_shop";

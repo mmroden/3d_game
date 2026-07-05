@@ -56,17 +56,32 @@ pub fn make_corridor(facing: ConnectorFacing, length: u32) -> RoomTemplate {
     }
 }
 
-/// Try placing a child room connected to a parent via a specific connector pair.
-/// Returns `Some((corridor_idx, child_idx))` on success.
-fn try_place_child(
+/// Outcome of a single fixed-length placement attempt.
+enum AttemptOutcome {
+    /// Corridor + child landed; carries `(corridor_idx, child_idx)`.
+    Placed(petgraph::graph::NodeIndex, petgraph::graph::NodeIndex),
+    /// Cells were occupied at this length — another length may fit.
+    Blocked,
+    /// The free-check passed but `place_room` still failed — abort probing
+    /// this connector (matches the historical early-`break` semantics).
+    Abort,
+}
+
+/// Try placing a child room off a parent connector through a corridor of
+/// EXACTLY `corridor_len` cells. Shared by the ascending probe (regular
+/// layout wants the shortest link) and the descending probe (the boss
+/// approach wants the longest).
+fn try_place_child_at(
     level: &mut LevelGraph,
     parent_level_idx: petgraph::graph::NodeIndex,
     parent_ci: usize,
     child_room: &RoomTemplate,
     child_ci: usize,
-    max_probe: i32,
-) -> Option<(petgraph::graph::NodeIndex, petgraph::graph::NodeIndex)> {
-    let parent_room = level.room(parent_level_idx)?;
+    corridor_len: i32,
+) -> AttemptOutcome {
+    let Some(parent_room) = level.room(parent_level_idx) else {
+        return AttemptOutcome::Abort;
+    };
     let parent_pos = parent_room.grid_pos;
     let parent_connector = &parent_room.template.connectors[parent_ci];
     let parent_facing = parent_connector.facing;
@@ -80,46 +95,63 @@ fn try_place_child(
 
     let child_connector = &child_room.connectors[child_ci];
 
+    let corridor_end = [
+        corridor_start[0] + direction[0] * (corridor_len - 1),
+        corridor_start[1] + direction[1] * (corridor_len - 1),
+        corridor_start[2] + direction[2] * (corridor_len - 1),
+    ];
+
+    let child_connector_cell = [
+        corridor_end[0] + direction[0],
+        corridor_end[1] + direction[1],
+        corridor_end[2] + direction[2],
+    ];
+    let child_pos = [
+        child_connector_cell[0] - child_connector.offset[0],
+        child_connector_cell[1] - child_connector.offset[1],
+        child_connector_cell[2] - child_connector.offset[2],
+    ];
+
+    let corridor = make_corridor(parent_facing, corridor_len as u32);
+    let corridor_origin = corridor_start_origin(corridor_start, parent_facing, &corridor);
+
+    let corridor_cells = cells_for_at(&corridor, corridor_origin);
+    if !corridor_cells.iter().all(|c| level.is_free(*c)) {
+        return AttemptOutcome::Blocked;
+    }
+
+    let child_cells = cells_for_at(child_room, child_pos);
+    if !child_cells.iter().all(|c| level.is_free(*c)) {
+        return AttemptOutcome::Blocked;
+    }
+
+    if let Ok(corridor_idx) = level.place_room(corridor, corridor_origin) {
+        let _ = level.connect_adjacent(parent_level_idx, corridor_idx);
+
+        if let Ok(child_idx) = level.place_room(child_room.clone(), child_pos) {
+            let _ = level.connect_adjacent(corridor_idx, child_idx);
+            return AttemptOutcome::Placed(corridor_idx, child_idx);
+        }
+    }
+    AttemptOutcome::Abort
+}
+
+/// Try placing a child room connected to a parent via a specific connector pair.
+/// Returns `Some((corridor_idx, child_idx))` on success.
+fn try_place_child(
+    level: &mut LevelGraph,
+    parent_level_idx: petgraph::graph::NodeIndex,
+    parent_ci: usize,
+    child_room: &RoomTemplate,
+    child_ci: usize,
+    max_probe: i32,
+) -> Option<(petgraph::graph::NodeIndex, petgraph::graph::NodeIndex)> {
     for corridor_len in 1..=max_probe {
-        let corridor_end = [
-            corridor_start[0] + direction[0] * (corridor_len - 1),
-            corridor_start[1] + direction[1] * (corridor_len - 1),
-            corridor_start[2] + direction[2] * (corridor_len - 1),
-        ];
-
-        let child_connector_cell = [
-            corridor_end[0] + direction[0],
-            corridor_end[1] + direction[1],
-            corridor_end[2] + direction[2],
-        ];
-        let child_pos = [
-            child_connector_cell[0] - child_connector.offset[0],
-            child_connector_cell[1] - child_connector.offset[1],
-            child_connector_cell[2] - child_connector.offset[2],
-        ];
-
-        let corridor = make_corridor(parent_facing, corridor_len as u32);
-        let corridor_origin = corridor_start_origin(corridor_start, parent_facing, &corridor);
-
-        let corridor_cells = cells_for_at(&corridor, corridor_origin);
-        if !corridor_cells.iter().all(|c| level.is_free(*c)) {
-            continue;
+        match try_place_child_at(level, parent_level_idx, parent_ci, child_room, child_ci, corridor_len) {
+            AttemptOutcome::Placed(corridor_idx, child_idx) => return Some((corridor_idx, child_idx)),
+            AttemptOutcome::Blocked => continue,
+            AttemptOutcome::Abort => break,
         }
-
-        let child_cells = cells_for_at(child_room, child_pos);
-        if !child_cells.iter().all(|c| level.is_free(*c)) {
-            continue;
-        }
-
-        if let Ok(corridor_idx) = level.place_room(corridor, corridor_origin) {
-            let _ = level.connect_adjacent(parent_level_idx, corridor_idx);
-
-            if let Ok(child_idx) = level.place_room(child_room.clone(), child_pos) {
-                let _ = level.connect_adjacent(corridor_idx, child_idx);
-                return Some((corridor_idx, child_idx));
-            }
-        }
-        break;
     }
 
     None
@@ -136,6 +168,110 @@ fn all_compatible_pairs(parent: &RoomTemplate, child: &RoomTemplate) -> Vec<(usi
         }
     }
     pairs
+}
+
+/// Boss arena sizing (grid cells / stories). The arena dwarfs regular rooms
+/// (3-6 cells): the scale shift is the encounter staging.
+pub const BOSS_ROOM_XZ: u32 = 10;
+pub const BOSS_ROOM_STORIES: u32 = 2;
+/// Approach-corridor bounds (cells). The long walk in — sealed behind the
+/// player once entered (B6) — is probed longest-first so the drama holds
+/// even on crowded grids.
+pub const MIN_BOSS_CORRIDOR: u32 = 12;
+pub const MAX_BOSS_CORRIDOR: u32 = 32;
+
+/// The boss arena: a giant single room with one mid-face door per side
+/// (only the approach corridor's side gets wired; the assembler seals the
+/// rest), one enemy spawn for the boss and one loot spawn for the reward
+/// container, both centered.
+fn boss_room_template() -> RoomTemplate {
+    use ConnectorFacing::*;
+
+    let ex = BOSS_ROOM_XZ as i32;
+    let ez = BOSS_ROOM_XZ as i32;
+    let mid_x = ex / 2;
+    let mid_z = ez / 2;
+    let connectors = vec![
+        Connector { offset: [0, 0, mid_z], facing: NegX, frame: FrameStyle::Door },
+        Connector { offset: [ex - 1, 0, mid_z], facing: PosX, frame: FrameStyle::Door },
+        Connector { offset: [mid_x, 0, 0], facing: NegZ, frame: FrameStyle::Door },
+        Connector { offset: [mid_x, 0, ez - 1], facing: PosZ, frame: FrameStyle::Door },
+    ];
+
+    // Same local-coordinate convention as the generator's auto spawns:
+    // cell_size 4.0, loot near the floor so the container rests in view.
+    let cell_size = 4.0_f32;
+    let center_x = BOSS_ROOM_XZ as f32 * cell_size / 2.0;
+    let center_z = BOSS_ROOM_XZ as f32 * cell_size / 2.0;
+
+    RoomTemplate {
+        kind: crate::room_template::TemplateKind::Room,
+        connectors,
+        enemy_spawns: vec![crate::room_template::SpawnPoint {
+            position: [center_x, 2.0, center_z],
+        }],
+        // The reward drops at the quarter point, NOT the center: the exit
+        // portal materializes at the room center (`portal_position`), and a
+        // reward on the same spot would hurl the player into it the moment
+        // it activates.
+        loot_spawns: vec![crate::room_template::SpawnPoint {
+            position: [center_x * 0.5, 0.75, center_z],
+        }],
+        extents: [BOSS_ROOM_XZ, BOSS_ROOM_STORIES, BOSS_ROOM_XZ],
+    }
+}
+
+/// Attach the boss arena to a generated level: a long corridor off the
+/// farthest room, ending in a giant sealed-off arena. The arena becomes the
+/// new farthest room, so `portal_position` (and the exit-room accents)
+/// follow with zero changes. Marks `LevelGraph::boss_room` on success.
+///
+/// Probes longest corridor first (the walk in is the staging), each of the
+/// far room's horizontal connectors in order — fully deterministic. Returns
+/// `None` only if no length ≥ `MIN_BOSS_CORRIDOR` fits anywhere, which the
+/// pinned-seed tests forbid for the levels the game actually schedules.
+pub fn attach_boss_room(
+    level: &mut LevelGraph,
+    entry: petgraph::graph::NodeIndex,
+) -> Option<petgraph::graph::NodeIndex> {
+    let far = level.farthest_room_from(entry)?;
+    let arena = boss_room_template();
+
+    let horizontal: Vec<(usize, ConnectorFacing)> = level
+        .room(far)?
+        .template
+        .connectors
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| {
+            matches!(
+                c.facing,
+                ConnectorFacing::PosX | ConnectorFacing::NegX
+                    | ConnectorFacing::PosZ | ConnectorFacing::NegZ
+            )
+        })
+        .map(|(i, c)| (i, c.facing))
+        .collect();
+
+    for corridor_len in (MIN_BOSS_CORRIDOR..=MAX_BOSS_CORRIDOR).rev() {
+        for &(parent_ci, facing) in &horizontal {
+            let Some(arena_ci) = arena
+                .connectors
+                .iter()
+                .position(|c| c.facing == facing.opposite())
+            else {
+                continue;
+            };
+            if let AttemptOutcome::Placed(_, boss_idx) = try_place_child_at(
+                level, far, parent_ci, &arena, arena_ci, corridor_len as i32,
+            ) {
+                level.boss_room = Some(boss_idx);
+                return Some(boss_idx);
+            }
+        }
+    }
+
+    None
 }
 
 /// Assign grid positions to rooms in an abstract graph, producing a fully
@@ -327,6 +463,109 @@ mod tests {
         let from_idx = room_a.connectors.iter().position(|c| c.facing == ConnectorFacing::PosY).unwrap();
         let to_idx = room_b.connectors.iter().position(|c| c.facing == ConnectorFacing::NegY).unwrap();
         ConnectorPair { from_connector_idx: from_idx, to_connector_idx: to_idx }
+    }
+
+    // --- Boss arena attachment (B4) ---
+
+    /// Seed 1, level 3 — the first mid-boss level; B6's GUT scenario builds
+    /// exactly this level, so these pins and the shell can never drift.
+    fn pinned_boss_level() -> (LevelGraph, petgraph::graph::NodeIndex) {
+        let config = GeneratorConfig::standard(
+            crate::seed::Seed::new(1),
+            crate::generator::rooms_for_level(3),
+        );
+        let level = crate::generator::generate(&config).expect("pinned seed generates");
+        let entry = level.room_indices().next().expect("level has rooms");
+        (level, entry)
+    }
+
+    #[test]
+    fn the_boss_arena_attaches_and_is_marked() {
+        let (mut level, entry) = pinned_boss_level();
+        let before = level.room_count();
+        let boss = attach_boss_room(&mut level, entry)
+            .expect("the pinned level must take a boss arena");
+        assert_eq!(level.boss_room(), Some(boss), "the graph carries the marker");
+        assert!(level.room_count() >= before + 2, "arena + approach corridor added");
+        assert!(level.is_fully_connected(), "the arena hangs off the existing graph");
+    }
+
+    #[test]
+    fn the_arena_dwarfs_regular_rooms() {
+        let (mut level, entry) = pinned_boss_level();
+        let boss = attach_boss_room(&mut level, entry).expect("attach");
+        let room = level.room(boss).expect("boss room exists");
+        assert_eq!(room.template.kind, TemplateKind::Room);
+        assert!(
+            room.template.extents[0] >= BOSS_ROOM_XZ
+                && room.template.extents[2] >= BOSS_ROOM_XZ,
+            "extents {:?} must dwarf the 3-6 cell regular rooms",
+            room.template.extents
+        );
+        assert!(room.template.extents[1] >= BOSS_ROOM_STORIES);
+    }
+
+    #[test]
+    fn the_approach_is_a_long_corridor() {
+        let (mut level, entry) = pinned_boss_level();
+        let boss = attach_boss_room(&mut level, entry).expect("attach");
+        let neighbors: Vec<_> = level.neighbors(boss).collect();
+        assert_eq!(neighbors.len(), 1, "the arena has exactly one way in");
+        let corridor = level.room(neighbors[0]).expect("approach exists");
+        assert_eq!(corridor.template.kind, TemplateKind::Corridor);
+        let length = corridor.template.extents.into_iter().max().unwrap();
+        assert!(
+            length >= MIN_BOSS_CORRIDOR,
+            "approach length {length} must sell the long walk in (≥ {MIN_BOSS_CORRIDOR})"
+        );
+    }
+
+    #[test]
+    fn the_arena_becomes_the_farthest_room_so_the_portal_follows() {
+        let (mut level, entry) = pinned_boss_level();
+        let boss = attach_boss_room(&mut level, entry).expect("attach");
+        assert_eq!(level.farthest_room_from(entry), Some(boss),
+            "portal_position keys off the farthest room — it must be the arena");
+
+        let cell_size = 4.0;
+        let portal = crate::portal::portal_position(&level, cell_size)
+            .expect("portal placed");
+        let room = level.room(boss).unwrap();
+        let story_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+        let origin = room.world_position(cell_size, story_height);
+        let ex = room.template.extents[0] as f32 * cell_size;
+        let ez = room.template.extents[2] as f32 * cell_size;
+        assert!(portal[0] >= origin[0] && portal[0] <= origin[0] + ex,
+            "portal x inside the arena");
+        assert!(portal[2] >= origin[2] && portal[2] <= origin[2] + ez,
+            "portal z inside the arena");
+    }
+
+    #[test]
+    fn the_arena_carries_a_boss_spawn_and_a_reward_spot() {
+        // One enemy spawn (the boss — B5's manifest places it) and one loot
+        // spawn (the red/consolation container — B7) — both near the center.
+        let (mut level, entry) = pinned_boss_level();
+        let boss = attach_boss_room(&mut level, entry).expect("attach");
+        let template = &level.room(boss).unwrap().template;
+        assert_eq!(template.enemy_spawns.len(), 1, "exactly the boss spawns here");
+        assert_eq!(template.loot_spawns.len(), 1, "exactly the reward drops here");
+    }
+
+    #[test]
+    fn boss_attachment_is_deterministic() {
+        let (mut a, entry_a) = pinned_boss_level();
+        let (mut b, entry_b) = pinned_boss_level();
+        let boss_a = attach_boss_room(&mut a, entry_a).expect("attach a");
+        let boss_b = attach_boss_room(&mut b, entry_b).expect("attach b");
+        assert_eq!(a.room(boss_a).unwrap().grid_pos, b.room(boss_b).unwrap().grid_pos);
+    }
+
+    #[test]
+    fn plain_generation_leaves_the_graph_unmarked() {
+        let (level, _) = pinned_boss_level();
+        assert_eq!(level.boss_room(), None,
+            "only attach_boss_room may mark a boss arena");
     }
 
     #[test]

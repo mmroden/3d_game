@@ -61,12 +61,6 @@ impl LaserLevel {
 
     /// Death penalty: halve the level (round down), minimum Red.
     /// Level 4→2, Level 3→1, Level 7→3, Level 2→1, Level 1→1.
-    pub fn downgrade(&self) -> LaserLevel {
-        let current = *self as u32;
-        let new_level = (current / 2).max(1);
-        Self::from_level(new_level).unwrap_or(Self::Red)
-    }
-
     /// Construct from numeric level (1-7).
     pub fn from_level(n: u32) -> Option<LaserLevel> {
         match n {
@@ -144,17 +138,6 @@ mod tests {
         assert_eq!(LaserLevel::Red.next(), Some(LaserLevel::Orange));
         assert_eq!(LaserLevel::Indigo.next(), Some(LaserLevel::Violet));
         assert_eq!(LaserLevel::Violet.next(), None);
-    }
-
-    #[test]
-    fn downgrade_halves_level() {
-        assert_eq!(LaserLevel::Red.downgrade(), LaserLevel::Red);       // 1/2=0 -> clamped to 1
-        assert_eq!(LaserLevel::Orange.downgrade(), LaserLevel::Red);    // 2/2=1
-        assert_eq!(LaserLevel::Yellow.downgrade(), LaserLevel::Red);    // 3/2=1
-        assert_eq!(LaserLevel::Green.downgrade(), LaserLevel::Orange);  // 4/2=2
-        assert_eq!(LaserLevel::Blue.downgrade(), LaserLevel::Orange);   // 5/2=2
-        assert_eq!(LaserLevel::Indigo.downgrade(), LaserLevel::Yellow); // 6/2=3
-        assert_eq!(LaserLevel::Violet.downgrade(), LaserLevel::Yellow); // 7/2=3
     }
 
     #[test]

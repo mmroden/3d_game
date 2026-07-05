@@ -44,6 +44,9 @@ pub struct MainMenuUI {
     /// Whether a continuable run exists. Defaults pessimistic; GameManager
     /// pushes the truth whenever the menu is shown.
     continue_available: bool,
+    /// Post-run-over mode: the Continue row restarts sector 1 with the
+    /// profile applied (its label says so) instead of resuming a snapshot.
+    continue_restarts: bool,
     labels: LiveVec<Label>,
     /// The container the action rows live in, kept so a Continue-availability
     /// change can rebuild just the rows.
@@ -75,6 +78,7 @@ impl ICanvasLayer for MainMenuUI {
             cursor: MenuCursor::new(3),
             actions: actions_for(false),
             continue_available: false,
+            continue_restarts: false,
             labels: LiveVec::new(),
             items_parent: None,
             in_options: false,
@@ -151,11 +155,15 @@ impl MainMenuUI {
     /// continuable run exists. Rebuilds the rows when the answer changes,
     /// with the cursor parked on New Game.
     #[func]
-    pub fn set_continue_available(&mut self, available: bool) {
-        if self.continue_available == available && !self.labels.is_empty() {
+    pub fn set_continue_available(&mut self, available: bool, restarts: bool) {
+        if self.continue_available == available
+            && self.continue_restarts == restarts
+            && !self.labels.is_empty()
+        {
             return;
         }
         self.continue_available = available;
+        self.continue_restarts = restarts;
         self.rebuild_items();
     }
 }
@@ -234,14 +242,16 @@ impl MainMenuUI {
         let Some(items_parent) = &self.items_parent else { return };
         let actions = self.actions.clone();
         let selected = self.cursor.index();
+        let restarts = self.continue_restarts;
         let mut new_labels: Vec<Gd<Label>> = Vec::new();
         items_parent.with(|vbox| {
             for (i, action) in actions.iter().enumerate() {
                 let mut label = Label::new_alloc();
+                let name = Self::action_label(*action, restarts);
                 let text = if i == selected {
-                    format!("> {}", action.label())
+                    format!("> {name}")
                 } else {
-                    format!("  {}", action.label())
+                    format!("  {name}")
                 };
                 label.set_text(&text);
                 label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_ROW);
@@ -293,9 +303,19 @@ impl MainMenuUI {
         }
     }
 
+    /// The row text for an action; the Continue row says what it will DO —
+    /// resume the run, or restart sector 1 with the profile (post-run-over).
+    fn action_label(action: MenuAction, restarts: bool) -> &'static str {
+        match action {
+            MenuAction::Continue if restarts => "Continue — Restart Sector 1",
+            other => other.label(),
+        }
+    }
+
     fn update_cursor(&mut self) {
         let selected = self.cursor.index();
         let actions = &self.actions;
+        let restarts = self.continue_restarts;
         self.labels.for_each_live(|i, label, _| {
             let color = if i == selected {
                 super::rgb(ui_style::TEXT_SELECTED)
@@ -305,10 +325,11 @@ impl MainMenuUI {
             label.add_theme_color_override(theme::FONT_COLOR, color);
 
             let Some(action) = actions.get(i) else { return };
+            let name = Self::action_label(*action, restarts);
             if i == selected {
-                label.set_text(&format!("> {}", action.label()));
+                label.set_text(&format!("> {name}"));
             } else {
-                label.set_text(&format!("  {}", action.label()));
+                label.set_text(&format!("  {name}"));
             }
         });
     }

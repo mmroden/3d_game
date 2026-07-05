@@ -12,6 +12,7 @@ mod player_drone;
 mod level_manager;
 mod persistence;
 pub(crate) mod views;
+mod boss_gate;
 mod portal;
 mod game_manager;
 mod turntable;

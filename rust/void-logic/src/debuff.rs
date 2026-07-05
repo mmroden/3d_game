@@ -60,6 +60,39 @@ impl Default for SlowDebuff {
     }
 }
 
+/// A latch drain: while the BossLatcher holds contact it siphons hull at a
+/// fixed rate, but damage crosses to `RunState::take_damage` only in whole
+/// points — the fractional remainder accrues here so the total over any
+/// stretch of contact is exactly `floor(dps × seconds)` regardless of how
+/// the physics ticks slice it (no float HP drift).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrainDebuff {
+    dps: f32,
+    /// Fractional damage accrued but not yet emitted. f64: the exactness
+    /// contract must survive thousands of 8ms ticks without drift.
+    accumulated: f64,
+}
+
+impl DrainDebuff {
+    pub fn new(dps: f32) -> Self {
+        Self { dps, accumulated: 0.0 }
+    }
+
+    /// Advance contact time; returns the whole damage points to apply now.
+    pub fn tick(&mut self, delta: f32) -> u32 {
+        self.accumulated += f64::from(self.dps) * f64::from(delta.max(0.0));
+        let whole = self.accumulated.floor();
+        self.accumulated -= whole;
+        whole as u32
+    }
+
+    /// Contact broke: forfeit the fractional remainder so re-latching never
+    /// banks damage from a previous grab.
+    pub fn reset(&mut self) {
+        self.accumulated = 0.0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +178,46 @@ mod tests {
         let mut d = SlowDebuff::new();
         d.apply(1.5, 1.0);
         assert_eq!(d.multiplier(), 1.0);
+    }
+
+    // --- DrainDebuff (B5) ---
+
+    #[test]
+    fn drain_emits_floor_of_dps_times_time() {
+        let mut d = DrainDebuff::new(7.5);
+        assert_eq!(d.tick(2.0), 15);
+    }
+
+    #[test]
+    fn drain_holds_fractions_until_a_whole_point_accrues() {
+        let mut d = DrainDebuff::new(2.0);
+        assert_eq!(d.tick(0.4), 0, "0.8 accrued — nothing whole yet");
+        assert_eq!(d.tick(0.2), 1, "1.2 accrued — one point crosses");
+    }
+
+    #[test]
+    fn drain_total_is_split_invariant() {
+        // The same 10 seconds of contact must cost the same hull whether the
+        // physics loop slices it into 8ms ticks or hands it over whole.
+        // 3.25 is binary-exact and 32.5 sits far from an integer boundary,
+        // so input representation error can never flip the floor.
+        let mut fine = DrainDebuff::new(3.25);
+        let mut fine_total: u32 = 0;
+        let steps = 1250; // 1250 × 8ms = 10s
+        for _ in 0..steps {
+            fine_total += fine.tick(0.008);
+        }
+        let mut coarse = DrainDebuff::new(3.25);
+        let coarse_total = coarse.tick(10.0);
+        assert_eq!(fine_total, coarse_total, "tick slicing must not change cost");
+        assert_eq!(coarse_total, 32, "floor(3.25 × 10)");
+    }
+
+    #[test]
+    fn drain_reset_forfeits_the_fraction() {
+        let mut d = DrainDebuff::new(2.0);
+        assert_eq!(d.tick(0.4), 0); // 0.8 banked
+        d.reset();
+        assert_eq!(d.tick(0.4), 0, "re-latch starts from zero, not 1.6");
     }
 }
