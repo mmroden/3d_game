@@ -324,12 +324,10 @@ pub fn manifest(graph: &LevelGraph, pitch: Pitch, seed: Seed, level: u32) -> Lev
 
     // A staged boss claims its arena outright: the schedule names the kind,
     // the graph marks the room, and no regular roll happens there.
-    let boss_arena = crate::boss::boss_for_level(level).and_then(|kind| {
-        graph
-            .room_indices()
-            .position(|idx| Some(idx) == graph.boss_room())
-            .map(|pos| (pos, kind))
-    });
+    let boss_arena = graph
+        .room_indices()
+        .position(|idx| Some(idx) == graph.boss_room())
+        .zip(crate::boss::boss_for_level(level));
 
     let rooms = rooms_assembly
         .iter()
