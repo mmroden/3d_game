@@ -414,6 +414,22 @@ fn cells_for_at(template: &RoomTemplate, origin: [i32; 3]) -> Vec<[i32; 3]> {
 
 #[cfg(test)]
 mod tests {
+    /// Attribute spec for tests: fresh profile, pinned run seed. The
+    /// GENERATION seed still travels separately.
+    fn spec_for(level: u32) -> crate::level_spec::LevelSpec {
+        crate::level_spec::LevelSpec::for_level(
+            crate::seed::Seed::new(1),
+            level,
+            &crate::unlocks::PermanentUnlocks::new(),
+        )
+    }
+
+    fn config_for(seed: u64, rooms: usize, level: u32) -> crate::generator::GeneratorConfig {
+        let mut spec = spec_for(level);
+        spec.room_budget = rooms;
+        crate::generator::GeneratorConfig::for_spec(&spec, crate::seed::Seed::new(seed))
+    }
+
     /// The planet-1 pitch, spelled out: tests may hold literals.
     const TEST_PITCH: crate::planet::Pitch =
         crate::planet::Pitch { tile: 4.0, story: 5.0 };
@@ -472,11 +488,7 @@ mod tests {
     /// Seed 1, level 3 — the first mid-boss level; B6's GUT scenario builds
     /// exactly this level, so these pins and the shell can never drift.
     fn pinned_boss_level() -> (LevelGraph, petgraph::graph::NodeIndex) {
-        let config = GeneratorConfig::standard(
-            crate::seed::Seed::new(1),
-            crate::generator::rooms_for_level(3),
-            3,
-        );
+        let config = config_for(1, crate::generator::rooms_for_level(3), 3);
         let level = crate::generator::generate(&config).expect("pinned seed generates");
         let entry = level.room_indices().next().expect("level has rooms");
         (level, entry)

@@ -56,7 +56,6 @@ pub mod methods {
     pub const ON_RENDER_VIEWPORTS_CHANGED: &str = "on_render_viewports_changed";
     pub const ON_BOSS_ARENA_ENTERED: &str = "on_boss_arena_entered";
     pub const SEAL_BOSS_GATE: &str = "seal_boss_gate";
-    pub const STAGE_RED_CONTAINER: &str = "stage_red_container";
     pub const SET_SEALED: &str = "set_sealed";
     pub const SET_DORMANT: &str = "set_dormant";
     pub const DISARM: &str = "disarm";
@@ -116,6 +115,10 @@ pub mod methods {
     pub const UPDATE_LEVEL: &str = "update_level";
     pub const UPDATE_SHIELD: &str = "update_shield";
     pub const UPDATE_POWER_MODE: &str = "update_power_mode";
+    /// The GUT/dev door on LevelManager. Production builds cross typed
+    /// (`build_from_spec`), so only GDScript and the crossing lint below
+    /// reference this name — hence the test gate.
+    #[cfg(test)]
     pub const GENERATE_LEVEL: &str = "generate_level";
     pub const GENERATE_BACKDROP: &str = "generate_backdrop";
     pub const ROOM_FLOOR_CENTER: &str = "room_floor_center";

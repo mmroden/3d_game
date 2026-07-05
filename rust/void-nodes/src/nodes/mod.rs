@@ -9,7 +9,7 @@ mod enemy_bolt;
 mod bolt_pool;
 mod currency_cache;
 mod player_drone;
-mod level_manager;
+pub(crate) mod level_manager;
 mod persistence;
 pub(crate) mod views;
 mod boss_gate;

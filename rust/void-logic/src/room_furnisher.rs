@@ -423,12 +423,15 @@ pub fn light_fixtures(
     template: &RoomTemplate,
     active_connectors: &[Connector],
     world_origin: [f32; 3],
-    cell_size: f32,
+    pitch: crate::planet::Pitch,
     ambiance_seed: u64,
 ) -> Vec<(MeshPlacement, LightSource)> {
     use crate::asset_catalog::CEILING_LIGHTS;
 
-    let story_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+    // The level's pitch, never a wall set's constant (audit 2026-07-05:
+    // this was a live single-source violation — 5 m fixtures in 3 m rooms).
+    let cell_size = pitch.tile;
+    let story_height = pitch.story;
     // Per-light state + color come from this stream, kept separate from
     // geometry so a fixture's position never depends on its liveness.
     let mut ambiance = SmallRng::seed_from_u64(ambiance_seed);

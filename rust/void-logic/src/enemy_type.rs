@@ -137,21 +137,13 @@ impl EnemyType {
         match self {
             Self::EyeDrone => Some((Self::SpawnDrone, 1)),
             Self::SphereCarrier => Some((Self::SpawnDrone, 2)),
-            // Killing the Brute starts phase two.
-            Self::BossBrute => Some((Self::SpawnDrone, 3)),
+            // Boss composition (what they field, when, how many) is FIGHT
+            // design, not an intrinsic fact — it lives on `BossKind::minions`
+            // + `BossStaging.adds` (audit 2026-07-05), never here.
             Self::GunDrone | Self::QuadOrb | Self::Bomber | Self::QuadShell
             | Self::SpawnDrone | Self::SphereGunner | Self::SphereStriker
-            | Self::AlienTroop | Self::SentryDrone | Self::BossLatcher => None,
-        }
-    }
-
-    /// Escorts that activate the moment this enemy ENGAGES (vs `death_spawn`,
-    /// which activates on death). Pre-built dormant beside the parent by the
-    /// same minion machinery; only the trigger differs.
-    pub fn escorts(&self) -> Option<(EnemyType, u8)> {
-        match self {
-            Self::BossLatcher => Some((Self::SpawnDrone, 3)),
-            _ => None,
+            | Self::AlienTroop | Self::SentryDrone
+            | Self::BossBrute | Self::BossLatcher => None,
         }
     }
 
@@ -268,58 +260,9 @@ impl EnemyType {
             .expect("EnemyType::ALL must contain every variant") as i32
     }
 
-    /// Minimum level at which this enemy type first appears in the pools —
-    /// `None` for the boss-duty reserves, which have no pool tier at all
-    /// (`spawns_directly` alone owns "never pooled"; no sentinel values).
-    /// Rosters are planet-scoped (a planet = six levels): planet 1
-    /// (levels 1-6) is the Quaternius fleet; the white cgtrader spheres mix
-    /// in on planet 2 (levels 7+) without retiring the veterans.
-    pub fn min_level(&self) -> Option<u32> {
-        match self {
-            // Planet 1: the sentry walks its beat from level 1; level 2 adds
-            // pressure (Bomber, EyeDrone), level 4 the shielded tank.
-            Self::SentryDrone => Some(1),
-            Self::Bomber | Self::EyeDrone => Some(2),
-            // Appears (via EyeDrone/Carrier death) from level 3.
-            Self::SpawnDrone => Some(3),
-            Self::QuadShell => Some(4),
-            // Planet 2: the white sphere fleet arrives one tier per level.
-            Self::SphereGunner => Some(7),
-            Self::SphereStriker => Some(8),
-            Self::AlienTroop => Some(9),
-            Self::SphereCarrier => Some(11),
-            // Boss duty: placed by the schedule, never by pools.
-            Self::GunDrone | Self::QuadOrb
-            | Self::BossBrute | Self::BossLatcher => None,
-        }
-    }
-}
-
-/// Returns which enemy types can be placed directly at a given level. Spawn-only
-/// types (the SpawnDrone) are excluded — they appear solely as death spawns.
-pub fn enemies_for_level(level: u32) -> Vec<EnemyType> {
-    EnemyType::ALL
-        .iter()
-        .filter(|e| e.spawns_directly() && e.min_level().is_some_and(|m| m <= level))
-        .copied()
-        .collect()
-}
-
-
-pub fn coverage_for_level(level: u32) -> Vec<EnemyType> {
-    let direct = enemies_for_level(level);
-    let mut seen = [false; EnemyType::ALL.len()];
-    for t in &direct {
-        seen[t.id() as usize] = true;
-        if let Some((minion, _)) = t.death_spawn() {
-            seen[minion.id() as usize] = true;
-        }
-    }
-    EnemyType::ALL
-        .iter()
-        .copied()
-        .filter(|t| seen[t.id() as usize])
-        .collect()
+    // Scheduling facts (WHEN a type appears) live on the level side —
+    // `level_spec::ROSTER_SCHEDULE` — not here (one truth, one door;
+    // owner's call 2026-07-05). This type carries only intrinsic facts.
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -451,59 +394,6 @@ mod tests {
     }
 
     #[test]
-    fn level_1_is_the_basic_sentry_only() {
-        let enemies = enemies_for_level(1);
-        assert_eq!(enemies, vec![EnemyType::SentryDrone],
-            "level 1 should spawn only the basic sentry drone");
-    }
-
-    #[test]
-    fn the_mechs_never_spawn_in_the_regular_pools() {
-        // The evil-mech models graduated to bosses (owner's call 2026-07-04):
-        // GunDrone and QuadOrb keep their ids (bestiary/save compat) but
-        // never place directly again.
-        for level in 1..=12 {
-            let pool = enemies_for_level(level);
-            assert!(!pool.contains(&EnemyType::GunDrone),
-                "level {level}: GunDrone is a boss model now");
-            assert!(!pool.contains(&EnemyType::QuadOrb),
-                "level {level}: QuadOrb is a boss model now");
-        }
-    }
-
-    #[test]
-    fn the_white_spheres_arrive_on_planet_two() {
-        // Planet 1 (levels 1-6) is the Quaternius fleet; the white cgtrader
-        // spheres are planet-2 machines (owner's call 2026-07-04) and mix in
-        // from level 7 on.
-        assert!(!enemies_for_level(6).contains(&EnemyType::SphereGunner),
-            "no white spheres anywhere on planet 1");
-        assert!(enemies_for_level(7).contains(&EnemyType::SphereGunner),
-            "the sphere gunner opens planet 2");
-        assert!(!enemies_for_level(7).contains(&EnemyType::SphereStriker));
-        assert!(enemies_for_level(8).contains(&EnemyType::SphereStriker),
-            "the strafing striker arrives at level 8");
-        assert!(!enemies_for_level(8).contains(&EnemyType::AlienTroop));
-        assert!(enemies_for_level(9).contains(&EnemyType::AlienTroop),
-            "the alien latcher arrives at level 9");
-        assert!(!enemies_for_level(10).contains(&EnemyType::SphereCarrier));
-        assert!(enemies_for_level(11).contains(&EnemyType::SphereCarrier),
-            "the carrier arrives at level 11");
-    }
-
-    #[test]
-    fn planet_one_fleet_mixes_into_planet_two() {
-        // Planet 2 ADDS the spheres on top of the Quaternius fleet — it does
-        // not replace it (owner's call: escalating variety, not a swap).
-        let pool = enemies_for_level(7);
-        for veteran in [EnemyType::SentryDrone, EnemyType::Bomber,
-                        EnemyType::EyeDrone, EnemyType::QuadShell] {
-            assert!(pool.contains(&veteran),
-                "{veteran:?} keeps spawning on planet 2");
-        }
-    }
-
-    #[test]
     fn the_carrier_releases_two_spawn_drones_on_death() {
         assert_eq!(EnemyType::SphereCarrier.death_spawn(),
             Some((EnemyType::SpawnDrone, 2)),
@@ -511,21 +401,9 @@ mod tests {
     }
 
     #[test]
-    fn enemies_for_level_high_includes_all_directly_spawnable() {
-        let enemies = enemies_for_level(11);
-        let direct = EnemyType::ALL.iter().filter(|e| e.spawns_directly()).count();
-        assert_eq!(enemies.len(), direct);
-    }
-
-    #[test]
     fn spawn_drone_is_never_placed_directly() {
-        assert!(!EnemyType::SpawnDrone.spawns_directly());
-        for level in 1..=10 {
-            assert!(
-                !enemies_for_level(level).contains(&EnemyType::SpawnDrone),
-                "SpawnDrone must never be in the direct spawn list (level {level})"
-            );
-        }
+        assert!(!EnemyType::SpawnDrone.spawns_directly(),
+            "the SpawnDrone exists only as another machine's death spawn");
     }
 
     #[test]
@@ -534,15 +412,6 @@ mod tests {
         let gun = EnemyType::GunDrone.stats();
         assert!(spawn.hp.as_f32() < gun.hp.as_f32(), "SpawnDrone is weaker");
         assert!(spawn.speed > gun.speed, "SpawnDrone is faster");
-    }
-
-    #[test]
-    fn enemies_for_level_scales() {
-        let l1 = enemies_for_level(1).len();
-        let l3 = enemies_for_level(3).len();
-        let l8 = enemies_for_level(8).len();
-        assert!(l3 > l1);
-        assert!(l8 > l3);
     }
 
     #[test]
@@ -577,41 +446,6 @@ mod tests {
     // --- Bosses (B5) ---
 
     #[test]
-    fn min_level_speaks_only_for_pool_relevant_types() {
-        // Review nit (2026-07-05): no sentinel values — `spawns_directly`
-        // alone owns "never pooled"; `min_level` is None for the reserves
-        // and a real tier for everyone the pools (or coverage) care about.
-        for e in EnemyType::ALL {
-            match e {
-                EnemyType::GunDrone | EnemyType::QuadOrb
-                | EnemyType::BossBrute | EnemyType::BossLatcher => {
-                    assert_eq!(e.min_level(), None,
-                        "{e:?} is boss duty — no pool tier, no sentinel");
-                }
-                _ => {
-                    let tier = e.min_level()
-                        .unwrap_or_else(|| panic!("{e:?} needs a pool tier"));
-                    assert!((1..=11).contains(&tier),
-                        "{e:?} tier {tier} is a real level, not a sentinel");
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn bosses_never_enter_the_level_pools() {
-        for level in 1..=24 {
-            let pool = enemies_for_level(level);
-            assert!(!pool.contains(&EnemyType::BossBrute),
-                "level {level}: the Brute is placed by the boss schedule only");
-            assert!(!pool.contains(&EnemyType::BossLatcher),
-                "level {level}: the Latcher is placed by the boss schedule only");
-        }
-        assert!(!EnemyType::BossBrute.spawns_directly());
-        assert!(!EnemyType::BossLatcher.spawns_directly());
-    }
-
-    #[test]
     fn bosses_wear_the_evil_mechs_at_boss_scale() {
         // The mechs were "way too cool" for the line — they ARE the bosses.
         assert_eq!(EnemyType::BossBrute.model_path(),
@@ -638,30 +472,13 @@ mod tests {
     }
 
     #[test]
-    fn the_brute_kites_and_death_spawns_a_drone_trio() {
+    fn boss_intrinsics_stay_but_composition_lives_on_the_fight_side() {
+        // Archetypes are intrinsic; what a boss FIELDS is fight design
+        // (`BossKind::minions` + staging) — the tables here stay silent.
         assert_eq!(EnemyType::BossBrute.stats().archetype, Archetype::Kiter);
-        assert_eq!(EnemyType::BossBrute.death_spawn(),
-            Some((EnemyType::SpawnDrone, 3)),
-            "killing the Brute starts the second phase, not the celebration");
-        assert_eq!(EnemyType::BossBrute.escorts(), None);
-    }
-
-    #[test]
-    fn the_latcher_swarms_with_a_circling_escort() {
         assert_eq!(EnemyType::BossLatcher.stats().archetype, Archetype::Swarmer);
-        assert_eq!(EnemyType::BossLatcher.escorts(),
-            Some((EnemyType::SpawnDrone, 3)),
-            "the escort is up the moment the fight starts, not on death");
+        assert_eq!(EnemyType::BossBrute.death_spawn(), None);
         assert_eq!(EnemyType::BossLatcher.death_spawn(), None);
-    }
-
-    #[test]
-    fn only_the_latcher_has_escorts() {
-        for enemy in EnemyType::ALL {
-            if *enemy != EnemyType::BossLatcher {
-                assert_eq!(enemy.escorts(), None, "{enemy:?} fights alone on engage");
-            }
-        }
     }
 
     // --- Archetype + behaviour config ---
@@ -727,50 +544,6 @@ mod tests {
     }
 
     // --- Level coverage (bestiary: direct + death-spawn types) ---
-
-    #[test]
-    fn coverage_includes_direct_roster() {
-        // Coverage is a superset of the directly-placed roster at every level.
-        for level in 1..=10 {
-            let coverage = coverage_for_level(level);
-            for direct in enemies_for_level(level) {
-                assert!(coverage.contains(&direct),
-                    "level {level}: coverage missing direct type {direct:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn coverage_surfaces_spawn_drone_from_eye_drone() {
-        // The EyeDrone is admitted at level 2 (its min_level); its death spawns a
-        // SpawnDrone, which `enemies_for_level` (direct-only) never lists. From
-        // level 2 up, coverage must include the SpawnDrone.
-        for level in 2..=10 {
-            let coverage = coverage_for_level(level);
-            assert!(coverage.contains(&EnemyType::EyeDrone), "level {level}: no EyeDrone");
-            assert!(coverage.contains(&EnemyType::SpawnDrone),
-                "level {level}: EyeDrone present but SpawnDrone absent from coverage");
-        }
-    }
-
-    #[test]
-    fn coverage_excludes_spawn_drone_below_eye_drone_level() {
-        // Level 1 is GunDrone-only (no EyeDrone), so no SpawnDrone can appear.
-        let coverage = coverage_for_level(1);
-        assert!(!coverage.contains(&EnemyType::EyeDrone), "level 1 has no EyeDrone");
-        assert!(!coverage.contains(&EnemyType::SpawnDrone),
-            "level 1 cannot produce a SpawnDrone, so coverage must exclude it");
-    }
-
-    #[test]
-    fn coverage_is_all_ordered_and_deduplicated() {
-        let coverage = coverage_for_level(8);
-        let ids: Vec<u32> = coverage.iter().map(|t| t.id() as u32).collect();
-        let mut sorted = ids.clone();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(sorted, ids, "coverage must be ALL-ordered and deduplicated");
-    }
 
     #[test]
     fn eye_drone_spawns_a_spawn_drone_on_death() {

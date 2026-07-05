@@ -22,11 +22,11 @@ use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
 use void_logic::generator::{generate, GeneratorConfig};
+use void_logic::level_spec::LevelSpec;
 use void_logic::level_assembly::{self, RoomBounds};
 use void_logic::level_graph::{LevelGraph, RENDER_ROOM_DEPTH};
 use void_logic::room_furnisher::LightState;
 use void_logic::room_assembler::{Collision, MeshPlacement};
-use void_logic::boss;
 use void_logic::portal as portal_sys;
 use void_logic::enemy_type;
 use void_logic::seed::Seed;
@@ -96,11 +96,11 @@ pub struct LevelManager {
     /// The exit portal on a boss level (`None` elsewhere) — pre-built
     /// dormant; activates when the fight's reward is collected.
     boss_portal: Option<LiveRef<Portal>>,
-    /// GameManager stages this before every build: `true` when this level's
-    /// boss drops the RED hull container (planet-final with hulls left to
-    /// win); otherwise the boss drops the consolation pile. Ownership policy
-    /// stays in the mediator — the builder only obeys.
-    red_container_staged: bool,
+    /// The typed description of the level under (or after) construction —
+    /// THE door for every level attribute (pitch, paradigm, roster, boss
+    /// staging). Constructed by GameManager (production) or the test door
+    /// (`generate_level`); retained beside the graph for the level's life.
+    spec: Option<LevelSpec>,
     /// Blinking light fixtures and their full ("on") energy, modulated
     /// each frame so a flickering abandoned base reads as alive.
     blinking_lights: LiveVec<OmniLight3D, f32>,
@@ -128,7 +128,7 @@ impl INode3D for LevelManager {
             player_drones: LiveVec::new(),
             boss_gate: None,
             boss_portal: None,
-            red_container_staged: false,
+            spec: None,
             blinking_lights: LiveVec::new(),
             blink_time: 0.0,
         }
@@ -227,13 +227,6 @@ impl LevelManager {
             origin[1] + 1.5,
             origin[2] + ez as f32 * pitch.tile * 0.5,
         )
-    }
-
-    /// GameManager stages the red container before triggering a build —
-    /// see the field doc; false on every non-final level.
-    #[func]
-    pub fn stage_red_container(&mut self, staged: bool) {
-        self.red_container_staged = staged;
     }
 
     /// Seal or open the arena gate (no-op off boss levels). GameManager
@@ -346,12 +339,28 @@ impl LevelManager {
     /// parked player and no exit gate floats in the loadout room.
     #[func]
     pub fn generate_backdrop(&mut self, seed: i64) {
-        self.build_level(seed, 1, true);
+        let mut spec = self.door_spec(seed);
+        spec.room_budget = 1;
+        self.build_from_spec(spec, seed, true);
     }
 
+    /// Dev/test door (GUT structural suites, the editor): builds a fresh-
+    /// profile spec for the property-set `current_level`, with the caller's
+    /// explicit room budget. Production goes through GameManager's typed
+    /// `build_from_spec` — BOTH converge on the one spec constructor.
     #[func]
     pub fn generate_level(&mut self, seed: i64, target_rooms: u32) {
-        self.build_level(seed, target_rooms, false);
+        let mut spec = self.door_spec(seed);
+        spec.room_budget = target_rooms as usize;
+        self.build_from_spec(spec, seed, false);
+    }
+
+    fn door_spec(&self, seed: i64) -> LevelSpec {
+        LevelSpec::for_level(
+            Seed::from_i64(seed),
+            self.current_level.max(1) as u32,
+            &void_logic::unlocks::PermanentUnlocks::new(),
+        )
     }
 }
 
@@ -363,13 +372,11 @@ impl LevelManager {
     /// containers, spawns enemies, and places the exit portal. Both drive the
     /// same per-room steps, so the backdrop room is identical to the one the
     /// player would fly through.
-    fn build_level(&mut self, seed: i64, target_rooms: u32, structure_only: bool) {
+    pub(crate) fn build_from_spec(&mut self, spec: LevelSpec, seed: i64, structure_only: bool) {
         let seed = Seed::from_i64(seed);
-        let level_number = self.current_level.max(1) as u32;
-        // The canonical parameters live in void-logic (GeneratorConfig::
-        // standard) so seed-property pins in the model tests can never drift
-        // from what the shell actually builds.
-        let config = GeneratorConfig::standard(seed, target_rooms as usize, level_number);
+        self.current_level = spec.level as i32;
+        self.spec = Some(spec.clone());
+        let config = GeneratorConfig::for_spec(&spec, seed);
 
         let mut graph = match generate(&config) {
             Ok(g) => g,
@@ -383,10 +390,10 @@ impl LevelManager {
         // corridor off the farthest room ending in the sealed-off arena. The
         // arena becomes the new farthest room, so the portal and exit-room
         // accents follow with zero changes. The backdrop build stays bossless.
-        if !structure_only && boss::boss_for_level(level_number).is_some() {
+        if !structure_only && spec.boss.is_some() {
             let entry = graph.room_indices().next();
             let attached = entry
-                .and_then(|e| spatial_layout::attach_boss_room(&mut graph, e, self.pitch()));
+                .and_then(|e| spatial_layout::attach_boss_room(&mut graph, e, spec.pitch));
             if attached.is_none() {
                 godot_warn!("Boss arena failed to attach; level runs bossless");
             }
@@ -395,7 +402,7 @@ impl LevelManager {
         // Assemble each room's content, grouped into the three build steps the
         // shell mirrors: structure, then non-enemy inhabitants (props +
         // containers), then enemies.
-        let rooms = level_assembly::spawn_list_full(&graph, self.pitch(), seed, level_number);
+        let rooms = level_assembly::spawn_list_full(&graph, &spec, seed);
 
         // The level manifest (Faucet Principle, tier-1 model): resolves each
         // enemy's type, expands its death-spawn minions, and binds one blue
@@ -404,7 +411,7 @@ impl LevelManager {
         // that used to live inline here now lives in the manifest. Its rooms
         // align one-for-one with `rooms` (both from `spawn_list_full`).
         let level = self.current_level;
-        let manifest = level_assembly::manifest(&graph, self.pitch(), seed, level as u32);
+        let manifest = level_assembly::manifest(&graph, &spec, seed);
 
         // Drop any room nodes from a previous level before rebuilding.
         self.room_nodes.for_each_live(|_, node, _| node.queue_free());
@@ -546,14 +553,16 @@ impl LevelManager {
                     // the red hull container when GameManager staged one,
                     // otherwise the consolation pile as extra bound caches.
                     if is_boss {
-                        if self.red_container_staged {
-                            parent.bind_mut().set_cache_kind(CurrencyKind::HullReward);
-                        } else {
-                            for (kind, amount) in boss::consolation_pile(level_number) {
-                                if let Some(mut bonus) = Self::build_cache(&mut loader, &mut level_mgr) {
-                                    parent.bind_mut().bind_bonus_cache(&bonus, kind, amount);
-                                    bonus.bind_mut().set_boss_loot(true);
-                                    self.caches.push(&bonus, ());
+                        if let Some(staging) = &spec.boss {
+                            if staging.hull_reward.is_some() {
+                                parent.bind_mut().set_cache_kind(CurrencyKind::HullReward);
+                            } else {
+                                for (kind, amount) in staging.pile.iter().copied() {
+                                    if let Some(mut bonus) = Self::build_cache(&mut loader, &mut level_mgr) {
+                                        parent.bind_mut().bind_bonus_cache(&bonus, kind, amount);
+                                        bonus.bind_mut().set_boss_loot(true);
+                                        self.caches.push(&bonus, ());
+                                    }
                                 }
                             }
                         }
@@ -684,7 +693,7 @@ impl LevelManager {
 
         godot_print!(
             "Level generated: {} rooms, {} meshes, {} lights, {} enemies{}",
-            target_rooms,
+            spec.room_budget,
             mesh_count,
             light_count,
             enemy_count,
@@ -823,7 +832,10 @@ impl LevelManager {
     /// (`planet::Pitch::for_level`); every conversion in this node and every
     /// void-logic call goes through it.
     fn pitch(&self) -> void_logic::planet::Pitch {
-        void_logic::planet::Pitch::for_level(self.current_level.max(1) as u32)
+        self.spec
+            .as_ref()
+            .map(|s| s.pitch)
+            .unwrap_or_else(|| void_logic::planet::Pitch::for_level(1))
     }
 
     /// Show only the player's current room and its portal-neighbors;

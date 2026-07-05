@@ -256,7 +256,7 @@ pub const DOOR: &str = megakit_platform!("Door_Frame_Square.gltf");
 /// face and rotation is the only difference (the 6DOF principle). Panels
 /// are flat plates authored `pitch × pitch` in XZ, thin in Y, split from
 /// the source kit by `scripts/split-panels.py`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PanelSet {
     pub id: &'static str,
     /// Every panel spans exactly one cell face at this pitch (meters).

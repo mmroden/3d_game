@@ -180,18 +180,34 @@ fn collect_rects(
 
 #[cfg(test)]
 mod tests {
+    /// Attribute spec for tests: fresh profile, pinned run seed. The
+    /// GENERATION seed still travels separately.
+    fn spec_for(level: u32) -> crate::level_spec::LevelSpec {
+        crate::level_spec::LevelSpec::for_level(
+            crate::seed::Seed::new(1),
+            level,
+            &crate::unlocks::PermanentUnlocks::new(),
+        )
+    }
+
+    fn config_for(seed: u64, rooms: usize, level: u32) -> crate::generator::GeneratorConfig {
+        let mut spec = spec_for(level);
+        spec.room_budget = rooms;
+        crate::generator::GeneratorConfig::for_spec(&spec, crate::seed::Seed::new(seed))
+    }
+
     /// The planet-1 pitch, spelled out: tests may hold literals.
     const TEST_PITCH: crate::planet::Pitch =
         crate::planet::Pitch { tile: 4.0, story: 5.0 };
 
     use super::*;
-    use crate::generator::{generate, GeneratorConfig};
+    use crate::generator::{generate};
     use crate::room_template::TemplateKind;
-    use crate::seed::Seed;
+
 
     /// The pinned GUT seed's level, through the shell's exact build path.
     fn level() -> LevelGraph {
-        generate(&GeneratorConfig::standard(Seed::from_i64(1), 8, 1))
+        generate(&config_for(1, 8, 1))
             .expect("the pinned seed must generate")
     }
 

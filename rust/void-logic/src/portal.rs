@@ -32,19 +32,35 @@ pub fn portal_position(graph: &LevelGraph, pitch: Pitch) -> Option<[f32; 3]> {
 
 #[cfg(test)]
 mod tests {
+    /// Attribute spec for tests: fresh profile, pinned run seed. The
+    /// GENERATION seed still travels separately.
+    fn spec_for(level: u32) -> crate::level_spec::LevelSpec {
+        crate::level_spec::LevelSpec::for_level(
+            crate::seed::Seed::new(1),
+            level,
+            &crate::unlocks::PermanentUnlocks::new(),
+        )
+    }
+
+    fn config_for(seed: u64, rooms: usize, level: u32) -> crate::generator::GeneratorConfig {
+        let mut spec = spec_for(level);
+        spec.room_budget = rooms;
+        crate::generator::GeneratorConfig::for_spec(&spec, crate::seed::Seed::new(seed))
+    }
+
     /// The planet-1 pitch, spelled out: tests may hold literals.
     const TEST_PITCH: crate::planet::Pitch =
         crate::planet::Pitch { tile: 4.0, story: 5.0 };
 
     use super::*;
-    use crate::generator::{generate, rooms_for_level, GeneratorConfig};
-    use crate::seed::Seed;
+    use crate::generator::{generate, rooms_for_level};
+
     use crate::spatial_layout::attach_boss_room;
 
     const CELL: f32 = 4.0;
 
     fn pinned_boss_graph() -> LevelGraph {
-        let config = GeneratorConfig::standard(Seed::new(1), rooms_for_level(3), 3);
+        let config = config_for(1, rooms_for_level(3), 3);
         let mut graph = generate(&config).expect("pinned seed generates");
         let entry = graph.room_indices().next().expect("has rooms");
         attach_boss_room(&mut graph, entry, TEST_PITCH).expect("arena attaches");
@@ -92,7 +108,7 @@ mod tests {
 
     #[test]
     fn regular_levels_keep_the_center_portal() {
-        let config = GeneratorConfig::standard(Seed::new(1), rooms_for_level(1), 1);
+        let config = config_for(1, rooms_for_level(1), 1);
         let graph = generate(&config).expect("generates");
         let first = graph.room_indices().next().expect("rooms");
         let far = graph.farthest_room_from(first).expect("farthest");

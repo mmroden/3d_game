@@ -23,12 +23,12 @@ use super::godot_util;
 use void_logic::audio_catalog::SfxEvent;
 use void_logic::bestiary::{self, BestiaryKind};
 use void_logic::boss_fight::BossFight;
-use void_logic::enemy_type::{self, EnemyType};
+use void_logic::enemy_type::EnemyType;
 use void_logic::game_options::GameOptions;
 use void_logic::game_phase::GamePhase;
-use void_logic::generator::rooms_for_level;
 use void_logic::input_method::InputMethod;
 use void_logic::level_map;
+use void_logic::level_spec::LevelSpec;
 use void_logic::newtypes::Damage;
 use void_logic::power_routing::PowerMode;
 use void_logic::currency::CurrencyKind;
@@ -64,6 +64,10 @@ pub struct GameManager {
     /// elsewhere. Reset on every level entry; GameManager alone advances it
     /// and fans the beats out to gate, escorts, music, and portal.
     boss_fight: Option<BossFight>,
+    /// The typed description of the current level — constructed once per
+    /// level entry (THE door for its attributes) and retained for its
+    /// lifetime; the same value is handed to LevelManager's build.
+    level_spec: Option<LevelSpec>,
 
     /// Pins the run seed for reproducible runs when nonzero (0 = random).
     /// Configuration, not build flavor: set it in the editor or a test
@@ -100,6 +104,7 @@ impl INode for GameManager {
             bestiary_index: 0,
             pending_respawn: false,
             boss_fight: None,
+            level_spec: None,
             start_level: 0,
             debug_hop_held: (false, false),
             fixed_seed: 0,
@@ -333,11 +338,12 @@ impl GameManager {
             // A boss death advances the fight — but opens NOTHING: the gate
             // stays sealed until the reward is taken (see on_cache_collected).
             if matches!(enemy_type, EnemyType::BossBrute | EnemyType::BossLatcher) {
-                let drops = void_logic::boss::boss_drop_count(
-                    self.run_state.run_seed,
-                    self.run_state.current_level,
-                    &self.run_state.unlocks,
-                );
+                let drops = self
+                    .level_spec
+                    .as_ref()
+                    .and_then(|s| s.boss.as_ref())
+                    .map(|b| b.drop_count())
+                    .unwrap_or(0);
                 if let Some(fight) = &mut self.boss_fight {
                     if fight.defeat(drops) {
                         godot_print!(
@@ -801,7 +807,12 @@ impl GameManager {
                     self.run_state.current_room,
                     self.run_state.unlocks.contains(Unlock::RouteScanner),
                 ),
-                level_map::map_projection(lm.graph(), void_logic::planet::Pitch::for_level(self.run_state.current_level)),
+                level_map::map_projection(
+                    lm.graph(),
+                    self.level_spec.as_ref().map(|s| s.pitch).unwrap_or_else(
+                        || void_logic::planet::Pitch::for_level(self.run_state.current_level),
+                    ),
+                ),
             )
         };
 
@@ -993,14 +1004,15 @@ impl GameManager {
     pub fn on_cache_collected(&mut self, kind_id: i32, amount: i64, boss_loot: bool) {
         let Some(kind) = CurrencyKind::from_id(kind_id) else { return };
         if kind == CurrencyKind::HullReward {
-            // The red container: a hull, not a balance. Same deterministic
-            // roll that staged it; the components fallback only fires if
-            // the fleet somehow completed since the build.
-            match void_logic::boss::roll_hull_reward(
-                self.run_state.run_seed,
-                self.run_state.current_level,
-                &self.run_state.unlocks,
-            ) {
+            // The red container: a hull, not a balance. The hull was rolled
+            // ONCE, at spec construction — the grant reads that staging; the
+            // components fallback is a never-expected safety arm.
+            match self
+                .level_spec
+                .as_ref()
+                .and_then(|s| s.boss.as_ref())
+                .and_then(|b| b.hull_reward)
+            {
                 Some(hull) => {
                     self.run_state.unlocks.grant(Unlock::Ship(hull));
                     self.persist_profile();
@@ -1246,7 +1258,12 @@ impl GameManager {
         // (the SpawnDrone an EyeDrone drops), so the briefing lists a type the
         // moment the level can produce it. `enemies_for_level` filtered on
         // `spawns_directly()` and could never surface a death-only enemy.
-        for enemy in enemy_type::coverage_for_level(self.run_state.current_level) {
+        let coverage = self
+            .level_spec
+            .as_ref()
+            .map(|s| s.coverage.clone())
+            .unwrap_or_default();
+        for enemy in coverage {
             if self.run_state.mark_enemy_seen(enemy) {
                 grew = true;
             }
@@ -1806,39 +1823,30 @@ impl GameManager {
     }
 
     fn regenerate_level(&mut self) {
-        // The staged fight resets with the level: armed on the schedule's
-        // boss levels, absent elsewhere. GameManager alone advances it.
-        self.boss_fight = void_logic::boss::boss_for_level(self.run_state.current_level)
-            .map(|_| BossFight::new());
-        // The red container is a mediator decision (only GameManager knows
-        // the profile): staged only on a planet-final level with hulls left
-        // to win. The builder obeys.
-        let red_container = void_logic::boss::is_planet_final(self.run_state.current_level)
-            && void_logic::boss::roll_hull_reward(
-                self.run_state.run_seed,
-                self.run_state.current_level,
-                &self.run_state.unlocks,
-            )
-            .is_some();
+        // ONE spec construction per level entry: every attribute (pitch,
+        // paradigm, roster, boss staging incl. the red container and the
+        // rolled hull) resolves here, against the profile, and this same
+        // value drives the build and every later mediator decision.
+        let spec = LevelSpec::for_level(
+            self.run_state.run_seed,
+            self.run_state.current_level,
+            &self.run_state.unlocks,
+        );
+        self.boss_fight = spec.boss.as_ref().map(|_| BossFight::new());
+        self.level_spec = Some(spec.clone());
         let Some(parent) = self.base().get_parent() else { return };
-        if let Some(mut level_mgr) = parent.try_get_node_as::<Node>(nodes::LEVEL_MANAGER) {
-            level_mgr.call(
-                methods::STAGE_RED_CONTAINER,
-                &[Variant::from(red_container)],
-            );
+        if let Some(level_mgr) = parent.try_get_node_as::<LevelManager>(nodes::LEVEL_MANAGER) {
+            let mut level_mgr = level_mgr;
             // Clear old children
             for mut child in level_mgr.get_children().iter_shared() {
                 child.queue_free();
             }
-            // Set current level for enemy scaling
-            level_mgr.set(properties::CURRENT_LEVEL, &Variant::from(self.run_state.current_level as i32));
-            // Generate with the seed derived from the run seed and level.
+            // Typed crossing — no stringly staging pre-calls, no property
+            // pushes syncing duplicate state.
             let seed = self.run_state.level_seed();
-            let target_rooms = rooms_for_level(self.run_state.current_level) as u32;
-            level_mgr.call(
-                methods::GENERATE_LEVEL,
-                &[Variant::from(seed.as_i64()), Variant::from(target_rooms)],
-            );
+            level_mgr
+                .bind_mut()
+                .build_from_spec(spec, seed.as_i64(), false);
         }
         // `generate_level` builds synchronously (add_child is synchronous), so
         // the whole pre-instantiated roster — enemies, dormant minions, currency

@@ -30,11 +30,11 @@ impl GeneratorConfig {
     /// shell builds every level with. Tests that pin seed properties for the
     /// GUT shell suite must construct through this too, so a pinned seed and
     /// the level the shell actually builds from it can never drift apart.
-    pub fn standard(seed: Seed, max_rooms: usize, level: u32) -> Self {
+    pub fn for_spec(spec: &crate::level_spec::LevelSpec, seed: Seed) -> Self {
         Self {
             seed,
-            pitch: crate::planet::Pitch::for_level(level),
-            max_rooms,
+            pitch: spec.pitch,
+            max_rooms: spec.room_budget,
             min_room_xz: 3,
             max_room_xz: 6,
             min_room_y: 1,
