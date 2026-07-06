@@ -457,16 +457,17 @@ func test_enemy_death_drops_one_pre_built_cache():
 
 
 func test_small_drones_are_hittable_with_aim_forgiveness():
-	# Playtest (2026-07-04): the little spheres (0.5 m models, ~0.25 m
-	# hulls) were nearly impossible to hit. The hitscan's forgiveness ring
-	# must connect a near-miss on a small drone — here 1.4 m off the
-	# center line at 20 m.
+	# Playtest (2026-07-04): the little spheres (0.5 m models, 0.25 m hull
+	# radius) were nearly impossible to hit. The assist is ANGULAR
+	# (LASER_ASSIST_CONE_DEG = 2.5): at 20 m the sight line forgives
+	# hull + tan(2.5°)*20 ≈ 1.12 m — a drone 1.0 m off the center line
+	# misses the hull but sits inside the cone, and must connect.
 	var player = _spawn_player(Vector3.ZERO)
 	player.set_controls_enabled(true)
 	var enemy = load("res://scenes/enemies/enemy.tscn").instantiate()
 	enemy.enemy_type_id = 3  # EyeDrone — one of the tiny spheres
 	add_child_autofree(enemy)
-	enemy.global_position = Vector3(1.4, 0.5, -20)
+	enemy.global_position = Vector3(1.0, 0.5, -20)
 	enemy.freeze = true  # hold the geometry still for a precise ray test
 	await wait_physics_frames(2, "let the drone build its hull and bar")
 
