@@ -194,13 +194,16 @@ impl IRigidBody3D for EnemyDrone {
             def.model.as_str(),
             def.size,
         ) {
-            // Mesh-hugging convex colliders (one per part), like the loose
-            // props — far better than a sphere wrapping a mech-shaped hull.
+            // ONE whole-model convex hull: the enemy's collider is a HIT
+            // TARGET first — the convex envelope of the silhouette the
+            // player aims at, concavities filled. (Per-part hulls hugged
+            // each piece and left the rest gaps: 6–61% silhouette coverage,
+            // audit 2026-07-05 — test_enemy_colliders pins >90% now.)
             // Built on the body (which never rotates), so it stays put while
             // the pivot yaws the visual — fine for a roughly radial drone.
             let xform = model.get_transform();
             let mut body: Gd<RigidBody3D> = self.base().clone();
-            godot_util::add_convex_collision(&mut body, &model, xform);
+            godot_util::add_whole_model_convex_hull(&mut body, &model, xform);
         }
         self.model_pivot = Some(LiveRef::new(&pivot));
 
@@ -396,6 +399,14 @@ impl EnemyDrone {
         let grammar = roster();
         let id = grammar.expect_enemy_by_crossing_id(self.enemy_type_id as u16);
         grammar.enemy(id).reward as i64
+    }
+
+    /// Half the def's fit size — the hull radius the aim assist credits
+    /// this drone with (the sight line must pass within it + the cone).
+    pub fn assist_radius(&self) -> f32 {
+        let grammar = roster();
+        let id = grammar.expect_enemy_by_crossing_id(self.enemy_type_id as u16);
+        grammar.enemy(id).size * 0.5
     }
 
     /// The def's `spawns_directly` — GDScript's grammar door for "is this a

@@ -31,11 +31,11 @@ const TURN_GAIN: f32 = 12.0;
 /// Wing offset from ship center (local X axis), in meters.
 const WING_OFFSET: f32 = 0.3;
 
-/// Aim forgiveness: lasers also test a ring of this radius around the centre
-/// line, so a near-miss still connects instead of needing pixel-perfect aim.
-/// Sized against the SMALLEST enemies (0.5 m models, ~0.25 m hulls —
-/// playtest 2026-07-04: they read as unhittable at 0.7).
-const LASER_AIM_RADIUS: f32 = 1.3;
+/// Aim forgiveness: a shot whose sight line passes within this ANGLE of an
+/// enemy's hull still connects — constant on-screen generosity at every
+/// range (2.5° ≈ 0.4 m of slop at 10 m, 1.1 m at 25 m, on top of the hull
+/// radius). A feel value to tune.
+const LASER_ASSIST_CONE_DEG: f32 = 2.5;
 /// Minimum gap between collision sounds (so a wall scrape doesn't machine-gun).
 const IMPACT_SOUND_COOLDOWN: f32 = 0.4;
 /// How far off the hull (m) the hit sound is placed, toward whatever struck us.
@@ -750,7 +750,6 @@ impl ShipController {
         let center = self.base().get_global_position() + global_basis.col_b() * 0.5;
         let forward = -global_basis.col_c();
         let right = global_basis.col_a();
-        let up = global_basis.col_b();
 
         let left_origin = center - right * WING_OFFSET;
         let right_origin = center + right * WING_OFFSET;
@@ -758,7 +757,7 @@ impl ShipController {
         // Hit-test down the reticle (centre line) with an aim-assist spread, then
         // converge both visible beams on whatever it found — so the lasers hit
         // where the crosshair points, not parallel-offset from the wings.
-        let hit_point = self.cast_forgiving(center, forward, right, up, damage * 2.0);
+        let hit_point = self.cast_forgiving(center, forward, damage * 2.0);
         self.spawn_beam(left_origin, hit_point);
         self.spawn_beam(right_origin, hit_point);
 
@@ -768,73 +767,106 @@ impl ShipController {
         }
     }
 
-    /// Hit-test from the centre line plus a ring of offset rays (aim assist).
-    /// The first ray to strike a damageable target wins (full dual damage);
-    /// otherwise the centre ray's wall/end point is returned so the beams land.
-    fn cast_forgiving(
-        &mut self,
-        center: Vector3,
-        forward: Vector3,
-        right: Vector3,
-        up: Vector3,
-        damage: f32,
-    ) -> Vector3 {
+    /// Hit-test down the reticle line with ANGULAR forgiveness. Exact aim wins:
+    /// the center ray takes whatever it strikes, wall or enemy. When it
+    /// misses, the nearest enemy whose hull the sight line passes within
+    /// `tan(LASER_ASSIST_CONE_DEG)·distance` of — with a clear line of sight
+    /// — takes the hit instead. A cone is constant on-screen generosity at
+    /// every range; the old fixed-radius ray ring was statistically dead
+    /// (nine discrete spokes, playtest 2026-07-05: only exact hits landed).
+    fn cast_forgiving(&mut self, center: Vector3, forward: Vector3, damage: f32) -> Vector3 {
         let max_range = self.weapon.max_range;
         let fallback = center + forward * max_range;
         let Some(world) = self.base().get_world_3d() else { return fallback };
         let Some(mut space) = world.get_direct_space_state() else { return fallback };
         let self_rid = self.base().get_rid();
 
-        let r = LASER_AIM_RADIUS;
-        // Center, the four cardinals, and the four diagonals: nine rays so
-        // a small hull can't slip between the spokes.
-        let d = r * std::f32::consts::FRAC_1_SQRT_2;
-        let offsets = [
-            Vector3::ZERO,
-            right * r,
-            -right * r,
-            up * r,
-            -up * r,
-            (right + up) * d,
-            (right - up) * d,
-            (-right + up) * d,
-            (-right - up) * d,
-        ];
+        // Exact aim first: walls clip the beam, a struck enemy ends it.
         let mut beam_end = fallback;
-        for (i, off) in offsets.iter().enumerate() {
-            let origin = center + *off;
+        if let Some(mut query) =
+            PhysicsRayQueryParameters3D::create(center, center + forward * max_range)
+        {
+            query.set_exclude(&array![self_rid]);
+            // Point-blank forgiveness: rays don't hit shapes they start
+            // inside unless told to — an enemy hugging the muzzle must die.
+            query.set_hit_from_inside(true);
+            let result = space.intersect_ray(&query);
+            if !result.is_empty() {
+                if let Some(pos) = result.get("position") {
+                    beam_end = pos.to::<Vector3>();
+                }
+                if let Some(collider) = result.get("collider") {
+                    let mut obj = collider.to::<Gd<Node3D>>();
+                    if obj.has_method(methods::TAKE_DAMAGE) {
+                        obj.call(methods::TAKE_DAMAGE, &[Variant::from(damage)]);
+                        let normal = result
+                            .get("normal")
+                            .unwrap_or(Variant::from(Vector3::UP))
+                            .to::<Vector3>();
+                        self.spawn_hit_sparks(beam_end, normal);
+                        return beam_end;
+                    }
+                }
+            }
+        }
+
+        // Angular assist: nearest cone candidate with a clear line of sight.
+        let tan_cone = LASER_ASSIST_CONE_DEG.to_radians().tan();
+        let mut candidates: Vec<(f32, Gd<super::enemy_drone::EnemyDrone>)> = Vec::new();
+        let tree = self.base().get_tree();
+        for node in tree.get_nodes_in_group(groups::ENEMIES).iter_shared() {
+            let Ok(enemy) = node.try_cast::<super::enemy_drone::EnemyDrone>() else {
+                continue;
+            };
+            if !enemy.is_visible_in_tree() {
+                continue;
+            }
+            let to = enemy.get_global_position() - center;
+            let along = to.dot(forward);
+            if along <= 0.0 || along > max_range {
+                continue;
+            }
+            let perp = (to - forward * along).length();
+            if perp > enemy.bind().assist_radius() + tan_cone * along {
+                continue;
+            }
+            candidates.push((along, enemy));
+        }
+        candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (_, enemy) in candidates {
+            // The forgiven shot still obeys walls: the ray to the enemy's
+            // center must reach the ENEMY first.
             let Some(mut query) =
-                PhysicsRayQueryParameters3D::create(origin, origin + forward * max_range)
+                PhysicsRayQueryParameters3D::create(center, enemy.get_global_position())
             else {
                 continue;
             };
             query.set_exclude(&array![self_rid]);
-            // Point-blank forgiveness: a hugging enemy surrounds the ray
-            // origin, and rays don't hit shapes they start inside unless
-            // told to — without this, an enemy in your face is unkillable.
             query.set_hit_from_inside(true);
             let result = space.intersect_ray(&query);
             if result.is_empty() {
                 continue;
             }
-            let Some(hit_pos_var) = result.get("position") else { continue };
-            let hit_pos = hit_pos_var.to::<Vector3>();
-            if let Some(collider) = result.get("collider") {
-                let mut obj = collider.to::<Gd<Node3D>>();
-                if obj.has_method(methods::TAKE_DAMAGE) {
-                    obj.call(methods::TAKE_DAMAGE, &[Variant::from(damage)]);
-                    let normal = result
-                        .get("normal")
-                        .unwrap_or(Variant::from(Vector3::UP))
-                        .to::<Vector3>();
-                    self.spawn_hit_sparks(hit_pos, normal);
-                    return hit_pos;
-                }
+            let Some(collider) = result.get("collider") else { continue };
+            let Ok(hit_node) = collider.to::<Gd<godot::classes::Node>>().try_cast::<Node3D>()
+            else {
+                continue;
+            };
+            if hit_node.instance_id() != enemy.instance_id() {
+                continue; // occluded — a wall owns this lane
             }
-            // No target on this ray; the centre ray defines where the beam lands.
-            if i == 0 {
-                beam_end = hit_pos;
-            }
+            let mut obj = hit_node;
+            obj.call(methods::TAKE_DAMAGE, &[Variant::from(damage)]);
+            let hit_pos = result
+                .get("position")
+                .map(|p| p.to::<Vector3>())
+                .unwrap_or_else(|| enemy.get_global_position());
+            let normal = result
+                .get("normal")
+                .unwrap_or(Variant::from(Vector3::UP))
+                .to::<Vector3>();
+            self.spawn_hit_sparks(hit_pos, normal);
+            return hit_pos;
         }
         beam_end
     }

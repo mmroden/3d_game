@@ -4,7 +4,7 @@
 use godot::prelude::*;
 use godot::classes::{
     MeshInstance3D, BoxMesh, StandardMaterial3D, OmniLight3D,
-    RigidBody3D, CollisionShape3D, PackedScene, ResourceLoader,
+    RigidBody3D, CollisionShape3D, ConvexPolygonShape3D, PackedScene, ResourceLoader,
     ParticleProcessMaterial, BaseMaterial3D, Texture2D,
     particle_process_material::Parameter,
     base_material_3d,
@@ -268,6 +268,47 @@ pub fn add_convex_collision(body: &mut Gd<RigidBody3D>, node: &Gd<Node3D>, xform
             add_convex_collision(body, &child3d, child_xform);
         }
     }
+}
+
+/// Add ONE convex hull spanning the whole model to `body`: every mesh part's
+/// vertices, transformed into body space, hulled together. This is the HIT
+/// TARGET for enemies — the convex envelope of the silhouette the player
+/// aims at, concavities filled (per-part hulls left a quadruped mostly gaps:
+/// the 2026-07-05 audit measured 6–61% silhouette coverage across the
+/// roster). Points are baked into body space here and the shape transform
+/// stays identity, so no engine scaled-shape semantics are involved — and
+/// one shape beats N per-part hulls in Jolt's narrowphase too.
+pub fn add_whole_model_convex_hull(
+    body: &mut Gd<RigidBody3D>,
+    node: &Gd<Node3D>,
+    xform: Transform3D,
+) {
+    fn gather(node: &Gd<Node3D>, xform: Transform3D, points: &mut PackedVector3Array) {
+        if let Ok(mesh_inst) = node.clone().try_cast::<MeshInstance3D>() {
+            if let Some(mesh) = mesh_inst.get_mesh() {
+                for p in mesh.get_faces().as_slice() {
+                    points.push(xform * *p);
+                }
+            }
+        }
+        for child in node.get_children().iter_shared() {
+            if let Ok(child3d) = child.try_cast::<Node3D>() {
+                let child_xform = xform * child3d.get_transform();
+                gather(&child3d, child_xform, points);
+            }
+        }
+    }
+
+    let mut points = PackedVector3Array::new();
+    gather(node, xform, &mut points);
+    if points.is_empty() {
+        return;
+    }
+    let mut shape = ConvexPolygonShape3D::new_gd();
+    shape.set_points(&points);
+    let mut col = CollisionShape3D::new_alloc();
+    col.set_shape(&shape);
+    body.add_child(&col);
 }
 
 /// Union of every `MeshInstance3D` AABB under `root`, expressed in `root`'s

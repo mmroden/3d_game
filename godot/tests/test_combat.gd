@@ -220,6 +220,123 @@ func test_player_trigger_damages_an_enemy_inside_the_full_game_stack():
 		"holding the trigger at a live enemy must deal damage inside the full stack")
 
 
+func test_the_laser_forgives_a_near_miss_inside_the_assist_cone():
+	# The aim assist is ANGULAR (playtest 2026-07-05: the old fixed-radius
+	# ray ring was statistically dead — only exact center-ray hits ever
+	# landed). Contract: a shot whose center ray misses the hull by a hair,
+	# but whose sight line passes within the assist cone of the enemy,
+	# still connects. Level 1 fields only sentries (0.5 m, hull radius
+	# ~0.25): at 5 m, aiming 0.4 m off center misses the hull by ~0.15 m
+	# and sits inside hull + tan(2.5°)*5 ≈ 0.47 m of allowance.
+	var setup: Dictionary = await _full_stack_aimed_at_enemy(Vector3(0.40, 0, 0))
+	if setup.is_empty():
+		return
+	await _assert_trigger_hurts(setup, true,
+		"a near-miss inside the assist cone must connect")
+
+
+func test_the_laser_never_hits_far_outside_the_assist_cone():
+	# The cone is forgiveness, not auto-aim: a shot ~22° off (2 m lateral
+	# at 5 m) must stay a miss.
+	var setup: Dictionary = await _full_stack_aimed_at_enemy(Vector3(2.0, 0, 0))
+	if setup.is_empty():
+		return
+	await _assert_trigger_hurts(setup, false,
+		"a wild shot far outside the cone must miss")
+
+
+## Build the pinned full stack, park the player on a verified clear 5 m
+## lane to a live enemy, and aim the reticle line at enemy-center plus
+## `aim_offset` expressed in lane coordinates (x = lateral across the
+## lane, y = up). Returns {player, enemy, fill} or {} when staging fails.
+func _full_stack_aimed_at_enemy(aim_offset: Vector3) -> Dictionary:
+	var root := Node3D.new()
+	add_child_autofree(root)
+	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
+		var stub := UiStub.new()
+		stub.name = ui_name
+		root.add_child(stub)
+	var lm := LevelManager.new()
+	lm.name = "LevelManager"
+	var player := ShipController.new()
+	player.name = "Player"
+	var shape := CollisionShape3D.new()
+	shape.name = "CollisionShape3D"
+	shape.shape = SphereShape3D.new()
+	player.add_child(shape)
+	var gm := GameManager.new()
+	gm.fixed_seed = 1
+	root.add_child(lm)
+	root.add_child(player)
+	root.add_child(gm)
+	gm.clear_save_for_tests()
+
+	gm.start_new_game()
+	gm.advance_from_ship_select()
+	for _i in range(12):
+		if gm.get_phase_name() == "Playing":
+			break
+		gm.advance_from_bestiary()
+	assert_eq(gm.get_phase_name(), "Playing", "must reach Playing")
+	await wait_process_frames(2)
+
+	var enemy: RigidBody3D = lm.find_children("*", "EnemyDrone", true, false).front()
+	assert_not_null(enemy, "the pinned level must field at least one enemy")
+	if enemy == null:
+		return {}
+	var fill = enemy.get_node_or_null("HealthBarFill")
+	assert_not_null(fill, "the target needs a health bar to observe")
+	if fill == null:
+		return {}
+
+	var space := player.get_world_3d().direct_space_state
+	var target: Vector3 = enemy.global_position
+	var spot: Vector3 = target + Vector3(0, 0, 5)
+	var found_clear := false
+	for offset in [Vector3(0, 0, 5), Vector3(0, 0, -5), Vector3(5, 0, 0), Vector3(-5, 0, 0)]:
+		var candidate: Vector3 = target + offset
+		var query := PhysicsRayQueryParameters3D.create(target, candidate)
+		query.exclude = [enemy.get_rid()]
+		var hit := space.intersect_ray(query)
+		if hit.is_empty():
+			spot = candidate
+			found_clear = true
+			break
+	assert_true(found_clear, "the pinned level must offer one clear 5 m lane")
+	if not found_clear:
+		return {}
+	player.global_position = spot
+	# Lane coordinates: lateral = across the firing lane, up = world up.
+	var lane: Vector3 = (target - spot).normalized()
+	var lateral: Vector3 = lane.cross(Vector3.UP).normalized()
+	var aim_point: Vector3 = target + Vector3.DOWN * 0.5 \
+		+ lateral * aim_offset.x + Vector3.UP * aim_offset.y
+	player.look_at(aim_point)
+	player.reset_physics_interpolation()
+	return {"player": player, "enemy": enemy, "fill": fill}
+
+
+## Hold the trigger for up to 3 s WITHOUT re-aiming (the offset is the
+## point) and assert whether the enemy got hurt.
+func _assert_trigger_hurts(setup: Dictionary, expect_hurt: bool, message: String) -> void:
+	var enemy: RigidBody3D = setup["enemy"]
+	var fill = setup["fill"]
+	await wait_physics_frames(2, "let the bar render at full health")
+	var full_width: float = fill.global_transform.basis.x.length()
+	Input.action_press("fire")
+	var hurt := false
+	for _i in range(180):
+		await get_tree().physics_frame
+		if not is_instance_valid(enemy) or not enemy.visible:
+			hurt = true
+			break
+		if fill.global_transform.basis.x.length() < full_width * 0.9:
+			hurt = true
+			break
+	Input.action_release("fire")
+	assert_eq(hurt, expect_hurt, message)
+
+
 func test_valkyrie_cannon_fires_only_once_owned():
 	# The green keystone: buying the Valkyrie arms a heavy bolt alongside the
 	# Vanguard's hitscan lasers. Before ownership the trigger spawns no bolts
