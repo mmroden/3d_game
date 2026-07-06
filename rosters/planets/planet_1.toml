@@ -13,7 +13,7 @@ enemies = ["sentry_drone"]
 
 [[level]]
 relative = 2
-enemies = ["sentry_drone", "bomber", "eye_drone"]
+enemies = ["sentry_drone", "bomber"]
 
 [[level]]
 relative = 3

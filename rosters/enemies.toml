@@ -30,13 +30,27 @@ at_level_1 = 1.4
 at_peak = 0.85
 peak_level = 10
 
+# HP
+[curves.hp_standard]
+kind = "ramp"
+at_level_1 = 1.0
+at_peak = 3.0
+peak_level = 10
+
+# Damage
+[curves.damage_standard]
+kind = "ramp"
+at_level_1 = 1.0
+at_peak = 1.5
+peak_level = 10
+
 # Every enemy rides these unless it overrides in [enemy.scaling]. All six
 # stats are declared — flat IS a config call, not an absence.
 [scaling_defaults]
 speed = "speed_standard"
 cooldown = "cooldown_standard"
-hp = "flat"
-damage = "flat"
+hp = "hp_standard"
+damage = "damage_standard"
 detection = "flat"
 attack_range = "flat"
 
@@ -232,7 +246,7 @@ key = "sentry_drone"
 id = 10
 name = "Sentry Drone"
 blurb = "The occupation's standard sentry. It walks its beat, spots you, and shoots — the first machine every scavenger learns to kill."
-model = "Enemy_Raptor"
+model = "Enemy_EyeDrone"
 size = 0.5
 yaw_offset_deg = 0
 ai = "shooter"
@@ -256,6 +270,7 @@ yaw_offset_deg = 180
 ai = "kiter"
 reward = 10000
 spawns_directly = false # staged by boss slots, never rolled into rooms
+minions = [{ enemy = "spawn_drone", count = 1, trigger = "{ every_seconds = 5 }" }]
 [enemy.stats]
 hp = 60.0
 speed = 8.0
@@ -276,6 +291,7 @@ ai = "swarmer"
 reward = 12000
 spawns_directly = false # staged by boss slots, never rolled into rooms
 drain_dps = 6.0 # hull drain while latched — any swarmer may carry this
+minions = [{ enemy = "spawn_drone", count = 2, trigger = "{ every_seconds = 5 }" }]
 [enemy.stats]
 hp = 80.0
 speed = 10.0
