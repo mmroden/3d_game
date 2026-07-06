@@ -19,6 +19,39 @@ pub const PANEL_PADDING: f32 = 24.0;
 /// Background alpha for screens that show the ship showcase behind.
 pub const SHOWCASE_BG_ALPHA: f32 = 0.4;
 
+// ── Type scale ───────────────────────────────────────────────────
+// ONE ladder for every menu screen, sized for couch/glasses distance
+// (playtest 2026-07-04: "the menu text is _tiny_"). Screens never invent
+// their own pixel sizes — pick the role. The in-level HUD keeps its own
+// tighter sizes (it lives inside the SBS safe band).
+
+/// Screen titles — "UPGRADE STATION", "SHIP LOADOUT", the death banner.
+pub const FONT_TITLE: i32 = 72;
+/// Section headers and balance lines.
+pub const FONT_HEADING: i32 = 44;
+/// Menu rows — the things the cursor walks.
+pub const FONT_ROW: i32 = 40;
+/// Body copy — summaries, blurbs, kept/lost lines.
+pub const FONT_BODY: i32 = 32;
+/// Fine print — row detail hints, prompts, pager position.
+pub const FONT_DETAIL: i32 = 26;
+
+// ── HUD type ─────────────────────────────────────────────────────
+// The in-game HUD lives inside the SBS safe band, so its ladder is tighter
+// than the menus' — but still couch-readable, and every HUD label wears a
+// dark outline so it reads against any backdrop (playtest 2026-07-04).
+
+/// The big readouts — health, the slow-warning banner.
+pub const FONT_HUD_PRIMARY: i32 = 38;
+/// Balances, shield, laser, lives, level.
+pub const FONT_HUD_LABEL: i32 = 32;
+/// Power mode, the controls hint.
+pub const FONT_HUD_FINE: i32 = 26;
+/// Outline width (px) on every HUD label.
+pub const HUD_OUTLINE: i32 = 6;
+/// Outline color — near-black, softened just enough not to ring.
+pub const HUD_OUTLINE_COLOR: [f32; 3] = [0.02, 0.03, 0.05];
+
 // ── Text colors ──────────────────────────────────────────────────
 
 /// White — selected / highlighted menu item [R, G, B].
@@ -87,6 +120,26 @@ mod tests {
                 assert!((0.0..=1.0).contains(&c), "{name} out of range: {c}");
             }
         }
+    }
+
+    #[test]
+    fn the_type_scale_descends_and_stays_readable() {
+        assert!(FONT_TITLE > FONT_HEADING);
+        assert!(FONT_HEADING >= FONT_ROW);
+        assert!(FONT_ROW > FONT_BODY);
+        assert!(FONT_BODY > FONT_DETAIL);
+        // The floors the playtest set: rows readable from the couch, the
+        // title anchoring the screen.
+        assert!(FONT_ROW >= 36, "menu rows must be readable from the couch");
+        assert!(FONT_TITLE >= 64);
+        assert!(FONT_DETAIL >= 22, "even fine print must not be squint-sized");
+        // The HUD ladder: tighter than the menus (it shares the safe band
+        // with the action) but never below the readable floor, and always
+        // outlined.
+        assert!(FONT_HUD_PRIMARY > FONT_HUD_LABEL);
+        assert!(FONT_HUD_LABEL > FONT_HUD_FINE);
+        assert!(FONT_HUD_FINE >= 26, "HUD fine print must be couch-readable");
+        assert!(HUD_OUTLINE >= 4, "HUD text needs a real outline to read");
     }
 
     #[test]

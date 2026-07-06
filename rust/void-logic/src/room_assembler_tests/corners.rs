@@ -51,7 +51,7 @@ fn corners_only_at_xz_corner_cells() {
     use crate::cell::CellGrid;
     let ws = &asset_catalog::WALL_SET_ASTRA;
     let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], ws);
-    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], ws.tile_width);
+    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], TILE_WIDTH, STORY_HEIGHT);
 
     // Count cells that have at least one XZ perpendicular corner pair.
     let has_xz_corner_pair = |cell: &crate::cell::Cell| -> bool {
@@ -103,7 +103,7 @@ fn active_connector_removes_corner() {
         [0.0, 0.0, 0.0],
         ws,
     );
-    let grid = CellGrid::new(&room_3x3(), active, [0.0, 0.0, 0.0], ws.tile_width);
+    let grid = CellGrid::new(&room_3x3(), active, [0.0, 0.0, 0.0], TILE_WIDTH, STORY_HEIGHT);
 
     let corners: Vec<_> = placements.iter()
         .filter(|p| p.scene == ws.corner_inner.wall)

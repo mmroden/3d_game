@@ -226,6 +226,22 @@ if [ -d "$SHIPS_SRC" ]; then
         cp -R "$SPACESHIP1_SRC/Texture_Base/"Style_* "$STYLES_DST/"
         echo "  Spaceship_1 color styles installed ($(ls -d "$STYLES_DST"/Style_* 2>/dev/null | wc -l | tr -d ' ') styles)."
     fi
+    # Purchasable hull roster (ship_upgrades/): installed under stable names —
+    # the ShipType spec table (void-logic/src/ship_type.rs) is the single
+    # source of truth for these res:// paths. The old free-floating copies
+    # under their upload-artifact names are removed.
+    UPGRADES_SRC="$SHIPS_SRC/ship_upgrades"
+    if [ -d "$UPGRADES_SRC" ]; then
+        rm -f "$SHIPS_DIR/basic_ship.glb" "$SHIPS_DIR/basic_ship.glb.import" \
+              "$SHIPS_DIR/uploads_files_2828578_Dronbizimisimiz.glb" \
+              "$SHIPS_DIR/uploads_files_2828578_Dronbizimisimiz.glb.import" \
+              "$SHIPS_DIR/uploads_files_4774125_Alien_spacecraft_04_FBX_.glb" \
+              "$SHIPS_DIR/uploads_files_4774125_Alien_spacecraft_04_FBX_.glb.import"
+        cp "$UPGRADES_SRC/basic_ship.glb" "$SHIPS_DIR/talon.glb"
+        cp "$UPGRADES_SRC/Dronbizimisimiz.glb" "$SHIPS_DIR/hive.glb"
+        cp "$UPGRADES_SRC/Alien_spacecraft_04_FBX_.glb" "$SHIPS_DIR/reaver.glb"
+        echo "  Hull roster installed (talon, hive, reaver)."
+    fi
     chmod -R u+w "$SHIPS_DIR"
     echo "  Player ship models installed ($(ls "$SHIPS_DIR"/*.glb 2>/dev/null | wc -l | tr -d ' ') models)."
 else
@@ -265,6 +281,59 @@ if [ -d "$EVIL_MECHS_SRC" ]; then
     fi
 else
     echo "  evil_mechs not found, skipping enemy mechs."
+fi
+
+# ========== Enemy models (CGTrader spheres + alien troop: decimated FBX -> glB) ==========
+# The sphere ships are the basic enemy roster (the mechs graduated to bosses);
+# same FBX + loose "(Textures)" folder shape as the mechs, same Blender pass.
+
+SPHERES_SRC="$SHIPS_SRC/spheres"
+
+if [ -d "$SPHERES_SRC" ]; then
+    ENEMIES_DIR="$GODOT_DIR/addons/enemies"
+    mkdir -p "$ENEMIES_DIR"
+    if [ ! -x "$BLENDER" ]; then
+        echo "  WARNING: Blender not found at $BLENDER — run 'make deps'. Skipping sphere enemies."
+    else
+        echo "  Decimating sphere enemy models (target ${DECIMATE_TARGET} tris)..."
+        for n in 01 02 03; do
+            src="$(find "$SPHERES_SRC" -maxdepth 1 -iname "*Sphere_ship_${n}*.fbx" | head -1)"
+            [ -n "$src" ] || continue
+            tex="$(find "$SPHERES_SRC" -maxdepth 1 -type d -iname "*Sphere_ship_${n}*Textures*" | head -1)"
+            "$BLENDER" --background --python "$(dirname "$0")/decimate.py" -- \
+                "$src" "$ENEMIES_DIR/sphere_ship_${n}.glb" "$DECIMATE_TARGET" "$tex" 2>&1 \
+                | grep -i "decimate:" || echo "  (sphere ${n}: no decimation summary — check Blender output)"
+        done
+        src="$(find "$SPHERES_SRC" -maxdepth 1 -iname "*Alien_troop_01*.fbx" | head -1)"
+        if [ -n "$src" ]; then
+            tex="$(find "$SPHERES_SRC" -maxdepth 1 -type d -iname "*Alien_troop_01*Textures*" | head -1)"
+            "$BLENDER" --background --python "$(dirname "$0")/decimate.py" -- \
+                "$src" "$ENEMIES_DIR/alien_troop_01.glb" "$DECIMATE_TARGET" "$tex" 2>&1 \
+                | grep -i "decimate:" || echo "  (alien troop: no decimation summary — check Blender output)"
+        fi
+        chmod -R u+w "$ENEMIES_DIR"
+        echo "  Sphere enemy models installed."
+    fi
+else
+    echo "  spheres not found, skipping sphere enemies."
+fi
+
+# ========== Planet-2 wall panels (CGTrader parts kit -> per-panel glB) ==========
+# B11 cubic-cell panel worlds: the "Sci-Fi Parts Kit Vol 01" GLB carries 32
+# flat panels as sibling objects; split-panels.py decimates each to game
+# weight and exports one stable-named .glb per panel. Panels serve ANY cell
+# face — there are no floors or ceilings in 6DOF (see the B11 plan).
+WALLS_SRC="$ASSETS_DIR/more_walls"
+VOL01=$(find "$WALLS_SRC" -maxdepth 1 -name "*Vol*01*.glb" 2>/dev/null | head -1)
+if [ -n "$VOL01" ]; then
+    echo "  Splitting planet-2 wall panels (target 800 tris each)..."
+    mkdir -p "$GODOT_DIR/addons/walls"
+    "$BLENDER" --background --python "$(dirname "$0")/split-panels.py" -- \
+        "$VOL01" "$GODOT_DIR/addons/walls" 800 >/dev/null 2>&1 || \
+        echo "  WARNING: panel split failed"
+    echo "  Wall panels installed: $(ls "$GODOT_DIR/addons/walls" | wc -l | tr -d ' ')"
+else
+    echo "  more_walls kit not found, skipping planet-2 panels."
 fi
 
 # ========== Jump gate (CGTrader OBJ -> decimated glB) ==========
@@ -308,13 +377,32 @@ SFX_SRC="$ASSETS_DIR/sfx"
 
 if [ -d "$MUSIC_SRC" ]; then
     echo "  Installing music..."
-    mkdir -p "$AUDIO_DIR/music"
-    for wav in "$MUSIC_SRC"/*.wav; do
+    # Four beds (owner's layout 2026-07-05): ambient (the original wavs —
+    # menu + reserve), per-level loopable backgrounds (1-30 so far), combat
+    # stingers (11-19, random per fight), boss tracks (1-6). Numbered
+    # sources install under stable numeric names the catalog derives.
+    mkdir -p "$AUDIO_DIR/music/ambient" "$AUDIO_DIR/music/levels" \
+             "$AUDIO_DIR/music/combat" "$AUDIO_DIR/music/boss"
+    for wav in "$MUSIC_SRC/Ambient"/*.wav; do
         [ -f "$wav" ] || continue
-        # Sanitize filename: strip "juanjo_sound - " prefix, lowercase, spaces→underscores
         base="$(basename "$wav" .wav)"
         clean="$(echo "$base" | sed 's/^juanjo_sound - //' | tr '[:upper:]' '[:lower:]' | tr ' ' '_')"
-        cp "$wav" "$AUDIO_DIR/music/${clean}.wav"
+        cp "$wav" "$AUDIO_DIR/music/ambient/${clean}.wav"
+    done
+    for mp3 in "$MUSIC_SRC/Level Backgrounds"/*.mp3; do
+        [ -f "$mp3" ] || continue
+        num="$(basename "$mp3" | sed 's/^\([0-9]*\)\..*/\1/')"
+        cp "$mp3" "$AUDIO_DIR/music/levels/level_$(printf '%02d' "$num").mp3"
+    done
+    for mp3 in "$MUSIC_SRC/combat"/*.mp3; do
+        [ -f "$mp3" ] || continue
+        num="$(basename "$mp3" | sed 's/^\([0-9]*\)\..*/\1/')"
+        cp "$mp3" "$AUDIO_DIR/music/combat/combat_${num}.mp3"
+    done
+    for mp3 in "$MUSIC_SRC/Boss Music Tracks"/*.mp3; do
+        [ -f "$mp3" ] || continue
+        num="$(basename "$mp3" | sed 's/^\([0-9]*\)\..*/\1/')"
+        cp "$mp3" "$AUDIO_DIR/music/boss/boss_${num}.mp3"
     done
     chmod -R u+w "$AUDIO_DIR/music"
     echo "  Music installed ($(ls "$AUDIO_DIR/music" | wc -l | tr -d ' ') tracks)."

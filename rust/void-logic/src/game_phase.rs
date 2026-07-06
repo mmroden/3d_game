@@ -54,13 +54,21 @@ impl GamePhase {
                 | (GamePhase::LevelComplete, GamePhase::KillSummary)
                 | (GamePhase::KillSummary, GamePhase::Shop)
                 | (GamePhase::Shop, GamePhase::Playing)
+                // Save & Exit: bank the run at the shop, back to the menu.
+                | (GamePhase::Shop, GamePhase::MainMenu)
                 // Loadout / ship-color screen, reached on new game and between levels.
                 | (GamePhase::MainMenu, GamePhase::ShipSelect)
                 | (GamePhase::Shop, GamePhase::ShipSelect)
-                // Ship-select → bestiary briefing → into the level.
+                // Ship-select → bestiary briefing → into the level; the
+                // briefing can also back out to the loadout (circle is
+                // always back — the two share one backdrop, no rebuild).
                 | (GamePhase::ShipSelect, GamePhase::Bestiary)
+                | (GamePhase::Bestiary, GamePhase::ShipSelect)
                 | (GamePhase::Bestiary, GamePhase::Playing)
                 | (GamePhase::Death, GamePhase::MainMenu)
+                // Losing a life (not the run): through the shop, then back
+                // into the same level via the Shop → Playing edge above.
+                | (GamePhase::Death, GamePhase::Shop)
         )
     }
 }
@@ -100,6 +108,13 @@ mod tests {
     }
 
     #[test]
+    fn shop_can_save_and_exit_to_the_menu() {
+        // The shop's Save & Exit row banks the run and returns to the menu
+        // (owner's ask, 2026-07-04).
+        assert!(GamePhase::Shop.can_transition_to(GamePhase::MainMenu));
+    }
+
+    #[test]
     fn ship_select_flow() {
         assert!(GamePhase::MainMenu.can_transition_to(GamePhase::ShipSelect));
         assert!(GamePhase::Shop.can_transition_to(GamePhase::ShipSelect));
@@ -114,15 +129,25 @@ mod tests {
     fn bestiary_briefing_sits_between_ship_select_and_play() {
         assert!(GamePhase::ShipSelect.can_transition_to(GamePhase::Bestiary));
         assert!(GamePhase::Bestiary.can_transition_to(GamePhase::Playing));
-        // The briefing is a one-way gate into the level, nothing else.
+        // Circle is always back: the briefing can return to the loadout
+        // (they share the backdrop — no rebuild). Forward, only the level.
+        assert!(GamePhase::Bestiary.can_transition_to(GamePhase::ShipSelect));
         assert!(!GamePhase::Bestiary.can_transition_to(GamePhase::Shop));
-        assert!(!GamePhase::Bestiary.can_transition_to(GamePhase::ShipSelect));
         assert!(!GamePhase::Playing.can_transition_to(GamePhase::Bestiary));
     }
 
     #[test]
     fn death_to_main_menu() {
         assert!(GamePhase::Death.can_transition_to(GamePhase::MainMenu));
+    }
+
+    #[test]
+    fn death_to_shop_when_lives_remain() {
+        // Losing a life (not the run) routes through the shop — spend banked
+        // components, maybe buy another life — then back into the same level
+        // via the existing Shop → Playing edge. Death → Playing directly stays
+        // banned (see cannot_skip_phases).
+        assert!(GamePhase::Death.can_transition_to(GamePhase::Shop));
     }
 
     #[test]

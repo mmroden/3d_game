@@ -17,6 +17,8 @@ mod tests;
 /// don't count. See [`LevelGraph::visible_from`].
 pub const RENDER_ROOM_DEPTH: usize = 2;
 
+
+
 /// The full level layout as a graph of flyable spaces connected by edges.
 /// Backed by petgraph for correct, battle-tested graph algorithms.
 /// Generated in pure Rust, then handed to LevelManager (Godot node)
@@ -26,6 +28,10 @@ pub struct LevelGraph {
     graph: UnGraph<PlacedRoom, EdgeKind>,
     /// Tracks which grid cells are occupied to prevent overlap.
     occupied: HashMap<[i32; 3], NodeIndex>,
+    /// The staged boss arena, when this level has one — set once by
+    /// `spatial_layout::attach_boss_room` after generation, never mutated
+    /// during a run. `None` on regular levels.
+    pub(crate) boss_room: Option<NodeIndex>,
 }
 
 impl Default for LevelGraph {
@@ -33,6 +39,7 @@ impl Default for LevelGraph {
         Self {
             graph: UnGraph::new_undirected(),
             occupied: HashMap::new(),
+            boss_room: None,
         }
     }
 }
@@ -45,6 +52,13 @@ impl LevelGraph {
     /// Check whether a grid cell is free.
     pub fn is_free(&self, pos: [i32; 3]) -> bool {
         !self.occupied.contains_key(&pos)
+    }
+
+    /// The staged boss arena, when this level has one. `None` on regular
+    /// levels; the culling, map, and portal paths treat the arena as any
+    /// other room — only the boss-fight flow keys off this marker.
+    pub fn boss_room(&self) -> Option<NodeIndex> {
+        self.boss_room
     }
 
     /// Place a room at a grid position. Returns the node index.
@@ -216,6 +230,21 @@ impl LevelGraph {
     /// traversed — they span the map, so the room on the far side isn't in
     /// view. This is the single authority for cull visibility; the shell
     /// resolves the player's current node and calls it.
+    /// The enemy radar's scope — deliberately LOCAL (owner's call
+    /// 2026-07-04). Standing in a room, the radar hears that room and its
+    /// corridor mouths, never past a door; standing in a corridor, the
+    /// corridor chain and the rooms it joins. Same cost model as
+    /// [`visible_from`], with the budget picked by where you stand.
+    pub fn radar_scope(&self, start: NodeIndex) -> Vec<NodeIndex> {
+        use crate::room_template::TemplateKind;
+        let in_room = self
+            .graph
+            .node_weight(start)
+            .map(|room| room.template.kind == TemplateKind::Room)
+            .unwrap_or(true);
+        self.visible_from(start, if in_room { 0 } else { 1 })
+    }
+
     pub fn visible_from(&self, start: NodeIndex, budget: usize) -> Vec<NodeIndex> {
         use petgraph::algo::dijkstra;
         use petgraph::visit::EdgeFiltered;

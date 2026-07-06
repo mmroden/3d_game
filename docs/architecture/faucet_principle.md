@@ -27,7 +27,7 @@ impurity is accepted — the frame cost and hitches live in structural work.
 ## Two tiers
 
 **Tier 1 — knowable counts, one life each, no reuse.**
-Enemies, death-spawned minions, lootboxes, dynamic props. The build manifest
+Enemies, death-spawned minions, currency caches, dynamic props. The build manifest
 sizes these exactly; each object activates at most once per level and is never
 recycled, so no reset logic exists. All rigid bodies live here.
 
@@ -35,13 +35,24 @@ recycled, so no reset logic exists. All rigid bodies live here.
   from a seeded RNG and `EnemyType::death_spawn()` is pure. Every EyeDrone
   contributes its minions to the manifest as dormant entries, pre-parented
   under the same room container as their parent-to-be.
-- Lootboxes are bounded by enemy count: one dormant box per enemy, activated
-  on drop.
+- Blue currency caches are bounded by enemy count: one dormant cache per
+  enemy, activated on drop carrying the type's component reward. Green
+  (organics) caches are placed at the manifest's loot spawns during the build,
+  through the same `drop_at` activation path — one pickup mechanism, two tints.
+- The player's subdrone squad is fixed at `SQUAD_SIZE`: pre-built dormant per
+  level as LevelManager siblings (escorts must survive room culling), a
+  launch is a dormancy flip, a deployment expiry flips back. One-life-per-
+  level like the caches: freed and rebuilt on regeneration.
 
 **Tier 2 — unbounded counts, ring buffer.**
-Ammunition only. The ring bounds *concurrent* bolts, not total; slot reuse is
-the recycle, and for an `Area3D` bolt the "reset" is the fire routine itself
-(transform, velocity, damage, age, monitoring on). Size the ring generously —
+Ammunition only. ONE ring serves both factions: a slot's `arm` stamps whose
+bolt this life is (enemy or player), any homing lock (instance-id validated
+per tick, the same guard discipline as the generation counter), and any
+payload (a cluster shell's burst re-enters the pool as player fragments).
+The ring bounds *concurrent* bolts, not total; slot reuse is
+the recycle, and for an `Area3D` bolt the "reset" is the arm routine itself
+(transform, velocity, damage, age, faction, lock, payload, monitoring on).
+Size the ring generously —
 dormant slots cost only memory; live cost scales with active bolts alone.
 If every slot is live, overwrite the oldest bolt: a bolt vanishing in its
 final tenths of a second is imperceptible, and it makes the buffer total (no
@@ -51,7 +62,7 @@ allocation fallback, no error path).
 
 - `void-logic` owns the **manifest**: a pure, seed-deterministic enumeration
   of everything the level can contain — direct spawns, death-spawn expansions,
-  lootbox bound, bolt-ring capacity. This is model: *what can exist*.
+  cache bound, bolt-ring capacity. This is model: *what can exist*.
 - `void-nodes` owns **pools and dormancy**: instantiating the manifest during
   the staged load, parenting under room containers, wiring signals once, and
   the dormant⇄active transitions. This is shell: *mechanism*.
@@ -72,8 +83,8 @@ verify than a recycle loop.
 
 - `GameManager::connect_spawned_entities` — the per-frame tree scan — is
   deleted, not optimized. Everything that will ever emit `enemy_killed`,
-  `upgrade_collected`, `organics_collected`, or `portal_entered` exists at
-  build time; the mediator wires signals once, during the load.
+  `cache_collected`, or `portal_entered` exists at build time; the mediator
+  wires signals once, during the load.
 - The death-minion ghost bug class: minions exist under their room container
   from the start, so mediator wiring and room culling cover them structurally.
 - The bestiary gap: the manifest knows every type that can appear this level
@@ -101,7 +112,7 @@ verify than a recycle loop.
    structural allocation (fire path) and `queue_free` churn. Red-first:
    bolt reuse preserves behavior (damage, lifetime, hit detection), stale-hit
    generation guard, dormant slots cost no physics.
-2. **Manifest + tier-1 pools** (minions, lootboxes). `void-logic` manifest
+2. **Manifest + tier-1 pools** (minions, currency caches). `void-logic` manifest
    derivation with pure unit tests; shell pools built during the staged load.
    Deletes `connect_spawned_entities` and `spawn_death_minion`'s
    load-instantiate path; fixes bestiary marking via the manifest.

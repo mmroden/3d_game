@@ -656,6 +656,27 @@ fn visible_from_lights_one_more_room_per_budget_unit() {
 }
 
 #[test]
+fn radar_scope_is_the_room_you_stand_in() {
+    // Owner's call (2026-07-04): the radar is LOCAL. In a room it hears
+    // that room and its corridor mouths — never the room past any door.
+    let (graph, n) = linear_chain();
+    let mut scope: Vec<usize> = graph.radar_scope(n[0]).into_iter().map(|x| x.index()).collect();
+    scope.sort_unstable();
+    assert_eq!(scope, vec![0, 1], "room r0: itself and its corridor mouth only");
+}
+
+#[test]
+fn radar_scope_in_a_corridor_hears_the_rooms_it_joins() {
+    let (graph, n) = linear_chain();
+    let mut scope: Vec<usize> = graph.radar_scope(n[1]).into_iter().map(|x| x.index()).collect();
+    scope.sort_unstable();
+    assert!(scope.contains(&0) && scope.contains(&2),
+        "corridor c0 hears the rooms at both ends, got {scope:?}");
+    assert!(!scope.contains(&4),
+        "and never a room past those, got {scope:?}");
+}
+
+#[test]
 fn visible_from_never_crosses_a_teleporter() {
     let mut graph = LevelGraph::new();
     let r0 = graph.place_room(room_1x1_east_west(), [0, 0, 0]).unwrap();

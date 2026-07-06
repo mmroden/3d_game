@@ -5,18 +5,37 @@ use godot::classes::{
 };
 
 use super::menu_panel;
-use crate::nodes::constants::{actions, signals, theme};
-use crate::nodes::live_handle::LiveVec;
+use crate::nodes::constants::{actions, shop_flags, signals, theme};
+use crate::nodes::live_handle::{LiveRef, LiveVec};
 use void_logic::menu_cursor::MenuCursor;
 use void_logic::ui_style;
 
-/// Upgrade shop between levels: buy laser upgrades with credits.
+/// The between-level (and between-lives) shop. Pure presentation: GameManager
+/// prices the catalog in void-logic (`shop::offers`) and pushes it here as
+/// packed arrays; a buy emits the row's typed item id back and the authority
+/// validates. Unpurchasable stock stays listed (dimmed) so the cursor never
+/// reshuffles under the player.
 #[derive(GodotClass)]
 #[class(base=CanvasLayer)]
 pub struct ShopUI {
     base: Base<CanvasLayer>,
     cursor: MenuCursor,
     labels: LiveVec<Label>,
+    ids: PackedInt32Array,
+    flags: PackedByteArray,
+    /// The press that opened this screen is still `just_pressed` in the
+    /// frame it becomes visible — swallow that one frame of input so it
+    /// can't buy or Continue (playtest 2026-07-04: the kill-summary press
+    /// closed the level-2 shop before it was ever seen).
+    swallow_entry_press: bool,
+    /// A green purchase awaiting confirmation: the info screen for this row
+    /// (what it does + how to trigger it) is up — select again buys, circle
+    /// cancels. Nobody buys a mystery (owner's ask, 2026-07-04).
+    pending_confirm: Option<usize>,
+    confirm_panel: Option<LiveRef<godot::classes::PanelContainer>>,
+    /// Row text retained for the confirm screen's content.
+    row_labels: PackedStringArray,
+    row_details: PackedStringArray,
 }
 
 #[godot_api]
@@ -24,8 +43,15 @@ impl ICanvasLayer for ShopUI {
     fn init(base: Base<CanvasLayer>) -> Self {
         Self {
             base,
-            cursor: MenuCursor::new(2),
+            cursor: MenuCursor::new(1),
             labels: LiveVec::new(),
+            ids: PackedInt32Array::new(),
+            flags: PackedByteArray::new(),
+            swallow_entry_press: false,
+            pending_confirm: None,
+            confirm_panel: None,
+            row_labels: PackedStringArray::new(),
+            row_details: PackedStringArray::new(),
         }
     }
 
@@ -40,23 +66,42 @@ impl ICanvasLayer for ShopUI {
         if !self.base().is_visible() {
             return;
         }
+        if self.swallow_entry_press {
+            self.swallow_entry_press = false;
+            return;
+        }
         let input = Input::singleton();
 
         if input.is_action_just_pressed(actions::MENU_UP) {
+            self.dismiss_confirm();
             self.cursor.move_up();
             self.update_cursor();
         } else if input.is_action_just_pressed(actions::MENU_DOWN) {
+            self.dismiss_confirm();
             self.cursor.move_down();
             self.update_cursor();
+        } else if input.is_action_just_pressed(actions::MENU_BACK) {
+            self.dismiss_confirm();
         } else if input.is_action_just_pressed(actions::MENU_SELECT) {
-            match self.cursor.index() {
-                0 => {
-                    self.base_mut().emit_signal(signals::BUY_PRESSED, &[]);
+            let index = self.cursor.index();
+            if index < self.ids.len() {
+                // Green (permanent) purchases confirm through an info
+                // screen first — what it does, how to trigger it. Blue
+                // rows buy immediately; the authority (GameManager ->
+                // shop::purchase) validates affordability either way.
+                let flag = self.flags.get(index).unwrap_or(0);
+                let green = flag & shop_flags::GREEN != 0;
+                if green && self.pending_confirm != Some(index) {
+                    self.show_confirm(index);
+                } else {
+                    self.dismiss_confirm();
+                    let item_id = self.ids[index];
+                    self.base_mut().emit_signal(signals::BUY_PRESSED, &[Variant::from(item_id)]);
                 }
-                1 => {
-                    self.base_mut().emit_signal(signals::CONTINUE_PRESSED, &[]);
-                }
-                _ => {}
+            } else if index == self.ids.len() {
+                self.base_mut().emit_signal(signals::CONTINUE_PRESSED, &[]);
+            } else {
+                self.base_mut().emit_signal(signals::SAVE_EXIT_PRESSED, &[]);
             }
         }
     }
@@ -65,30 +110,84 @@ impl ICanvasLayer for ShopUI {
 #[godot_api]
 impl ShopUI {
     #[signal]
-    fn buy_pressed();
+    fn buy_pressed(item_id: i32);
 
     #[signal]
     fn continue_pressed();
 
-    /// Populate and show the shop screen.
-    #[func]
+    #[signal]
+    fn save_exit_pressed();
+
+    /// ENTER the shop: cursor at the top, and the press that opened the
+    /// screen swallowed. Fresh-vs-refresh is explicit in the API — it must
+    /// NOT be inferred from visibility, because the phase machine shows the
+    /// layer before the mediator populates it (that inference let the
+    /// level-2 summary press chain straight through a cursor still parked
+    /// on Continue — playtest 2026-07-04).
+    // A Variant-boundary crossing: the arg list IS the wire protocol
+    // (balances + one packed array per row column), not a bundle of state
+    // that wants a struct — GDScript callers can't pass one.
     #[allow(clippy::too_many_arguments)]
+    #[func]
     pub fn show_shop(
         &mut self,
         components: i64,
-        laser_name: GString,
-        laser_color: Color,
-        laser_damage: f32,
-        next_cost: i64,
-        can_afford: bool,
-        is_max: bool,
+        organics: i64,
+        ids: PackedInt32Array,
+        labels: PackedStringArray,
+        details: PackedStringArray,
+        costs: PackedInt64Array,
+        flags: PackedByteArray,
+    ) {
+        self.swallow_entry_press = true;
+        self.populate(components, organics, ids, labels, details, costs, flags, 0);
+    }
+
+    /// RE-PRICE the open shop after a buy: same catalog wire, cursor kept
+    /// on the row the player just used.
+    #[allow(clippy::too_many_arguments)]
+    #[func]
+    pub fn refresh_shop(
+        &mut self,
+        components: i64,
+        organics: i64,
+        ids: PackedInt32Array,
+        labels: PackedStringArray,
+        details: PackedStringArray,
+        costs: PackedInt64Array,
+        flags: PackedByteArray,
+    ) {
+        let keep_row = self.cursor.index().min(ids.len());
+        self.populate(components, organics, ids, labels, details, costs, flags, keep_row);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn populate(
+        &mut self,
+        components: i64,
+        organics: i64,
+        ids: PackedInt32Array,
+        labels: PackedStringArray,
+        details: PackedStringArray,
+        costs: PackedInt64Array,
+        flags: PackedByteArray,
+        keep_row: usize,
     ) {
         for mut child in self.base().get_children().iter_shared() {
             child.queue_free();
         }
-
         self.labels.clear();
-        self.cursor.reset();
+        self.pending_confirm = None;
+        self.confirm_panel = None; // freed with the children above
+        self.ids = ids;
+        self.flags = flags;
+        self.row_labels = labels.clone();
+        self.row_details = details.clone();
+        // Rows: the offers, then Continue, then Save & Exit.
+        self.cursor = MenuCursor::new(self.ids.len() + 2);
+        for _ in 0..keep_row {
+            self.cursor.move_down();
+        }
 
         // Semi-transparent overlay for ship showcase visibility
         let overlay = menu_panel::create_showcase_overlay();
@@ -99,7 +198,7 @@ impl ShopUI {
         // Title
         let mut title = Label::new_alloc();
         title.set_text("UPGRADE STATION");
-        title.add_theme_font_size_override(theme::FONT_SIZE, 48);
+        title.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_TITLE);
         title.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.8, 0.6, 1.0));
         vbox.add_child(&title);
 
@@ -107,67 +206,137 @@ impl ShopUI {
         spacer.set_custom_minimum_size(Vector2::new(0.0, 20.0));
         vbox.add_child(&spacer);
 
-        // Current laser info
-        let mut current = Label::new_alloc();
-        current.set_text(&format!(
-            "Current Laser: {} (Damage: {})",
-            laser_name, laser_damage as i32
-        ));
-        current.add_theme_font_size_override(theme::FONT_SIZE, 28);
-        current.add_theme_color_override(theme::FONT_COLOR, laser_color);
-        vbox.add_child(&current);
-
-        // Components (in-run currency)
+        // Balances: blue and green side by side.
         let mut components_label = Label::new_alloc();
         components_label.set_text(&format!("Components: {}", components));
-        components_label.add_theme_font_size_override(theme::FONT_SIZE, 28);
+        components_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_HEADING);
         components_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_COMPONENTS));
         vbox.add_child(&components_label);
+
+        let mut organics_label = Label::new_alloc();
+        organics_label.set_text(&format!("Organics: {}", organics));
+        organics_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_HEADING);
+        organics_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_ORGANICS));
+        vbox.add_child(&organics_label);
 
         let mut spacer2 = Control::new_alloc();
         spacer2.set_custom_minimum_size(Vector2::new(0.0, 30.0));
         vbox.add_child(&spacer2);
 
-        // Upgrade option
-        let upgrade_text = if is_max {
-            "  LASER MAXED OUT".to_string()
-        } else if can_afford {
-            format!("> Upgrade Laser ({} components)", next_cost)
-        } else {
-            format!("  Upgrade Laser ({} components) [NOT ENOUGH]", next_cost)
-        };
-        let mut upgrade_label = Label::new_alloc();
-        upgrade_label.set_text(&upgrade_text);
-        upgrade_label.add_theme_font_size_override(theme::FONT_SIZE, 28);
-        let upgrade_color = if is_max {
-            Color::from_rgb(0.4, 0.4, 0.5)
-        } else if can_afford {
-            super::rgb(ui_style::TEXT_SELECTED)
-        } else {
-            Color::from_rgb(0.6, 0.3, 0.3)
-        };
-        upgrade_label.add_theme_color_override(theme::FONT_COLOR, upgrade_color);
-        vbox.add_child(&upgrade_label);
-        self.labels.push(&upgrade_label, ());
+        // Offer rows.
+        for i in 0..self.ids.len() {
+            let flag = if i < self.flags.len() { self.flags[i] } else { 0 };
+            let label_text = labels.get(i).map(|l| l.to_string()).unwrap_or_default();
+            let cost = costs.get(i).unwrap_or(0);
+            let currency_name = if flag & shop_flags::GREEN != 0 { "organics" } else { "components" };
 
-        // Continue
+            let text = if flag & shop_flags::PURCHASABLE == 0 {
+                format!("  {}", label_text)
+            } else {
+                format!("  {} — {} {}", label_text, cost, currency_name)
+            };
+            let mut row = Label::new_alloc();
+            row.set_text(&text);
+            row.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_ROW);
+            vbox.add_child(&row);
+            self.labels.push(&row, ());
+
+            // The implication line: what buying this row actually does.
+            // Smaller and dimmer — context, not a second row (the cursor
+            // tracks `labels`, so this never joins it).
+            if let Some(detail) = details.get(i) {
+                if !detail.is_empty() {
+                    let mut hint = Label::new_alloc();
+                    hint.set_text(&format!("      {}", detail));
+                    hint.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_DETAIL);
+                    hint.add_theme_color_override(
+                        theme::FONT_COLOR,
+                        Color::from_rgb(0.55, 0.6, 0.65),
+                    );
+                    vbox.add_child(&hint);
+                }
+            }
+        }
+
+        // Continue, then Save & Exit — the run banks at the shop.
         let mut continue_label = Label::new_alloc();
-        continue_label.set_text("  Continue to Next Level");
-        continue_label.add_theme_font_size_override(theme::FONT_SIZE, 28);
-        continue_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_UNSELECTED));
+        continue_label.set_text("  Continue");
+        continue_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_ROW);
         vbox.add_child(&continue_label);
         self.labels.push(&continue_label, ());
+
+        let mut save_exit_label = Label::new_alloc();
+        save_exit_label.set_text("  Save & Exit");
+        save_exit_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_ROW);
+        vbox.add_child(&save_exit_label);
+        self.labels.push(&save_exit_label, ());
 
         self.base_mut().add_child(&panel);
         self.base_mut().set_visible(true);
         self.update_cursor();
     }
 
+    /// Raise the info screen for a green row: name, what it does, how to
+    /// trigger it, and the confirm/cancel prompt.
+    fn show_confirm(&mut self, index: usize) {
+        self.dismiss_confirm();
+        let (mut panel, mut vbox) = menu_panel::create_menu_panel();
+
+        let mut title = Label::new_alloc();
+        title.set_text(&self.row_labels.get(index).map(|l| l.to_string()).unwrap_or_default());
+        title.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_HEADING);
+        title.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_ORGANICS));
+        vbox.add_child(&title);
+
+        // "blurb | trigger" — one line each.
+        let detail = self.row_details.get(index).map(|d| d.to_string()).unwrap_or_default();
+        for part in detail.split('|') {
+            let mut line = Label::new_alloc();
+            line.set_text(part.trim());
+            line.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_BODY);
+            line.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_SECONDARY));
+            vbox.add_child(&line);
+        }
+
+        let mut prompt = Label::new_alloc();
+        prompt.set_text("SELECT: buy    CIRCLE: back");
+        prompt.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_DETAIL);
+        prompt.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_UNSELECTED));
+        vbox.add_child(&prompt);
+
+        // Above the catalog, centered by the shared panel builder.
+        panel.set_z_index(10);
+        self.base_mut().add_child(&panel);
+        self.confirm_panel = Some(LiveRef::new(&panel));
+        self.pending_confirm = Some(index);
+    }
+
+    /// Drop the info screen, if up.
+    fn dismiss_confirm(&mut self) {
+        if let Some(panel) = self.confirm_panel.take() {
+            panel.with(|p| p.queue_free());
+        }
+        self.pending_confirm = None;
+    }
+
+    /// Row coloring: the selected row highlights; unpurchasable stock is
+    /// dimmed, unaffordable stock reads red, everything else neutral.
     fn update_cursor(&mut self) {
         let selected = self.cursor.index();
+        let flags = self.flags.clone();
+        let offer_count = self.ids.len();
         self.labels.for_each_live(|i, label, _| {
             let color = if i == selected {
                 super::rgb(ui_style::TEXT_SELECTED)
+            } else if i < offer_count {
+                let flag = if i < flags.len() { flags[i] } else { 0 };
+                if flag & shop_flags::PURCHASABLE == 0 {
+                    Color::from_rgb(0.4, 0.4, 0.5)
+                } else if flag & shop_flags::AFFORDABLE == 0 {
+                    Color::from_rgb(0.6, 0.3, 0.3)
+                } else {
+                    super::rgb(ui_style::TEXT_UNSELECTED)
+                }
             } else {
                 super::rgb(ui_style::TEXT_UNSELECTED)
             };

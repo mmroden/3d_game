@@ -293,29 +293,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn wall_set_tile_width_matches_mesh_bounds() {
-        for ws in ALL_WALL_SETS {
-            assert!(
-                (ws.tile_width - 4.0).abs() < 0.01,
-                "wall set '{}' tile_width should be 4.0, got {}",
-                ws.id,
-                ws.tile_width
-            );
-        }
-    }
-
-    #[test]
-    fn wall_set_story_height_matches_mesh_bounds() {
-        for ws in ALL_WALL_SETS {
-            assert!(
-                ws.story_height > 4.0 && ws.story_height <= 5.0,
-                "wall set '{}' story_height should be ~5.0, got {}",
-                ws.id,
-                ws.story_height
-            );
-        }
-    }
+    // (Grid dimensions are no longer fields here: the probe derives each
+    // kit's tile/story from these recipes' meshes — roster/probe.rs — and
+    // `the_derived_grids_match_the_recipes` pins the committed file.)
 
     #[test]
     fn short_wall_and_bottom_scene_paths_exist_on_disk() {

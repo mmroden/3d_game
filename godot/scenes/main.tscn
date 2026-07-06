@@ -75,3 +75,5 @@ environment = SubResource("env")
 [node name="DeathScreenUI" type="DeathScreenUI" parent="."]
 
 [node name="PauseMenuUI" type="PauseMenuUI" parent="."]
+
+[node name="LoadingUI" type="LoadingUI" parent="."]

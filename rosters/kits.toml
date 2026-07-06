@@ -1,0 +1,15 @@
+# HAND-AUTHORED kit manifest: which kits exist, their paradigm, and where
+# their pieces install. The kit's GRID (tile/story) is never authored — the
+# probe derives it from the assembly recipe + installed meshes into
+# kits.generated.toml, and the linker joins the two (owner 2026-07-05: two
+# hand-transcribed dimension copies had already drifted into folklore).
+# Pitch and paradigm derive from kits; nothing else in the roster data may
+# state a cell dimension.
+
+[kits.quaternius_megakit]
+paradigm = "layered"
+install_dir = "godot/addons/quaternius/modularscifimegakit"
+
+[kits.sf_panels_vol1]
+paradigm = "panel"
+install_dir = "godot/addons/walls"

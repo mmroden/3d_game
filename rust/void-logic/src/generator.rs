@@ -10,6 +10,9 @@ use crate::spatial_layout;
 /// Configuration for level generation.
 pub struct GeneratorConfig {
     pub seed: Seed,
+    /// World-space pitch the templates' spawn offsets are authored at —
+    /// always `Pitch::for_level` of the level being built.
+    pub pitch: crate::planet::Pitch,
     /// Maximum number of rooms. If 0, defaults to 200.
     pub max_rooms: usize,
     /// Minimum XZ extent for generated rooms.
@@ -20,6 +23,24 @@ pub struct GeneratorConfig {
     pub min_room_y: u32,
     /// Maximum Y extent (stories) for generated rooms.
     pub max_room_y: u32,
+}
+
+impl GeneratorConfig {
+    /// The game's canonical generation parameters — the single config the
+    /// shell builds every level with. Tests that pin seed properties for the
+    /// GUT shell suite must construct through this too, so a pinned seed and
+    /// the level the shell actually builds from it can never drift apart.
+    pub fn for_spec(spec: &crate::level_spec::LevelSpec, seed: Seed) -> Self {
+        Self {
+            seed,
+            pitch: spec.pitch,
+            max_rooms: spec.room_budget,
+            min_room_xz: 3,
+            max_room_xz: 6,
+            min_room_y: 1,
+            max_room_y: 6,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -36,8 +57,8 @@ pub(crate) fn generate_room(rng: &mut SmallRng, config: &GeneratorConfig) -> Roo
     let ez = rng.random_range(config.min_room_xz..=config.max_room_xz);
 
     let connectors = auto_connectors(ex, ey, ez, rng);
-    let enemy_spawns = auto_enemy_spawns(ex, ey, ez, rng);
-    let loot_spawns = auto_loot_spawns(ex, ez, rng);
+    let enemy_spawns = auto_enemy_spawns(ex, ey, ez, rng, config.pitch);
+    let loot_spawns = auto_loot_spawns(ex, ez, rng, config.pitch);
 
     RoomTemplate {
         kind: TemplateKind::Room,
@@ -114,15 +135,22 @@ fn auto_connectors(ex: u32, ey: u32, ez: u32, rng: &mut SmallRng) -> Vec<Connect
 }
 
 /// Generate enemy spawn points at random interior positions.
-fn auto_enemy_spawns(ex: u32, ey: u32, ez: u32, rng: &mut SmallRng) -> Vec<SpawnPoint> {
+fn auto_enemy_spawns(
+    ex: u32,
+    ey: u32,
+    ez: u32,
+    rng: &mut SmallRng,
+    pitch: crate::planet::Pitch,
+) -> Vec<SpawnPoint> {
     use rand::RngExt;
 
-    let cell_size = 4.0_f32;
-    let story_height = 5.0_f32;
+    let cell_size = pitch.tile;
+    let story_height = pitch.story;
     let count = rng.random_range(1..=3u32);
-    // Y range: stay within the room's vertical extent, leaving headroom below ceiling.
-    // The +1.5 lift in level_assembly means max y should be (ey * story_height - 1.5 - buffer).
-    let max_y = ((ey as f32) * story_height - 3.0).max(0.5);
+    // Y range: stay within the room's vertical extent, leaving headroom below
+    // the ceiling. The floor of 0.6 keeps the range non-empty in cubic panel
+    // worlds (3 m stories), where the 3 m headroom buffer would swallow it.
+    let max_y = ((ey as f32) * story_height - 3.0).max(0.6);
     (0..count).map(|_| {
         let x = rng.random_range(1.0..(ex as f32 - 1.0).max(1.5)) * cell_size;
         let y = rng.random_range(0.5..max_y);
@@ -135,10 +163,10 @@ fn auto_enemy_spawns(ex: u32, ey: u32, ez: u32, rng: &mut SmallRng) -> Vec<Spawn
 /// interior positions. Sparser than enemies — a level should reward exploration
 /// without carpeting every room in loot. Lives near the floor so the barrel
 /// rests in view rather than floating mid-air.
-fn auto_loot_spawns(ex: u32, ez: u32, rng: &mut SmallRng) -> Vec<SpawnPoint> {
+fn auto_loot_spawns(ex: u32, ez: u32, rng: &mut SmallRng, pitch: crate::planet::Pitch) -> Vec<SpawnPoint> {
     use rand::RngExt;
 
-    let cell_size = 4.0_f32;
+    let cell_size = pitch.tile;
     let count = rng.random_range(0..=2u32);
     (0..count).map(|_| {
         let x = rng.random_range(1.0..(ex as f32 - 1.0).max(1.5)) * cell_size;
@@ -183,6 +211,7 @@ mod tests {
 
     fn test_config(seed: u64) -> GeneratorConfig {
         GeneratorConfig {
+            pitch: crate::planet::Pitch { tile: 4.0, story: 5.0 },
             seed: Seed::new(seed),
             max_rooms: 10,
             min_room_xz: 3,

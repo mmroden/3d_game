@@ -18,7 +18,10 @@ pub enum DroneState {
 }
 
 /// Behavioural archetype. Selects how an enemy moves and attacks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Deserializes from the roster grammar (`ai = "shooter"`): the game enum
+/// IS the closed vocabulary — a typo is a parse error, never a runtime limp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Archetype {
     /// Chase to attack range and fire (the original behaviour).
     Shooter,
@@ -127,6 +130,21 @@ impl Default for DroneConfig {
     }
 }
 
+/// Desired-vs-actual speed ratio below which a strafing drone counts as
+/// blocked (a wall is eating its orbit).
+pub const BLOCKED_RATIO: f32 = 0.35;
+/// Consecutive blocked ticks before the orbit flips direction.
+pub const BLOCKED_FLIP_TICKS: u32 = 24;
+/// Ticks after a flip during which a second blockage means "flipping didn't
+/// help — back out and reapproach" instead of flip-flopping in the corner.
+pub const FLIP_MEMORY_TICKS: u32 = 240;
+/// Ticks of forced retreat when both orbit directions are blocked.
+pub const RETREAT_TICKS: u32 = 60;
+/// Ticks of sidestep (strafe) when a straight chase is blocked — long enough
+/// to clear a panel-relief pocket (~half a cubic cell), short enough that the
+/// pursuit reads as a dodge, not a wander.
+pub const EVADE_TICKS: u32 = 30;
+
 /// State machine for enemy AI.
 #[derive(Debug, Clone)]
 pub struct DroneAi {
@@ -136,6 +154,19 @@ pub struct DroneAi {
     pub attack_timer: f32,
     pub fuse_timer: f32,
     pub config: DroneConfig,
+    /// Movement feedback from the shell (actual/desired speed, last tick).
+    /// 1.0 = moving freely; near 0 = something is eating the motion.
+    feedback_ratio: f32,
+    /// Consecutive strafe ticks spent blocked.
+    blocked_ticks: u32,
+    /// Orbit handedness (±1); the node multiplies its perpendicular by this.
+    orbit_sign: f32,
+    /// Ticks since the last orbit flip (saturating).
+    ticks_since_flip: u32,
+    /// Forced-retreat ticks remaining after both directions blocked.
+    retreat_ticks: u32,
+    /// Sidestep ticks remaining after a blocked straight chase.
+    evade_ticks: u32,
 }
 
 impl DroneAi {
@@ -149,7 +180,31 @@ impl DroneAi {
             attack_timer: 0.0,
             fuse_timer: 0.0,
             config,
+            feedback_ratio: 1.0,
+            blocked_ticks: 0,
+            orbit_sign: 1.0,
+            ticks_since_flip: u32::MAX,
+            retreat_ticks: 0,
+            evade_ticks: 0,
         }
+    }
+
+    /// Shell feedback: how much of last tick's desired speed was actually
+    /// achieved (`|linear_velocity| / |desired|`, clamped by the caller).
+    /// The AI never learns about walls any other way — this is the loop
+    /// that stops orbiting drones parking in corners (playtest 2026-07-04).
+    pub fn report_movement_feedback(&mut self, actual_speed_ratio: f32) {
+        self.feedback_ratio = if actual_speed_ratio.is_finite() {
+            actual_speed_ratio.clamp(0.0, 2.0)
+        } else {
+            1.0
+        };
+    }
+
+    /// Orbit handedness for `Movement::Strafe` — the node multiplies its
+    /// perpendicular unit vector by this. Flips when the orbit is blocked.
+    pub fn orbit_sign(&self) -> f32 {
+        self.orbit_sign
     }
 
     /// Update state from the player's distance and visibility, returning the
@@ -207,12 +262,53 @@ impl DroneAi {
         }
     }
 
+    /// One straight-chase tick under the wall-feedback loop (playtest
+    /// 2026-07-05: a 6DOF chase pressed drones into panel-relief pockets and
+    /// Jolt held them there). Sustained blockage sidesteps (strafe) out of
+    /// the pocket; a blocked sidestep rides the shared orbit loop — flip
+    /// handedness, then back out entirely. Nothing parks.
+    fn chase_movement(&mut self, speed_mul: f32) -> Movement {
+        if self.retreat_ticks > 0 {
+            self.retreat_ticks -= 1;
+            return Movement::Retreat { speed_mul: 0.8 };
+        }
+        if self.evade_ticks > 0 {
+            self.evade_ticks -= 1;
+            self.tick_orbit_blockage();
+            return Movement::Strafe { speed_mul: 0.7 };
+        }
+        if self.feedback_ratio < BLOCKED_RATIO {
+            self.blocked_ticks += 1;
+        } else {
+            self.blocked_ticks = 0;
+        }
+        if self.blocked_ticks >= BLOCKED_FLIP_TICKS {
+            self.blocked_ticks = 0;
+            self.evade_ticks = EVADE_TICKS;
+            return Movement::Strafe { speed_mul: 0.7 };
+        }
+        Movement::Chase { speed_mul }
+    }
+
     fn shooter_tick(&mut self, has_line_of_sight: bool) -> AiTick {
         let attack = self.try_fire(has_line_of_sight);
         let movement = match self.state {
-            DroneState::Chasing => Movement::Chase { speed_mul: 1.0 },
-            // Close slowly while attacking so it does not overrun the player.
-            DroneState::Attacking => Movement::Chase { speed_mul: 0.3 },
+            DroneState::Chasing => self.chase_movement(1.0),
+            // In range and firing: HOLD. The old slow creep walked shooters
+            // into the player's face, where rays starting inside their hull
+            // can't hit them (playtest 2026-07-04). The Chasing/Attacking
+            // hysteresis re-closes if the player pulls away. The hold is
+            // earned BY the shot: sight-blocked (a neighbor drone, a prop),
+            // it circles for an angle — no shot, no standing (playtest
+            // 2026-07-05: blind shooters were statues).
+            DroneState::Attacking => {
+                if has_line_of_sight {
+                    Movement::Hold
+                } else {
+                    self.tick_orbit_blockage();
+                    Movement::Strafe { speed_mul: 0.7 }
+                }
+            }
             DroneState::Idle | DroneState::Dead => Movement::Hold,
         };
         AiTick { movement, attack }
@@ -222,11 +318,17 @@ impl DroneAi {
         let attack = self.try_fire(has_line_of_sight);
         let movement = match self.state {
             DroneState::Idle | DroneState::Dead => Movement::Hold,
-            DroneState::Chasing => Movement::Chase { speed_mul: 1.0 },
+            DroneState::Chasing => self.chase_movement(1.0),
             DroneState::Attacking => {
-                if distance < self.config.standoff_range {
+                if self.retreat_ticks > 0 {
+                    // Both orbit directions were blocked: back out, then
+                    // reapproach — a maneuver, never a parking spot.
+                    self.retreat_ticks -= 1;
+                    Movement::Retreat { speed_mul: 0.8 }
+                } else if distance < self.config.standoff_range {
                     Movement::Retreat { speed_mul: 1.0 }
                 } else {
+                    self.tick_orbit_blockage();
                     Movement::Strafe { speed_mul: 0.7 }
                 }
             }
@@ -234,10 +336,35 @@ impl DroneAi {
         AiTick { movement, attack }
     }
 
+    /// The wall-feedback loop for orbiting drones: sustained low
+    /// actual-vs-desired speed flips the orbit direction; a second blockage
+    /// soon after the flip means the corner has both directions covered —
+    /// back out for [`RETREAT_TICKS`] and come in fresh.
+    fn tick_orbit_blockage(&mut self) {
+        self.ticks_since_flip = self.ticks_since_flip.saturating_add(1);
+        if self.feedback_ratio < BLOCKED_RATIO {
+            self.blocked_ticks += 1;
+        } else {
+            self.blocked_ticks = 0;
+        }
+        if self.blocked_ticks >= BLOCKED_FLIP_TICKS {
+            self.blocked_ticks = 0;
+            if self.ticks_since_flip <= FLIP_MEMORY_TICKS {
+                self.retreat_ticks = RETREAT_TICKS;
+            } else {
+                self.orbit_sign = -self.orbit_sign;
+                self.ticks_since_flip = 0;
+            }
+        }
+    }
+
     fn swarmer_tick(&mut self) -> AiTick {
         let movement = match self.state {
             DroneState::Idle | DroneState::Dead => Movement::Hold,
-            DroneState::Chasing | DroneState::Attacking => Movement::Chase { speed_mul: 1.0 },
+            DroneState::Chasing => self.chase_movement(1.0),
+            // Latched: the press against the player IS the attack — zero
+            // speed here is success, never a wall verdict.
+            DroneState::Attacking => Movement::Chase { speed_mul: 1.0 },
         };
         let attack = if self.state == DroneState::Attacking {
             Attack::Ram
@@ -255,7 +382,7 @@ impl DroneAi {
             DroneState::Chasing => {
                 // Arm the fuse so it is full when detonation range is reached.
                 self.fuse_timer = self.config.fuse_seconds;
-                AiTick { movement: Movement::Chase { speed_mul: 1.0 }, attack: Attack::None }
+                AiTick { movement: self.chase_movement(1.0), attack: Attack::None }
             }
             DroneState::Attacking => {
                 self.fuse_timer = (self.fuse_timer - delta).max(0.0);
@@ -412,12 +539,34 @@ mod tests {
     }
 
     #[test]
-    fn shooter_chases_then_closes_slowly() {
+    fn shooter_chases_then_holds_at_attack_range() {
+        // "Chase TO attack range and fire" — the old slow-creep in Attacking
+        // walked shooters into the player's face, where rays that start
+        // inside their hull can't hit them (playtest 2026-07-04: hugging
+        // enemies were unkillable). The hold is earned BY the shot: it
+        // applies only while the shooter can actually see the player.
         let mut ai = default_ai();
         let chasing = ai.update(20.0, true, 0.016);
         assert_eq!(chasing.movement, Movement::Chase { speed_mul: 1.0 });
         let attacking = ai.update(4.0, true, 0.016);
-        assert_eq!(attacking.movement, Movement::Chase { speed_mul: 0.3 });
+        assert_eq!(attacking.movement, Movement::Hold,
+            "in range and firing: hold, never creep into the target");
+    }
+
+    #[test]
+    fn a_blind_shooter_hunts_an_angle_instead_of_standing() {
+        // Playtest 2026-07-05 (planet 2): shooters in range but sight-blocked
+        // (a neighbor drone, a prop) held position AND held fire — statues
+        // that only rotated. No shot, no hold: a blind shooter repositions.
+        let mut ai = default_ai();
+        ai.update(20.0, true, 0.016); // → Chasing
+        ai.update(4.0, true, 0.016); // → Attacking, sighted: holds
+        let blind = ai.update(4.0, false, 0.016);
+        assert_eq!(blind.movement, Movement::Strafe { speed_mul: 0.7 },
+            "sight lost: circle for a firing angle, never stand blind");
+        let sighted = ai.update(4.0, true, 0.016);
+        assert_eq!(sighted.movement, Movement::Hold,
+            "sight regained: the hold (and the shot) come back");
     }
 
     // --- Line of sight ---
@@ -658,5 +807,183 @@ mod tests {
         let tick = ai.update(4.0, true, 0.5); // back in range, fuse full again
         assert_eq!(tick.attack, Attack::None);
         assert!(!ai.is_dead());
+    }
+
+    // --- Movement feedback: blocked orbits flip, then back out ---
+    // (Playtest 2026-07-04: strafing drones wedged into corners forever —
+    // the AI computed orbit intent but never learned the wall was eating it.)
+
+    /// A kiter parked in its strafe band (attacking, outside standoff).
+    fn strafing_kiter() -> DroneAi {
+        let mut ai = DroneAi::new(DroneConfig {
+            archetype: Archetype::Kiter,
+            attack_range: 10.0,
+            standoff_range: 6.0,
+            ..DroneConfig::default()
+        });
+        ai.update(20.0, true, 0.016); // → Chasing
+        let tick = ai.update(8.0, true, 0.016); // → Attacking, outside standoff
+        assert_eq!(tick.movement, Movement::Strafe { speed_mul: 0.7 },
+            "fixture sanity: the kiter must be strafing");
+        ai
+    }
+
+    #[test]
+    fn a_blocked_orbit_flips_direction() {
+        let mut ai = strafing_kiter();
+        assert_eq!(ai.orbit_sign(), 1.0);
+        for _ in 0..BLOCKED_FLIP_TICKS {
+            ai.report_movement_feedback(0.1);
+            ai.update(8.0, true, 0.016);
+        }
+        assert_eq!(ai.orbit_sign(), -1.0,
+            "a wall eating the orbit for {BLOCKED_FLIP_TICKS} ticks flips the direction");
+    }
+
+    #[test]
+    fn noisy_but_moving_orbits_never_flip() {
+        let mut ai = strafing_kiter();
+        for i in 0..200 {
+            // Alternate blocked/free — a graze, not a wedge.
+            ai.report_movement_feedback(if i % 2 == 0 { 0.1 } else { 1.0 });
+            ai.update(8.0, true, 0.016);
+        }
+        assert_eq!(ai.orbit_sign(), 1.0, "intermittent contact must not flip the orbit");
+    }
+
+    #[test]
+    fn both_directions_blocked_backs_out_and_reapproaches() {
+        let mut ai = strafing_kiter();
+        // First wedge: flip.
+        for _ in 0..BLOCKED_FLIP_TICKS {
+            ai.report_movement_feedback(0.1);
+            ai.update(8.0, true, 0.016);
+        }
+        assert_eq!(ai.orbit_sign(), -1.0);
+        // Still wedged after flipping: the drone must back out, not park.
+        let mut retreated = false;
+        for _ in 0..(BLOCKED_FLIP_TICKS + 4) {
+            ai.report_movement_feedback(0.1);
+            let tick = ai.update(8.0, true, 0.016);
+            if matches!(tick.movement, Movement::Retreat { .. }) {
+                retreated = true;
+                break;
+            }
+        }
+        assert!(retreated, "blocked in both directions: back out and reapproach");
+
+        // Once clear, the retreat expires and the strafe resumes.
+        let mut strafed = false;
+        for _ in 0..(RETREAT_TICKS + 8) {
+            ai.report_movement_feedback(1.0);
+            let tick = ai.update(8.0, true, 0.016);
+            if matches!(tick.movement, Movement::Strafe { .. }) {
+                strafed = true;
+                break;
+            }
+        }
+        assert!(strafed, "the retreat is a maneuver, not a new parking spot");
+    }
+
+    // --- Movement feedback: blocked chases sidestep, then back out ---
+    // (Playtest 2026-07-05: a 6DOF chase pressed a drone into a panel-relief
+    // pocket on planet 2 and Jolt held it there forever — the old contract
+    // exempted Chasing from the feedback loop. Nothing parks. Ever.)
+
+    #[test]
+    fn a_blocked_chase_sidesteps_out_of_the_pocket() {
+        let mut ai = default_ai();
+        ai.update(20.0, true, 0.016); // → Chasing (Shooter fixture)
+        let mut sidestepped = false;
+        for _ in 0..(BLOCKED_FLIP_TICKS + 4) {
+            ai.report_movement_feedback(0.1);
+            let tick = ai.update(20.0, true, 0.016);
+            if matches!(tick.movement, Movement::Strafe { .. }) {
+                sidestepped = true;
+                break;
+            }
+        }
+        assert!(sidestepped,
+            "a wall eating the chase for {BLOCKED_FLIP_TICKS} ticks must sidestep");
+
+        // Once clear, the sidestep expires and the chase resumes.
+        let mut chased = false;
+        for _ in 0..(EVADE_TICKS + 8) {
+            ai.report_movement_feedback(1.0);
+            let tick = ai.update(20.0, true, 0.016);
+            if matches!(tick.movement, Movement::Chase { .. }) {
+                chased = true;
+                break;
+            }
+        }
+        assert!(chased, "the sidestep is a maneuver, not a new parking spot");
+    }
+
+    #[test]
+    fn a_blocked_sidestep_backs_out_entirely() {
+        let mut ai = default_ai();
+        ai.update(20.0, true, 0.016); // → Chasing
+        // Wedged no matter what it tries: chase blocked, sidestep blocked
+        // both ways. The escape ladder must bottom out at Retreat.
+        let mut retreated = false;
+        for _ in 0..300 {
+            ai.report_movement_feedback(0.1);
+            let tick = ai.update(20.0, true, 0.016);
+            if matches!(tick.movement, Movement::Retreat { .. }) {
+                retreated = true;
+                break;
+            }
+        }
+        assert!(retreated, "blocked in every direction: back out and reapproach");
+    }
+
+    #[test]
+    fn noisy_but_moving_chases_never_evade() {
+        let mut ai = default_ai();
+        ai.update(20.0, true, 0.016); // → Chasing
+        for i in 0..200 {
+            // Alternate blocked/free — a graze, not a wedge.
+            ai.report_movement_feedback(if i % 2 == 0 { 0.1 } else { 1.0 });
+            let tick = ai.update(20.0, true, 0.016);
+            assert_eq!(tick.movement, Movement::Chase { speed_mul: 1.0 },
+                "intermittent contact must not derail the chase");
+        }
+    }
+
+    #[test]
+    fn a_latched_swarmer_never_reads_as_blocked() {
+        // A swarmer at latch range PRESSES into the player — zero speed is
+        // its attack working, not a wall. It must never retreat off a latch.
+        let mut ai = DroneAi::new(DroneConfig {
+            archetype: Archetype::Swarmer,
+            attack_range: 3.0,
+            ..DroneConfig::default()
+        });
+        ai.update(20.0, true, 0.016); // → Chasing
+        ai.update(2.0, true, 0.016); // → Attacking (latched)
+        for _ in 0..200 {
+            ai.report_movement_feedback(0.0);
+            let tick = ai.update(2.0, true, 0.016);
+            assert_eq!(tick.movement, Movement::Chase { speed_mul: 1.0 },
+                "the latch press is the attack, never a blockage");
+        }
+    }
+
+    #[test]
+    fn a_charging_bomber_never_reads_as_blocked() {
+        // A bomber riding its fuse into the player's hull is doing its job.
+        let mut ai = DroneAi::new(DroneConfig {
+            archetype: Archetype::Bomber,
+            attack_range: 5.0,
+            fuse_seconds: 100.0, // hold the fuse so the charge outlives the loop
+            ..DroneConfig::default()
+        });
+        ai.update(20.0, true, 0.016); // → Chasing
+        for _ in 0..200 {
+            ai.report_movement_feedback(0.0);
+            let tick = ai.update(3.0, true, 0.016); // in detonation range
+            assert_eq!(tick.movement, Movement::Chase { speed_mul: 1.0 },
+                "the fuse charge presses by design, never a blockage");
+        }
     }
 }

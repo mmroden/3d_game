@@ -1,20 +1,36 @@
 use godot::prelude::*;
-use godot::classes::{Area3D, IArea3D};
+use godot::classes::{Area3D, IArea3D, OmniLight3D};
 
 use super::constants::{groups, methods, signals};
 use super::godot_util;
+use super::live_handle::{LiveOpt, LiveRef};
 use void_logic::audio_catalog::SfxEvent;
+use void_logic::currency::CurrencyKind;
 
-/// A pickup that grants the player an upgrade.
+/// A currency cache pickup — the only in-level reward. A blue cache carries
+/// components (in-run), a green one organics (permanent); the kind tints the
+/// glow. Enemies drop a blue cache on death, a level's loot spawns place green
+/// ones, and flying into either credits its amount through GameManager.
+/// Nothing is ever auto-awarded: an uncollected cache is money left floating.
 #[derive(GodotClass)]
 #[class(base=Area3D)]
-pub struct Lootbox {
+pub struct CurrencyCache {
     base: Base<Area3D>,
 
     #[export]
     bob_speed: f32,
     #[export]
     bob_amplitude: f32,
+
+    /// Which account this cache credits. Stamped by `drop_at`.
+    kind: CurrencyKind,
+    /// Part of a boss's staged drop set (bound cache or consolation pile) —
+    /// stamped by the LevelManager at build; crosses with `cache_collected`.
+    boss_loot: bool,
+    /// How much it credits. Stamped by `drop_at`.
+    amount: u32,
+    /// The glow light, kept so `drop_at` can retint it to the kind's color.
+    glow: Option<LiveRef<OmniLight3D>>,
 
     time: f32,
     origin_y: f32,
@@ -23,12 +39,16 @@ pub struct Lootbox {
 }
 
 #[godot_api]
-impl IArea3D for Lootbox {
+impl IArea3D for CurrencyCache {
     fn init(base: Base<Area3D>) -> Self {
         Self {
             base,
             bob_speed: 2.0,
             bob_amplitude: 0.3,
+            kind: CurrencyKind::Components,
+            boss_loot: false,
+            amount: 0,
+            glow: None,
             time: 0.0,
             origin_y: 0.0,
             origin_captured: false,
@@ -37,7 +57,7 @@ impl IArea3D for Lootbox {
     }
 
     fn ready(&mut self) {
-        // Monitoring is owned by apply_dormancy (deferred): boxes are built mid
+        // Monitoring is owned by apply_dormancy (deferred): caches are built mid
         // portal-signal flush, where a direct set_monitoring is blocked.
         self.base_mut().set_collision_mask(1); // Detect layer 1 (player)
         self.base_mut().set_collision_layer(0); // Don't block anything
@@ -46,13 +66,15 @@ impl IArea3D for Lootbox {
         let callable = self.base().callable(methods::ON_BODY_ENTERED);
         self.base_mut().connect(signals::BODY_ENTERED, &callable);
 
-        // Soft blue glow distinguishes the upgrade lootbox from green organics.
+        // The glow marks the currency: blue components, green organics. Kept as
+        // a handle so drop_at retints it when the kind is stamped.
+        let color = self.kind.glow_color();
         let mut node: Gd<Node3D> = self.base().clone().upcast();
-        godot_util::attach_glow_light(&mut node, &[0.2, 0.5, 1.0], 4.0, 5.0);
+        self.glow = Some(godot_util::attach_glow_light(&mut node, &color, 4.0, 5.0));
 
-        // Pre-built boxes enter the tree dormant (Faucet Principle, tier 1):
-        // one is reserved per enemy during the load and sits invisible,
-        // non-processing, non-monitoring until that enemy dies and drops it.
+        // Pre-built caches enter the tree dormant (Faucet Principle, tier 1):
+        // one blue cache is reserved per enemy during the load, and the green
+        // loot-spawn caches are placed by the same `drop_at` activation path.
         self.deactivate_dormant();
     }
 
@@ -81,9 +103,9 @@ impl IArea3D for Lootbox {
 }
 
 #[godot_api]
-impl Lootbox {
+impl CurrencyCache {
     #[signal]
-    fn upgrade_collected(name: GString, kind_id: i32, multiplier: f32);
+    fn cache_collected(kind_id: i32, amount: i64, boss_loot: bool);
 
     #[func]
     fn on_body_entered(&mut self, body: Gd<Node3D>) {
@@ -102,46 +124,51 @@ impl Lootbox {
         }
         self.collected = true;
 
-        use void_logic::upgrade::random_upgrade;
-        use rand::SeedableRng;
-        use rand::rngs::SmallRng;
-
         let pos = self.base().get_global_position();
-        let seed = ((pos.x * 1000.0) as u64)
-            .wrapping_add((pos.z * 7777.0) as u64)
-            .wrapping_add((self.time * 9999.0) as u64);
-        let mut rng = SmallRng::seed_from_u64(seed);
-        let upgrade = random_upgrade(&mut rng);
 
         // Loot pickup SFX
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
             audio.bind_mut().play_event_at(SfxEvent::LootPickup, pos);
         }
 
-        godot_print!("Collected upgrade: {} (x{:.0}%)", upgrade.name, (upgrade.multiplier - 1.0) * 100.0);
+        godot_print!("Collected cache: {} ({:?})", self.amount, self.kind);
 
-        // Emit signal — GameManager routes to RunState then pushes to ShipController
+        // Emit signal — GameManager credits the matching account; the
+        // boss-loot stamp lets the fight FSM count ONLY the boss's drop set
+        // (an ordinary cache never advances the arena).
+        let (kind_id, amount, boss_loot) = (self.kind.id(), self.amount as i64, self.boss_loot);
         self.base_mut().emit_signal(
-            signals::UPGRADE_COLLECTED,
+            signals::CACHE_COLLECTED,
             &[
-                Variant::from(GString::from(&upgrade.name)),
-                Variant::from(upgrade.kind as i32),
-                Variant::from(upgrade.multiplier),
+                Variant::from(kind_id),
+                Variant::from(amount),
+                Variant::from(boss_loot),
             ],
         );
 
-        // Tier-1 pool contract (Faucet Principle): a collected box goes dormant,
-        // never freed. It lived its one life; the pool holds it for the level's
-        // lifetime and never reuses it.
+        // Tier-1 pool contract (Faucet Principle): a collected cache goes
+        // dormant, never freed. It lived its one life; the pool holds it for the
+        // level's lifetime and never reuses it.
         self.deactivate_dormant();
     }
 
-    /// Activate this dormant box at `pos` — the drop, on its bound enemy's
-    /// death. Reset-in-place: re-arm the collect/bob state, flip all three
-    /// dormancy flags on, and place it (resetting interpolation so it doesn't
-    /// streak across the map). This is the one structural drop path; nothing is
-    /// instantiated here — the box was pre-built during the load.
-    pub fn drop_at(&mut self, pos: Vector3) {
+    /// Activate this dormant cache at `pos` carrying `amount` of `kind` — the
+    /// drop, on its bound enemy's death (blue) or at a loot spawn during the
+    /// build (green). Reset-in-place: stamp the payload, retint the glow, re-arm
+    /// the collect/bob state, flip all three dormancy flags on, and place it
+    /// (resetting interpolation so it doesn't streak across the map). This is
+    /// the one structural drop path; nothing is instantiated here — the cache
+    /// was pre-built during the load.
+    /// Mark this cache as part of a boss's staged drop set. Build-time only.
+    pub fn set_boss_loot(&mut self, boss_loot: bool) {
+        self.boss_loot = boss_loot;
+    }
+
+    pub fn drop_at(&mut self, pos: Vector3, kind: CurrencyKind, amount: u32) {
+        self.kind = kind;
+        self.amount = amount;
+        let c = kind.glow_color();
+        self.glow.with(|light| light.set_color(Color::from_rgb(c[0], c[1], c[2])));
         self.collected = false;
         self.origin_captured = false;
         self.time = 0.0;
@@ -160,7 +187,7 @@ impl Lootbox {
     /// Return to dormant, deferred for the same reason: `collect()` runs inside
     /// this Area3D's own `body_entered` flush, where a direct `set_monitoring`
     /// is blocked ("Function blocked during in/out signal") and would strand the
-    /// box half-dormant. The `collected` flag is the immediate logical truth;
+    /// cache half-dormant. The `collected` flag is the immediate logical truth;
     /// the engine flags follow at end of frame.
     pub fn deactivate_dormant(&mut self) {
         self.base_mut().call_deferred(methods::APPLY_DORMANCY, &[false.to_variant()]);

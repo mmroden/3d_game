@@ -5,6 +5,7 @@ use godot::classes::{
     QuadMesh, StandardMaterial3D, SubViewport, SubViewportContainer, TextureRect,
     base_material_3d::{ShadingMode, Transparency, CullMode, Flags},
     display_server::WindowMode,
+    node::PhysicsInterpolationMode,
     texture_rect::StretchMode,
     sub_viewport::UpdateMode,
     viewport::Msaa,
@@ -14,7 +15,7 @@ use crate::nodes::constants::{methods, nodes, signals};
 use void_logic::stereo::{
     frustum_offsets, left_eye_offset, right_eye_offset,
     single_viewport_size, ui_plane_size, ui_viewport_size,
-    DisplayMode, StereoConfig, UI_NODE_NAMES,
+    DisplayMode, StereoConfig,
 };
 
 /// Default distance (meters) from camera to the floating UI plane in SBS mode.
@@ -97,12 +98,16 @@ impl ViewManager {
     #[signal]
     fn render_viewports_changed(viewports: Array<Rid>);
 
-    /// Called when the window resizes (fullscreen transition, manual resize, etc.)
-    /// Recomputes all viewport and container sizes from the actual window dims.
+    /// Called when the window resizes (fullscreen transition, manual resize,
+    /// etc.) Recomputes viewport and container sizes from the actual window
+    /// dims in BOTH modes — mono is the no-goggles way to play, and its
+    /// single eye must follow the window too (a mode-gated resize left the
+    /// 3D view frozen at its old size, playtest 2026-07-05). The 3D UI
+    /// plane only exists in SBS.
     #[func]
     pub fn on_window_size_changed(&mut self) {
+        self.resize_viewports();
         if self.current_mode == DisplayMode::SideBySide {
-            self.resize_viewports();
             self.resize_ui_plane();
         }
     }
@@ -221,6 +226,10 @@ impl ViewManager {
 
     /// Set custom_viewport on all UI CanvasLayers to point at UIViewport.
     /// Called once at startup — never changed again at runtime.
+    /// STRUCTURAL, not a name list: every CanvasLayer child of Main is a UI
+    /// layer and renders through the one UIViewport, so any new screen is
+    /// SBS-correct by construction (a hand-maintained list went stale the
+    /// moment LoadingUI arrived and put the veil in one eye).
     fn set_ui_viewport_once(&self) {
         let Some(main_scene) = self.base().get_parent() else {
             return;
@@ -229,8 +238,8 @@ impl ViewManager {
             godot_warn!("ViewManager: UIViewport not found");
             return;
         };
-        for name in UI_NODE_NAMES {
-            if let Some(mut canvas) = main_scene.try_get_node_as::<CanvasLayer>(*name) {
+        for child in main_scene.get_children().iter_shared() {
+            if let Ok(mut canvas) = child.try_cast::<CanvasLayer>() {
                 canvas.set_custom_viewport(&ui_vp);
             }
         }
@@ -298,6 +307,12 @@ impl ViewManager {
 
         let mut left_cam = Camera3D::new_alloc();
         left_cam.set_name("LeftCamera");
+        // Driven per rendered frame (sync_eye_cameras) — the engine's own
+        // physics interpolation would re-blend the last two set poses and
+        // smear the rig a frame behind the world (the residual chase-view
+        // jitter, playtest 2026-07-04). The eyes and the UI plane opt out
+        // and move as one rigid unit.
+        left_cam.set_physics_interpolation_mode(PhysicsInterpolationMode::OFF);
 
         left_viewport.add_child(&left_cam);
         left_container.add_child(&left_viewport);
@@ -320,6 +335,7 @@ impl ViewManager {
 
         let mut right_cam = Camera3D::new_alloc();
         right_cam.set_name("RightCamera");
+        right_cam.set_physics_interpolation_mode(PhysicsInterpolationMode::OFF);
 
         right_viewport.add_child(&right_cam);
         right_container.add_child(&right_viewport);
@@ -416,6 +432,9 @@ impl ViewManager {
 
         let mut ui_plane = MeshInstance3D::new_alloc();
         ui_plane.set_name("UIPlane");
+        // Same per-frame-driven rig as the eye cameras: no engine re-blend,
+        // or the whole HUD swims against the view in SBS.
+        ui_plane.set_physics_interpolation_mode(PhysicsInterpolationMode::OFF);
         ui_plane.set_mesh(&quad_mesh);
         ui_plane.set_visible(false);
 
@@ -473,7 +492,10 @@ impl ViewManager {
             return;
         };
 
-        let cam_transform = camera.get_global_transform();
+        // INTERPOLATED, not raw: the world renders at the physics-interpolated
+        // pose, and a plane pinned to the raw pose swims against it.
+        let mut camera = camera;
+        let cam_transform = camera.get_global_transform_interpolated();
         let forward = -cam_transform.basis.col_c();
         let plane_origin = cam_transform.origin + forward * self.ui_plane_distance;
 
@@ -492,7 +514,13 @@ impl ViewManager {
             return;
         };
 
-        let camera_transform = camera.get_global_transform();
+        // INTERPOLATED, not raw (chase-view fix, playtest 2026-07-04): the
+        // ship's hull renders at the physics-interpolated pose, but the raw
+        // transform steps at physics ticks — an eye camera copying the raw
+        // pose oscillates against the hull it's chasing. Invisible in
+        // cockpit (no hull in frame), violent in chase view.
+        let mut camera = camera;
+        let camera_transform = camera.get_global_transform_interpolated();
         let config = self.stereo_config();
 
         // Mono = a single centered eye: no horizontal separation, no frustum

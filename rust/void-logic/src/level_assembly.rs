@@ -1,7 +1,8 @@
 //! Level assembly: builds meshes, lights, enemies, and collision boxes from a LevelGraph.
 
-use crate::enemy_type::EnemyType;
+use crate::roster::{roster, EnemyId};
 use crate::level_graph::LevelGraph;
+use crate::planet::Pitch;
 use crate::seed::Seed;
 use crate::room_assembler::MeshPlacement;
 use crate::room_furnisher::{LightAccent, LightSource};
@@ -53,12 +54,12 @@ pub struct RoomAssembly {
 /// and return all mesh placements plus light sources for the level.
 pub fn spawn_list(
     graph: &LevelGraph,
-    cell_size: f32,
+    spec: &crate::level_spec::LevelSpec,
     seed: Seed,
 ) -> (Vec<MeshPlacement>, Vec<LightSource>) {
     let mut meshes = Vec::new();
     let mut lights = Vec::new();
-    for room in spawn_list_full(graph, cell_size, seed) {
+    for room in spawn_list_full(graph, spec, seed) {
         meshes.extend(room.structure);
         meshes.extend(room.props);
         lights.extend(room.lights);
@@ -71,7 +72,7 @@ pub fn spawn_list(
 /// identity the shell needs to parent and cull per room.
 pub fn spawn_list_full(
     graph: &LevelGraph,
-    cell_size: f32,
+    spec: &crate::level_spec::LevelSpec,
     seed: Seed,
 ) -> Vec<RoomAssembly> {
     use crate::cell::CellGrid;
@@ -79,31 +80,51 @@ pub fn spawn_list_full(
     use crate::room_furnisher;
     use crate::room_theme;
 
+    let pitch = spec.pitch;
     let mut rooms = Vec::new();
 
     for (room_idx, idx) in graph.room_indices().enumerate() {
         let Some(room) = graph.room(idx) else { continue };
         let active = graph.active_connectors(idx);
         let theme = room_theme::theme_for_room(seed.value(), room_idx);
-        let story_height = theme.wall_set.story_height;
-        let origin = room.world_position(cell_size, story_height);
+        // The level's pitch, not the wall set's: the single source (B11) —
+        // the Pitch/wall-set agreement is pinned in planet.rs.
+        let origin = room.world_position(pitch.tile, pitch.story);
 
-        let mut grid = CellGrid::new(&room.template, &active, origin, cell_size);
-        // Step 1 data — the room's shell.
-        let mut structure = crate::room_assembler::assemble_from_grid(
-            &grid,
-            &room.template,
-            &active,
-            theme.wall_set,
-        );
-
-        let room_seed = seed.value().wrapping_add(room_idx as u64).wrapping_mul(2654435761);
+        let mut grid = CellGrid::new(&room.template, &active, origin, pitch.tile, pitch.story);
+        let room_seed = seed
+            .value()
+            .wrapping_add(room_idx as u64)
+            .wrapping_mul(crate::seed::salt::ROOM_MIX);
+        // Step 1 data — the room's shell. One paradigm per planet: the
+        // megakit's layered walls on planet 1, the panel pool from planet 2
+        // (cubic cells; see planet::panel_world and the B11 plan).
+        let mut structure = if let crate::level_spec::Paradigm::Panel(set) = spec.paradigm {
+            crate::room_assembler::assemble_panels_from_grid(&grid, set, room_seed)
+        } else {
+            crate::room_assembler::assemble_from_grid(
+                &grid,
+                &room.template,
+                &active,
+                theme.wall_set,
+            )
+        };
         grid.populate(theme, room_seed);
-        // Step 2 data — furnished fixtures (cell-rolled).
-        let props = grid.prop_placements();
+        // Step 2 data — furnished fixtures (cell-rolled). The start room's
+        // spawn square stays empty: the player materializes there and
+        // shares it with nothing (playtest 2026-07-04).
+        let mut props = grid.prop_placements();
+        if room_idx == 0 {
+            let (spawn, _) = spawn_pose(graph, pitch);
+            let half = pitch.tile * 0.5;
+            props.retain(|p| {
+                (p.position[0] - spawn[0]).abs() > half
+                    || (p.position[2] - spawn[2]).abs() > half
+            });
+        }
 
         let mut lights = Vec::new();
-        for (mesh, light) in room_furnisher::light_fixtures(&room.template, &active, origin, cell_size, room_seed) {
+        for (mesh, light) in room_furnisher::light_fixtures(&room.template, &active, origin, pitch, room_seed) {
             // Light fixtures are part of the shell: they render in the structure
             // step and are passable, so they never join the merged collider.
             structure.push(mesh);
@@ -111,8 +132,9 @@ pub fn spawn_list_full(
         }
 
         // Step 2 data — organics containers, authored per template via loot
-        // spawns (replaces the shell's old ad-hoc scatter).
-        let containers: Vec<[f32; 3]> = room
+        // spawns (replaces the shell's old ad-hoc scatter). The start room's
+        // spawn square is kept clear here too.
+        let mut containers: Vec<[f32; 3]> = room
             .template
             .loot_spawns
             .iter()
@@ -122,6 +144,13 @@ pub fn spawn_list_full(
                 origin[2] + sp.position[2],
             ])
             .collect();
+        if room_idx == 0 {
+            let (spawn, _) = spawn_pose(graph, pitch);
+            let half = pitch.tile * 0.5;
+            containers.retain(|c| {
+                (c[0] - spawn[0]).abs() > half || (c[2] - spawn[2]).abs() > half
+            });
+        }
 
         // Step 3 data — enemies, authored per template via enemy spawns. The
         // start room (room_idx 0) stays clear so the player isn't ambushed on
@@ -140,7 +169,7 @@ pub fn spawn_list_full(
         // World bounds = union of this room's cell AABBs (each cell spans
         // [floor, floor + story_height] in Y, ±half-cell in XZ). A
         // point-in-room test only needs to enclose the flyable interior.
-        let half_cell = cell_size / 2.0;
+        let half_cell = pitch.tile / 2.0;
         let mut min = [f32::INFINITY; 3];
         let mut max = [f32::NEG_INFINITY; 3];
         let mut any = false;
@@ -150,7 +179,7 @@ pub fn spawn_list_full(
             min[0] = min[0].min(c[0] - half_cell);
             max[0] = max[0].max(c[0] + half_cell);
             min[1] = min[1].min(c[1]);
-            max[1] = max[1].max(c[1] + story_height);
+            max[1] = max[1].max(c[1] + pitch.story);
             min[2] = min[2].min(c[2] - half_cell);
             max[2] = max[2].max(c[2] + half_cell);
         }
@@ -201,20 +230,63 @@ pub fn spawn_list_full(
     rooms
 }
 
-/// One dormant death-spawn minion the manifest reserves for a parent enemy.
-/// `death_spawn`'s count is already expanded into one entry per minion, so the
-/// shell pre-instantiates exactly `parent.minions.len()` bodies under the
-/// parent's room and activates them all when the parent dies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// When a parent enemy's bound minions flip live.
+/// Deserializes from the roster grammar (`trigger = "on_engage"`); the
+/// timed form arrives as `{ every_seconds = N }` via the schema's
+/// `TriggerRaw` (untagged strings-or-table).
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MinionTrigger {
+    /// Activate when the parent dies.
+    OnDeath,
+    /// Activate the moment the parent engages — a boss's circling guard
+    /// is up for the whole fight.
+    OnEngage,
+    /// A batch activates every N seconds while the parent lives, drawn
+    /// from a capped pre-built ring (dead minions return to it — Faucet).
+    #[serde(skip)]
+    Every(f32),
+}
+
+/// Accumulating interval clock for timed minion emitters
+/// (`trigger = {{ every_seconds = N }}`) — pure, so the cadence is testable
+/// without an engine tick. Catch-up safe: a long frame yields every
+/// interval it spanned.
+#[derive(Debug, Clone, Copy)]
+pub struct EmitterTimer {
+    interval: f32,
+    elapsed: f32,
+}
+
+impl EmitterTimer {
+    pub fn new(interval: f32) -> Self {
+        Self { interval: interval.max(f32::EPSILON), elapsed: 0.0 }
+    }
+
+    /// Advance by `dt`; returns how many intervals elapsed.
+    pub fn tick(&mut self, dt: f32) -> u32 {
+        self.elapsed += dt.max(0.0);
+        let fires = (self.elapsed / self.interval) as u32;
+        self.elapsed -= fires as f32 * self.interval;
+        fires
+    }
+}
+
+/// One dormant minion the manifest reserves for a parent enemy. The spawn
+/// count is already expanded into one entry per minion, so the shell
+/// pre-instantiates exactly `parent.minions.len()` bodies under the parent's
+/// room and activates each on its trigger.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MinionSpawn {
-    pub enemy_type: EnemyType,
+    pub enemy_type: EnemyId,
+    pub trigger: MinionTrigger,
 }
 
 /// One direct enemy spawn: its resolved type, world position, and the dormant
-/// minions its death will cough up (empty for types with no `death_spawn`).
+/// minions its death or engagement will rouse (the def's `minions` list).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnemySpawn {
-    pub enemy_type: EnemyType,
+    pub enemy_type: EnemyId,
     pub position: [f32; 3],
     pub minions: Vec<MinionSpawn>,
 }
@@ -231,9 +303,9 @@ pub struct RoomManifest {
 /// A seed-deterministic enumeration of everything a level can *contain* — the
 /// Faucet Principle's model half (`void-logic`), consumed by the shell's tier-1
 /// pools (`void-nodes`). It resolves each direct enemy's type (the roll the
-/// shell used to make inline), expands every `death_spawn` into dormant minion
-/// entries bound to their parent, and — since a level drops one lootbox per
-/// enemy — knows the exact lootbox bound. Nothing here touches Godot; the same
+/// shell used to make inline), expands every declared minion into a dormant
+/// entries bound to their parent, and — since a level drops one blue cache per
+/// enemy — knows the exact cache bound. Nothing here touches Godot; the same
 /// seed yields the same manifest, so the pool sizes and the bestiary coverage
 /// are both derivable before a single node is instantiated.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -242,47 +314,92 @@ pub struct LevelManifest {
 }
 
 impl LevelManifest {
-    /// Total direct enemies across every room — the lootbox bound (one box per
-    /// enemy) and the number of parent bodies the shell instantiates.
+    /// Total direct enemies across every room — the blue-cache bound (one
+    /// cache per enemy) and the number of parent bodies the shell instantiates.
     pub fn enemy_count(&self) -> usize {
         self.rooms.iter().map(|r| r.enemies.len()).sum()
     }
 
     /// Every enemy type that can appear this level — direct spawns *and* the
-    /// death-spawn minions they cough up — deduplicated, in `EnemyType::ALL`
+    /// death-spawn minions they cough up — deduplicated, in roster declaration
     /// order. This is what the bestiary marks as seen, so a death-only type (the
     /// SpawnDrone) enters the catalog the moment a level can produce it, which
     /// `enemies_for_level` (direct-only) could never surface.
-    pub fn enemy_coverage(&self) -> Vec<EnemyType> {
-        let mut seen = [false; EnemyType::ALL.len()];
+    pub fn enemy_coverage(&self) -> Vec<EnemyId> {
+        let mut seen = vec![false; roster().enemies.len()];
         for room in &self.rooms {
             for enemy in &room.enemies {
-                seen[enemy.enemy_type.id() as usize] = true;
+                seen[enemy.enemy_type.0] = true;
                 for minion in &enemy.minions {
-                    seen[minion.enemy_type.id() as usize] = true;
+                    seen[minion.enemy_type.0] = true;
                 }
             }
         }
-        EnemyType::ALL
-            .iter()
-            .copied()
-            .filter(|t| seen[t.id() as usize])
-            .collect()
+        roster().enemy_ids().filter(|id| seen[id.0]).collect()
     }
 }
 
-pub fn manifest(graph: &LevelGraph, cell_size: f32, seed: Seed, level: u32) -> LevelManifest {
+pub fn manifest(
+    graph: &LevelGraph,
+    spec: &crate::level_spec::LevelSpec,
+    seed: Seed,
+) -> LevelManifest {
     use rand::seq::IndexedRandom;
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
 
-    let rooms_assembly = spawn_list_full(graph, cell_size, seed);
-    let available = crate::enemy_type::enemies_for_level(level);
+    let rooms_assembly = spawn_list_full(graph, spec, seed);
+    let available = &spec.roster;
     let mut enemy_rng = SmallRng::seed_from_u64(seed.value());
+
+    // A staged boss claims its arena outright: the schedule names the kind,
+    // the graph marks the room, and no regular roll happens there.
+    let boss_arena = graph
+        .room_indices()
+        .position(|idx| Some(idx) == graph.boss_room())
+        .zip(spec.boss.as_ref());
 
     let rooms = rooms_assembly
         .iter()
-        .map(|room| {
+        .enumerate()
+        .map(|(room_pos, room)| {
+            if let Some((arena_pos, staging)) = boss_arena {
+                if room_pos == arena_pos {
+                    let boss_type = staging.boss;
+                    let adds = staging.adds;
+                    // Escorts are declared on the boss slot (count = the
+                    // staged adds); the def's own TIMED emitters reserve
+                    // their rings beside them (cap slots each — the Faucet
+                    // reservation, same as any enemy's declared minions).
+                    let (minion_type, trigger) = staging.escorts;
+                    let minions: Vec<MinionSpawn> = (0..adds)
+                        .map(|_| MinionSpawn { enemy_type: minion_type, trigger })
+                        .chain(
+                            roster()
+                                .enemy(boss_type)
+                                .minions
+                                .iter()
+                                .filter(|m| matches!(m.trigger, MinionTrigger::Every(_)))
+                                .flat_map(|m| {
+                                    (0..m.cap).map(move |_| MinionSpawn {
+                                        enemy_type: m.enemy,
+                                        trigger: m.trigger,
+                                    })
+                                }),
+                        )
+                        .collect();
+                    let enemies = room
+                        .enemies
+                        .iter()
+                        .map(|pos| EnemySpawn {
+                            enemy_type: boss_type,
+                            position: *pos,
+                            minions: minions.clone(),
+                        })
+                        .collect();
+                    return RoomManifest { enemies };
+                }
+            }
             let enemies = room
                 .enemies
                 .iter()
@@ -290,12 +407,21 @@ pub fn manifest(graph: &LevelGraph, cell_size: f32, seed: Seed, level: u32) -> L
                     let enemy_type = *available
                         .choose(&mut enemy_rng)
                         .expect("available_enemies is non-empty for any valid level");
-                    let minions = enemy_type
-                        .death_spawn()
-                        .map(|(minion_type, count)| {
-                            (0..count).map(|_| MinionSpawn { enemy_type: minion_type }).collect()
+                    // Every declared minion entry reserves its RING (cap
+                    // slots; one-shot entries have cap == count) with its
+                    // declared trigger — the grammar's list is the Faucet
+                    // reservation, timed emitters included.
+                    let minions = roster()
+                        .enemy(enemy_type)
+                        .minions
+                        .iter()
+                        .flat_map(|m| {
+                            (0..m.cap).map(move |_| MinionSpawn {
+                                enemy_type: m.enemy,
+                                trigger: m.trigger,
+                            })
                         })
-                        .unwrap_or_default();
+                        .collect();
                     EnemySpawn { enemy_type, position: *pos, minions }
                 })
                 .collect();
@@ -306,41 +432,157 @@ pub fn manifest(graph: &LevelGraph, cell_size: f32, seed: Seed, level: u32) -> L
     LevelManifest { rooms }
 }
 
-/// Return the world-space center of every cell in the level (for player spawn).
-pub fn cell_centers(
-    graph: &LevelGraph,
-    cell_size: f32,
-) -> Vec<[f32; 3]> {
-    let story_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
-    graph
-        .room_indices()
-        .filter_map(|idx| {
-            let room = graph.room(idx)?;
-            let origin = room.world_position(cell_size, story_height);
-            let [ex, ey, ez] = room.template.extents.map(|e| e as i32);
-            let centers: Vec<_> = (0..ex).flat_map(|cx| {
-                (0..ey).flat_map(move |cy| {
-                    (0..ez).map(move |cz| [
-                        origin[0] + (cx as f32 + 0.5) * cell_size,
-                        origin[1] + cy as f32 * story_height,
-                        origin[2] + (cz as f32 + 0.5) * cell_size,
-                    ])
-                })
-            }).collect();
-            Some(centers)
+/// Where the run begins: the center of the start room's ground story at
+/// flight height, yawed to face the room's first doorway. A first-cell,
+/// corner-facing spawn reads as disorientation (playtest 2026-07-04).
+pub fn spawn_pose(graph: &LevelGraph, pitch: Pitch) -> ([f32; 3], f32) {
+    let Some(idx) = graph.room_indices().next() else { return ([0.0; 3], 0.0) };
+    let Some(room) = graph.room(idx) else { return ([0.0; 3], 0.0) };
+    let origin = room.world_position(pitch.tile, pitch.story);
+    let [ex, _ey, ez] = room.template.extents;
+    let pos = [
+        origin[0] + ex as f32 * pitch.tile * 0.5,
+        origin[1] + 1.5,
+        origin[2] + ez as f32 * pitch.tile * 0.5,
+    ];
+    // Face the first doorway: -Z rotated by yaw must point from the spawn
+    // toward the connector cell.
+    let yaw = graph
+        .active_connectors(idx)
+        .first()
+        .map(|c| {
+            let cx = origin[0] + (c.offset[0] as f32 + 0.5) * pitch.tile;
+            let cz = origin[2] + (c.offset[2] as f32 + 0.5) * pitch.tile;
+            let (dx, dz) = (cx - pos[0], cz - pos[2]);
+            if dx.abs() + dz.abs() < 1e-3 {
+                0.0
+            } else {
+                (-dx).atan2(-dz)
+            }
         })
-        .flatten()
-        .collect()
+        .unwrap_or(0.0);
+    (pos, yaw)
 }
 
 
+
+#[cfg(test)]
+mod emitter_tests {
+    use super::EmitterTimer;
+
+    #[test]
+    fn the_emitter_fires_on_its_cadence_and_not_before() {
+        let mut t = EmitterTimer::new(10.0);
+        assert_eq!(t.tick(9.9), 0, "no early fire");
+        assert_eq!(t.tick(0.1), 1, "fires exactly on the interval");
+        assert_eq!(t.tick(9.9), 0, "the clock reset — no residue fire");
+    }
+
+    #[test]
+    fn a_long_frame_yields_every_interval_it_spanned() {
+        let mut t = EmitterTimer::new(5.0);
+        assert_eq!(t.tick(17.5), 3, "catch-up: three intervals in one frame");
+        assert_eq!(t.tick(2.5), 1, "the 2.5s remainder carried over");
+    }
+
+    #[test]
+    fn degenerate_inputs_never_wedge_the_clock() {
+        let mut t = EmitterTimer::new(0.0); // clamped to epsilon internally
+        assert!(t.tick(0.016) > 0, "a zero interval still fires");
+        let mut t = EmitterTimer::new(10.0);
+        assert_eq!(t.tick(-1.0), 0, "negative dt is ignored, not banked");
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// Attribute spec for tests: fresh profile, pinned run seed. The
+    /// GENERATION seed still travels separately.
+    fn spec_for(level: u32) -> crate::level_spec::LevelSpec {
+        crate::level_spec::LevelSpec::for_level(
+            crate::seed::Seed::new(1),
+            level,
+            &crate::unlocks::PermanentUnlocks::new(),
+        )
+    }
+
+    fn config_for(seed: u64, rooms: usize, level: u32) -> crate::generator::GeneratorConfig {
+        let mut spec = spec_for(level);
+        spec.room_budget = rooms;
+        crate::generator::GeneratorConfig::for_spec(&spec, crate::seed::Seed::new(seed))
+    }
+
+    /// The planet-1 pitch, spelled out: tests may hold literals.
+    const TEST_PITCH: crate::planet::Pitch =
+        crate::planet::Pitch { tile: 4.0, story: 5.0 };
+
     use super::*;
+
+    fn eid(key: &str) -> EnemyId {
+        roster().enemy_by_key(key).expect(key)
+    }
     use crate::generator::{generate, GeneratorConfig};
     use crate::level_graph::{EdgeKind, RENDER_ROOM_DEPTH};
     use crate::room_template::ConnectorFacing;
     use crate::seed::Seed;
+
+    #[test]
+    fn spawn_pose_centers_the_start_room_facing_its_doorway() {
+        for seed in 0..10u64 {
+            let Ok(graph) = generate(&test_config(seed)) else { continue };
+            let cell = 4.0;
+            let (pos, yaw) = spawn_pose(&graph, TEST_PITCH);
+
+            // Centered on the start room's footprint, at flight height.
+            let idx = graph.room_indices().next().unwrap();
+            let room = graph.room(idx).unwrap();
+            let story = 5.0; // planet-1 story — tests may hold literals
+            let origin = room.world_position(cell, story);
+            let [ex, _ey, ez] = room.template.extents;
+            assert!((pos[0] - (origin[0] + ex as f32 * cell * 0.5)).abs() < 0.01,
+                "seed {seed}: spawn X centers the room");
+            assert!((pos[2] - (origin[2] + ez as f32 * cell * 0.5)).abs() < 0.01,
+                "seed {seed}: spawn Z centers the room");
+            assert!(pos[1] > origin[1], "seed {seed}: spawn floats above the floor");
+
+            // Facing the first doorway, not a corner: the yaw's forward
+            // (-Z rotated by yaw) points at the connector.
+            let connectors = graph.active_connectors(idx);
+            let Some(c) = connectors.first() else { continue };
+            let cx = origin[0] + (c.offset[0] as f32 + 0.5) * cell;
+            let cz = origin[2] + (c.offset[2] as f32 + 0.5) * cell;
+            let (dx, dz) = (cx - pos[0], cz - pos[2]);
+            let len = (dx * dx + dz * dz).sqrt();
+            if len < 0.1 { continue; } // doorway dead-center: any yaw works
+            let forward = (-yaw.sin(), -yaw.cos());
+            let dot = forward.0 * dx / len + forward.1 * dz / len;
+            assert!(dot > 0.99,
+                "seed {seed}: spawn must face its doorway (dot {dot})");
+        }
+    }
+
+    #[test]
+    fn the_spawn_square_holds_nothing_but_the_player() {
+        for seed in 0..10u64 {
+            let Ok(graph) = generate(&test_config(seed)) else { continue };
+            let cell = 4.0;
+            let (pos, _) = spawn_pose(&graph, TEST_PITCH);
+            let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(seed));
+            let start = &rooms[0];
+            let half = cell * 0.5;
+            for p in &start.props {
+                let (dx, dz) = ((p.position[0] - pos[0]).abs(), (p.position[2] - pos[2]).abs());
+                assert!(dx > half || dz > half,
+                    "seed {seed}: prop at ({}, {}) squats in the spawn square",
+                    p.position[0], p.position[2]);
+            }
+            for c in &start.containers {
+                let (dx, dz) = ((c[0] - pos[0]).abs(), (c[2] - pos[2]).abs());
+                assert!(dx > half || dz > half,
+                    "seed {seed}: container at ({}, {}) squats in the spawn square", c[0], c[2]);
+            }
+        }
+    }
 
     /// End-to-end: through the full generation pipeline, a real level's
     /// vertical shafts are square (no rounded corner pieces) and lit by rim
@@ -350,12 +592,12 @@ mod tests {
     /// not a rendering gap.
     #[test]
     fn generated_vertical_shafts_are_square_and_rim_lit() {
-        let cell = 4.0_f32;
         let mut square_shaft_seen = false;
         let mut rim_lit_shaft_seen = false;
 
         'seeds: for seed in 0..30u64 {
             let config = GeneratorConfig {
+                pitch: crate::planet::Pitch { tile: 4.0, story: 5.0 },
                 seed: Seed::new(seed),
                 max_rooms: 30,
                 min_room_xz: 3,
@@ -364,7 +606,7 @@ mod tests {
                 max_room_y: 6,
             };
             let Ok(graph) = generate(&config) else { continue };
-            let assemblies = spawn_list_full(&graph, cell, Seed::new(seed));
+            let assemblies = spawn_list_full(&graph, &spec_for(1), Seed::new(seed));
 
             for (i, idx) in graph.room_indices().enumerate() {
                 let room = graph.room(idx).unwrap();
@@ -407,11 +649,12 @@ mod tests {
     #[test]
     fn vertical_passages_are_unobstructed() {
         let cell = 4.0_f32;
-        let story = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+        let story = 5.0_f32; // planet-1 story — tests may hold literals
         let mut passages_checked = 0u32;
 
         for seed in 0..30u64 {
             let config = GeneratorConfig {
+                pitch: crate::planet::Pitch { tile: 4.0, story: 5.0 },
                 seed: Seed::new(seed),
                 max_rooms: 20,
                 min_room_xz: 3,
@@ -420,7 +663,7 @@ mod tests {
                 max_room_y: 6,
             };
             let Ok(graph) = generate(&config) else { continue };
-            let (meshes, _lights) = spawn_list(&graph, cell, Seed::new(seed));
+            let (meshes, _lights) = spawn_list(&graph, &spec_for(1), Seed::new(seed));
 
             for (a, _b, kind) in graph.edges() {
                 let EdgeKind::Adjacent { from_connector, .. } = kind else {
@@ -480,6 +723,7 @@ mod tests {
 
     fn test_config(seed: u64) -> GeneratorConfig {
         GeneratorConfig {
+            pitch: crate::planet::Pitch { tile: 4.0, story: 5.0 },
             seed: Seed::new(seed),
             max_rooms: 20,
             min_room_xz: 3,
@@ -492,7 +736,7 @@ mod tests {
     #[test]
     fn one_assembly_per_room() {
         let graph = generate(&test_config(7)).expect("generation");
-        let rooms = spawn_list_full(&graph, 4.0, Seed::new(7));
+        let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(7));
         assert_eq!(rooms.len(), graph.room_count());
     }
 
@@ -507,7 +751,7 @@ mod tests {
         let mut any_enemy = false;
         for seed in 0..30u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let rooms = spawn_list_full(&graph, 4.0, Seed::new(seed));
+            let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(seed));
             for room in &rooms {
                 assert!(!room.structure.is_empty(), "seed {seed}: a room had no structure");
                 any_container |= !room.containers.is_empty();
@@ -526,7 +770,7 @@ mod tests {
         // spawn — even though its template may define enemy spawns.
         for seed in 0..30u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let rooms = spawn_list_full(&graph, 4.0, Seed::new(seed));
+            let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(seed));
             if let Some(start) = rooms.first() {
                 assert!(start.enemies.is_empty(), "seed {seed}: start room has enemies");
             }
@@ -538,7 +782,7 @@ mod tests {
         // Each room's bounds must be a non-degenerate box derived from
         // its geometry — the stub (min == max) fails this.
         let graph = generate(&test_config(7)).expect("generation");
-        let rooms = spawn_list_full(&graph, 4.0, Seed::new(7));
+        let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(7));
         for (i, room) in rooms.iter().enumerate() {
             for a in 0..3 {
                 assert!(
@@ -554,7 +798,7 @@ mod tests {
     #[test]
     fn room_at_locates_interior_points_and_rejects_distant_ones() {
         let graph = generate(&test_config(7)).expect("generation");
-        let rooms = spawn_list_full(&graph, 4.0, Seed::new(7));
+        let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(7));
         let bounds: Vec<_> = rooms.iter().map(|r| r.bounds.clone()).collect();
 
         for room in &rooms {
@@ -588,7 +832,7 @@ mod tests {
 
         for seed in 0..30u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let rooms = spawn_list_full(&graph, 4.0, Seed::new(seed));
+            let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(seed));
             if rooms.is_empty() {
                 continue;
             }
@@ -653,7 +897,7 @@ mod tests {
         // would be warm-white (red ≈ 1.0), so this pins the wiring.
         for seed in 0..30u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let rooms = spawn_list_full(&graph, 4.0, Seed::new(seed));
+            let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(seed));
             if rooms.is_empty() || rooms[0].lights.is_empty() {
                 continue;
             }
@@ -680,11 +924,47 @@ mod tests {
     /// inputs are byte-identical, so the pool sizes and enemy mix the shell
     /// builds are reproducible.
     #[test]
+    fn planet_two_rooms_are_skinned_with_panels_not_megakit() {
+        // B11: planet 2+ structure comes from the panel pool — wholesale,
+        // no megakit walls (one paradigm per planet, owner's call).
+        let config = config_for(1, crate::generator::rooms_for_level(7), 7);
+        let graph = generate(&config).expect("generates");
+        let rooms = spawn_list_full(&graph, &spec_for(7), Seed::new(1));
+        let mut any_panel = false;
+        for room in &rooms {
+            for m in &room.structure {
+                // Light FIXTURES (props) may stay megakit for now — the ban
+                // is on structural skin: walls, platforms, corners, trims.
+                assert!(
+                    !m.scene.contains("megakit/walls")
+                        && !m.scene.contains("megakit/platforms"),
+                    "planet 2 must not place megakit structure: {}",
+                    m.scene
+                );
+                if m.scene.contains("addons/walls/") {
+                    any_panel = true;
+                }
+            }
+        }
+        assert!(any_panel, "planet 2 rooms are skinned from the panel pool");
+    }
+
+    #[test]
+    fn planet_one_keeps_the_megakit() {
+        let config = config_for(1, crate::generator::rooms_for_level(1), 1);
+        let graph = generate(&config).expect("generates");
+        let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(1));
+        let any_megakit = rooms.iter().flat_map(|r| &r.structure)
+            .any(|m| m.scene.contains("quaternius"));
+        assert!(any_megakit, "planet 1 stays terrestrial megakit");
+    }
+
+    #[test]
     fn manifest_is_seed_deterministic() {
         for seed in 0..20u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let a = manifest(&graph, 4.0, Seed::new(seed), 5);
-            let b = manifest(&graph, 4.0, Seed::new(seed), 5);
+            let a = manifest(&graph, &spec_for(5), Seed::new(seed));
+            let b = manifest(&graph, &spec_for(5), Seed::new(seed));
             assert_eq!(a, b, "seed {seed}: manifest not deterministic");
         }
     }
@@ -696,8 +976,8 @@ mod tests {
     fn manifest_covers_every_assembly_enemy_position() {
         for seed in 0..20u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let assembly = spawn_list_full(&graph, 4.0, Seed::new(seed));
-            let m = manifest(&graph, 4.0, Seed::new(seed), 5);
+            let assembly = spawn_list_full(&graph, &spec_for(1), Seed::new(seed));
+            let m = manifest(&graph, &spec_for(5), Seed::new(seed));
             assert_eq!(m.rooms.len(), assembly.len(), "seed {seed}: room count differs");
             for (room, room_asm) in m.rooms.iter().zip(&assembly) {
                 let positions: Vec<_> = room.enemies.iter().map(|e| e.position).collect();
@@ -707,27 +987,37 @@ mod tests {
     }
 
     /// Every EyeDrone the manifest places carries exactly one dormant SpawnDrone
-    /// minion (its `death_spawn`); every type with no death spawn carries none.
-    /// This is the expansion the shell pre-instantiates under the parent's room.
+    /// minions (the def's declared list, with each entry's trigger); every
+    /// type declaring none carries none. This is the expansion the shell
+    /// pre-instantiates under the parent's room.
     #[test]
-    fn manifest_expands_death_spawn_minions() {
-        // Level 2 admits the EyeDrone (its min_level); run enough seeds that at
-        // least one EyeDrone is placed, and check the expansion on every enemy.
+    fn manifest_expands_declared_minions() {
+        // Level 3 fields the EyeDrone (owner's schedule); run enough seeds
+        // that at least one is placed, and check the expansion on every enemy.
         let mut saw_eye_drone = false;
         for seed in 0..40u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let m = manifest(&graph, 4.0, Seed::new(seed), 2);
+            let m = manifest(&graph, &spec_for(3), Seed::new(seed));
             for room in &m.rooms {
                 for enemy in &room.enemies {
-                    match enemy.enemy_type.death_spawn() {
-                        Some((minion_type, count)) => {
-                            assert_eq!(enemy.minions.len(), count as usize);
-                            assert!(enemy.minions.iter().all(|mn| mn.enemy_type == minion_type));
-                            if enemy.enemy_type == EnemyType::EyeDrone {
+                    let declared = &roster().enemy(enemy.enemy_type).minions;
+                    match declared.first() {
+                        Some(first) => {
+                            let total: usize =
+                                declared.iter().map(|m| m.cap as usize).sum();
+                            assert_eq!(enemy.minions.len(), total);
+                            let _ = first;
+                            assert!(enemy.minions.iter().all(|mn| declared
+                                .iter()
+                                .any(|m| m.enemy == mn.enemy_type)));
+                            if enemy.enemy_type == eid("eye_drone") {
                                 saw_eye_drone = true;
                                 assert_eq!(
                                     enemy.minions,
-                                    vec![MinionSpawn { enemy_type: EnemyType::SpawnDrone }],
+                                    vec![MinionSpawn {
+                                        enemy_type: eid("spawn_drone"),
+                                        trigger: MinionTrigger::OnDeath,
+                                    }],
                                 );
                             }
                         }
@@ -740,14 +1030,169 @@ mod tests {
         assert!(saw_eye_drone, "no EyeDrone placed across 40 seeds at level 2");
     }
 
-    /// Lootbox bound = one per direct enemy = total enemy count. The minions
-    /// don't add boxes (they're bound to their parent's box), so the count is
-    /// the sum of direct enemies only.
+    // --- Boss staging (B5) ---
+
+    /// Seed 1 with the arena attached — the exact graph the shell builds on a
+    /// boss level (B6's GUT scenario mirrors this construction).
+    fn pinned_boss_graph(level: u32) -> LevelGraph {
+        let config = config_for(1, crate::generator::rooms_for_level(level), level);
+        let mut graph = generate(&config).expect("pinned seed generates");
+        let entry = graph.room_indices().next().expect("has rooms");
+        crate::spatial_layout::attach_boss_room(&mut graph, entry, TEST_PITCH).expect("arena attaches");
+        graph
+    }
+
+    fn arena_position(graph: &LevelGraph) -> usize {
+        graph
+            .room_indices()
+            .position(|i| Some(i) == graph.boss_room())
+            .expect("boss room is in the graph")
+    }
+
     #[test]
-    fn manifest_lootbox_bound_is_one_per_enemy() {
+    fn the_mid_boss_manifest_stages_the_brute_alone_in_the_arena() {
+        let graph = pinned_boss_graph(3);
+        let m = manifest(&graph, &spec_for(3), Seed::new(1));
+        let arena = &m.rooms[arena_position(&graph)];
+        assert_eq!(arena.enemies.len(), 1, "the arena holds the boss, nothing else");
+        let boss = &arena.enemies[0];
+        assert_eq!(boss.enemy_type, eid("boss_brute"), "rel-3 stages the Brute");
+        // The slot's escorts AND the def's own emitter ring both reserve
+        // (Faucet: cap slots pre-built) — the Brute declares a cap-3 ring.
+        let escorts = boss.minions.iter().filter(|mn| {
+            mn.enemy_type == eid("spawn_drone") && mn.trigger == MinionTrigger::OnDeath
+        }).count();
+        let ring = boss.minions.iter().filter(|mn| {
+            mn.enemy_type == eid("spawn_drone")
+                && matches!(mn.trigger, MinionTrigger::Every(_))
+        }).count();
+        assert_eq!(escorts, 3, "planet 1's slot declares a trio");
+        assert_eq!(ring, 3, "the def's cap-3 emitter ring reserves with it");
+        assert_eq!(boss.minions.len(), 6, "escorts + ring, nothing else");
+    }
+
+    #[test]
+    fn the_planet_final_manifest_stages_the_latcher_with_engage_escorts() {
+        let graph = pinned_boss_graph(6);
+        let m = manifest(&graph, &spec_for(6), Seed::new(1));
+        let boss = &m.rooms[arena_position(&graph)].enemies[0];
+        assert_eq!(boss.enemy_type, eid("boss_latcher"), "rel-6 stages the Latcher");
+        let engage = boss.minions.iter().filter(|mn| {
+            mn.enemy_type == eid("spawn_drone") && mn.trigger == MinionTrigger::OnEngage
+        }).count();
+        let ring = boss.minions.iter().filter(|mn| {
+            matches!(mn.trigger, MinionTrigger::Every(_))
+        }).count();
+        assert_eq!(engage, 3, "the escort is up from first contact, not on death");
+        assert_eq!(ring, 6, "the Latcher's cap-6 emitter ring reserves with it");
+        assert_eq!(boss.minions.len(), 9, "escorts + ring, nothing else");
+    }
+
+    #[test]
+    fn escort_counts_come_from_the_slot_declaration() {
+        let graph = pinned_boss_graph(9); // planet 2's mid-boss
+        let m = manifest(&graph, &spec_for(9), Seed::new(1));
+        let boss = &m.rooms[arena_position(&graph)].enemies[0];
+        assert_eq!(boss.enemy_type, eid("boss_brute"));
+        let escorts = boss.minions.iter()
+            .filter(|mn| mn.trigger == MinionTrigger::OnDeath)
+            .count();
+        assert_eq!(escorts, 4, "planet 2's slots declare four");
+    }
+
+    #[test]
+    fn regular_rooms_stay_boss_free_on_boss_levels() {
+        let graph = pinned_boss_graph(3);
+        let m = manifest(&graph, &spec_for(3), Seed::new(1));
+        let arena_pos = arena_position(&graph);
+        for (pos, room) in m.rooms.iter().enumerate() {
+            if pos == arena_pos {
+                continue;
+            }
+            for enemy in &room.enemies {
+                assert!(
+                    enemy.enemy_type != eid("boss_brute")
+                        && enemy.enemy_type != eid("boss_latcher"),
+                    "room {pos}: bosses live in the arena only"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_arena_means_no_boss_even_on_a_boss_level() {
+        // The shell only attaches the arena on boss levels; if it didn't (or
+        // the attach failed), the manifest must not invent a boss.
+        let config = config_for(1, crate::generator::rooms_for_level(3), 3);
+        let graph = generate(&config).expect("generates");
+        let m = manifest(&graph, &spec_for(3), Seed::new(1));
+        for room in &m.rooms {
+            for enemy in &room.enemies {
+                assert!(
+                    enemy.enemy_type != eid("boss_brute")
+                        && enemy.enemy_type != eid("boss_latcher"),
+                    "no arena marker — no boss"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_boss_enters_bestiary_coverage_on_its_level() {
+        let graph = pinned_boss_graph(3);
+        let m = manifest(&graph, &spec_for(3), Seed::new(1));
+        assert!(m.enemy_coverage().contains(&eid("boss_brute")),
+            "the bestiary logs the Siege Mech the level it can appear");
+    }
+
+    /// Cache bound = one per direct enemy = total enemy count. The minions
+    /// don't add caches (they're bound to their parent's), so the count is
+    /// the sum of direct enemies only.
+    // --- Pinned seeds for the GUT shell suite ---
+    //
+    // The shell tests (godot/tests) build exactly ONE level per scenario:
+    // whether a seed produces a given property is a pure model question and
+    // is pinned here, through the same `GeneratorConfig::standard` path the
+    // shell builds with. If generation changes and one of these fails, fix
+    // the constant here AND its mirror in the named GUT file — never by
+    // reintroducing a seed scan on the engine side.
+
+    /// Mirror: godot/tests/test_faucet_pools.gd `EYE_DRONE_SEED`.
+    /// Seed 1 at level 3 (8 rooms) places at least one EyeDrone, whose
+    /// death-spawn minion the shell pre-instantiates dormant.
+    #[test]
+    fn pinned_gut_seed_places_an_eye_drone() {
+        let seed = Seed::from_i64(1);
+        let graph = generate(&crate::generator::GeneratorConfig::for_spec(&spec_for(1), seed))
+            .expect("the pinned seed must generate");
+        let m = manifest(&graph, &spec_for(3), seed);
+        assert!(
+            m.rooms.iter().any(|r| r.enemies.iter().any(|e| e.enemy_type == eid("eye_drone"))),
+            "seed 1 must place an EyeDrone at level 3 — the GUT suite builds this exact level"
+        );
+    }
+
+    /// Mirror: godot/tests/test_faucet_pools.gd `GREEN_CACHE_RUN_SEED`.
+    /// A run with fixed_seed 1 places at least one loot container (a green
+    /// cache) on level 1 via GameManager's run-seed → level-seed derivation.
+    #[test]
+    fn pinned_gut_run_seed_places_a_loot_container() {
+
+        let level_seed = Seed::from_i64(1).for_level(1);
+        let graph = generate(&crate::generator::GeneratorConfig::for_spec(&spec_for(1), level_seed))
+            .expect("the pinned seed must generate");
+        let rooms = spawn_list_full(&graph, &spec_for(1), level_seed);
+        assert!(
+            rooms.iter().any(|r| !r.containers.is_empty()),
+            "run seed 1 must place a green cache on level 1 — the GUT suite drives this run"
+        );
+    }
+
+    #[test]
+    fn manifest_cache_bound_is_one_per_enemy() {
         for seed in 0..20u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let m = manifest(&graph, 4.0, Seed::new(seed), 5);
+            let m = manifest(&graph, &spec_for(5), Seed::new(seed));
             let direct: usize = m.rooms.iter().map(|r| r.enemies.len()).sum();
             assert_eq!(m.enemy_count(), direct);
         }
@@ -763,15 +1208,15 @@ mod tests {
         let mut covered_spawn_drone = false;
         for seed in 0..40u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let m = manifest(&graph, 4.0, Seed::new(seed), 3);
+            let m = manifest(&graph, &spec_for(3), Seed::new(seed));
             let coverage = m.enemy_coverage();
             // Coverage is a subset of ALL, deduplicated and ALL-ordered.
             let mut sorted = coverage.clone();
             sorted.dedup();
             assert_eq!(sorted, coverage, "coverage must be deduplicated");
-            if coverage.contains(&EnemyType::EyeDrone) {
+            if coverage.contains(&eid("eye_drone")) {
                 assert!(
-                    coverage.contains(&EnemyType::SpawnDrone),
+                    coverage.contains(&eid("spawn_drone")),
                     "seed {seed}: EyeDrone present but SpawnDrone missing from coverage",
                 );
                 covered_spawn_drone = true;
@@ -786,13 +1231,13 @@ mod tests {
     fn manifest_coverage_excludes_death_spawn_types_below_level() {
         for seed in 0..20u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let coverage = manifest(&graph, 4.0, Seed::new(seed), 1).enemy_coverage();
+            let coverage = manifest(&graph, &spec_for(1), Seed::new(seed)).enemy_coverage();
             assert!(
-                !coverage.contains(&EnemyType::SpawnDrone),
+                !coverage.contains(&eid("spawn_drone")),
                 "seed {seed}: SpawnDrone in coverage at level 1 (below its min_level)",
             );
             assert!(
-                !coverage.contains(&EnemyType::EyeDrone),
+                !coverage.contains(&eid("eye_drone")),
                 "seed {seed}: EyeDrone in coverage at level 1",
             );
         }

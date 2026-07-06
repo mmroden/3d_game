@@ -2,15 +2,16 @@ use godot::prelude::*;
 use godot::classes::{Node3D, INode3D, MeshInstance3D, Engine, OmniLight3D};
 
 use void_logic::ship::{self, ShipColor};
-use void_logic::enemy_type::EnemyType;
+use void_logic::ship_type::ShipType;
+use void_logic::roster::roster;
 
 use super::constants::scenes;
 use super::godot_util;
 use super::live_handle::{LiveRef, LiveVec};
 
 /// Kind ids shared with the bestiary UI (mirror of `void_logic::bestiary::
-/// BestiaryKind`): 0 = organic barrel, 1 = component cache, 2 = enemy.
-const KIND_ORGANIC_BARREL: i32 = 0;
+/// BestiaryKind`): 0 = organic cache, 1 = component cache, 2 = enemy.
+const KIND_ORGANIC_CACHE: i32 = 0;
 const KIND_COMPONENT_CACHE: i32 = 1;
 const KIND_ENEMY: i32 = 2;
 
@@ -40,6 +41,9 @@ pub struct Turntable {
     beam_interval: f32,
     /// Cosmetic beams fire only in ship mode; the bestiary subjects are inert.
     beams_enabled: bool,
+    /// A fresh subject turns to front the camera on its next process tick
+    /// (the reveal must not start facing away — playtest 2026-07-03).
+    face_camera_pending: bool,
     accent_color: [f32; 4],
     beams: LiveVec<MeshInstance3D>,
     model: Option<LiveRef<Node3D>>,
@@ -55,6 +59,7 @@ impl INode3D for Turntable {
             beam_timer: 0.0,
             beam_interval: 1.5,
             beams_enabled: false,
+            face_camera_pending: false,
             accent_color: [1.0, 0.2, 0.2, 1.0],
             beams: LiveVec::new(),
             model: None,
@@ -87,6 +92,18 @@ impl INode3D for Turntable {
             if let Some(pos) = godot_util::camera_front_position(&main, 6.0) {
                 self.base_mut().set_global_position(pos);
             }
+            // A fresh subject starts its spin fronting the camera (level, so
+            // the subject stays upright — only yaw comes from the look).
+            if self.face_camera_pending {
+                if let Some(cam) = godot_util::camera_front_position(&main, 0.0) {
+                    let here = self.base().get_global_position();
+                    let flat = Vector3::new(cam.x, here.y, cam.z);
+                    if flat.distance_to(here) > 0.01 {
+                        self.base_mut().look_at(flat);
+                        self.face_camera_pending = false;
+                    }
+                }
+            }
         }
         let angle = self.rotation_speed * delta;
         self.base_mut().rotate_y(angle);
@@ -104,21 +121,33 @@ impl INode3D for Turntable {
 
 #[godot_api]
 impl Turntable {
-    /// Ship mode: the player's hull in the chosen color, with body-style paint,
-    /// an accent glow, and cosmetic beams. Shown on the menu and loadout screens.
+    /// Ship mode: the chosen hull in the chosen color, with body-style paint
+    /// (on hulls that have it), an accent glow, and cosmetic beams. Shown on
+    /// the menu and loadout screens. The model path comes from the hull's
+    /// spec — the same source the flying ship spawns from.
     #[func]
-    pub fn show_ship(&mut self, color_id: i32) {
+    pub fn show_ship(&mut self, ship_type_id: i32, color_id: i32) {
+        let hull = ShipType::from_id(ship_type_id).unwrap_or_default();
         let sc = ShipColor::from_id(color_id).unwrap_or_default();
         self.accent_color = sc.color();
         self.beams_enabled = true;
         self.beam_timer = 0.0;
-        self.set_model(scenes::SHIP_MODEL, sc.color(), 12.0, SHIP_LENGTH);
-        // Paint the hull to the variant's body style. apply_body_style walks our
-        // subtree, so the freshly-spawned model child is found without a handle.
-        let style = sc.body_style();
-        let idx = ship::style_texture_index(ship::STYLED_BODY_PART, style);
-        let root: Gd<Node3D> = self.base().clone();
-        godot_util::apply_body_style(&root, style, idx);
+        self.set_model(
+            hull.spec().model_path,
+            sc.color(),
+            12.0,
+            SHIP_LENGTH,
+            hull.spec().model_yaw_offset,
+        );
+        if hull.spec().supports_styles {
+            // Paint the hull to the variant's body style. apply_body_style walks
+            // our subtree, so the freshly-spawned model child is found without a
+            // handle.
+            let style = sc.body_style();
+            let idx = ship::style_texture_index(ship::STYLED_BODY_PART, style);
+            let root: Gd<Node3D> = self.base().clone();
+            godot_util::apply_body_style(&root, style, idx);
+        }
     }
 
     /// Entry mode: one bestiary catalog subject. `kind` selects pickup vs enemy;
@@ -127,17 +156,29 @@ impl Turntable {
     pub fn show_entry(&mut self, kind: i32, enemy_type_id: i32) {
         self.beams_enabled = false;
         let (path, glow): (Option<&str>, [f32; 4]) = match kind {
-            KIND_ORGANIC_BARREL => (Some(scenes::BARREL_MODEL), [0.2, 0.9, 0.2, 1.0]),
+            // Both caches spin the barrel prop — the same mesh the in-level
+            // CurrencyCache scene wears — tinted to their currency.
+            KIND_ORGANIC_CACHE => (Some(scenes::BARREL_MODEL), [0.2, 0.9, 0.2, 1.0]),
             KIND_COMPONENT_CACHE => (Some(scenes::BARREL_MODEL), [0.2, 0.5, 1.0, 1.0]),
             KIND_ENEMY => (
-                EnemyType::from_id(enemy_type_id).map(|t| t.model_path()),
+                roster()
+                    .enemy_by_crossing_id(enemy_type_id as u16)
+                    .map(|id| roster().enemy(id).model.as_str()),
                 // Neutral glow so the unlit enemy reads in the dark room.
                 [1.0, 1.0, 0.95, 1.0],
             ),
             _ => (None, [1.0, 1.0, 1.0, 1.0]),
         };
+        // The caches' barrel prop is radially symmetric — no front to correct.
+        let front_yaw = match kind {
+            KIND_ENEMY => roster()
+                .enemy_by_crossing_id(enemy_type_id as u16)
+                .map(|id| roster().enemy(id).yaw_offset_deg.to_radians())
+                .unwrap_or(0.0),
+            _ => 0.0,
+        };
         if let Some(path) = path {
-            self.set_model(path, glow, 8.0, ENTRY_LENGTH);
+            self.set_model(path, glow, 8.0, ENTRY_LENGTH, front_yaw);
         } else {
             self.hide_turntable();
         }
@@ -156,20 +197,30 @@ impl Turntable {
 impl Turntable {
     /// The shared spawn path: clear the old subject, square the turntable, spawn
     /// the fitted model with its accent glow, and show. Every mode funnels here.
-    fn set_model(&mut self, path: &str, glow: [f32; 4], glow_range: f32, length: f32) {
+    /// `front_yaw` is the subject's imported-front correction (its
+    /// `model_yaw_offset`); the next process tick turns the whole table so the
+    /// reveal starts with the subject facing the camera.
+    fn set_model(&mut self, path: &str, glow: [f32; 4], glow_range: f32, length: f32, front_yaw: f32) {
         self.clear_model();
         self.base_mut().set_rotation(Vector3::ZERO);
         let mut parent: Gd<Node3D> = self.base().clone();
-        if let Some(mut model) = godot_util::spawn_fitted_model(&mut parent, path, length) {
+        if let Some(mut model) = godot_util::spawn_fitted_model(&mut parent, path, length, front_yaw) {
             self.model_glow = Some(godot_util::attach_glow_light(&mut model, &glow, 3.0, glow_range));
             self.model = Some(LiveRef::new(&model));
         }
+        self.face_camera_pending = true;
         self.base_mut().set_visible(true);
     }
 
     fn clear_model(&mut self) {
         if let Some(model) = self.model.take() {
-            model.with(|m| m.queue_free());
+            model.with(|m| {
+                // queue_free lands at frame end; hand back the "Model" name
+                // now or the incoming subject gets auto-renamed past every
+                // get_node("Model") lookup (same gotcha as the hull swap).
+                m.set_name("RetiredModel");
+                m.queue_free();
+            });
         }
         self.model_glow = None;
     }

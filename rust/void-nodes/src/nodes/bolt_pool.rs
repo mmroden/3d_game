@@ -2,8 +2,9 @@ use godot::prelude::*;
 use godot::classes::{Node3D, INode3D};
 
 use super::constants::groups;
-use super::enemy_bolt::EnemyBolt;
+use super::enemy_bolt::{BoltPayload, EnemyBolt};
 use super::live_handle::LiveVec;
+use void_logic::armament::Faction;
 
 /// Ring capacity: the number of bolts that can be *concurrently* in flight, not
 /// the total a level fires. Dormant slots cost only memory (a hidden,
@@ -63,19 +64,54 @@ impl INode3D for BoltPool {
 
 #[godot_api]
 impl BoltPool {
-    /// Fire a bolt at the ring cursor, then advance the cursor. Reset-in-place:
-    /// the slot's own `fire` sets its transform, velocity, damage, age, and
-    /// generation and flips it live. No allocation, ever — a full ring reuses
-    /// its oldest slot.
+    /// Fire an enemy ballistic bolt at the ring cursor — the classic path
+    /// every enemy fire site calls.
     #[func]
     pub fn fire(&mut self, position: Vector3, velocity: Vector3, damage: f32) {
-        if self.slots.len() == 0 {
+        self.arm_next(position, velocity, damage, Faction::Enemy, None, BoltPayload::None);
+    }
+
+    /// Fire a player ballistic bolt (subdrones, cluster fragments).
+    #[func]
+    pub fn fire_player(&mut self, position: Vector3, velocity: Vector3, damage: f32) {
+        self.arm_next(position, velocity, damage, Faction::Player, None, BoltPayload::None);
+    }
+
+    /// Fire a player homing bolt locked onto the node with this instance id
+    /// (the tracking laser). An invalid or dead id flies ballistic.
+    #[func]
+    pub fn fire_homing(&mut self, position: Vector3, velocity: Vector3, damage: f32, target_instance_id: i64) {
+        let target = InstanceId::try_from_i64(target_instance_id);
+        self.arm_next(position, velocity, damage, Faction::Player, target, BoltPayload::None);
+    }
+
+    /// Fire a player cluster shell: it bursts into fragments (through this
+    /// same pool) when it spends itself.
+    #[func]
+    pub fn fire_cluster(&mut self, position: Vector3, velocity: Vector3, damage: f32) {
+        self.arm_next(position, velocity, damage, Faction::Player, None, BoltPayload::ClusterBurst);
+    }
+
+    /// Arm the slot at the ring cursor, then advance the cursor.
+    /// Reset-in-place: the slot's own `arm` sets its transform, velocity,
+    /// damage, age, faction, lock, payload, and generation and flips it live.
+    /// No allocation, ever — a full ring reuses its oldest slot.
+    fn arm_next(
+        &mut self,
+        position: Vector3,
+        velocity: Vector3,
+        damage: f32,
+        faction: Faction,
+        homing_target: Option<InstanceId>,
+        payload: BoltPayload,
+    ) {
+        if self.slots.is_empty() {
             return; // ring not built (no capacity) — nothing to fire
         }
         let slot_index = self.cursor % self.slots.len();
         self.cursor = self.cursor.wrapping_add(1);
         if let Some(mut slot) = self.slots.get_live(slot_index) {
-            slot.bind_mut().fire(position, velocity, damage);
+            slot.bind_mut().arm(position, velocity, damage, faction, homing_target, payload);
         }
     }
 

@@ -98,6 +98,13 @@ assets: build deps-godot
 	@echo "==> Reimporting assets (pass 3: with restored materials)..."
 	@rm -f $(GODOT_DIR)/.godot/uid_cache.bin
 	$(GODOT) --headless --import --path $(GODOT_DIR)
+	@# Final accounting: probe the installed assets into the generated
+	@# catalogs the roster linker resolves against — the enemy-model map
+	@# (models.generated.toml) and each kit's recipe-derived grid
+	@# (kits.generated.toml).
+	@echo "==> Probing installed assets into the roster catalogs..."
+	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
+		cd $(RUST_DIR) && $(CARGO) test -p void_logic --quiet probe_installed_assets -- --ignored >/dev/null
 	@echo "Import complete."
 
 deps-gut:
@@ -138,15 +145,33 @@ test-rust:
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && $(CARGO) test $(FILTER) -- --nocapture
 
+# Regenerate rosters/VOCABULARY.md from the closed-vocabulary enums.
+# `make build` runs this; the standalone target is the fast manual path.
+roster-vocab:
+	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
+		cd $(RUST_DIR) && $(CARGO) test -p void_logic regenerate_vocabulary_reference -- --ignored
+
+# Regenerate rosters/TEMPLATE.toml — the complete authoring scaffold (every
+# field of every entry kind, defaults spelled out; itself a loadable
+# grammar, test-enforced). `make build` runs this too.
+roster-template:
+	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
+		cd $(RUST_DIR) && $(CARGO) test -p void_logic regenerate_template -- --ignored
+
 # Runs GUT against the currently installed dylib (no rebuild). Optional filters
 # for the fast inner loop (skip the full suite): F selects scripts by filename
 # substring, T narrows to a single test by name. With neither set, runs all:
 #   make test-godot
 #   make test-godot F=test_ship_select_backdrop
 #   make test-godot F=test_ship_select_backdrop T=test_backdrop_is_structure_only
+# GUT runs under an isolated HOME so its user:// (savegame.cfg, options.cfg)
+# never touches the developer's real profile — tests exercise real
+# persistence, and real persistence must not wipe real progress.
 test-godot: deps-godot deps-gut
 	@echo "==> Running Godot tests (GUT)$(if $(F), [F=$(F) T=$(T)])..."
-	@GODOT_DISABLE_LEAK_CHECKS=1 $(GODOT) --headless --path $(GODOT_DIR) \
+	@mkdir -p $(GODOT_DIR)/.godot/test_home
+	@GODOT_DISABLE_LEAK_CHECKS=1 HOME=$(abspath $(GODOT_DIR)/.godot/test_home) \
+		$(GODOT) --headless --path $(GODOT_DIR) \
 		-s res://addons/gut/gut_cmdln.gd \
 		-gdir=res://tests -ginclude_subdirs \
 		$(if $(F),-gselect=$(F)) $(if $(T),-gunit_test_name=$(T)) -gexit
@@ -156,6 +181,10 @@ build: require-rust
 		cd $(RUST_DIR) && $(CARGO) build
 	@rm -f $(GODOT_DIR)/libvoid_scavenger.debug.dylib $(GODOT_DIR)/libvoid_scavenger.dylib
 	@cp $(RUST_DIR)/target/debug/libvoid_scavenger.dylib $(GODOT_DIR)/libvoid_scavenger.dylib
+	@# Re-render the generated roster artifacts (TEMPLATE.toml, VOCABULARY.md)
+	@# so they can never drift from the code — no golden pins to trip.
+	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
+		cd $(RUST_DIR) && $(CARGO) test -p void_logic --quiet regenerate_ -- --ignored >/dev/null
 	@echo "Build complete (debug)."
 
 build-release: require-rust
@@ -165,13 +194,16 @@ build-release: require-rust
 	@cp $(RUST_DIR)/target/release/libvoid_scavenger.dylib $(GODOT_DIR)/libvoid_scavenger.dylib
 	@echo "Build complete (release)."
 
+# Dev knobs: `make run LEVEL=7` starts new games at level 7 (rendering /
+# roster / boss-staging inspection); `SEED=1` pins the run seed. F9/F10
+# hop levels in flight.
 run: build-release deps-godot
 	@echo "==> Launching game (release)..."
-	@$(GODOT) --path $(GODOT_DIR)
+	@$(GODOT) --path $(GODOT_DIR) $(if $(LEVEL)$(SEED),-- $(if $(LEVEL),--level=$(LEVEL)) $(if $(SEED),--seed=$(SEED)))
 
 demo: build deps-godot
 	@echo "==> Launching game (debug)..."
-	@$(GODOT) --path $(GODOT_DIR)
+	@$(GODOT) --path $(GODOT_DIR) $(if $(LEVEL)$(SEED),-- $(if $(LEVEL),--level=$(LEVEL)) $(if $(SEED),--seed=$(SEED)))
 
 # Godot editor: Debugger -> Monitors graphs the kinetics/* counters live.
 edit: build deps-godot

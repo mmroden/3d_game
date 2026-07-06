@@ -34,6 +34,52 @@ impl Currency for Organic {
     const NAME: &'static str = "organics";
 }
 
+/// Which currency a cache pickup carries. The only in-level reward is a
+/// dropped cache of one of these; nothing is credited without a pickup.
+/// Crosses to GDScript as an id (`id`/`from_id`), like `EnemyType`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurrencyKind {
+    /// Blue: in-run components, lost on run-over.
+    Components,
+    /// Green: permanent organics, kept across runs.
+    Organics,
+    /// Red: a planet-final boss's hull container. Not a balance — collecting
+    /// it grants a random unowned hull (`boss::roll_hull_reward`); the
+    /// carried amount is the components fallback if no hull remains.
+    HullReward,
+}
+
+impl CurrencyKind {
+    pub const ALL: &[CurrencyKind] = &[
+        CurrencyKind::Components,
+        CurrencyKind::Organics,
+        CurrencyKind::HullReward,
+    ];
+
+    pub fn id(&self) -> i32 {
+        Self::ALL.iter().position(|k| k == self)
+            .expect("CurrencyKind::ALL must contain every variant") as i32
+    }
+
+    pub fn from_id(id: i32) -> Option<CurrencyKind> {
+        Self::ALL.get(id as usize).copied()
+    }
+
+    /// Glow tint for the in-level cache pickup: blue components, green
+    /// organics, red hull container.
+    pub fn glow_color(&self) -> [f32; 3] {
+        match self {
+            Self::Components => [0.2, 0.5, 1.0],
+            Self::Organics => [0.2, 0.9, 0.2],
+            Self::HullReward => [1.0, 0.15, 0.1],
+        }
+    }
+}
+
+/// Organics carried by each green cache placed at a level's loot spawns.
+/// Green income is deliberately slow — it prices the permanent unlocks.
+pub const ORGANIC_CACHE_AMOUNT: u32 = 50;
+
 /// Returned when a spend exceeds the available balance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotEnough {
@@ -153,6 +199,28 @@ mod tests {
     fn error_names_the_currency() {
         let err = OrganicAccount::new().spend(5).unwrap_err();
         assert_eq!(err.currency, "organics");
+    }
+
+    #[test]
+    fn currency_kind_id_round_trips() {
+        for kind in CurrencyKind::ALL {
+            assert_eq!(CurrencyKind::from_id(kind.id()), Some(*kind),
+                "{kind:?} must round-trip through its id");
+        }
+    }
+
+    #[test]
+    fn currency_kind_from_id_invalid_is_none() {
+        assert_eq!(CurrencyKind::from_id(-1), None);
+        assert_eq!(CurrencyKind::from_id(99), None);
+    }
+
+    #[test]
+    fn cache_glow_colors_match_their_currency() {
+        let [r, g, b] = CurrencyKind::Components.glow_color();
+        assert!(b > r && b > g, "the components cache glows blue, got [{r}, {g}, {b}]");
+        let [r, g, b] = CurrencyKind::Organics.glow_color();
+        assert!(g > r && g > b, "the organics cache glows green, got [{r}, {g}, {b}]");
     }
 
     #[test]

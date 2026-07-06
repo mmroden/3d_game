@@ -1,6 +1,6 @@
 use crate::kinetics::Retention;
 use crate::newtypes::{Health, Damage};
-use crate::upgrade::{Upgrade, UpgradeKind};
+use crate::upgrade::{UpgradeKind, STAT_UPGRADE_MULTIPLIER};
 use serde::{Deserialize, Serialize};
 
 /// Base stats for the ship before upgrades.
@@ -35,7 +35,7 @@ impl Default for BaseStats {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Loadout {
     pub base: BaseStats,
-    pub upgrades: Vec<Upgrade>,
+    pub upgrades: Vec<UpgradeKind>,
 }
 
 impl Loadout {
@@ -43,16 +43,20 @@ impl Loadout {
         Self::default()
     }
 
-    pub fn add_upgrade(&mut self, upgrade: Upgrade) {
-        self.upgrades.push(upgrade);
+    pub fn add_upgrade(&mut self, kind: UpgradeKind) {
+        self.upgrades.push(kind);
     }
 
-    /// Compute effective stat by applying all relevant upgrade multipliers.
+    /// The total multiplier the loadout applies to `kind` (1.0 = stock).
+    pub fn stat_multiplier(&self, kind: UpgradeKind) -> f32 {
+        self.effective(kind, 1.0)
+    }
+
+    /// Compute effective stat: the fixed policy step, compounded once per
+    /// purchase of `kind` (the loadout stores WHICH, policy stores HOW MUCH).
     fn effective(&self, kind: UpgradeKind, base_value: f32) -> f32 {
-        self.upgrades
-            .iter()
-            .filter(|u| u.kind == kind)
-            .fold(base_value, |val, u| val * u.multiplier)
+        let count = self.upgrades.iter().filter(|k| **k == kind).count();
+        base_value * STAT_UPGRADE_MULTIPLIER.powi(count as i32)
     }
 
     pub fn thrust_power(&self) -> f32 {
@@ -64,15 +68,10 @@ impl Loadout {
     }
 
     pub fn damping(&self) -> Retention {
-        // Stability upgrades scale the decay *rate* — the exponent of
-        // the per-second retention: retention' = base^multiplier.
-        // Multipliers > 1 settle the ship faster, stacking approaches
-        // but never reaches zero, and the result can never exceed the
-        // base — the invariants hold structurally, no clamps needed.
-        // Retention's own invariant (< 1.0 unless FULL) keeps the
-        // infinite-spin bug unrepresentable.
-        let exponent = self.effective(UpgradeKind::Damping, 1.0);
-        Retention::decaying(self.base.damping.factor().powf(exponent))
+        // Fixed base value: the "Stability" upgrade was retired with the
+        // free-drop economy. Retention's own invariant (< 1.0 unless FULL)
+        // keeps the infinite-spin bug unrepresentable.
+        self.base.damping
     }
 
     pub fn max_health(&self) -> Health {
@@ -84,7 +83,9 @@ impl Loadout {
     }
 
     pub fn projectile_speed(&self) -> f32 {
-        self.effective(UpgradeKind::ProjectileSpeed, self.base.projectile_speed)
+        // Fixed base value: the "Beam Focus" upgrade was retired with the
+        // free-drop economy.
+        self.base.projectile_speed
     }
 
     pub fn projectile_damage(&self) -> Damage {
@@ -104,79 +105,33 @@ mod tests {
     }
 
     #[test]
-    fn single_upgrade_applies() {
+    fn single_upgrade_applies_the_policy_step() {
         let mut loadout = Loadout::new();
-        loadout.add_upgrade(Upgrade {
-            name: "Test Booster".to_string(),
-            kind: UpgradeKind::Thrust,
-            multiplier: 1.5,
-        });
-        assert_eq!(loadout.thrust_power(), 60.0);
+        loadout.add_upgrade(UpgradeKind::Thrust);
+        assert_eq!(loadout.thrust_power(), 40.0 * STAT_UPGRADE_MULTIPLIER);
         // Other stats unaffected
         assert_eq!(loadout.rotation_speed(), 6.0);
     }
 
-    fn stability(multiplier: f32) -> Upgrade {
-        Upgrade {
-            name: format!("Stability +{}%", ((multiplier - 1.0) * 100.0).round()),
-            kind: UpgradeKind::Damping,
-            multiplier,
-        }
-    }
-
     #[test]
-    fn stability_upgrade_keeps_damping_below_one() {
+    fn damping_and_projectile_speed_are_fixed_base_values() {
+        // These stats have no upgrade kind (retired with the free-drop
+        // economy): whatever the loadout collects, they stay at base.
         let mut loadout = Loadout::new();
-        loadout.add_upgrade(stability(1.1));
-        assert!(
-            loadout.damping().factor() < 1.0,
-            "damping is per-frame velocity retention; at >= 1.0 motion never \
-             decays and the ship spins forever, got {}",
-            loadout.damping().factor()
-        );
-    }
-
-    #[test]
-    fn stability_upgrade_settles_the_ship_faster() {
-        let base = Loadout::new();
-        let mut upgraded = Loadout::new();
-        upgraded.add_upgrade(stability(1.2));
-        assert!(
-            upgraded.damping().factor() < base.damping().factor(),
-            "a stability upgrade must decay velocity faster than base \
-             (smaller retention), got {} vs base {}",
-            upgraded.damping().factor(),
-            base.damping().factor()
-        );
-    }
-
-    #[test]
-    fn stacked_stability_upgrades_never_exceed_base_retention() {
-        let base = Loadout::new().damping().factor();
-        let mut loadout = Loadout::new();
-        for _ in 0..30 {
-            loadout.add_upgrade(stability(1.3));
-        }
-        let damping = loadout.damping().factor();
-        assert!(
-            (0.0..=base).contains(&damping),
-            "stacked stability upgrades must keep retention in [0, base], got {damping}"
-        );
+        loadout.add_upgrade(UpgradeKind::Thrust);
+        assert_eq!(loadout.damping().factor(), Loadout::new().damping().factor());
+        assert_eq!(loadout.projectile_speed(), Loadout::new().projectile_speed());
     }
 
     #[test]
     fn multiple_upgrades_stack_multiplicatively() {
         let mut loadout = Loadout::new();
-        loadout.add_upgrade(Upgrade {
-            name: "Boost A".to_string(),
-            kind: UpgradeKind::Thrust,
-            multiplier: 1.5,
-        });
-        loadout.add_upgrade(Upgrade {
-            name: "Boost B".to_string(),
-            kind: UpgradeKind::Thrust,
-            multiplier: 2.0,
-        });
-        assert_eq!(loadout.thrust_power(), 120.0); // 40 * 1.5 * 2.0
+        loadout.add_upgrade(UpgradeKind::Thrust);
+        loadout.add_upgrade(UpgradeKind::Thrust);
+        assert_eq!(
+            loadout.thrust_power(),
+            40.0 * STAT_UPGRADE_MULTIPLIER * STAT_UPGRADE_MULTIPLIER,
+            "each purchase compounds the ONE policy step"
+        );
     }
 }

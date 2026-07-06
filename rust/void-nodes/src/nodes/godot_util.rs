@@ -4,7 +4,7 @@
 use godot::prelude::*;
 use godot::classes::{
     MeshInstance3D, BoxMesh, StandardMaterial3D, OmniLight3D,
-    RigidBody3D, CollisionShape3D, PackedScene, ResourceLoader,
+    RigidBody3D, CollisionShape3D, ConvexPolygonShape3D, PackedScene, ResourceLoader,
     ParticleProcessMaterial, BaseMaterial3D, Texture2D,
     particle_process_material::Parameter,
     base_material_3d,
@@ -16,10 +16,7 @@ use super::bolt_pool::BoltPool;
 use super::constants::{groups, meta_keys, nodes};
 use super::live_handle::{LiveOpt, LiveRef, LiveVec};
 
-/// Yaw applied to the imported ship model so its nose points along the ship's
-/// forward (-Z); the asset is modelled facing backward. One source of truth for
-/// both the player ship and the menu showcase.
-pub const SHIP_MODEL_YAW: f32 = std::f32::consts::PI;
+
 
 /// Get the scene tree root node from a SceneTree (or Optional SceneTree).
 /// Returns `None` during early initialization or after the tree is torn down.
@@ -41,7 +38,7 @@ pub fn camera_front_position(main: &Gd<godot::classes::Node>, distance: f32) -> 
 }
 
 /// Find the AudioManager node by navigating up to the scene root, then down to Main/AudioManager.
-/// Works from any depth in the tree (enemies under LevelManager, portal, lootbox, etc.).
+/// Works from any depth in the tree (enemies under LevelManager, portal, caches, etc.).
 /// Accepts the result of `self.base().get_tree()` to avoid upcast ambiguity.
 pub fn find_audio_manager(tree: impl Into<Option<Gd<godot::classes::SceneTree>>>) -> Option<Gd<AudioManager>> {
     let root = scene_root(tree)?;
@@ -200,13 +197,18 @@ pub fn recolor_glow(glow: &Option<LiveRef<OmniLight3D>>, color: Color) {
     glow.with(|light| light.set_color(Color::from_rgb(color.r, color.g, color.b)));
 }
 
-/// Load the ship model scene at `path`, instance it under `parent`, scale it to
-/// `length`, and face its nose forward. Returns the model node. The single
-/// source of truth for building the ship — both the player and the menu
-/// showcase call this instead of repeating the load/fit/yaw sequence.
-pub fn spawn_fitted_model(parent: &mut Gd<Node3D>, path: &str, length: f32) -> Option<Gd<Node3D>> {
+/// Load the model scene at `path`, instance it under `parent`, scale it to
+/// `length`, and turn it by `front_yaw` — the subject's own front-axis
+/// correction (`ShipType`/`EnemyType` `model_yaw_offset`), so that the
+/// model's nose ends up along the parent's -Z. Returns the model node.
+pub fn spawn_fitted_model(
+    parent: &mut Gd<Node3D>,
+    path: &str,
+    length: f32,
+    front_yaw: f32,
+) -> Option<Gd<Node3D>> {
     let mut model = spawn_model_fitted(parent, path, length)?;
-    model.rotate_y(SHIP_MODEL_YAW);
+    model.rotate_y(front_yaw);
     Some(model)
 }
 
@@ -266,6 +268,47 @@ pub fn add_convex_collision(body: &mut Gd<RigidBody3D>, node: &Gd<Node3D>, xform
             add_convex_collision(body, &child3d, child_xform);
         }
     }
+}
+
+/// Add ONE convex hull spanning the whole model to `body`: every mesh part's
+/// vertices, transformed into body space, hulled together. This is the HIT
+/// TARGET for enemies — the convex envelope of the silhouette the player
+/// aims at, concavities filled (per-part hulls left a quadruped mostly gaps:
+/// the 2026-07-05 audit measured 6–61% silhouette coverage across the
+/// roster). Points are baked into body space here and the shape transform
+/// stays identity, so no engine scaled-shape semantics are involved — and
+/// one shape beats N per-part hulls in Jolt's narrowphase too.
+pub fn add_whole_model_convex_hull(
+    body: &mut Gd<RigidBody3D>,
+    node: &Gd<Node3D>,
+    xform: Transform3D,
+) {
+    fn gather(node: &Gd<Node3D>, xform: Transform3D, points: &mut PackedVector3Array) {
+        if let Ok(mesh_inst) = node.clone().try_cast::<MeshInstance3D>() {
+            if let Some(mesh) = mesh_inst.get_mesh() {
+                for p in mesh.get_faces().as_slice() {
+                    points.push(xform * *p);
+                }
+            }
+        }
+        for child in node.get_children().iter_shared() {
+            if let Ok(child3d) = child.try_cast::<Node3D>() {
+                let child_xform = xform * child3d.get_transform();
+                gather(&child3d, child_xform, points);
+            }
+        }
+    }
+
+    let mut points = PackedVector3Array::new();
+    gather(node, xform, &mut points);
+    if points.is_empty() {
+        return;
+    }
+    let mut shape = ConvexPolygonShape3D::new_gd();
+    shape.set_points(&points);
+    let mut col = CollisionShape3D::new_alloc();
+    col.set_shape(&shape);
+    body.add_child(&col);
 }
 
 /// Union of every `MeshInstance3D` AABB under `root`, expressed in `root`'s

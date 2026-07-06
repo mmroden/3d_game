@@ -6,12 +6,23 @@ use godot::classes::{
 
 use super::constants::{groups, methods};
 use super::godot_util;
+use void_logic::armament::{cluster, homing, Faction};
 
-/// Enemy bolt: a small Area3D projectile, one slot of the [`BoltPool`] ring
-/// (Faucet Principle, tier 2). Godot moves nothing for us here — it travels at
-/// constant velocity (set on fire) and detonates on first contact: damage to
-/// the player, or just vanish on a wall. Detonation and expiry return the slot
-/// to *dormant* rather than freeing it, so the pool reuses it for the next shot.
+/// A bolt slot's special payload, resolved when the bolt spends itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BoltPayload {
+    #[default]
+    None,
+    /// A cluster shell: bursts into player-faction fragments on impact or expiry.
+    ClusterBurst,
+}
+
+/// A bolt: a small Area3D projectile, one slot of the [`BoltPool`] ring
+/// (Faucet Principle, tier 2), serving BOTH factions — the slot's faction
+/// decides whose group it passes through and whose it damages. It travels at
+/// constant velocity (set on fire), optionally steering toward a homing
+/// target, and detonates on first contact. Detonation and expiry return the
+/// slot to *dormant* rather than freeing it, so the pool reuses it.
 // Bolts are an Area3D moved by teleporting each physics frame, so a small,
 // fast bolt tunnels past the player between frames. A larger radius makes hits
 // land reliably (the dominant cause of "damage feels low").
@@ -22,6 +33,13 @@ const BOLT_LIFETIME_S: f64 = 3.0;
 /// HIT_SFX_OFFSET — tune the two together or ram and bolt hits localize
 /// inconsistently).
 const HIT_SFX_OFFSET: f32 = 5.0;
+/// Cluster fragments inherit this fraction of the shell's speed, faster than
+/// the lobbed shell so the burst reads as an explosion.
+const FRAGMENT_SPEED_FACTOR: f32 = 1.6;
+/// Each fragment carries this fraction of the shell's damage.
+const FRAGMENT_DAMAGE_FACTOR: f32 = 0.4;
+/// Cone half-angle for the burst.
+const FRAGMENT_SPREAD_RAD: f32 = 0.7;
 
 #[derive(GodotClass)]
 #[class(base=Area3D)]
@@ -42,6 +60,14 @@ pub struct EnemyBolt {
     /// this field, not `is_monitoring`, is the truth the pool and flight logic
     /// read.
     live: bool,
+    /// Whose bolt this life is — pass through your own side, damage the other.
+    faction: Faction,
+    /// Steer toward this node while it lives; a freed or hidden target drops
+    /// the lock and the bolt flies on ballistic (instance-id validated per
+    /// tick, the same guard discipline as the generation counter).
+    homing_target: Option<InstanceId>,
+    /// What the bolt does when it spends itself.
+    payload: BoltPayload,
 }
 
 #[godot_api]
@@ -54,6 +80,9 @@ impl IArea3D for EnemyBolt {
             age: 0.0,
             generation: 0,
             live: false,
+            faction: Faction::Enemy,
+            homing_target: None,
+            payload: BoltPayload::None,
         }
     }
 
@@ -94,35 +123,75 @@ impl IArea3D for EnemyBolt {
         if !self.live {
             return;
         }
+        self.steer_toward_target(delta as f32);
         let step = self.velocity * delta as f32;
         let next = self.base().get_global_position() + step;
         self.base_mut().set_global_position(next);
 
         self.age += delta;
         if self.age >= BOLT_LIFETIME_S {
-            // A spent bolt returns to dormant for reuse — never freed.
-            self.deactivate();
+            // A spent bolt returns to dormant for reuse — never freed. A
+            // cluster shell that outlives its flight still bursts.
+            self.spend();
         }
     }
 }
 
 #[godot_api]
 impl EnemyBolt {
-    /// Fire this slot: reset-in-place and activate. The whole "reset" for an
-    /// Area3D bolt is exactly this routine (transform, velocity, damage, age,
-    /// generation, monitoring on) — there is no separate recycle path. Bumping
-    /// the generation invalidates any hit still queued from a previous life.
+    /// Fire this slot as an enemy ballistic bolt — the classic path every
+    /// enemy fire site calls.
     #[func]
     pub fn fire(&mut self, position: Vector3, velocity: Vector3, damage: f32) {
+        self.arm(position, velocity, damage, Faction::Enemy, None, BoltPayload::None);
+    }
+
+    /// Arm this slot: reset-in-place and activate. The whole "reset" for an
+    /// Area3D bolt is exactly this routine (transform, velocity, damage, age,
+    /// generation, faction, homing lock, payload, monitoring on) — there is no
+    /// separate recycle path. Bumping the generation invalidates any hit still
+    /// queued from a previous life.
+    pub fn arm(
+        &mut self,
+        position: Vector3,
+        velocity: Vector3,
+        damage: f32,
+        faction: Faction,
+        homing_target: Option<InstanceId>,
+        payload: BoltPayload,
+    ) {
         self.velocity = velocity;
         self.damage = damage;
         self.age = 0.0;
+        self.faction = faction;
+        self.homing_target = homing_target;
+        self.payload = payload;
         self.generation = self.generation.wrapping_add(1);
         self.base_mut().set_global_position(position);
         self.activate();
         // Re-placed across the map, not flown there — don't interpolate from the
         // slot's previous resting position (same as spawn-time placement).
         self.base_mut().reset_physics_interpolation();
+    }
+
+    /// Bend the velocity toward the homing target, if the lock still resolves
+    /// to a live, visible node; otherwise drop it and fly on ballistic.
+    fn steer_toward_target(&mut self, dt: f32) {
+        let Some(target_id) = self.homing_target else { return };
+        let target = Gd::<Node3D>::try_from_instance_id(target_id).ok()
+            .filter(|t| t.is_inside_tree() && t.is_visible_in_tree());
+        let Some(target) = target else {
+            self.homing_target = None; // target died or went dormant: ballistic
+            return;
+        };
+        let to = target.get_global_position() - self.base().get_global_position();
+        let steered = homing::steer(
+            [self.velocity.x, self.velocity.y, self.velocity.z],
+            [to.x, to.y, to.z],
+            homing::TURN_RATE,
+            dt,
+        );
+        self.velocity = Vector3::new(steered[0], steered[1], steered[2]);
     }
 
     /// This slot's current generation. Exposed for the stale-hit guard test.
@@ -180,11 +249,19 @@ impl EnemyBolt {
 
     #[func]
     fn on_body_entered(&mut self, body: Gd<Node3D>) {
-        // Pass harmlessly through enemies. The bolt and enemies share a
+        // Pass harmlessly through the firing side. Everything shares one
         // collision layer, and a bolt spawns at the firer's muzzle inside its
-        // own collision sphere — without this it would detonate on the firing
-        // enemy the instant it appears (no visible shot, no damage).
-        if body.is_in_group(groups::ENEMIES) {
+        // own collision sphere — without this it would detonate on the firer
+        // the instant it appears (no visible shot, no damage).
+        let own_side = match self.faction {
+            Faction::Enemy => groups::ENEMIES,
+            Faction::Player => groups::PLAYER,
+        };
+        if body.is_in_group(own_side) {
+            return;
+        }
+        // Player bolts also pass through the player's own drones.
+        if self.faction == Faction::Player && body.is_in_group(groups::PLAYER_DRONES) {
             return;
         }
         // Resolve the hit on a deferred boundary, tagged with the generation it
@@ -209,17 +286,71 @@ impl EnemyBolt {
             return; // the bolt expired in the gap before its engine flags flushed
         }
         let mut body = body;
-        if body.is_in_group(groups::PLAYER) && body.has_method(methods::TAKE_DAMAGE) {
-            // The bolt is on top of the ship at impact, so its own position gives
-            // no direction. Point back along its travel — that's where the
-            // shooter is — so the hit sound localizes toward the threat.
-            let source = self.base().get_global_position() - self.velocity.normalized() * HIT_SFX_OFFSET;
-            body.call(
-                methods::TAKE_DAMAGE,
-                &[Variant::from(self.damage), Variant::from(source)],
+        match self.faction {
+            Faction::Enemy => {
+                if body.is_in_group(groups::PLAYER) && body.has_method(methods::TAKE_DAMAGE) {
+                    // The bolt is on top of the ship at impact, so its own position
+                    // gives no direction. Point back along its travel — that's where
+                    // the shooter is — so the hit sound localizes toward the threat.
+                    let source =
+                        self.base().get_global_position() - self.velocity.normalized() * HIT_SFX_OFFSET;
+                    body.call(
+                        methods::TAKE_DAMAGE,
+                        &[Variant::from(self.damage), Variant::from(source)],
+                    );
+                }
+            }
+            Faction::Player => {
+                if body.is_in_group(groups::ENEMIES) && body.has_method(methods::TAKE_DAMAGE) {
+                    // EnemyDrone::take_damage takes the raw amount.
+                    body.call(methods::TAKE_DAMAGE, &[Variant::from(self.damage)]);
+                }
+            }
+        }
+        // Detonate on the target or solid world geometry — back to dormant
+        // (bursting first, if this life carried a cluster payload).
+        self.spend();
+    }
+
+    /// Spend the bolt: resolve any payload, then return the slot to dormant.
+    fn spend(&mut self) {
+        if self.payload == BoltPayload::ClusterBurst {
+            self.burst();
+        }
+        self.deactivate();
+    }
+
+    /// The cluster shell's burst: a deterministic cone of player-faction
+    /// fragments fired through the shared pool (found by group, like the
+    /// audio manager). The seed mixes the slot and its generation so every
+    /// shell bursts uniquely but reproducibly.
+    fn burst(&mut self) {
+        let dir = self.velocity.normalized();
+        if !dir.is_finite() {
+            return;
+        }
+        let position = self.base().get_global_position();
+        let speed = self.velocity.length() * FRAGMENT_SPEED_FACTOR;
+        let seed = (self.base().instance_id().to_i64() as u64).wrapping_add(self.generation);
+        let directions = cluster::fragment_directions(
+            [dir.x, dir.y, dir.z],
+            cluster::FRAGMENT_COUNT,
+            FRAGMENT_SPREAD_RAD,
+            seed,
+        );
+        let pool = self
+            .base()
+            .get_tree()
+            .get_first_node_in_group(groups::BOLT_POOL)
+            .and_then(|n| n.try_cast::<super::bolt_pool::BoltPool>().ok());
+        let Some(mut pool) = pool else { return };
+        let damage = self.damage * FRAGMENT_DAMAGE_FACTOR;
+        for d in directions {
+            pool.bind_mut().fire_player(
+                position,
+                Vector3::new(d[0], d[1], d[2]) * speed,
+                damage,
             );
         }
-        // Detonate on the player or solid world geometry — back to dormant.
-        self.deactivate();
     }
 }

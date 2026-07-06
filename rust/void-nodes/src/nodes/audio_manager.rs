@@ -3,12 +3,12 @@ use godot::classes::{
     AudioStreamPlayer, AudioStreamPlayer3D,
     Node, INode, Engine, ResourceLoader,
 };
-use rand::seq::{IndexedRandom, SliceRandom};
+use rand::seq::IndexedRandom;
 
 use super::constants::{signals, methods, nodes};
 use super::live_handle::{LiveOpt, LiveRef};
 use void_logic::audio_catalog::{
-    MusicContext, SfxEvent,
+    combat_pool, menu_track, MusicBed, SfxEvent,
     CROSSFADE_SECS, GAMEPLAY_MUSIC_VOL, MENU_MUSIC_VOL, TRANSITION_MUSIC_VOL,
     DEATH_MUSIC_VOL, MAX_SFX_POLYPHONY, COLLISION_SFX_COOLDOWN,
 };
@@ -36,11 +36,21 @@ pub struct AudioManager {
     music_player_a: Option<LiveRef<AudioStreamPlayer>>,
     music_player_b: Option<LiveRef<AudioStreamPlayer>>,
     active_player: ActivePlayer,
+    /// The bed GameManager last pushed (ONE derivation, pushed at every
+    /// input change — this node holds no music lifecycle of its own; see
+    /// audio_catalog::music_bed) and the track it named.
+    current_bed: MusicBed,
+    current_track: String,
+    /// What is actually audible right now — diverges from `current_track`
+    /// when a bed's continuation swaps the stream (Boss → combat stinger).
+    audible_track: String,
+    /// Where the level background stood when a fight interrupted it — the
+    /// bed resumes there, not from the top (owner, playtest 2026-07-05).
+    level_resume_track: String,
+    level_resume_pos: f32,
     crossfade_timer: f32,
     crossfade_target_vol: f32,
     is_crossfading: bool,
-    gameplay_tracks: Vec<&'static str>,
-    gameplay_track_index: usize,
     current_phase: GamePhase,
     active_sfx_count: u32,
     collision_cooldown: f32,
@@ -49,19 +59,19 @@ pub struct AudioManager {
 #[godot_api]
 impl INode for AudioManager {
     fn init(base: Base<Node>) -> Self {
-        let mut tracks: Vec<&str> = MusicContext::Gameplay.track_pool().to_vec();
-        tracks.shuffle(&mut rand::rng());
-
         Self {
             base,
             music_player_a: None,
             music_player_b: None,
             active_player: ActivePlayer::A,
+            current_bed: MusicBed::Menu,
+            current_track: menu_track().to_string(),
+            audible_track: String::new(),
+            level_resume_track: String::new(),
+            level_resume_pos: 0.0,
             crossfade_timer: 0.0,
             crossfade_target_vol: MENU_MUSIC_VOL,
             is_crossfading: false,
-            gameplay_tracks: tracks,
-            gameplay_track_index: 0,
             current_phase: GamePhase::MainMenu,
             active_sfx_count: 0,
             collision_cooldown: 0.0,
@@ -97,7 +107,7 @@ impl INode for AudioManager {
             }
         }
 
-        self.start_music(MusicContext::Menu.track_path(), MENU_MUSIC_VOL);
+        self.start_music(menu_track(), MENU_MUSIC_VOL);
     }
 
     fn process(&mut self, delta: f64) {
@@ -139,50 +149,105 @@ impl AudioManager {
             return;
         };
 
-        let prev = self.current_phase;
         self.current_phase = phase;
+        // Volume ducking only — WHICH bed plays is GameManager's single
+        // derivation (set_music_bed), never inferred from phases here.
+        let vol = self.target_volume();
+        if self.is_crossfading {
+            self.crossfade_target_vol = vol;
+        } else {
+            self.set_active_volume(vol);
+        }
+    }
 
-        match phase {
-            GamePhase::MainMenu => {
-                self.crossfade_to(MusicContext::Menu.track_path(), MENU_MUSIC_VOL);
+    /// GameManager pushes the derived bed at every input change (phase,
+    /// room, kill, fight beat, rebuild). An empty `track` lets this node
+    /// pick — used for Combat, where the stinger is random (cosmetic
+    /// entropy, the accepted exception).
+    #[func]
+    pub fn set_music_bed(&mut self, bed_id: i32, track: GString) {
+        let bed = match bed_id {
+            0 => MusicBed::Menu,
+            1 => MusicBed::Level,
+            2 => MusicBed::Combat,
+            3 => MusicBed::Boss,
+            _ => return,
+        };
+        let mut track = track.to_string();
+        if bed == self.current_bed
+            && (bed == MusicBed::Combat || track == self.current_track)
+        {
+            return; // already on this bed — a re-push is a no-op
+        }
+        if bed == MusicBed::Combat && track.is_empty() {
+            track = Self::random_combat_track();
+        }
+        if track.is_empty() {
+            return;
+        }
+        // A fight interrupting the level background bookmarks it; coming
+        // back to the SAME background picks up where it left off rather
+        // than restarting (owner, playtest 2026-07-05).
+        if self.current_bed == MusicBed::Level && bed != MusicBed::Level {
+            self.level_resume_track = self.current_track.clone();
+            self.level_resume_pos = self
+                .active_music_player()
+                .with(|p| p.get_playback_position())
+                .unwrap_or(0.0);
+        }
+        if bed == MusicBed::Menu {
+            // The menu is a run boundary — a fresh run's level_01 must not
+            // resume a dead run's bookmark.
+            self.level_resume_track.clear();
+            self.level_resume_pos = 0.0;
+        }
+        self.current_bed = bed;
+        self.current_track = track.clone();
+        let vol = self.target_volume();
+        self.crossfade_to(&track, vol);
+        if bed == MusicBed::Level && track == self.level_resume_track {
+            let pos = self.level_resume_pos;
+            self.active_music_player().with(|p| p.seek(pos));
+        }
+    }
+
+    /// Track-end continuation, per bed (owner's design 2026-07-05): menu
+    /// and level backgrounds loop; a finished combat stinger draws another;
+    /// a boss fight outlasting its track continues on combat stingers —
+    /// the boss track never reloops.
+    #[func]
+    fn on_music_finished(&mut self) {
+        let vol = self.target_volume();
+        match self.current_bed {
+            MusicBed::Menu | MusicBed::Level => {
+                let track = self.current_track.clone();
+                self.start_music(&track, vol);
             }
-            GamePhase::Playing => {
-                if prev == GamePhase::MainMenu
-                    || prev == GamePhase::Shop
-                    || prev == GamePhase::ShipSelect
-                    || prev == GamePhase::Bestiary
-                {
-                    let track = self.next_gameplay_track();
-                    self.crossfade_to(track, GAMEPLAY_MUSIC_VOL);
-                } else {
-                    self.set_active_volume(GAMEPLAY_MUSIC_VOL);
-                }
-            }
-            GamePhase::Death => {
-                self.set_active_volume(DEATH_MUSIC_VOL);
-            }
-            // Transition/menu screens all reduce volume.
-            GamePhase::KillSummary | GamePhase::Shop | GamePhase::ShipSelect
-            | GamePhase::Bestiary | GamePhase::Paused | GamePhase::LevelComplete => {
-                self.set_active_volume(TRANSITION_MUSIC_VOL);
+            MusicBed::Combat | MusicBed::Boss => {
+                // current_bed/current_track stay as pushed, so GameManager
+                // re-pushes remain no-ops; only the audible track changes.
+                let track = Self::random_combat_track();
+                self.start_music(&track, vol);
             }
         }
     }
 
-    /// Called when the active music player finishes a track.
+    fn random_combat_track() -> String {
+        let pool = combat_pool();
+        pool.choose(&mut rand::rng()).cloned().unwrap_or_default()
+    }
+
+    /// The bed as last pushed — the GDScript-facing observability door.
     #[func]
-    fn on_music_finished(&mut self) {
-        if matches!(
-            self.current_phase,
-            GamePhase::Playing
-                | GamePhase::LevelComplete
-                | GamePhase::KillSummary
-                | GamePhase::Shop
-        ) {
-            let track = self.next_gameplay_track();
-            let vol = self.volume_for_phase();
-            self.start_music(track, vol);
-        }
+    pub fn music_bed_id(&self) -> i32 {
+        self.current_bed.id()
+    }
+
+    /// The track actually audible (a Boss bed may be playing a combat
+    /// stinger continuation — this reports the stinger).
+    #[func]
+    pub fn music_track(&self) -> GString {
+        GString::from(self.audible_track.as_str())
     }
 
     /// Called when any ephemeral SFX node finishes playback.
@@ -258,6 +323,12 @@ impl AudioManager {
         variants.choose(&mut rand::rng()).copied().unwrap_or(variants[0])
     }
 
+    /// The active bed's playback volume: phase ducking × the bed's own
+    /// gain (fight music rides ~20% over exploration — owner's call).
+    fn target_volume(&self) -> f32 {
+        self.volume_for_phase() * self.current_bed.gain()
+    }
+
     fn volume_for_phase(&self) -> f32 {
         match self.current_phase {
             GamePhase::MainMenu => MENU_MUSIC_VOL,
@@ -270,16 +341,8 @@ impl AudioManager {
         }
     }
 
-    fn next_gameplay_track(&mut self) -> &'static str {
-        let track = self.gameplay_tracks[self.gameplay_track_index];
-        self.gameplay_track_index = (self.gameplay_track_index + 1) % self.gameplay_tracks.len();
-        if self.gameplay_track_index == 0 {
-            self.gameplay_tracks.shuffle(&mut rand::rng());
-        }
-        track
-    }
-
     fn start_music(&mut self, path: &str, volume: f32) {
+        self.audible_track = path.to_string();
         if let Some(stream) = Self::load_audio_stream(path) {
             self.active_music_player().with(|p| {
                 p.set_stream(&stream);
@@ -290,6 +353,7 @@ impl AudioManager {
     }
 
     fn crossfade_to(&mut self, path: &str, target_vol: f32) {
+        self.audible_track = path.to_string();
         self.active_player = self.active_player.flip();
 
         if let Some(stream) = Self::load_audio_stream(path) {

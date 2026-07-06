@@ -95,6 +95,16 @@ impl Portal {
     #[signal]
     fn portal_entered();
 
+    /// Dormancy flip (Faucet Principle): on boss levels the portal is
+    /// pre-built with the level but stays dark and intangible until the
+    /// fight resolves. Flips directly — from a physics callback, invoke it
+    /// via `call_deferred` (the house dormancy pattern).
+    #[func]
+    pub fn set_dormant(&mut self, dormant: bool) {
+        self.base_mut().set_visible(!dormant);
+        self.base_mut().set_monitoring(!dormant);
+    }
+
     #[func]
     fn on_body_entered(&mut self, body: Gd<Node3D>) {
         // Check if it's the player (in "player" group)
@@ -105,8 +115,11 @@ impl Portal {
                 audio.bind_mut().play_event_at(SfxEvent::PortalEnter, pos);
             }
             self.base_mut().emit_signal(signals::PORTAL_ENTERED, &[]);
-            // Disable further collisions
-            self.base_mut().set_monitoring(false);
+            // Disable further collisions — call_deferred of the setter (the
+            // house dormancy pattern; a property set_deferred("monitoring")
+            // silently never lands).
+            self.base_mut()
+                .call_deferred(methods::SET_MONITORING, &[Variant::from(false)]);
         }
     }
 }

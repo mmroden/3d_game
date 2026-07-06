@@ -6,7 +6,7 @@ use godot::classes::{
     Input,
 };
 
-use super::constants::{actions, groups, methods, scenes, signals};
+use super::constants::{actions, groups, methods, signals};
 use super::godot_util;
 use super::live_handle::{LiveOpt, LiveRef, LiveVec};
 
@@ -15,7 +15,9 @@ use void_logic::laser::LaserLevel;
 use void_logic::ship::{self, ShipColor};
 use void_logic::loadout::Loadout;
 use void_logic::power_routing::PowerMode;
-use void_logic::upgrade::{Upgrade, UpgradeKind};
+use void_logic::armament::{cluster, subdrone, valkyrie, WeaponKind};
+use void_logic::ship_type::ShipType;
+use void_logic::upgrade::UpgradeKind;
 use void_logic::audio_catalog::SfxEvent;
 use void_logic::weapon::{WeaponState, FireResult};
 
@@ -29,9 +31,11 @@ const TURN_GAIN: f32 = 12.0;
 /// Wing offset from ship center (local X axis), in meters.
 const WING_OFFSET: f32 = 0.3;
 
-/// Aim forgiveness: lasers also test a ring of this radius around the centre
-/// line, so a near-miss still connects instead of needing pixel-perfect aim.
-const LASER_AIM_RADIUS: f32 = 0.7;
+/// Aim forgiveness: a shot whose sight line passes within this ANGLE of an
+/// enemy's hull still connects — constant on-screen generosity at every
+/// range (2.5° ≈ 0.4 m of slop at 10 m, 1.1 m at 25 m, on top of the hull
+/// radius). A feel value to tune.
+const LASER_ASSIST_CONE_DEG: f32 = 2.5;
 /// Minimum gap between collision sounds (so a wall scrape doesn't machine-gun).
 const IMPACT_SOUND_COOLDOWN: f32 = 0.4;
 /// How far off the hull (m) the hit sound is placed, toward whatever struck us.
@@ -44,9 +48,6 @@ const HIT_SFX_OFFSET: f32 = 2.0;
 const SHAKE_DURATION: f32 = 0.5;
 const SHAKE_AMP: f32 = 0.25;
 
-/// Target length (longest dimension) of the player ship, in world units.
-/// The model is auto-scaled to this regardless of its native size.
-const TARGET_SHIP_LENGTH: f32 = 2.0;
 /// Flight collider capsule, in world units (independent of the model's scale).
 /// Tighter than the visual hull so the ship slides through doorways.
 const SHIP_COLLIDER_RADIUS: f32 = 0.45;
@@ -97,8 +98,22 @@ pub struct ShipController {
     ship_model: Option<LiveRef<Node3D>>,
     /// Color accent light on the ship model (the player's chosen color).
     color_glow: Option<LiveRef<OmniLight3D>>,
-    /// Flight-speed multiplier from the chosen ship color.
+    /// The chosen hull — model, weapon, and stat multipliers come from its
+    /// spec; GameManager pushes changes via `configure_ship`.
+    ship_type: ShipType,
+    /// Flight-speed multiplier (hull × color), pushed by GameManager.
     ship_thrust_mul: f32,
+    /// Turn-rate multiplier from the hull's spec.
+    ship_rotation_mul: f32,
+    /// The Hive's launch-charge clock. Reset with the loadout; ticks in the
+    /// weapons pass (piloting only).
+    subdrone_regen: subdrone::RegenTimer,
+    /// The Vanguard's purchasable heavy cannon: `Some` once the green
+    /// keystone is owned (pushed by GameManager), firing alongside the
+    /// hitscan lasers on the same trigger.
+    valkyrie: Option<WeaponState>,
+    /// Bursts fired — seeds each burst's deterministic fan.
+    valkyrie_bursts: u64,
     /// Pilot input (fly, fire, view toggle) is only live during gameplay. On
     /// menu/showcase/bestiary screens the camera must NOT respond to the stick,
     /// so GameManager flips this off there.
@@ -124,7 +139,12 @@ impl IRigidBody3D for ShipController {
             was_in_contact: false,
             ship_model: None,
             color_glow: None,
+            ship_type: ShipType::Vanguard,
             ship_thrust_mul: 1.0,
+            ship_rotation_mul: 1.0,
+            subdrone_regen: subdrone::RegenTimer::new(subdrone::REGEN_SECONDS),
+            valkyrie: None,
+            valkyrie_bursts: 0,
             controls_enabled: false,
         }
     }
@@ -214,6 +234,11 @@ impl ShipController {
     #[signal]
     fn player_damaged(amount: f32, hit_position: Vector3);
 
+    /// The pilot pressed the item trigger (Shield Surge). GameManager owns
+    /// the charges and the shield; this only reports intent.
+    #[signal]
+    fn shield_burst_requested();
+
     /// Ship hit static geometry (onset, throttled). Carries no shield state —
     /// GameManager owns that and picks the shielded/bare collision sound.
     #[signal]
@@ -253,31 +278,57 @@ impl ShipController {
     }
 
     /// Apply the player's chosen ship color and its flight-speed multiplier.
-    /// Called by GameManager (passing the ShipColor id) when the color is
-    /// chosen/synced. The variant color now lives in the hull texture (the body
-    /// style); the accent glow just matches it.
+    /// Called by GameManager (hull id, ShipColor id, combined thrust
+    /// multiplier) when the loadout is chosen/synced. A hull change respawns
+    /// the model from its spec; the color re-paints hulls that support the
+    /// painted styles, and the accent glow matches it either way.
     #[func]
-    pub fn configure_ship(&mut self, color_id: i32, thrust_mul: f32) {
+    pub fn configure_ship(&mut self, ship_type_id: i32, color_id: i32, thrust_mul: f32) {
         self.ship_thrust_mul = thrust_mul;
+        let new_type = ShipType::from_id(ship_type_id).unwrap_or_default();
+        self.ship_rotation_mul = new_type.spec().rotation_mul;
+        if new_type != self.ship_type {
+            self.ship_type = new_type;
+            // The glow lives on the model; both rebuild from the new spec.
+            // The retiring model is renamed first: it lives until the deferred
+            // free, and Godot would otherwise rename the incoming "Model".
+            self.ship_model.with(|model| {
+                model.set_name("RetiredModel");
+                model.queue_free();
+            });
+            self.ship_model = None;
+            self.color_glow = None;
+            self.spawn_ship_model();
+            // The fresh model must honor the current view: in cockpit the
+            // hull is hidden (you're inside it) — without this the swapped
+            // ship floats visibly in front of the camera.
+            self.apply_camera_mode();
+        }
         let sc = ShipColor::from_id(color_id).unwrap_or_default();
         godot_util::recolor_glow(&self.color_glow, godot_util::to_color(sc.color()));
-        let style = sc.body_style();
-        let idx = ship::style_texture_index(ship::STYLED_BODY_PART, style);
-        self.ship_model.with(|model| {
-            let m: Gd<Node3D> = model.clone();
-            godot_util::apply_body_style(&m, style, idx);
-        });
+        if self.ship_type.spec().supports_styles {
+            let style = sc.body_style();
+            let idx = ship::style_texture_index(ship::STYLED_BODY_PART, style);
+            self.ship_model.with(|model| {
+                let m: Gd<Node3D> = model.clone();
+                godot_util::apply_body_style(&m, style, idx);
+            });
+        }
     }
 
-    /// Build the player ship: the shared model helper, a capsule collider, and
+    /// Build the player ship from the hull's spec — model path, fit size,
+    /// and imported-front-axis yaw all come from `ShipType` (one source of
+    /// truth, like `EnemyType::model_path`) — plus a capsule collider and
     /// the color accent light.
     fn spawn_ship_model(&mut self) {
+        let spec = self.ship_type.spec();
         let mut parent: Gd<Node3D> = self.base().clone().upcast();
         let Some(mut model) =
-            godot_util::spawn_fitted_model(&mut parent, scenes::SHIP_MODEL, TARGET_SHIP_LENGTH)
+            godot_util::spawn_model_fitted(&mut parent, spec.model_path, spec.model_size)
         else {
             return;
         };
+        model.rotate_y(spec.model_yaw_offset);
         self.ship_model = Some(LiveRef::new(&model));
 
         // Flight collider: a capsule laid along the hull. It's rounded, so it
@@ -298,12 +349,15 @@ impl ShipController {
         }
 
         // Color accent light + painted body style (Standard until GameManager
-        // pushes the choice). The body texture carries the color; the glow matches.
+        // pushes the choice). The body texture carries the color; the glow
+        // matches. Styles only exist on hulls that support them.
         let default = ShipColor::default();
         let c = default.color();
         self.color_glow = Some(godot_util::attach_glow_light(&mut model, &c, 2.0, 6.0));
-        let style = default.body_style();
-        godot_util::apply_body_style(&model, style, ship::style_texture_index(ship::STYLED_BODY_PART, style));
+        if spec.supports_styles {
+            let style = default.body_style();
+            godot_util::apply_body_style(&model, style, ship::style_texture_index(ship::STYLED_BODY_PART, style));
+        }
     }
 
     /// Place the camera for the current view mode, and show the ship model only
@@ -402,7 +456,8 @@ impl ShipController {
         // Steering: torque toward a commanded angular velocity. Rotation
         // upgrades scale the rate; the controller drives spin toward the
         // command (and to zero on release).
-        let turn_mult = self.loadout.rotation_speed() / self.loadout.base.rotation_speed;
+        let turn_mult = self.loadout.rotation_speed() / self.loadout.base.rotation_speed
+            * self.ship_rotation_mul;
         let command = basis * Vector3::new(pitch, yaw, roll) * (TURN_RATE * turn_mult);
         let torque = (command - state.get_angular_velocity()) * TURN_GAIN;
         state.apply_torque(torque);
@@ -445,11 +500,51 @@ impl ShipController {
         self.weapon.fire_rate = self.loadout.fire_rate() * self.power_mode.fire_rate_multiplier();
         self.weapon.damage = void_logic::newtypes::Damage::new(self.laser_level.damage());
         self.weapon.tick(delta);
+        if let Some(cannon) = self.valkyrie.as_mut() {
+            // Cadence stays fixed; the punch follows the equipped laser.
+            cannon.damage = valkyrie::state(self.weapon.damage).damage;
+            cannon.tick(delta);
+        }
+        self.subdrone_regen.tick(delta);
         self.age_beams(delta);
 
+        if input.is_action_just_pressed(actions::USE_ITEM) {
+            // The Shield Surge (and future consumables): the node only
+            // reports the press — charges and the shield are RunState's,
+            // so GameManager mediates.
+            self.base_mut().emit_signal(signals::SHIELD_BURST_REQUESTED, &[]);
+        }
         if input.is_action_pressed(actions::FIRE) {
-            if let FireResult::Fired { damage } = self.weapon.try_fire() {
-                self.fire_dual_lasers(damage.as_f32());
+            // The hull's weapon decides what the trigger does. Everything
+            // shares the one cooldown state; the subdrone bay layers its
+            // regen clock on top.
+            match self.ship_type.spec().weapon {
+                WeaponKind::HitscanLaser => {
+                    if let FireResult::Fired { damage } = self.weapon.try_fire() {
+                        self.fire_dual_lasers(damage.as_f32());
+                    }
+                    // The Valkyrie rides the same trigger with its own,
+                    // slower clock — a heavy center bolt over the beams.
+                    let cannon_shot = self.valkyrie.as_mut().map(WeaponState::try_fire);
+                    if let Some(FireResult::Fired { damage }) = cannon_shot {
+                        self.fire_valkyrie(damage.as_f32());
+                    }
+                }
+                WeaponKind::TrackingLaser => {
+                    if let FireResult::Fired { damage } = self.weapon.try_fire() {
+                        self.fire_tracking(damage.as_f32());
+                    }
+                }
+                WeaponKind::ClusterMunition => {
+                    if let FireResult::Fired { damage } = self.weapon.try_fire() {
+                        self.fire_cluster(damage.as_f32());
+                    }
+                }
+                WeaponKind::SubdroneLauncher => {
+                    if self.subdrone_regen.ready() {
+                        self.launch_subdrone();
+                    }
+                }
             }
         }
     }
@@ -489,7 +584,25 @@ impl ShipController {
         self.loadout = Loadout::new();
         self.laser_level = LaserLevel::Red;
         self.power_mode = PowerMode::default();
+        self.subdrone_regen = subdrone::RegenTimer::new(subdrone::REGEN_SECONDS);
         self.apply_envelope();
+    }
+
+    /// Ownership of the Valkyrie cannon, pushed by GameManager on the
+    /// purchase receipt and on every player-state sync. The node never
+    /// reads the profile itself.
+    #[func]
+    pub fn set_valkyrie_owned(&mut self, owned: bool) {
+        self.valkyrie = if owned {
+            Some(valkyrie::state(self.weapon.damage))
+        } else {
+            None
+        };
+    }
+
+    #[func]
+    pub fn is_valkyrie_owned(&self) -> bool {
+        self.valkyrie.is_some()
     }
 
     #[func]
@@ -501,29 +614,135 @@ impl ShipController {
     }
 
     #[func]
-    pub fn apply_upgrade(&mut self, name: GString, kind_id: i32, multiplier: f32) {
-        let kind = match kind_id {
-            0 => UpgradeKind::Thrust,
-            1 => UpgradeKind::RotationSpeed,
-            2 => UpgradeKind::Damping,
-            3 => UpgradeKind::MaxHealth,
-            4 => UpgradeKind::FireRate,
-            5 => UpgradeKind::ProjectileSpeed,
-            6 => UpgradeKind::ProjectileDamage,
-            _ => {
-                godot_warn!("Unknown upgrade kind: {kind_id}");
+    pub fn apply_upgrade(&mut self, kind_id: i32) {
+        let Some(kind) = UpgradeKind::from_id(kind_id) else {
+            godot_warn!("Unknown upgrade kind: {kind_id}");
+            return;
+        };
+        godot_print!("Applied upgrade: {}", kind.label());
+        self.loadout.add_upgrade(kind);
+        // Re-derive the engine envelope from the updated loadout.
+        self.apply_envelope();
+    }
+
+    /// The shared bolt pool, found by group like the audio manager.
+    fn bolt_pool(&self) -> Option<Gd<super::bolt_pool::BoltPool>> {
+        self.base()
+            .get_tree()
+            .get_first_node_in_group(groups::BOLT_POOL)
+            .and_then(|n| n.try_cast::<super::bolt_pool::BoltPool>().ok())
+    }
+
+    /// The ship's muzzle and forward direction.
+    fn muzzle(&self) -> (Vector3, Vector3) {
+        let t = self.base().get_global_transform();
+        let forward = -t.basis.col_c();
+        (t.origin + forward * 1.2, forward)
+    }
+
+    /// Lock the nearest live enemy inside the aim cone: the shared acquire
+    /// for every seeking weapon (Talon tracking, Valkyrie burst).
+    fn acquire_lock(&self, muzzle: Vector3, forward: Vector3) -> Option<i64> {
+        const AIM_CONE_COS: f32 = 0.75;
+        const LOCK_RANGE: f32 = 80.0;
+        let mut best: Option<(f32, i64)> = None;
+        let tree = self.base().get_tree();
+        for node in tree.get_nodes_in_group(groups::ENEMIES).iter_shared() {
+            let Ok(enemy) = node.try_cast::<Node3D>() else { continue };
+            if !enemy.is_visible_in_tree() {
+                continue;
+            }
+            let to = enemy.get_global_position() - muzzle;
+            let distance = to.length();
+            if distance > LOCK_RANGE || distance <= f32::EPSILON {
+                continue;
+            }
+            if forward.dot(to / distance) < AIM_CONE_COS {
+                continue; // outside the aim cone — no lock
+            }
+            if best.is_none_or(|(d, _)| distance < d) {
+                best = Some((distance, enemy.instance_id().to_i64()));
+            }
+        }
+        best.map(|(_, id)| id)
+    }
+
+    /// Tracking laser: lock the nearest live enemy inside the aim cone and
+    /// fire a homing bolt at it; with no lock the bolt flies ballistic.
+    fn fire_tracking(&mut self, damage: f32) {
+        const TRACKING_BOLT_SPEED: f32 = 45.0;
+        let (muzzle, forward) = self.muzzle();
+        let lock = self.acquire_lock(muzzle, forward);
+        if let Some(mut pool) = self.bolt_pool() {
+            let velocity = forward * TRACKING_BOLT_SPEED;
+            match lock {
+                Some(target_id) => {
+                    pool.bind_mut().fire_homing(muzzle, velocity, damage, target_id)
+                }
+                None => pool.bind_mut().fire_player(muzzle, velocity, damage),
+            }
+        }
+    }
+
+    /// Valkyrie: empty the rack — a fan of heavy bolts that all curve onto
+    /// whatever the reticle holds (the cannon's job is CONNECTING when raw
+    /// aim can't — playtest 2026-07-04: one straight bolt read as nothing).
+    /// With no lock the fan flies ballistic.
+    fn fire_valkyrie(&mut self, damage: f32) {
+        let (muzzle, forward) = self.muzzle();
+        let lock = self.acquire_lock(muzzle, forward);
+        self.valkyrie_bursts = self.valkyrie_bursts.wrapping_add(1);
+        let directions = cluster::fragment_directions(
+            [forward.x, forward.y, forward.z],
+            valkyrie::BURST_COUNT,
+            valkyrie::BURST_SPREAD,
+            self.valkyrie_bursts,
+        );
+        if let Some(mut pool) = self.bolt_pool() {
+            let mut pool = pool.bind_mut();
+            for dir in directions {
+                let velocity = Vector3::new(dir[0], dir[1], dir[2]) * valkyrie::BOLT_SPEED;
+                match lock {
+                    Some(target_id) => pool.fire_homing(muzzle, velocity, damage, target_id),
+                    None => pool.fire_player(muzzle, velocity, damage),
+                }
+            }
+        }
+        if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+            audio.bind_mut().play_event(SfxEvent::LaserFire);
+        }
+    }
+
+    /// Cluster cannon: lob a shell that bursts into fragments when it spends
+    /// itself (the burst lives on the bolt; see `EnemyBolt::burst`).
+    fn fire_cluster(&mut self, damage: f32) {
+        const SHELL_SPEED: f32 = 25.0;
+        let (muzzle, forward) = self.muzzle();
+        if let Some(mut pool) = self.bolt_pool() {
+            pool.bind_mut().fire_cluster(muzzle, forward * SHELL_SPEED, damage);
+        }
+    }
+
+    /// Subdrone bay: spend the regen charge to deploy the first drone still
+    /// folded in the bay (the squad is pre-built dormant by the LevelManager;
+    /// a launch is a dormancy flip, never a spawn).
+    fn launch_subdrone(&mut self) {
+        let tree = self.base().get_tree();
+        let mut side = 1.0;
+        for node in tree.get_nodes_in_group(groups::PLAYER_DRONES).iter_shared() {
+            let Ok(drone) = node.try_cast::<super::player_drone::PlayerDrone>() else { continue };
+            if drone.bind().is_live() {
+                side = -side; // station the next launch on the other flank
+                continue;
+            }
+            if !self.subdrone_regen.consume() {
                 return;
             }
-        };
-        let upgrade = Upgrade {
-            name: name.to_string(),
-            kind,
-            multiplier,
-        };
-        godot_print!("Applied upgrade: {} (x{:.2})", upgrade.name, upgrade.multiplier);
-        self.loadout.add_upgrade(upgrade);
-        // Stability upgrades change retention → re-derive engine damping.
-        self.apply_envelope();
+            let position = self.base().get_global_position();
+            let mut drone = drone;
+            drone.bind_mut().activate_at(position, side);
+            return;
+        }
     }
 
     fn fire_dual_lasers(&mut self, damage: f32) {
@@ -531,7 +750,6 @@ impl ShipController {
         let center = self.base().get_global_position() + global_basis.col_b() * 0.5;
         let forward = -global_basis.col_c();
         let right = global_basis.col_a();
-        let up = global_basis.col_b();
 
         let left_origin = center - right * WING_OFFSET;
         let right_origin = center + right * WING_OFFSET;
@@ -539,7 +757,7 @@ impl ShipController {
         // Hit-test down the reticle (centre line) with an aim-assist spread, then
         // converge both visible beams on whatever it found — so the lasers hit
         // where the crosshair points, not parallel-offset from the wings.
-        let hit_point = self.cast_forgiving(center, forward, right, up, damage * 2.0);
+        let hit_point = self.cast_forgiving(center, forward, damage * 2.0);
         self.spawn_beam(left_origin, hit_point);
         self.spawn_beam(right_origin, hit_point);
 
@@ -549,56 +767,106 @@ impl ShipController {
         }
     }
 
-    /// Hit-test from the centre line plus a ring of offset rays (aim assist).
-    /// The first ray to strike a damageable target wins (full dual damage);
-    /// otherwise the centre ray's wall/end point is returned so the beams land.
-    fn cast_forgiving(
-        &mut self,
-        center: Vector3,
-        forward: Vector3,
-        right: Vector3,
-        up: Vector3,
-        damage: f32,
-    ) -> Vector3 {
+    /// Hit-test down the reticle line with ANGULAR forgiveness. Exact aim wins:
+    /// the center ray takes whatever it strikes, wall or enemy. When it
+    /// misses, the nearest enemy whose hull the sight line passes within
+    /// `tan(LASER_ASSIST_CONE_DEG)·distance` of — with a clear line of sight
+    /// — takes the hit instead. A cone is constant on-screen generosity at
+    /// every range; the old fixed-radius ray ring was statistically dead
+    /// (nine discrete spokes, playtest 2026-07-05: only exact hits landed).
+    fn cast_forgiving(&mut self, center: Vector3, forward: Vector3, damage: f32) -> Vector3 {
         let max_range = self.weapon.max_range;
         let fallback = center + forward * max_range;
         let Some(world) = self.base().get_world_3d() else { return fallback };
         let Some(mut space) = world.get_direct_space_state() else { return fallback };
         let self_rid = self.base().get_rid();
 
-        let r = LASER_AIM_RADIUS;
-        let offsets = [Vector3::ZERO, right * r, -right * r, up * r, -up * r];
+        // Exact aim first: walls clip the beam, a struck enemy ends it.
         let mut beam_end = fallback;
-        for (i, off) in offsets.iter().enumerate() {
-            let origin = center + *off;
+        if let Some(mut query) =
+            PhysicsRayQueryParameters3D::create(center, center + forward * max_range)
+        {
+            query.set_exclude(&array![self_rid]);
+            // Point-blank forgiveness: rays don't hit shapes they start
+            // inside unless told to — an enemy hugging the muzzle must die.
+            query.set_hit_from_inside(true);
+            let result = space.intersect_ray(&query);
+            if !result.is_empty() {
+                if let Some(pos) = result.get("position") {
+                    beam_end = pos.to::<Vector3>();
+                }
+                if let Some(collider) = result.get("collider") {
+                    let mut obj = collider.to::<Gd<Node3D>>();
+                    if obj.has_method(methods::TAKE_DAMAGE) {
+                        obj.call(methods::TAKE_DAMAGE, &[Variant::from(damage)]);
+                        let normal = result
+                            .get("normal")
+                            .unwrap_or(Variant::from(Vector3::UP))
+                            .to::<Vector3>();
+                        self.spawn_hit_sparks(beam_end, normal);
+                        return beam_end;
+                    }
+                }
+            }
+        }
+
+        // Angular assist: nearest cone candidate with a clear line of sight.
+        let tan_cone = LASER_ASSIST_CONE_DEG.to_radians().tan();
+        let mut candidates: Vec<(f32, Gd<super::enemy_drone::EnemyDrone>)> = Vec::new();
+        let tree = self.base().get_tree();
+        for node in tree.get_nodes_in_group(groups::ENEMIES).iter_shared() {
+            let Ok(enemy) = node.try_cast::<super::enemy_drone::EnemyDrone>() else {
+                continue;
+            };
+            if !enemy.is_visible_in_tree() {
+                continue;
+            }
+            let to = enemy.get_global_position() - center;
+            let along = to.dot(forward);
+            if along <= 0.0 || along > max_range {
+                continue;
+            }
+            let perp = (to - forward * along).length();
+            if perp > enemy.bind().assist_radius() + tan_cone * along {
+                continue;
+            }
+            candidates.push((along, enemy));
+        }
+        candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (_, enemy) in candidates {
+            // The forgiven shot still obeys walls: the ray to the enemy's
+            // center must reach the ENEMY first.
             let Some(mut query) =
-                PhysicsRayQueryParameters3D::create(origin, origin + forward * max_range)
+                PhysicsRayQueryParameters3D::create(center, enemy.get_global_position())
             else {
                 continue;
             };
             query.set_exclude(&array![self_rid]);
+            query.set_hit_from_inside(true);
             let result = space.intersect_ray(&query);
             if result.is_empty() {
                 continue;
             }
-            let Some(hit_pos_var) = result.get("position") else { continue };
-            let hit_pos = hit_pos_var.to::<Vector3>();
-            if let Some(collider) = result.get("collider") {
-                let mut obj = collider.to::<Gd<Node3D>>();
-                if obj.has_method(methods::TAKE_DAMAGE) {
-                    obj.call(methods::TAKE_DAMAGE, &[Variant::from(damage)]);
-                    let normal = result
-                        .get("normal")
-                        .unwrap_or(Variant::from(Vector3::UP))
-                        .to::<Vector3>();
-                    self.spawn_hit_sparks(hit_pos, normal);
-                    return hit_pos;
-                }
+            let Some(collider) = result.get("collider") else { continue };
+            let Ok(hit_node) = collider.to::<Gd<godot::classes::Node>>().try_cast::<Node3D>()
+            else {
+                continue;
+            };
+            if hit_node.instance_id() != enemy.instance_id() {
+                continue; // occluded — a wall owns this lane
             }
-            // No target on this ray; the centre ray defines where the beam lands.
-            if i == 0 {
-                beam_end = hit_pos;
-            }
+            let mut obj = hit_node;
+            obj.call(methods::TAKE_DAMAGE, &[Variant::from(damage)]);
+            let hit_pos = result
+                .get("position")
+                .map(|p| p.to::<Vector3>())
+                .unwrap_or_else(|| enemy.get_global_position());
+            let normal = result
+                .get("normal")
+                .unwrap_or(Variant::from(Vector3::UP))
+                .to::<Vector3>();
+            self.spawn_hit_sparks(hit_pos, normal);
+            return hit_pos;
         }
         beam_end
     }

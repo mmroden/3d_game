@@ -1,0 +1,217 @@
+//! Boss-fight sub-state: pure FSM owned by GameManager, driven by shell
+//! triggers (arena entry, boss death, reward pickup). Not a `GamePhase` —
+//! the game stays in `Playing` throughout; this machine only decides the
+//! gate, the music context, and the portal.
+
+/// The four beats of a staged fight. Transitions are one-way and strictly
+/// ordered — a boss fight never rewinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BossFightState {
+    /// Boss level built, arena sealed off ahead, gate open inbound.
+    Dormant,
+    /// The player crossed the corridor mouth: gate solid behind them, boss
+    /// and OnEngage escorts live, boss music context active.
+    Engaged,
+    /// Boss down, reward cache live — the gate STAYS sealed until the
+    /// reward is taken; the fight ends at the pickup, not the kill.
+    Defeated,
+    /// Reward collected: gate open, portal active, music back to gameplay.
+    RewardCollected,
+}
+
+/// The fight machine. Every mutator returns whether the transition was
+/// legal; illegal calls are refused no-ops so a stray shell signal (a
+/// second trigger volume touch, a duplicate death report) can never skip
+/// or rewind a beat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BossFight {
+    state: BossFightState,
+    /// Boss drops still on the arena floor. Staged by `defeat`; the fight
+    /// closes only when the COMPLETE set is gathered (owner's call
+    /// 2026-07-05) — a layered condition, not a single trip-wire.
+    outstanding_loot: u8,
+}
+
+impl BossFight {
+    pub fn new() -> Self {
+        Self {
+            state: BossFightState::Dormant,
+            outstanding_loot: 0,
+        }
+    }
+
+    pub fn state(&self) -> BossFightState {
+        self.state
+    }
+
+    /// The player crossed into the arena approach.
+    pub fn engage(&mut self) -> bool {
+        self.advance(BossFightState::Dormant, BossFightState::Engaged)
+    }
+
+    /// The boss died, staging its complete drop set (`loot_count` caches).
+    /// A zero-drop defeat is refused outright — it could never open.
+    pub fn defeat(&mut self, loot_count: u8) -> bool {
+        if loot_count == 0 {
+            return false;
+        }
+        if self.advance(BossFightState::Engaged, BossFightState::Defeated) {
+            self.outstanding_loot = loot_count;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// One piece of boss loot was picked up. Returns `true` when it was the
+    /// LAST one — the fight closes and the arena opens.
+    pub fn collect_boss_loot(&mut self) -> bool {
+        if self.state != BossFightState::Defeated {
+            return false;
+        }
+        self.outstanding_loot = self.outstanding_loot.saturating_sub(1);
+        if self.outstanding_loot == 0 {
+            self.advance(BossFightState::Defeated, BossFightState::RewardCollected)
+        } else {
+            false
+        }
+    }
+
+    /// Whether the arena gate is solid right now: from the moment the fight
+    /// starts until the reward is taken — the kill alone opens nothing.
+    pub fn is_sealed(&self) -> bool {
+        matches!(
+            self.state,
+            BossFightState::Engaged | BossFightState::Defeated
+        )
+    }
+
+    /// Whether the exit portal is live right now.
+    pub fn portal_active(&self) -> bool {
+        self.state == BossFightState::RewardCollected
+    }
+
+    fn advance(&mut self, from: BossFightState, to: BossFightState) -> bool {
+        if self.state == from {
+            self.state = to;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl BossFightState {
+    /// GDScript crossing (append-only law): -1 is reserved by convention for
+    /// "no boss fight on this level" on the shell side.
+    pub fn id(self) -> i32 {
+        match self {
+            Self::Dormant => 0,
+            Self::Engaged => 1,
+            Self::Defeated => 2,
+            Self::RewardCollected => 3,
+        }
+    }
+}
+
+impl Default for BossFight {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn starts_dormant_with_the_gate_open_and_the_portal_dark() {
+        let f = BossFight::new();
+        assert_eq!(f.state(), BossFightState::Dormant);
+        assert!(!f.is_sealed(), "the approach is passable inbound");
+        assert!(!f.portal_active(), "no exit until the fight is done");
+    }
+
+    #[test]
+    fn the_fight_walks_its_only_legal_path() {
+        let mut f = BossFight::new();
+
+        assert!(f.engage(), "entry engages");
+        assert_eq!(f.state(), BossFightState::Engaged);
+        assert!(f.is_sealed(), "the gate slams behind the player");
+        assert!(!f.portal_active());
+
+        assert!(f.defeat(1), "the boss falls, staging its one drop");
+        assert_eq!(f.state(), BossFightState::Defeated);
+        assert!(f.is_sealed(), "the kill is not the end — the pickup is");
+        assert!(!f.portal_active());
+
+        assert!(f.collect_boss_loot(), "the last drop closes the fight");
+        assert_eq!(f.state(), BossFightState::RewardCollected);
+        assert!(!f.is_sealed(), "the arena opens");
+        assert!(f.portal_active(), "the way to the next level appears");
+    }
+
+    #[test]
+    fn the_arena_opens_only_when_all_boss_loot_is_gathered() {
+        // The mid-boss drops a PILE (bound blue + consolation caches). One
+        // pickup is not the reward beat — the whole drop set is (owner's
+        // call 2026-07-05): a layered condition, not a single trip-wire.
+        let mut f = BossFight::new();
+        f.engage();
+        assert!(f.defeat(4), "the pile stages four drops");
+        assert!(!f.collect_boss_loot(), "1 of 4 — the arena stays sealed");
+        assert_eq!(f.state(), BossFightState::Defeated);
+        assert!(f.is_sealed());
+        assert!(!f.collect_boss_loot(), "2 of 4");
+        assert!(!f.collect_boss_loot(), "3 of 4");
+        assert!(f.is_sealed(), "still sealed with loot on the floor");
+        assert!(f.collect_boss_loot(), "4 of 4 — NOW the fight closes");
+        assert_eq!(f.state(), BossFightState::RewardCollected);
+        assert!(!f.is_sealed());
+        assert!(f.portal_active());
+    }
+
+    #[test]
+    fn a_dropless_defeat_is_refused() {
+        // Zero staged drops would deadlock the arena (nothing could ever
+        // open it) — the transition itself refuses the nonsense.
+        let mut f = BossFight::new();
+        f.engage();
+        assert!(!f.defeat(0), "a boss always drops something");
+        assert_eq!(f.state(), BossFightState::Engaged);
+    }
+
+    #[test]
+    fn state_ids_are_pinned_for_the_gdscript_crossing() {
+        assert_eq!(BossFightState::Dormant.id(), 0);
+        assert_eq!(BossFightState::Engaged.id(), 1);
+        assert_eq!(BossFightState::Defeated.id(), 2);
+        assert_eq!(BossFightState::RewardCollected.id(), 3);
+    }
+
+    #[test]
+    fn illegal_transitions_are_refused_and_preserve_state() {
+        let mut f = BossFight::new();
+        assert!(!f.defeat(1), "nothing to defeat before engagement");
+        assert!(!f.collect_boss_loot(), "nothing to collect before engagement");
+        assert_eq!(f.state(), BossFightState::Dormant);
+
+        f.engage();
+        assert!(!f.engage(), "a second trigger touch is a no-op");
+        assert!(!f.collect_boss_loot(), "no drops exist while the boss lives");
+        assert_eq!(f.state(), BossFightState::Engaged);
+
+        f.defeat(2);
+        assert!(!f.engage(), "the fight never rewinds");
+        assert!(!f.defeat(2), "a duplicate death report is a no-op");
+        assert_eq!(f.state(), BossFightState::Defeated);
+
+        f.collect_boss_loot();
+        f.collect_boss_loot();
+        assert_eq!(f.state(), BossFightState::RewardCollected);
+        assert!(!f.engage());
+        assert!(!f.defeat(1));
+        assert!(!f.collect_boss_loot(), "no over-collection past the close");
+    }
+}

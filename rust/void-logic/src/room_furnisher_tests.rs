@@ -239,7 +239,7 @@ fn corridor_gets_no_center_props() {
 fn every_room_cell_gets_at_least_one_light_fixture() {
     let template = room_3x3();
     let cell_size = 4.0;
-    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], cell_size, 0);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: cell_size, story: 5.0 }, 0);
     let cell_count = (template.extents[0] * template.extents[2]) as usize;
     assert_eq!(
         fixtures.len(), cell_count,
@@ -250,7 +250,7 @@ fn every_room_cell_gets_at_least_one_light_fixture() {
 #[test]
 fn corridor_gets_light_fixtures() {
     let template = corridor_1x1();
-    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0, 0);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 0);
     assert!(
         !fixtures.is_empty(),
         "corridor should get at least 1 light fixture"
@@ -261,9 +261,9 @@ fn corridor_gets_light_fixtures() {
 fn light_fixture_mesh_at_ceiling_height() {
     let template = room_3x3();
     let cell_size = 4.0;
-    let cell_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+    let cell_height = 5.0; // planet-1 story — tests may hold literals
     let origin_y = 0.0;
-    let fixtures = light_fixtures(&template, &[], [0.0, origin_y, 0.0], cell_size, 0);
+    let fixtures = light_fixtures(&template, &[], [0.0, origin_y, 0.0], crate::planet::Pitch { tile: cell_size, story: 5.0 }, 0);
     for (mesh, _) in &fixtures {
         let expected_y = origin_y + cell_height - 0.1;
         assert!(
@@ -277,7 +277,7 @@ fn light_fixture_mesh_at_ceiling_height() {
 #[test]
 fn light_source_within_fixture_bounds() {
     let template = room_3x3();
-    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0, 0);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 0);
     for (mesh, light) in &fixtures {
         // Find which fixture catalog entry this is
         let fixture_entry = asset_catalog::ALL_LIGHTS.iter()
@@ -304,10 +304,10 @@ fn light_source_inside_room_bounds() {
     let template = room_5x5();
     let cell_size = 4.0;
     let origin = [4.0, 2.0, 8.0];
-    let fixtures = light_fixtures(&template, &[], origin, cell_size, 0);
+    let fixtures = light_fixtures(&template, &[], origin, crate::planet::Pitch { tile: cell_size, story: 5.0 }, 0);
     let max_x = origin[0] + template.extents[0] as f32 * cell_size;
     let max_z = origin[2] + template.extents[2] as f32 * cell_size;
-    let cell_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+    let cell_height = 5.0; // planet-1 story — tests may hold literals
     let max_y = origin[1] + template.extents[1] as f32 * cell_height;
 
     for (_, light) in &fixtures {
@@ -330,7 +330,7 @@ fn light_source_inside_room_bounds() {
 fn light_source_range_covers_cell() {
     let cell_size = 4.0;
     let template = room_3x3();
-    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], cell_size, 0);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: cell_size, story: 5.0 }, 0);
     for (_, light) in &fixtures {
         assert!(
             light.range >= cell_size / 2.0,
@@ -353,8 +353,8 @@ fn multi_story_room_lights_only_at_top_floor() {
         loot_spawns: vec![],
         extents: [3, 2, 3],
     };
-    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0, 0);
-    let cell_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 0);
+    let cell_height = 5.0; // planet-1 story — tests may hold literals
     // Only top floor (cy=1) has ceilings → 3x3 = 9 lights, NOT 18.
     assert_eq!(
         fixtures.len(), 9,
@@ -387,7 +387,7 @@ fn no_light_where_ceiling_removed_by_connector() {
         extents: [1, 1, 1],
     };
     let active = vec![Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosY, frame: FrameStyle::Door }];
-    let fixtures = light_fixtures(&template, &active, [0.0, 0.0, 0.0], 4.0, 0);
+    let fixtures = light_fixtures(&template, &active, [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 0);
     assert_eq!(
         fixtures.len(), 0,
         "cell with active PosY connector has no ceiling → no light"
@@ -411,7 +411,7 @@ fn no_lights_over_a_2x2_ceiling_opening() {
         extents: [4, 1, 4],
     };
     let active = vec![template.connectors[0]];
-    let fixtures = light_fixtures(&template, &active, [0.0, 0.0, 0.0], 4.0, 0);
+    let fixtures = light_fixtures(&template, &active, [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 0);
     // The four open cells (1,1)(1,2)(2,1)(2,2) → world centers (6/10, *, 6/10):
     // no fixture may sit on any of them.
     let over_hole = [(6.0, 6.0), (6.0, 10.0), (10.0, 6.0), (10.0, 10.0)];
@@ -451,7 +451,7 @@ fn rim_lights_ring_a_vertical_opening() {
         extents: [4, 1, 4],
     };
     let active = vec![template.connectors[0]];
-    let fixtures = light_fixtures(&template, &active, [0.0, 0.0, 0.0], 4.0, 0);
+    let fixtures = light_fixtures(&template, &active, [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 0);
     assert_eq!(
         fixtures.len(),
         16,
@@ -493,8 +493,8 @@ fn light_ambiance_is_deterministic_for_a_seed() {
     // Same seed → identical states and colors, so a level looks the same
     // every time it is generated.
     let template = room_5x5();
-    let a = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0, 777);
-    let b = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0, 777);
+    let a = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 777);
+    let b = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 777);
     assert_eq!(a.len(), b.len());
     for ((_, la), (_, lb)) in a.iter().zip(b.iter()) {
         assert_eq!(la.state, lb.state);
@@ -534,7 +534,7 @@ fn most_lights_are_dark_in_an_abandoned_base() {
     // Over a large room, Off should dominate (≈50%) — the feature's
     // whole point is that lights exist but mostly are not on.
     let template = room_5x5();
-    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], 4.0, 12345);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 12345);
     let off = fixtures.iter().filter(|(_, l)| l.state == LightState::Off).count();
     let on = fixtures.iter().filter(|(_, l)| l.state == LightState::On).count();
     assert!(

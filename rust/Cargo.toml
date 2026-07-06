@@ -1,3 +1,14 @@
 [workspace]
 members = ["void-logic", "void-nodes"]
 resolver = "2"
+
+# Debug builds feed `make run` and the GUT suite, where every full-stack
+# test pays for real level builds (generation, merged-collision bake, Jolt).
+# Unoptimized, one build costs ~30s; optimizing dependencies once (they
+# cache) and our crates lightly keeps compile fast and puts the suite on a
+# red-green cadence instead of a coffee break.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

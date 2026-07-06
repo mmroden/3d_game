@@ -1,16 +1,17 @@
 //! The bestiary: a catalog of the hazards the player has encountered. The two
 //! currency pickups always lead (they teach the run-vs-permanent economy),
-//! followed by every enemy type seen so far, in roster order. This drives the
-//! between-level briefing screen — on the first level, before any enemy is met,
-//! it shows only the green barrel and the blue cache.
+//! followed by every enemy seen so far, in roster declaration order. Enemy
+//! identity is the grammar's append-only crossing id — an id whose def has
+//! been REMOVED from the roster simply stops appearing (old saves tolerate
+//! retired enemies; nothing crashes).
 
-use crate::enemy_type::EnemyType;
+use crate::roster::{roster, EnemyId};
 
-/// The set of enemy types the player has encountered. Permanent across runs:
-/// an enemy is marked the first time it spawns, and stays catalogued forever.
+/// The set of enemy crossing ids the player has encountered. Permanent
+/// across runs: marked the first time one spawns, catalogued forever.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SeenEnemies {
-    seen: std::collections::HashSet<EnemyType>,
+    seen: std::collections::HashSet<u16>,
 }
 
 impl SeenEnemies {
@@ -18,27 +19,26 @@ impl SeenEnemies {
         Self::default()
     }
 
-    /// Mark `enemy` as encountered. Returns `true` if this is the first sighting
+    /// Mark a crossing id as encountered. Returns `true` on first sighting
     /// (so the caller can flag "new entry" / trigger a save).
-    pub fn mark(&mut self, enemy: EnemyType) -> bool {
-        self.seen.insert(enemy)
+    pub fn mark(&mut self, crossing_id: u16) -> bool {
+        self.seen.insert(crossing_id)
     }
 
-    pub fn contains(&self, enemy: EnemyType) -> bool {
-        self.seen.contains(&enemy)
+    pub fn contains(&self, crossing_id: u16) -> bool {
+        self.seen.contains(&crossing_id)
     }
 
     pub fn count(&self) -> usize {
         self.seen.len()
     }
 
-    /// Seen enemies in stable roster order (`EnemyType::ALL`), independent of the
-    /// order they were actually encountered, so the catalog reads consistently.
-    pub fn in_roster_order(&self) -> Vec<EnemyType> {
-        EnemyType::ALL
-            .iter()
-            .copied()
-            .filter(|e| self.seen.contains(e))
+    /// Seen enemies in roster declaration order, independent of encounter
+    /// order. Ids without a def (removed from the grammar) are skipped.
+    pub fn in_roster_order(&self) -> Vec<EnemyId> {
+        let r = roster();
+        r.enemy_ids()
+            .filter(|id| self.seen.contains(&r.enemy(*id).crossing_id))
             .collect()
     }
 }
@@ -46,12 +46,12 @@ impl SeenEnemies {
 /// What a briefing entry spins in the room — a currency pickup or an enemy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BestiaryKind {
-    /// Green barrel: permanent, run-to-run ship upgrades (organics).
-    OrganicBarrel,
+    /// Green cache: the permanent currency (organics).
+    OrganicCache,
     /// Blue cache: upgrades for the current run only (components).
     ComponentCache,
     /// A catalogued enemy.
-    Enemy(EnemyType),
+    Enemy(EnemyId),
 }
 
 /// A fully-resolved catalog entry: what to display, its title, and its lore.
@@ -62,21 +62,24 @@ pub struct BestiaryEntry {
     pub blurb: &'static str,
 }
 
-const ORGANIC_TITLE: &str = "Organic Barrel";
+const ORGANIC_TITLE: &str = "Organic Cache";
 const ORGANIC_BLURB: &str = "A green-glowing canister of something the brass want very badly. \
 Bank it and it stays with you, run after run, buying the upgrades that ride home in your hull. \
 Nobody briefs you on what the green stuff actually is — only that people are paying real money for it.";
 
 const COMPONENT_TITLE: &str = "Component Cache";
-const COMPONENT_BLURB: &str = "A blue salvage cache of spare parts. Useful now, worthless later: \
-its components buy upgrades for this run only, and burn up with you if you don't come home.";
+const COMPONENT_BLURB: &str = "A blue salvage cache of spare parts, shaken loose when a machine \
+dies — fly it down before you move on, because nothing is credited from a distance. Useful now, \
+worthless later: its components buy upgrades between levels, this run only, and burn up with you \
+if you don't come home.";
 
 /// Build the ordered briefing entries: the two pickups first (always — they
-/// teach the economy), then each seen enemy in roster order.
+/// teach the economy), then each seen enemy in roster order, titles and
+/// lore straight from the grammar.
 pub fn entries(seen: &SeenEnemies) -> Vec<BestiaryEntry> {
     let mut out = vec![
         BestiaryEntry {
-            kind: BestiaryKind::OrganicBarrel,
+            kind: BestiaryKind::OrganicCache,
             title: ORGANIC_TITLE,
             blurb: ORGANIC_BLURB,
         },
@@ -86,11 +89,13 @@ pub fn entries(seen: &SeenEnemies) -> Vec<BestiaryEntry> {
             blurb: COMPONENT_BLURB,
         },
     ];
-    for enemy in seen.in_roster_order() {
+    let r = roster();
+    for id in seen.in_roster_order() {
+        let def = r.enemy(id);
         out.push(BestiaryEntry {
-            kind: BestiaryKind::Enemy(enemy),
-            title: enemy.display_name(),
-            blurb: enemy_blurb(enemy),
+            kind: BestiaryKind::Enemy(id),
+            title: def.name.as_str(),
+            blurb: def.blurb.as_str(),
         });
     }
     out
@@ -119,74 +124,70 @@ pub fn briefing_hint(total: usize) -> &'static str {
     }
 }
 
-/// Lore for a catalogued enemy. Every variant must return non-empty text.
-pub fn enemy_blurb(enemy: EnemyType) -> &'static str {
-    match enemy {
-        EnemyType::GunDrone => "A lone picket gun. It hangs back at standoff range and strafes, \
-peppering you with bolts while it keeps the gap open.",
-        EnemyType::QuadOrb => "A four-legged swarm unit. It doesn't shoot — it closes and clamps on, \
-dragging your thrust down so its friends get clean shots.",
-        EnemyType::Bomber => "A walking charge. It fuses up the moment it's in range and detonates, \
-trading itself for a hole in your shields. Kill it early or get clear.",
-        EnemyType::EyeDrone => "An optical sentry. It takes a few shots, then breaks off to round up \
-other machines and herd them onto you — death by overwhelming odds.",
-        EnemyType::QuadShell => "A shielded tank. Its plating soaks damage before its hull ever feels it; \
-patient fire, or a flank while it's busy, is the only way through.",
-        EnemyType::SpawnDrone => "A scrap-built picket an EyeDrone ejects as it dies. Lighter and quicker \
-than a gun drone but flimsy — it buys the swarm a few more seconds of fire.",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn cid(key: &str) -> u16 {
+        let r = roster();
+        r.enemy(r.enemy_by_key(key).expect(key)).crossing_id
+    }
+
     #[test]
     fn newly_seen_enemy_reports_first_sighting() {
         let mut seen = SeenEnemies::new();
-        assert!(seen.mark(EnemyType::GunDrone), "first sighting is new");
-        assert!(!seen.mark(EnemyType::GunDrone), "second sighting is not new");
-        assert!(seen.contains(EnemyType::GunDrone));
+        assert!(seen.mark(cid("gun_drone")), "first sighting is new");
+        assert!(!seen.mark(cid("gun_drone")), "second sighting is not new");
+        assert!(seen.contains(cid("gun_drone")));
         assert_eq!(seen.count(), 1);
     }
 
     #[test]
     fn seen_enemies_iterate_in_roster_order_not_encounter_order() {
         let mut seen = SeenEnemies::new();
-        // Encountered out of roster order.
-        seen.mark(EnemyType::QuadShell);
-        seen.mark(EnemyType::GunDrone);
-        seen.mark(EnemyType::Bomber);
-        assert_eq!(
-            seen.in_roster_order(),
-            vec![EnemyType::GunDrone, EnemyType::Bomber, EnemyType::QuadShell]
-        );
+        // Encountered out of declaration order.
+        seen.mark(cid("quad_shell"));
+        seen.mark(cid("gun_drone"));
+        seen.mark(cid("bomber"));
+        let keys: Vec<&str> = seen
+            .in_roster_order()
+            .iter()
+            .map(|id| roster().enemy(*id).key.as_str())
+            .collect();
+        assert_eq!(keys, vec!["gun_drone", "bomber", "quad_shell"]);
+    }
+
+    #[test]
+    fn a_removed_enemys_save_flag_is_tolerated() {
+        // Open-set identity (owner 2026-07-05): an old save may reference an
+        // enemy the grammar no longer declares — it silently stops appearing.
+        let mut seen = SeenEnemies::new();
+        seen.mark(9999);
+        seen.mark(cid("bomber"));
+        let listed = seen.in_roster_order();
+        assert_eq!(listed.len(), 1, "the ghost id is skipped, nothing crashes");
+        assert_eq!(entries(&seen).len(), 3, "pickups + the one real enemy");
     }
 
     #[test]
     fn empty_bestiary_shows_only_the_two_pickups() {
         let entries = entries(&SeenEnemies::new());
         assert_eq!(entries.len(), 2, "level 1, nothing seen → just the pickups");
-        assert_eq!(entries[0].kind, BestiaryKind::OrganicBarrel);
+        assert_eq!(entries[0].kind, BestiaryKind::OrganicCache);
         assert_eq!(entries[1].kind, BestiaryKind::ComponentCache);
     }
 
     #[test]
     fn pickups_always_lead_then_seen_enemies_in_order() {
         let mut seen = SeenEnemies::new();
-        seen.mark(EnemyType::QuadShell);
-        seen.mark(EnemyType::GunDrone);
+        seen.mark(cid("quad_shell"));
+        seen.mark(cid("gun_drone"));
         let entries = entries(&seen);
-        let kinds: Vec<BestiaryKind> = entries.iter().map(|e| e.kind).collect();
-        assert_eq!(
-            kinds,
-            vec![
-                BestiaryKind::OrganicBarrel,
-                BestiaryKind::ComponentCache,
-                BestiaryKind::Enemy(EnemyType::GunDrone),
-                BestiaryKind::Enemy(EnemyType::QuadShell),
-            ]
-        );
+        assert_eq!(entries.len(), 4);
+        assert_eq!(entries[0].kind, BestiaryKind::OrganicCache);
+        assert_eq!(entries[1].kind, BestiaryKind::ComponentCache);
+        assert_eq!(entries[2].title, "Gun Drone");
+        assert_eq!(entries[3].title, "Quad Shell");
     }
 
     #[test]
@@ -219,8 +220,8 @@ mod tests {
     #[test]
     fn every_entry_has_a_title_and_a_blurb() {
         let mut seen = SeenEnemies::new();
-        for e in EnemyType::ALL {
-            seen.mark(*e);
+        for id in roster().enemy_ids() {
+            seen.mark(roster().enemy(id).crossing_id);
         }
         for entry in entries(&seen) {
             assert!(!entry.title.is_empty(), "{:?} title empty", entry.kind);

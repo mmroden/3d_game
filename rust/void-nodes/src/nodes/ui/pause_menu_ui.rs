@@ -118,7 +118,7 @@ impl PauseMenuUI {
 
         let mut title = Label::new_alloc();
         title.set_text("PAUSED");
-        title.add_theme_font_size_override(theme::FONT_SIZE, 56);
+        title.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_TITLE);
         title.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.6, 0.8, 1.0));
         vbox.add_child(&title);
 
@@ -135,7 +135,7 @@ impl PauseMenuUI {
                 format!("  {}", item)
             };
             label.set_text(&text);
-            label.add_theme_font_size_override(theme::FONT_SIZE, 32);
+            label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_ROW);
             let color = if i == self.cursor.index() {
                 super::rgb(ui_style::TEXT_SELECTED)
             } else {
@@ -226,7 +226,7 @@ impl PauseMenuUI {
                 text.clone()
             };
             label.set_text(&display);
-            label.add_theme_font_size_override(theme::FONT_SIZE, 32);
+            label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_ROW);
             let color = if i == self.option_cursor.index() {
                 super::rgb(ui_style::TEXT_SELECTED)
             } else {

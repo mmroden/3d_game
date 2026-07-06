@@ -4,12 +4,17 @@ use godot::classes::{
     PackedScene, ResourceLoader, RigidBody3D, StaticBody3D,
 };
 
-use super::constants::{methods, nodes, scenes, signals};
+use super::constants::{groups, methods, nodes, scenes, signals};
 use super::godot_util;
 use super::live_handle::{LiveRef, LiveVec, LiveOpt};
 use super::bolt_pool::BoltPool;
+use super::boss_gate::{BossGate, BossTrigger};
 use super::enemy_drone::EnemyDrone;
-use super::lootbox::Lootbox;
+use super::currency_cache::CurrencyCache;
+use super::player_drone::PlayerDrone;
+use super::portal::Portal;
+use void_logic::armament::subdrone;
+use void_logic::currency::{CurrencyKind, ORGANIC_CACHE_AMOUNT};
 use super::ship_controller::ShipController;
 use super::telemetry::Telemetry;
 use super::views::ViewManager;
@@ -17,13 +22,14 @@ use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
 use void_logic::generator::{generate, GeneratorConfig};
+use void_logic::level_spec::LevelSpec;
 use void_logic::level_assembly::{self, RoomBounds};
 use void_logic::level_graph::{LevelGraph, RENDER_ROOM_DEPTH};
 use void_logic::room_furnisher::LightState;
 use void_logic::room_assembler::{Collision, MeshPlacement};
 use void_logic::portal as portal_sys;
-use void_logic::enemy_type;
 use void_logic::seed::Seed;
+use void_logic::spatial_layout;
 
 fn vec3(a: [f32; 3]) -> Vector3 {
     Vector3::new(a[0], a[1], a[2])
@@ -43,9 +49,6 @@ fn arr(v: Vector3) -> [f32; 3] {
 #[class(base=Node3D)]
 pub struct LevelManager {
     base: Base<Node3D>,
-
-    #[export]
-    grid_cell_size: f32,
 
     #[export]
     current_level: i32,
@@ -72,13 +75,31 @@ pub struct LevelManager {
     /// a sibling of the room containers so bolts escape per-room culling, and it
     /// outlives the room nodes `build_level` frees. Re-dormanted on each rebuild.
     bolt_pool: Option<LiveRef<BoltPool>>,
-    /// The level's lootbox pool (Faucet Principle tier 1): one dormant box per
-    /// enemy, pre-built during the load and parented here under the LevelManager
-    /// (not under a room container) so a dropped box persists and stays visible
-    /// when the player leaves the room it dropped in — drops are collected
-    /// across rooms. Unlike the bolt ring these are one-life-per-level, so they
-    /// are freed and rebuilt on each regeneration rather than reused.
-    lootboxes: LiveVec<Lootbox>,
+    /// The level's blue-cache pool (Faucet Principle tier 1): one dormant
+    /// currency cache per enemy, pre-built during the load and parented here
+    /// under the LevelManager (not under a room container) so a dropped cache
+    /// persists and stays visible when the player leaves the room it dropped
+    /// in — drops are collected across rooms. Unlike the bolt ring these are
+    /// one-life-per-level, so they are freed and rebuilt on each regeneration
+    /// rather than reused. (Green loot-spawn caches parent under their rooms
+    /// and are freed with them.)
+    caches: LiveVec<CurrencyCache>,
+    /// The player's subdrone squad (Faucet tier 1): SQUAD_SIZE drones
+    /// pre-built dormant per level, launched by dormancy flips from the
+    /// Hive's bay. One-life-per-level like the caches: freed and rebuilt on
+    /// regeneration.
+    player_drones: LiveVec<PlayerDrone>,
+    /// The arena seal on a boss level (`None` elsewhere) — pre-built
+    /// unsealed with the level, flipped by GameManager off the fight FSM.
+    boss_gate: Option<LiveRef<BossGate>>,
+    /// The exit portal on a boss level (`None` elsewhere) — pre-built
+    /// dormant; activates when the fight's reward is collected.
+    boss_portal: Option<LiveRef<Portal>>,
+    /// The typed description of the level under (or after) construction —
+    /// THE door for every level attribute (pitch, paradigm, roster, boss
+    /// staging). Constructed by GameManager (production) or the test door
+    /// (`generate_level`); retained beside the graph for the level's life.
+    spec: Option<LevelSpec>,
     /// Blinking light fixtures and their full ("on") energy, modulated
     /// each frame so a flickering abandoned base reads as alive.
     blinking_lights: LiveVec<OmniLight3D, f32>,
@@ -94,7 +115,6 @@ impl INode3D for LevelManager {
     fn init(base: Base<Node3D>) -> Self {
         Self {
             base,
-            grid_cell_size: 4.0,
             current_level: 1_i32,
             telemetry: Telemetry::new(),
             room_nodes: LiveVec::new(),
@@ -103,7 +123,11 @@ impl INode3D for LevelManager {
             current_room: None,
             player: None,
             bolt_pool: None,
-            lootboxes: LiveVec::new(),
+            caches: LiveVec::new(),
+            player_drones: LiveVec::new(),
+            boss_gate: None,
+            boss_portal: None,
+            spec: None,
             blinking_lights: LiveVec::new(),
             blink_time: 0.0,
         }
@@ -146,6 +170,12 @@ impl INode3D for LevelManager {
 
 #[godot_api]
 impl LevelManager {
+    /// Fired when the player's room resolves to a new room-list index —
+    /// the same detection that drives culling. GameManager visits the room
+    /// (RunState) and refreshes the recon map from it.
+    #[signal]
+    fn room_changed(room: i64);
+
     #[func]
     pub fn step_ms_p50(&self) -> f64 {
         self.telemetry.step_ms_p50() as f64
@@ -174,6 +204,108 @@ impl LevelManager {
     #[func]
     fn on_render_viewports_changed(&mut self, viewports: Array<Rid>) {
         self.apply_measured_viewports(viewports);
+    }
+
+    /// The world grid's cell size — GameManager derives the map projection
+    /// from it (one source; the exported field stays private).
+    /// World-space center of the boss arena at flight height —
+    /// `Vector3::ZERO` when this level has none. Teleport/escort anchor.
+    #[func]
+    pub fn boss_arena_center(&self) -> Vector3 {
+        let Some(boss_idx) = self.level_graph.boss_room() else {
+            return Vector3::ZERO;
+        };
+        let Some(room) = self.level_graph.room(boss_idx) else {
+            return Vector3::ZERO;
+        };
+        let pitch = self.pitch();
+        let origin = room.world_position(pitch.tile, pitch.story);
+        let [ex, _ey, ez] = room.template.extents;
+        Vector3::new(
+            origin[0] + ex as f32 * pitch.tile * 0.5,
+            origin[1] + 1.5,
+            origin[2] + ez as f32 * pitch.tile * 0.5,
+        )
+    }
+
+    /// Seal or open the arena gate (no-op off boss levels). GameManager
+    /// drives this from physics callbacks, so the flip rides call_deferred
+    /// (the house dormancy pattern — space state never mutates mid-step).
+    #[func]
+    pub fn seal_boss_gate(&mut self, sealed: bool) {
+        if let Some(gate) = &self.boss_gate {
+            gate.with(|g| {
+                g.call_deferred(methods::SET_SEALED, &[Variant::from(sealed)]);
+            });
+        }
+    }
+
+    /// Light or darken the boss level's portal (no-op off boss levels).
+    #[func]
+    pub fn set_boss_portal_active(&mut self, active: bool) {
+        if let Some(portal) = &self.boss_portal {
+            portal.with(|p| {
+                p.call_deferred(methods::SET_DORMANT, &[Variant::from(!active)]);
+            });
+        }
+    }
+
+    /// Enemy instance ids inside the radar's scope — deliberately local
+    /// (`LevelGraph::radar_scope`: the room you stand in, or from a
+    /// corridor the rooms it joins). GameManager pulls this on every room
+    /// change and pushes it to the HUD; enemies activated mid-fight join
+    /// on the next room change (they spawn in the player's own room, on
+    /// screen anyway).
+    #[func]
+    pub fn radar_contacts(&self) -> PackedInt64Array {
+        let Some(current) = self.current_room else { return PackedInt64Array::new() };
+        let Some(current_node) = self.level_graph.room_indices().nth(current) else {
+            return PackedInt64Array::new();
+        };
+        let in_scope: std::collections::HashSet<usize> = self
+            .level_graph
+            .radar_scope(current_node)
+            .into_iter()
+            .map(|n| n.index())
+            .collect();
+        let tree = self.base().get_tree();
+        let mut ids = PackedInt64Array::new();
+        for node in tree.get_nodes_in_group(groups::ENEMIES).iter_shared() {
+            let Ok(enemy) = node.try_cast::<Node3D>() else { continue };
+            let p = enemy.get_global_position();
+            let Some(room) = level_assembly::room_at([p.x, p.y, p.z], &self.room_bounds) else {
+                continue;
+            };
+            // Room-list index → graph node index, the same alignment
+            // update_room_culling uses.
+            let Some(room_node) = self.level_graph.room_indices().nth(room) else { continue };
+            if in_scope.contains(&room_node.index()) {
+                ids.push(enemy.instance_id().to_i64());
+            }
+        }
+        ids
+    }
+
+    /// Does a live enemy share the player's room? Drives the Combat music
+    /// bed (GameManager's conductor re-derives on every input change).
+    /// "Live" = visible (dormant staging is invisible, `apply_dormancy`)
+    /// and not already queued for freeing (a corpse mid-death-report must
+    /// not hold the combat bed). Same position→room resolution as
+    /// `radar_contacts`.
+    pub fn live_enemies_in_current_room(&self) -> bool {
+        let Some(current) = self.current_room else { return false };
+        let tree = self.base().get_tree();
+        for node in tree.get_nodes_in_group(groups::ENEMIES).iter_shared() {
+            let Ok(enemy) = node.try_cast::<Node3D>() else { continue };
+            if !enemy.is_visible() || enemy.is_queued_for_deletion() {
+                continue;
+            }
+            let p = enemy.get_global_position();
+            if level_assembly::room_at([p.x, p.y, p.z], &self.room_bounds) == Some(current) {
+                return true;
+            }
+        }
+        false
     }
 
     /// World-space center of room `i` (midpoint of its bounds). Drives room
@@ -228,12 +360,28 @@ impl LevelManager {
     /// parked player and no exit gate floats in the loadout room.
     #[func]
     pub fn generate_backdrop(&mut self, seed: i64) {
-        self.build_level(seed, 1, true);
+        let mut spec = self.door_spec(seed);
+        spec.room_budget = 1;
+        self.build_from_spec(spec, seed, true);
     }
 
+    /// Dev/test door (GUT structural suites, the editor): builds a fresh-
+    /// profile spec for the property-set `current_level`, with the caller's
+    /// explicit room budget. Production goes through GameManager's typed
+    /// `build_from_spec` — BOTH converge on the one spec constructor.
     #[func]
     pub fn generate_level(&mut self, seed: i64, target_rooms: u32) {
-        self.build_level(seed, target_rooms, false);
+        let mut spec = self.door_spec(seed);
+        spec.room_budget = target_rooms as usize;
+        self.build_from_spec(spec, seed, false);
+    }
+
+    fn door_spec(&self, seed: i64) -> LevelSpec {
+        LevelSpec::for_level(
+            Seed::from_i64(seed),
+            self.current_level.max(1) as u32,
+            &void_logic::unlocks::PermanentUnlocks::new(),
+        )
     }
 }
 
@@ -245,18 +393,13 @@ impl LevelManager {
     /// containers, spawns enemies, and places the exit portal. Both drive the
     /// same per-room steps, so the backdrop room is identical to the one the
     /// player would fly through.
-    fn build_level(&mut self, seed: i64, target_rooms: u32, structure_only: bool) {
+    pub(crate) fn build_from_spec(&mut self, spec: LevelSpec, seed: i64, structure_only: bool) {
         let seed = Seed::from_i64(seed);
-        let config = GeneratorConfig {
-            seed,
-            max_rooms: if target_rooms == 0 { 0 } else { target_rooms as usize },
-            min_room_xz: 3,
-            max_room_xz: 6,
-            min_room_y: 1,
-            max_room_y: 6,
-        };
+        self.current_level = spec.level as i32;
+        self.spec = Some(spec.clone());
+        let config = GeneratorConfig::for_spec(&spec, seed);
 
-        let graph = match generate(&config) {
+        let mut graph = match generate(&config) {
             Ok(g) => g,
             Err(e) => {
                 godot_error!("Level generation failed: {e:?}");
@@ -264,19 +407,32 @@ impl LevelManager {
             }
         };
 
+        // Boss levels grow their arena as a post-process: a long approach
+        // corridor off the farthest room ending in the sealed-off arena. The
+        // arena becomes the new farthest room, so the portal and exit-room
+        // accents follow with zero changes. The backdrop build stays bossless.
+        if !structure_only && spec.boss.is_some() {
+            let entry = graph.room_indices().next();
+            let attached = entry
+                .and_then(|e| spatial_layout::attach_boss_room(&mut graph, e, spec.pitch));
+            if attached.is_none() {
+                godot_warn!("Boss arena failed to attach; level runs bossless");
+            }
+        }
+
         // Assemble each room's content, grouped into the three build steps the
         // shell mirrors: structure, then non-enemy inhabitants (props +
         // containers), then enemies.
-        let rooms = level_assembly::spawn_list_full(&graph, self.grid_cell_size, seed);
+        let rooms = level_assembly::spawn_list_full(&graph, &spec, seed);
 
         // The level manifest (Faucet Principle, tier-1 model): resolves each
-        // enemy's type, expands its death-spawn minions, and binds one lootbox
-        // per enemy — all seed-deterministic, all derived in void-logic. The
+        // enemy's type, expands its death-spawn minions, and binds one blue
+        // cache per enemy — all seed-deterministic, all derived in void-logic. The
         // shell only places what the manifest enumerates; the enemy-type roll
         // that used to live inline here now lives in the manifest. Its rooms
         // align one-for-one with `rooms` (both from `spawn_list_full`).
         let level = self.current_level;
-        let manifest = level_assembly::manifest(&graph, self.grid_cell_size, seed, level as u32);
+        let manifest = level_assembly::manifest(&graph, &spec, seed);
 
         // Drop any room nodes from a previous level before rebuilding.
         self.room_nodes.for_each_live(|_, node, _| node.queue_free());
@@ -285,17 +441,35 @@ impl LevelManager {
         self.current_room = None;
         // Blinking lights are children of the freed room nodes.
         self.blinking_lights.clear();
-        // Lootboxes are direct children of the LevelManager (not under a room),
-        // so they aren't freed with the room nodes — free them explicitly. They
-        // are one-life-per-level (tier 1), rebuilt fresh below, unlike the reused
-        // bolt ring.
-        self.lootboxes.for_each_live(|_, node, _| node.queue_free());
-        self.lootboxes.clear();
+        // Blue caches are direct children of the LevelManager (not under a
+        // room), so they aren't freed with the room nodes — free them
+        // explicitly. They are one-life-per-level (tier 1), rebuilt fresh below,
+        // unlike the reused bolt ring. (Green caches were freed with their rooms.)
+        self.caches.for_each_live(|_, node, _| node.queue_free());
+        self.caches.clear();
+        // The subdrone squad is one-life-per-level too.
+        self.player_drones.for_each_live(|_, node, _| node.queue_free());
+        self.player_drones.clear();
+        // Boss fixtures (gate + trigger are LM children freed below with a
+        // fresh handle set; the portal is freed with its room).
+        self.boss_gate = None;
+        self.boss_portal = None;
 
         // The bolt ring survives the rebuild: build it once, then re-dormant it
         // so any bolt from the previous level is cleared. It is a sibling of the
         // room containers, so per-room culling never touches it.
         self.ensure_bolt_pool();
+
+        // Pre-build the player's subdrone squad, dormant, as siblings of the
+        // rooms (they escort the player across rooms, so per-room culling must
+        // never hide them). The backdrop build skips them with the populace.
+        if !structure_only {
+            for _ in 0..subdrone::SQUAD_SIZE {
+                let drone = PlayerDrone::new_alloc();
+                self.base_mut().add_child(&drone);
+                self.player_drones.push(&drone, ());
+            }
+        }
 
         let mut loader = ResourceLoader::singleton();
         let mut loose_rng = SmallRng::seed_from_u64(seed.value());
@@ -356,14 +530,14 @@ impl LevelManager {
                     }
                 }
                 for pos in &room.containers {
-                    Self::spawn_organic_barrel(&mut loader, &mut room_node, *pos);
+                    Self::spawn_organic_cache(&mut loader, &mut room_node, *pos);
                 }
 
                 // --- Step 3: enemies — each a self-driving RigidBody3D parented
                 // under the room so it culls/hides with it. Type, death-spawn
-                // minions, and the bound lootbox all come from the manifest: the
+                // minions, and the bound cache all come from the manifest: the
                 // parent is placed live, its minions pre-built dormant under the
-                // SAME room, its lootbox pre-built dormant under the level. On
+                // SAME room, its cache pre-built dormant under the level. On
                 // the parent's death it activates them — no death-path or
                 // per-drop instantiate remains.
                 for spawn in &manifest.rooms[room_index].enemies {
@@ -376,15 +550,43 @@ impl LevelManager {
                         if let Some(minion_node) = Self::spawn_enemy(
                             &mut loader, &mut room_node, minion.enemy_type, level, spawn.position, true,
                         ) {
-                            parent.bind_mut().bind_minion(&minion_node);
+                            parent.bind_mut().bind_minion(&minion_node, minion.trigger);
                         }
                     }
 
+                    // "Is this the boss" is the staging's call, not a type
+                    // check: exactly the enemy the level's slot staged.
+                    let is_boss =
+                        spec.boss.as_ref().map(|b| b.boss) == Some(spawn.enemy_type);
                     let mut level_mgr: Gd<Node3D> = self.base().clone().cast();
-                    if let Some(box_node) = Self::build_lootbox(&mut loader, &mut level_mgr) {
-                        parent.bind_mut().bind_lootbox(&box_node);
+                    if let Some(mut cache_node) = Self::build_cache(&mut loader, &mut level_mgr) {
+                        parent.bind_mut().bind_cache(&cache_node);
+                        // A boss's bound cache is part of its staged drop
+                        // set — the stamp crosses with cache_collected so
+                        // the fight FSM counts exactly these.
+                        cache_node.bind_mut().set_boss_loot(is_boss);
                         // Track it so a rebuild frees it (tier-1, one life/level).
-                        self.lootboxes.push(&box_node, ());
+                        self.caches.push(&cache_node, ());
+                    }
+
+                    // A boss's drop is special-cased at BUILD time (Faucet:
+                    // everything it can shed exists before the fight):
+                    // the red hull container when GameManager staged one,
+                    // otherwise the consolation pile as extra bound caches.
+                    if is_boss {
+                        if let Some(staging) = &spec.boss {
+                            if staging.hull_reward.is_some() {
+                                parent.bind_mut().set_cache_kind(CurrencyKind::HullReward);
+                            } else {
+                                for (kind, amount) in staging.pile.iter().copied() {
+                                    if let Some(mut bonus) = Self::build_cache(&mut loader, &mut level_mgr) {
+                                        parent.bind_mut().bind_bonus_cache(&bonus, kind, amount);
+                                        bonus.bind_mut().set_boss_loot(true);
+                                        self.caches.push(&bonus, ());
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -400,8 +602,11 @@ impl LevelManager {
         // End-of-level portal: parent it under the room that contains it so it
         // culls and hides with that room like every other inhabitant. Skipped
         // for the structure-only backdrop (no exit gate behind the loadout).
+        // On a boss level it is pre-built DORMANT (Faucet: built with the
+        // level, flipped live when the fight's reward is collected).
+        let boss_arena = if structure_only { None } else { graph.boss_room() };
         if !structure_only {
-            if let Some(portal_pos) = portal_sys::portal_position(&graph, self.grid_cell_size) {
+            if let Some(portal_pos) = portal_sys::portal_position(&graph, self.pitch()) {
                 if let Some(portal_scene) = loader.load(scenes::PORTAL) {
                     let packed: Gd<PackedScene> = portal_scene.cast();
                     if let Some(instance) = packed.instantiate() {
@@ -412,6 +617,12 @@ impl LevelManager {
                             Some(mut room_node) => room_node.add_child(&node),
                             None => self.base_mut().add_child(&node),
                         }
+                        if boss_arena.is_some() {
+                            if let Ok(mut portal) = node.clone().try_cast::<Portal>() {
+                                portal.bind_mut().set_dormant(true);
+                                self.boss_portal = Some(LiveRef::new(&portal));
+                            }
+                        }
                         godot_print!("Portal spawned at ({}, {}, {})", portal_pos[0], portal_pos[1], portal_pos[2]);
                     }
                 } else {
@@ -420,19 +631,79 @@ impl LevelManager {
             }
         }
 
+        // Boss fixtures: the arena seal across the one doorway and the entry
+        // sensor just inside it. Both parent under the arena's room container
+        // (freed and culled with the room); both are dormancy-flip-only after
+        // this point (Faucet Principle).
+        if let Some(boss_idx) = graph.boss_room() {
+            let story = self.pitch().story;
+            let cell = self.pitch().tile;
+            let arena_pos = graph.room_indices().position(|i| i == boss_idx);
+            let arena_node = arena_pos.and_then(|i| self.room_nodes.get_live(i));
+            let doorway = graph.room(boss_idx).and_then(|room| {
+                graph.active_connectors(boss_idx).first().map(|conn| {
+                    let origin = room.world_position(cell, story);
+                    let center = Vector3::new(
+                        origin[0] + (conn.offset[0] as f32 + 0.5) * cell,
+                        origin[1] + conn.offset[1] as f32 * story + story * 0.5,
+                        origin[2] + (conn.offset[2] as f32 + 0.5) * cell,
+                    );
+                    (center, conn.facing.grid_offset())
+                })
+            });
+            if let (Some(mut arena_node), Some((center, dir))) = (arena_node, doorway) {
+                let outward = Vector3::new(dir[0] as f32, dir[1] as f32, dir[2] as f32);
+                // The barrier sits in the doorway plane (half a cell out,
+                // where arena wall meets corridor), thin axis along the way
+                // through.
+                let mut gate = BossGate::new_alloc();
+                gate.bind_mut().set_span(cell, story);
+                arena_node.add_child(&gate);
+                gate.set_global_position(center + outward * (0.5 * cell));
+                if dir[0] != 0 {
+                    gate.set_rotation(Vector3::new(0.0, std::f32::consts::FRAC_PI_2, 0.0));
+                }
+                self.boss_gate = Some(LiveRef::new(&gate));
+
+                // The sensor spans the whole arena interior (inset ~1m from
+                // the walls): "entering the room" IS the engagement, however
+                // the player comes in — there is no path that skips it.
+                if let Some(room) = graph.room(boss_idx) {
+                    let origin = room.world_position(cell, story);
+                    let [ex, ey, ez] = room.template.extents;
+                    let interior = Vector3::new(
+                        ex as f32 * cell - 2.0,
+                        ey as f32 * story - 1.0,
+                        ez as f32 * cell - 2.0,
+                    );
+                    let arena_center = Vector3::new(
+                        origin[0] + ex as f32 * cell * 0.5,
+                        origin[1] + ey as f32 * story * 0.5,
+                        origin[2] + ez as f32 * cell * 0.5,
+                    );
+                    let mut trigger = BossTrigger::new_alloc();
+                    trigger.bind_mut().set_extents(interior);
+                    arena_node.add_child(&trigger);
+                    trigger.set_global_position(arena_center);
+                }
+            }
+        }
+
         // Place the player in the first room's center. The ship is a
         // RigidBody3D and drives its own motion; we only position it.
-        let centers = level_assembly::cell_centers(&graph, self.grid_cell_size);
-        if let Some(first_center) = centers.first() {
-            let spawn = [first_center[0], first_center[1] + 1.5, first_center[2]];
-            if let Some(parent) = self.base().get_parent() {
-                if let Some(player) = parent.try_get_node_as::<ShipController>(nodes::PLAYER) {
-                    let mut player_node = player.clone();
-                    player_node.set_position(vec3(spawn));
-                    player_node.reset_physics_interpolation();
-                    self.player = Some(LiveRef::new(&player_node.upcast::<Node3D>()));
-                    godot_print!("Player spawned at ({}, {}, {})", spawn[0], spawn[1], spawn[2]);
-                }
+        let (spawn, spawn_yaw) = level_assembly::spawn_pose(&graph, self.pitch());
+        if let Some(parent) = self.base().get_parent() {
+            if let Some(player) = parent.try_get_node_as::<ShipController>(nodes::PLAYER) {
+                let mut player_node = player.clone();
+                player_node.set_position(vec3(spawn));
+                // Centered in the start room, facing its doorway — never a
+                // corner (the pose is the model's, tested in level_assembly).
+                player_node.set_rotation(Vector3::new(0.0, spawn_yaw, 0.0));
+                player_node.set_linear_velocity(Vector3::ZERO);
+                player_node.set_angular_velocity(Vector3::ZERO);
+                player_node.reset_physics_interpolation();
+                self.player = Some(LiveRef::new(&player_node.upcast::<Node3D>()));
+                godot_print!("Player spawned at ({}, {}, {})", spawn[0], spawn[1], spawn[2]);
             }
         }
 
@@ -443,7 +714,7 @@ impl LevelManager {
 
         godot_print!(
             "Level generated: {} rooms, {} meshes, {} lights, {} enemies{}",
-            target_rooms,
+            spec.room_budget,
             mesh_count,
             light_count,
             enemy_count,
@@ -468,13 +739,27 @@ impl LevelManager {
     /// containers, not inside one), so bolts are not toggled off by per-room
     /// visibility culling and the pool outlives the room nodes cleared above.
     fn ensure_bolt_pool(&mut self) {
-        match self.bolt_pool.with(|p| p.bind_mut().reset()) {
-            Some(()) => {} // already built and now re-dormanted
-            None => {
-                let pool = BoltPool::new_alloc();
-                self.base_mut().add_child(&pool);
-                self.bolt_pool = Some(LiveRef::new(&pool));
-            }
+        // A pool queue_freed THIS frame (GameManager clears LevelManager's
+        // children before every rebuild; the free lands at frame end) is
+        // still briefly alive — it must count as gone, or the fresh level
+        // runs with no ammunition ring and nothing in it can fire. That was
+        // the "enemies stopped shooting" playtest bug: every build reached
+        // through the backdrop flow skipped the rebuild against a dying pool.
+        let usable = self
+            .bolt_pool
+            .with(|p| {
+                if p.is_queued_for_deletion() {
+                    None
+                } else {
+                    p.bind_mut().reset();
+                    Some(()) // already built and now re-dormanted
+                }
+            })
+            .flatten();
+        if usable.is_none() {
+            let pool = BoltPool::new_alloc();
+            self.base_mut().add_child(&pool);
+            self.bolt_pool = Some(LiveRef::new(&pool));
         }
     }
 
@@ -505,6 +790,10 @@ impl LevelManager {
         let mut col = CollisionShape3D::new_alloc();
         col.set_shape(&shape);
         let mut body = StaticBody3D::new_alloc();
+        // Named for diagnostics: an anonymous @StaticBody3D@N in a contact
+        // report reads as an ad-hoc body; this is the container's ONE fused
+        // shell (the only static collision constructor in the build).
+        body.set_name("FusedShell");
         body.add_child(&col);
         room_node.add_child(&body);
     }
@@ -557,6 +846,23 @@ impl LevelManager {
         self.telemetry.measure_viewports(&rids);
     }
 
+    /// The retained level graph — culling, the recon map, and future
+    /// pathfinding all read this one authority (crate-internal, no Variant
+    /// crossing).
+    pub fn graph(&self) -> &LevelGraph {
+        &self.level_graph
+    }
+
+    /// This level's world-space quantization — the ONE pitch source
+    /// (`planet::Pitch::for_level`); every conversion in this node and every
+    /// void-logic call goes through it.
+    fn pitch(&self) -> void_logic::planet::Pitch {
+        self.spec
+            .as_ref()
+            .map(|s| s.pitch)
+            .unwrap_or_else(|| void_logic::planet::Pitch::for_level(1))
+    }
+
     /// Show only the player's current room and its portal-neighbors;
     /// hide the rest. Recomputes only when the player changes rooms.
     fn update_room_culling(&mut self, player_pos: [f32; 3]) {
@@ -567,6 +873,12 @@ impl LevelManager {
             return;
         }
         self.current_room = Some(current);
+        // Culling and the recon map share this one room-change detection. The
+        // handler (GameManager) reads back through our Gd binding for the
+        // graph, which must not re-enter this &mut method — its subscription
+        // is CONNECT_DEFERRED (see GameManager::wire_level_signals), so the
+        // emit itself stays direct and typed.
+        self.base_mut().emit_signal(signals::ROOM_CHANGED, &[Variant::from(current as i64)]);
         // The current room-list index maps to the graph node at that
         // placement position; visibility is the graph's to decide.
         let Some(current_node) = self.level_graph.room_indices().nth(current) else {
@@ -603,39 +915,43 @@ impl LevelManager {
         });
     }
 
-    /// Instantiate an enemy scene under `parent`, stamped with its type + level,
-    /// positioned. It self-drives as a RigidBody3D; the engine owns its motion.
-    /// Returns the live handle so the caller can bind its death-spawn minions and
-    /// lootbox (Faucet Principle, tier 1). `dormant` builds it invisible,
-    /// non-processing, non-colliding — that's how a reserved death-spawn minion
-    /// enters the tree, waiting for its parent to die.
+    /// Instantiate an enemy scene under `parent`, stamped with its def's
+    /// crossing id + level, positioned. It self-drives as a RigidBody3D; the
+    /// engine owns its motion. Returns the live handle so the caller can bind
+    /// its minions and blue cache (Faucet Principle, tier 1). `dormant`
+    /// builds it invisible, non-processing, non-colliding — that's how a
+    /// reserved minion enters the tree, waiting for its trigger.
     fn spawn_enemy(
         loader: &mut Gd<ResourceLoader>,
         parent: &mut Gd<Node3D>,
-        etype: enemy_type::EnemyType,
+        enemy_id: void_logic::roster::EnemyId,
         level: i32,
         pos: [f32; 3],
         dormant: bool,
     ) -> Option<Gd<EnemyDrone>> {
-        let scene_res = loader.load(etype.scene_path())?;
+        // Every enemy is the same node + collider scene; the def (via the
+        // crossing id stamped below) drives stats, model, and collider size.
+        let scene_res = loader.load("res://scenes/enemies/enemy.tscn")?;
         let packed: Gd<PackedScene> = scene_res.cast();
         let instance = packed.instantiate()?;
         let mut enemy = instance.try_cast::<EnemyDrone>().ok()?;
         // Stamp type + level before entering the tree so ready() configures it.
         {
             let mut g = enemy.bind_mut();
-            g.set_spawn_type(etype.id());
+            g.set_spawn_type(
+                void_logic::roster::roster().enemy(enemy_id).crossing_id as i32,
+            );
             g.set_spawn_level(level);
         }
         enemy.set_position(vec3(pos));
         // Parented under the room container (a cell inhabitant), so hiding or
-        // culling the room takes its enemies with it. Death-spawn minions parent
+        // culling the room takes its enemies with it. Reserved minions parent
         // under the SAME room as their parent-to-be, so they share its culling
         // and the one recursive signal wire.
         parent.add_child(&enemy);
         // ready() has now run (add_child is synchronous): a reserved minion is
         // fully built (model, hull, health bar) but must sit dormant until its
-        // parent dies. An active enemy resets interpolation for its placement.
+        // trigger. An active enemy resets interpolation for its placement.
         if dormant {
             enemy.bind_mut().deactivate_dormant();
         } else {
@@ -644,37 +960,42 @@ impl LevelManager {
         Some(enemy)
     }
 
-    /// Pre-build the one lootbox reserved for an enemy (Faucet Principle, tier
-    /// 1), dormant, parented under the LevelManager rather than a room container
-    /// so a dropped box persists and stays visible when the player leaves the
-    /// room it dropped in (drops are collected across rooms, matching the old
-    /// scene-root drop). Returns the handle for the enemy to bind and drop.
-    fn build_lootbox(loader: &mut Gd<ResourceLoader>, level_mgr: &mut Gd<Node3D>) -> Option<Gd<Lootbox>> {
-        let scene_res = loader.load(scenes::LOOTBOX)?;
+    /// Pre-build the one blue cache reserved for an enemy (Faucet Principle,
+    /// tier 1), dormant, parented under the LevelManager rather than a room
+    /// container so a dropped cache persists and stays visible when the player
+    /// leaves the room it dropped in (drops are collected across rooms,
+    /// matching the old scene-root drop). Returns the handle for the enemy to
+    /// bind and drop with its reward.
+    fn build_cache(loader: &mut Gd<ResourceLoader>, level_mgr: &mut Gd<Node3D>) -> Option<Gd<CurrencyCache>> {
+        let scene_res = loader.load(scenes::CURRENCY_CACHE)?;
         let packed: Gd<PackedScene> = scene_res.cast();
         let instance = packed.instantiate()?;
-        let lootbox = instance.try_cast::<Lootbox>().ok()?;
+        let cache = instance.try_cast::<CurrencyCache>().ok()?;
         // ready() dormants it; parent under the level (sibling of rooms + the
-        // bolt pool), so per-room culling never hides a dropped box.
-        level_mgr.add_child(&lootbox);
-        Some(lootbox)
+        // bolt pool), so per-room culling never hides a dropped cache.
+        level_mgr.add_child(&cache);
+        Some(cache)
     }
 
-    /// Instantiate an organics barrel at `pos` under the given room container (a
-    /// cell inhabitant). GameManager's spawned-entity scan recurses into room
-    /// containers to connect its `organics_collected` signal.
-    fn spawn_organic_barrel(loader: &mut Gd<ResourceLoader>, parent: &mut Gd<Node3D>, pos: [f32; 3]) -> bool {
-        let Some(scene_res) = loader.load(scenes::ORGANIC_BARREL) else {
+    /// Place a green (organics) cache at `pos` under the given room container
+    /// (a cell inhabitant), live from the start — the same `drop_at` activation
+    /// path the blue kill-drops use, stamped with the green payload. Wired to
+    /// GameManager by the recursive build-time signal pass.
+    fn spawn_organic_cache(loader: &mut Gd<ResourceLoader>, parent: &mut Gd<Node3D>, pos: [f32; 3]) -> bool {
+        let Some(scene_res) = loader.load(scenes::CURRENCY_CACHE) else {
             return false;
         };
         let packed: Gd<PackedScene> = scene_res.cast();
         let Some(instance) = packed.instantiate() else {
             return false;
         };
-        let mut node: Gd<Node3D> = instance.cast();
-        node.set_position(vec3(pos));
-        parent.add_child(&node);
-        node.reset_physics_interpolation();
+        let Ok(mut cache) = instance.try_cast::<CurrencyCache>() else {
+            return false;
+        };
+        // ready() (run by add_child) queues the dormant flip; drop_at queues the
+        // live flip after it, so the cache ends the frame active at its spawn.
+        parent.add_child(&cache);
+        cache.bind_mut().drop_at(vec3(pos), CurrencyKind::Organics, ORGANIC_CACHE_AMOUNT);
         true
     }
 

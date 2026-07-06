@@ -9,3 +9,9 @@ petgraph = "0.8"
 rand = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.8"
+
+[dev-dependencies]
+# The asset probe (roster/probe.rs, run by `make assets`) measures installed
+# glTF models; parse-only, never shipped in the game dylib.
+gltf = { version = "1", default-features = false }

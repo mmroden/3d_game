@@ -25,16 +25,21 @@ func after_each():
 # --- UIViewport wiring ---
 
 func test_all_ui_layers_render_into_ui_viewport():
+	# STRUCTURAL: every CanvasLayer child of Main renders through the one
+	# UIViewport — no hand-maintained name list anywhere (the list went
+	# stale the moment LoadingUI arrived and put the veil in one eye,
+	# playtest 2026-07-04). Text drawn on any UI layer is view-agnostic by
+	# construction: both eyes sample the same viewport texture.
 	var ui_vp = _main.get_node("ViewManager/UIViewport")
 	assert_not_null(ui_vp, "UIViewport must exist under ViewManager")
 
-	var ui_names = ["MainMenuUI", "HUD", "PauseMenuUI",
-		"KillSummaryUI", "ShopUI", "DeathScreenUI"]
-	for ui_name in ui_names:
-		var layer = _main.get_node(ui_name) as CanvasLayer
-		assert_not_null(layer, "%s must exist" % ui_name)
-		assert_eq(layer.get_custom_viewport(), ui_vp,
-			"%s must render into UIViewport for SBS compositing" % ui_name)
+	var layers := 0
+	for child in _main.get_children():
+		if child is CanvasLayer:
+			layers += 1
+			assert_eq((child as CanvasLayer).get_custom_viewport(), ui_vp,
+				"%s must render into UIViewport for SBS compositing" % child.name)
+	assert_gt(layers, 8, "the sweep must actually cover the UI layers")
 
 # --- Menu centering ---
 
@@ -99,6 +104,21 @@ func test_sbs_hides_the_mono_ui_layer():
 	await get_tree().process_frame
 	var mono = _main.get_node("ViewManager/MonoUILayer")
 	assert_false(mono.visible, "MonoUILayer must hide in SBS")
+
+func test_mono_view_recovers_the_window_after_a_resize():
+	# Mono is the no-goggles way to play; the single-eye view must follow
+	# the window (playtest 2026-07-05: a resized window left the 3D view
+	# frozen at its old size in a sea of dead gray, reticle divorced from
+	# the optical center). Simulate the stale state a resize used to leave
+	# behind, then fire the resize handler: the eye must re-cover the
+	# window.
+	var vm = _main.get_node("ViewManager")
+	var left = _main.get_node("ViewManager/StereoCanvas/LeftContainer")
+	left.size = Vector2(123, 77) # the stale pre-resize footprint
+	vm.on_window_size_changed()
+	var win := Vector2(DisplayServer.window_get_size())
+	assert_eq(left.size, win,
+		"mono's single eye must re-cover the window after a resize")
 
 # --- helpers ---
 

@@ -5,7 +5,28 @@ use crate::room_template::*;
 mod placement;
 mod assembly;
 mod corners;
+mod panels;
 mod theming;
+
+/// Assemble at the pinned test pitch. The production door is
+/// `assemble_from_grid` fed a grid built from the level's `Pitch`
+/// (level_assembly); tests build the grid the same way and may hold the
+/// megakit literals.
+fn assemble(
+    template: &RoomTemplate,
+    active_connectors: &[Connector],
+    world_origin: [f32; 3],
+    wall_set: &asset_catalog::WallSet,
+) -> Vec<MeshPlacement> {
+    let grid = crate::cell::CellGrid::new(
+        template,
+        active_connectors,
+        world_origin,
+        TILE_WIDTH,
+        STORY_HEIGHT,
+    );
+    crate::room_assembler::assemble_from_grid(&grid, template, active_connectors, wall_set)
+}
 
 /// Convenience wrapper: assemble with default Astra wall set.
 fn assemble_default(
@@ -100,7 +121,9 @@ fn is_floor_scene(scene: &str) -> bool {
     scene == FLOOR || scene == FLOOR_CURVE
 }
 
-/// Story height from the default (Astra) wall set.
+/// The megakit grid, spelled out — tests may hold literals (the game
+/// derives these from the recipe meshes via the probe).
+const TILE_WIDTH: f32 = 4.0;
 const STORY_HEIGHT: f32 = 5.0;
 
 fn count_floors(placements: &[MeshPlacement], origin_y: f32) -> usize {

@@ -1,8 +1,8 @@
 //! Type-safe audio asset catalog.
 //!
 //! All audio selection goes through enums — callers never touch path strings.
-//! `SfxEvent` selects a sound effect (with random variant picking),
-//! `MusicContext` selects menu vs. gameplay music pools.
+//! `SfxEvent` selects a sound effect (with random variant picking);
+//! `MusicBed` + `music_bed` derive which music should be playing.
 
 // ── Path macros (module-private) ─────────────────────────────────────
 
@@ -18,45 +18,110 @@ macro_rules! sfx {
 }
 
 // ── Music ────────────────────────────────────────────────────────────
+//
+// Four beds (owner's design 2026-07-05): the menu ambient, a loopable
+// per-level background, random combat stingers while the current room
+// holds live enemies, and the boss track from arena entry (never
+// relooped — a fight outlasting its track queues combat stingers).
+// `music_bed` is THE derivation: one pure function of (phase, fight
+// state, enemies-present); the shell evaluates it at every input change
+// and pushes the result, so no shell lifecycle bool can drift.
 
-/// Which music context is active.
+/// Which bed should be playing right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MusicContext {
+pub enum MusicBed {
     Menu,
-    Gameplay,
+    /// The level's own loopable background.
+    Level,
+    /// Random combat stinger — live enemies share the player's room.
+    Combat,
+    /// The staged fight's track, from arena entry until the loot closes it.
+    Boss,
 }
 
-const MENU_TRACK: &str = music!("frozen_whispers.wav");
+/// Fight-music loudness over the exploration baseline (owner's call,
+/// playtest 2026-07-05: "combat music should be played louder — maybe 20%").
+pub const FIGHT_MUSIC_GAIN: f32 = 1.2;
 
-const GAMEPLAY_TRACKS: &[&str] = &[
-    music!("days_became_years.wav"),
-    music!("cosmic_research_facility.wav"),
-    music!("askaris_v.wav"),
-    music!("bad_omen.wav"),
-    music!("tumor.wav"),
-    music!("mist_of_aeons.wav"),
-    music!("last_light.wav"),
-    music!("departure.wav"),
-    music!("sacrifice.wav"),
-    music!("erythion_rift.wav"),
-];
-
-impl MusicContext {
-    /// The single track for this context (Menu) or the first track in the pool.
-    pub fn track_path(self) -> &'static str {
+impl MusicBed {
+    /// Loudness multiplier layered on the phase volume: fight beds (combat
+    /// stingers AND the boss track — whose continuations ARE combat
+    /// stingers) ride above the exploration baseline.
+    pub fn gain(self) -> f32 {
         match self {
-            Self::Menu => MENU_TRACK,
-            Self::Gameplay => GAMEPLAY_TRACKS[0],
+            Self::Combat | Self::Boss => FIGHT_MUSIC_GAIN,
+            Self::Menu | Self::Level => 1.0,
         }
     }
 
-    /// The full pool of tracks for rotation. Menu returns a single-element slice.
-    pub fn track_pool(self) -> &'static [&'static str] {
+    /// GDScript crossing (append-only law).
+    pub fn id(self) -> i32 {
         match self {
-            Self::Menu => std::slice::from_ref(&MENU_TRACK),
-            Self::Gameplay => GAMEPLAY_TRACKS,
+            Self::Menu => 0,
+            Self::Level => 1,
+            Self::Combat => 2,
+            Self::Boss => 3,
         }
     }
+}
+
+/// THE bed derivation. Boss outranks combat (the arena has enemies in it
+/// by definition); combat outranks the level bed; everything outside a
+/// run is the menu. Non-Playing in-run phases (shop, summary, briefing,
+/// pause, death) keep the level bed — the existing per-phase volume
+/// ducking does the rest.
+pub fn music_bed(
+    phase: crate::game_phase::GamePhase,
+    boss: Option<crate::boss_fight::BossFightState>,
+    enemies_in_room: bool,
+) -> MusicBed {
+    use crate::boss_fight::BossFightState;
+    use crate::game_phase::GamePhase;
+
+    if phase == GamePhase::MainMenu {
+        return MusicBed::Menu;
+    }
+    if matches!(
+        boss,
+        Some(BossFightState::Engaged) | Some(BossFightState::Defeated)
+    ) {
+        return MusicBed::Boss;
+    }
+    if enemies_in_room {
+        return MusicBed::Combat;
+    }
+    MusicBed::Level
+}
+
+/// Written level backgrounds so far (levels past the table reuse the
+/// last track until more arrive — owner supplies in batches).
+pub const LEVEL_BACKGROUND_COUNT: u32 = 30;
+const COMBAT_TRACKS: [u32; 9] = [11, 12, 13, 14, 15, 16, 17, 18, 19];
+
+pub fn menu_track() -> &'static str {
+    music!("ambient/frozen_whispers.wav")
+}
+
+/// The level's loopable background: `levels/level_NN.mp3`.
+pub fn level_background(level: u32) -> String {
+    let n = level.clamp(1, LEVEL_BACKGROUND_COUNT);
+    format!("res://addons/audio/music/levels/level_{n:02}.mp3")
+}
+
+/// The combat stinger pool — the shell picks randomly per fight
+/// (unseeded: cosmetic, the accepted entropy exception).
+pub fn combat_pool() -> Vec<String> {
+    COMBAT_TRACKS
+        .iter()
+        .map(|n| format!("res://addons/audio/music/combat/combat_{n}.mp3"))
+        .collect()
+}
+
+/// The staged fight's track by index — declared per boss slot in the
+/// roster grammar (owner: "tracks 1 and 2, up to 6" — all six installed).
+pub fn boss_track(index: u32) -> String {
+    let n = index.clamp(1, 6);
+    format!("res://addons/audio/music/boss/boss_{n}.mp3")
 }
 
 // ── Sound effects ────────────────────────────────────────────────────
@@ -84,7 +149,7 @@ pub enum SfxEvent {
     DroneSpawn,
     /// Player enters portal.
     PortalEnter,
-    /// Lootbox collected.
+    /// Currency cache collected.
     LootPickup,
     /// Health below critical threshold.
     LowHealthAlert,
@@ -207,16 +272,21 @@ pub const COLLISION_SFX_MIN_SPEED: f32 = 3.0;
 // ── Validation helper ────────────────────────────────────────────────
 
 /// Every audio path in the catalog, for disk-existence tests.
-pub fn all_audio_paths() -> Vec<&'static str> {
-    let mut paths = Vec::new();
+pub fn all_audio_paths() -> Vec<String> {
+    let mut paths: Vec<String> = Vec::new();
 
-    // Music
-    paths.push(MENU_TRACK);
-    paths.extend_from_slice(GAMEPLAY_TRACKS);
+    // Music — every bed the conductor can select.
+    paths.push(menu_track().to_string());
+    for level in 1..=LEVEL_BACKGROUND_COUNT {
+        paths.push(level_background(level));
+    }
+    paths.extend(combat_pool());
+    paths.push(boss_track(1));
+    paths.push(boss_track(2));
 
     // SFX
     for event in ALL_SFX_EVENTS {
-        paths.extend_from_slice(event.variants());
+        paths.extend(event.variants().iter().map(|s| s.to_string()));
     }
 
     paths.sort();
@@ -229,6 +299,67 @@ pub fn all_audio_paths() -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fight_beds_play_louder_than_the_rest() {
+        // Owner's call (playtest 2026-07-05): combat music noticeably louder
+        // than exploration — about 20%. Boss rides the same fight gain so its
+        // combat-stinger continuations hold one loudness.
+        assert_eq!(MusicBed::Combat.gain(), FIGHT_MUSIC_GAIN);
+        assert_eq!(MusicBed::Boss.gain(), FIGHT_MUSIC_GAIN);
+        assert_eq!(MusicBed::Level.gain(), 1.0, "exploration is the baseline");
+        assert_eq!(MusicBed::Menu.gain(), 1.0);
+        assert!((FIGHT_MUSIC_GAIN - 1.2).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn the_bed_derivation_ranks_boss_over_combat_over_level() {
+        use crate::boss_fight::BossFightState as B;
+        use crate::game_phase::GamePhase as P;
+
+        assert_eq!(music_bed(P::MainMenu, None, false), MusicBed::Menu);
+        assert_eq!(music_bed(P::Playing, None, false), MusicBed::Level);
+        assert_eq!(music_bed(P::Playing, None, true), MusicBed::Combat,
+            "live enemies in the room bring the stinger in");
+        assert_eq!(music_bed(P::Playing, Some(B::Engaged), true), MusicBed::Boss,
+            "the arena outranks the stinger");
+        assert_eq!(music_bed(P::Playing, Some(B::Defeated), false), MusicBed::Boss,
+            "the fight owns the bed until the loot closes it");
+        assert_eq!(music_bed(P::Playing, Some(B::Dormant), false), MusicBed::Level,
+            "a dormant fight is no fight");
+        assert_eq!(music_bed(P::Playing, Some(B::RewardCollected), false),
+            MusicBed::Level, "the loot closes it — back to the level bed");
+        // In-run menus keep the level bed (phase volume ducking handles feel).
+        assert_eq!(music_bed(P::Shop, None, false), MusicBed::Level);
+        assert_eq!(music_bed(P::Paused, Some(B::Engaged), true), MusicBed::Boss,
+            "pausing mid-fight doesn't end the fight");
+        assert_eq!(music_bed(P::Death, None, false), MusicBed::Level);
+    }
+
+    #[test]
+    fn level_backgrounds_map_by_number_and_reuse_the_last_past_the_table() {
+        assert_eq!(level_background(1), "res://addons/audio/music/levels/level_01.mp3");
+        assert_eq!(level_background(7), "res://addons/audio/music/levels/level_07.mp3");
+        assert_eq!(level_background(30), "res://addons/audio/music/levels/level_30.mp3");
+        assert_eq!(level_background(31), "res://addons/audio/music/levels/level_30.mp3",
+            "levels past the written table reuse the last background");
+    }
+
+    #[test]
+    fn boss_tracks_split_mid_and_final() {
+        assert_eq!(boss_track(1), "res://addons/audio/music/boss/boss_1.mp3");
+        assert_eq!(boss_track(2), "res://addons/audio/music/boss/boss_2.mp3");
+        assert_eq!(boss_track(9), "res://addons/audio/music/boss/boss_6.mp3",
+            "indices clamp to the installed set");
+    }
+
+    #[test]
+    fn the_combat_pool_is_the_nine_stingers() {
+        let pool = combat_pool();
+        assert_eq!(pool.len(), 9);
+        assert!(pool[0].ends_with("combat_11.mp3"));
+        assert!(pool[8].ends_with("combat_19.mp3"));
+    }
 
     #[test]
     fn sfx_event_has_at_least_one_variant() {
@@ -266,42 +397,16 @@ mod tests {
 
     #[test]
     fn all_music_paths_are_valid_res() {
-        for path in [MENU_TRACK].iter().chain(GAMEPLAY_TRACKS.iter()) {
-            assert!(
-                path.starts_with("res://"),
-                "music path should start with res://: {path}"
-            );
-            assert!(
-                path.ends_with(".ogg") || path.ends_with(".wav"),
-                "music path should end with .ogg or .wav: {path}"
-            );
+        let mut music: Vec<String> = vec![menu_track().to_string()];
+        music.push(level_background(1));
+        music.extend(combat_pool());
+        music.push(boss_track(2));
+        for path in music {
+            assert!(path.starts_with("res://"),
+                "music path should start with res://: {path}");
+            assert!(path.ends_with(".mp3") || path.ends_with(".wav"),
+                "music path should be mp3/wav: {path}");
         }
-    }
-
-    #[test]
-    fn gameplay_has_10_tracks() {
-        assert_eq!(
-            MusicContext::Gameplay.track_pool().len(),
-            10,
-            "expected 10 gameplay tracks"
-        );
-    }
-
-    #[test]
-    fn no_duplicate_gameplay_tracks() {
-        let mut tracks: Vec<&str> = GAMEPLAY_TRACKS.to_vec();
-        tracks.sort();
-        for pair in tracks.windows(2) {
-            assert_ne!(pair[0], pair[1], "duplicate gameplay track: {}", pair[0]);
-        }
-    }
-
-    #[test]
-    fn menu_track_not_in_gameplay() {
-        assert!(
-            !GAMEPLAY_TRACKS.contains(&MENU_TRACK),
-            "menu track should not be in gameplay rotation"
-        );
     }
 
     #[test]
@@ -369,27 +474,16 @@ mod tests {
     }
 
     #[test]
-    fn menu_context_returns_single_track() {
-        assert_eq!(MusicContext::Menu.track_pool().len(), 1);
-        assert_eq!(MusicContext::Menu.track_path(), MENU_TRACK);
-    }
-
-    #[test]
     fn no_duplicate_audio_paths() {
         let paths = all_audio_paths(); // already sorted + deduped
-        let before_dedup = {
-            let mut p = Vec::new();
-            p.push(MENU_TRACK);
-            p.extend_from_slice(GAMEPLAY_TRACKS);
-            for event in ALL_SFX_EVENTS {
-                p.extend_from_slice(event.variants());
-            }
-            p
-        };
-        assert_eq!(
-            paths.len(),
-            before_dedup.len(),
-            "found duplicate audio paths"
-        );
+        let before_dedup = 1 // menu
+            + LEVEL_BACKGROUND_COUNT as usize
+            + combat_pool().len()
+            + 2 // boss mid + final
+            + ALL_SFX_EVENTS
+                .iter()
+                .map(|e| e.variants().len())
+                .sum::<usize>();
+        assert_eq!(paths.len(), before_dedup, "found duplicate audio paths");
     }
 }

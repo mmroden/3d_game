@@ -65,6 +65,305 @@ func test_enemy_in_range_fires_and_damages_player():
 	assert_signal_emitted(player, "player_damaged",
 		"an enemy within range must fire a bolt that damages the player")
 
+const UiStub := preload("res://tests/helpers/ui_stub.gd")
+
+func test_enemy_fires_inside_the_full_game_stack():
+	# Playtest regression report (2026-07-03): enemies stopped firing in real
+	# play. The bare-pipeline test above passes, so this reproduces the FULL
+	# stack: GameManager-driven build, Playing phase, real ShipController —
+	# then parks the player beside a shooter and expects fire.
+	var root := Node3D.new()
+	add_child_autofree(root)
+	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
+		var stub := UiStub.new()
+		stub.name = ui_name
+		root.add_child(stub)
+	var lm := LevelManager.new()
+	lm.name = "LevelManager"
+	var player := ShipController.new()
+	player.name = "Player"
+	var shape := CollisionShape3D.new()
+	shape.name = "CollisionShape3D"
+	shape.shape = SphereShape3D.new()
+	player.add_child(shape)
+	var gm := GameManager.new()
+	gm.fixed_seed = 1  # the pinned seed
+	root.add_child(lm)
+	root.add_child(player)
+	root.add_child(gm)
+	gm.clear_save_for_tests()
+
+	gm.start_new_game()
+	gm.advance_from_ship_select()
+	for _i in range(12):
+		if gm.get_phase_name() == "Playing":
+			break
+		gm.advance_from_bestiary()
+	assert_eq(gm.get_phase_name(), "Playing", "must reach Playing")
+	await wait_process_frames(2)
+
+	# Park the player right beside a SHOOTER (SentryDrone id 10 — the level-1
+	# roster is sentries only, so the pinned level MUST field one; swarmers
+	# never fire). Node-transform teleport is what the AI reads.
+	var shooter: RigidBody3D = null
+	for e in lm.find_children("*", "EnemyDrone", true, false):
+		if e.enemy_type_id == 10:
+			shooter = e
+			break
+	assert_not_null(shooter, "level 1 spawns only SentryDrones — one must exist")
+	if shooter == null:
+		return
+	player.global_position = shooter.global_position + Vector3(0, 0, 5)
+	player.reset_physics_interpolation()
+
+	var pool: Node = lm.find_children("*", "BoltPool", false, false).front()
+	var fired := false
+	for _i in range(300):  # 5 seconds
+		await get_tree().physics_frame
+		if pool.live_count() > 0:
+			fired = true
+			break
+	assert_true(fired,
+		"a shooter with the player parked in range must open fire inside the full stack")
+
+
+func test_player_trigger_damages_an_enemy_inside_the_full_game_stack():
+	# Playtest regression (2026-07-03): a freshly bought hull fired nothing and
+	# dealt no damage until a restart. The enemy half of the pipeline is pinned
+	# above; this pins the player half the same way — real GameManager build,
+	# Playing phase, aim at a live enemy, hold the trigger, expect its health
+	# bar to deplete (or the enemy to die outright).
+	var root := Node3D.new()
+	add_child_autofree(root)
+	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
+		var stub := UiStub.new()
+		stub.name = ui_name
+		root.add_child(stub)
+	var lm := LevelManager.new()
+	lm.name = "LevelManager"
+	var player := ShipController.new()
+	player.name = "Player"
+	var shape := CollisionShape3D.new()
+	shape.name = "CollisionShape3D"
+	shape.shape = SphereShape3D.new()
+	player.add_child(shape)
+	var gm := GameManager.new()
+	gm.fixed_seed = 1  # the pinned seed
+	root.add_child(lm)
+	root.add_child(player)
+	root.add_child(gm)
+	gm.clear_save_for_tests()
+
+	gm.start_new_game()
+	gm.advance_from_ship_select()
+	for _i in range(12):
+		if gm.get_phase_name() == "Playing":
+			break
+		gm.advance_from_bestiary()
+	assert_eq(gm.get_phase_name(), "Playing", "must reach Playing")
+	await wait_process_frames(2)
+
+	var enemy: RigidBody3D = lm.find_children("*", "EnemyDrone", true, false).front()
+	assert_not_null(enemy, "the pinned level must field at least one enemy")
+	if enemy == null:
+		return
+	var fill = enemy.get_node_or_null("HealthBarFill")
+	assert_not_null(fill, "the target needs a health bar to observe")
+	if fill == null:
+		return
+
+	# Park in front of the target with a VERIFIED clear line of fire — the
+	# manifest decides where enemies stand, and a fixed offset can land
+	# behind a wall face.
+	var space := player.get_world_3d().direct_space_state
+	var target: Vector3 = enemy.global_position
+	var spot: Vector3 = target + Vector3(0, 0, 5)
+	var found_clear := false
+	for offset in [Vector3(0, 0, 5), Vector3(0, 0, -5), Vector3(5, 0, 0), Vector3(-5, 0, 0), Vector3(0, 0, 3), Vector3(3, 0, 0), Vector3(-3, 0, 0), Vector3(0, 0, -3)]:
+		var candidate: Vector3 = target + offset
+		# Cast OUTWARD from the enemy: a candidate inside a wall shows up as
+		# a front-face hit on the way there (a ray STARTING inside a wall
+		# can sneak out through backfaces and lie about being clear).
+		var query := PhysicsRayQueryParameters3D.create(target, candidate)
+		query.exclude = [enemy.get_rid()]
+		var hit := space.intersect_ray(query)
+		if hit.is_empty():
+			spot = candidate
+			found_clear = true
+			break
+	assert_true(found_clear, "the pinned level must offer one clear firing lane")
+	player.global_position = spot
+	# The hitscan line runs 0.5 m above the body origin (the camera/reticle
+	# height); aim the BODY at a point 0.5 below the target so the beam
+	# line crosses the enemy's center — exactly what aiming the reticle
+	# does in play.
+	player.look_at(enemy.global_position + Vector3.DOWN * 0.5)
+	player.reset_physics_interpolation()
+	await wait_physics_frames(2, "let the bar render at full health")
+	var full_width: float = fill.global_transform.basis.x.length()
+
+	Input.action_press("fire")
+	var hurt := false
+	for i in range(300):  # 5 seconds
+		await get_tree().physics_frame
+		if not is_instance_valid(enemy) or not enemy.visible:
+			hurt = true  # killed outright — dormancy flip
+			break
+		if fill.global_transform.basis.x.length() < full_width * 0.9:
+			hurt = true
+			break
+		if i % 30 == 0 and is_instance_valid(enemy):  # the target drifts; re-aim
+			player.look_at(enemy.global_position + Vector3.DOWN * 0.5)
+			player.reset_physics_interpolation()
+	Input.action_release("fire")
+	assert_true(hurt,
+		"holding the trigger at a live enemy must deal damage inside the full stack")
+
+
+func test_the_laser_forgives_a_near_miss_inside_the_assist_cone():
+	# The aim assist is ANGULAR (playtest 2026-07-05: the old fixed-radius
+	# ray ring was statistically dead — only exact center-ray hits ever
+	# landed). Contract: a shot whose center ray misses the hull by a hair,
+	# but whose sight line passes within the assist cone of the enemy,
+	# still connects. Level 1 fields only sentries (0.5 m, hull radius
+	# ~0.25): at 5 m, aiming 0.4 m off center misses the hull by ~0.15 m
+	# and sits inside hull + tan(2.5°)*5 ≈ 0.47 m of allowance.
+	var setup: Dictionary = await _full_stack_aimed_at_enemy(Vector3(0.40, 0, 0))
+	if setup.is_empty():
+		return
+	await _assert_trigger_hurts(setup, true,
+		"a near-miss inside the assist cone must connect")
+
+
+func test_the_laser_never_hits_far_outside_the_assist_cone():
+	# The cone is forgiveness, not auto-aim: a shot ~22° off (2 m lateral
+	# at 5 m) must stay a miss.
+	var setup: Dictionary = await _full_stack_aimed_at_enemy(Vector3(2.0, 0, 0))
+	if setup.is_empty():
+		return
+	await _assert_trigger_hurts(setup, false,
+		"a wild shot far outside the cone must miss")
+
+
+## Build the pinned full stack, park the player on a verified clear 5 m
+## lane to a live enemy, and aim the reticle line at enemy-center plus
+## `aim_offset` expressed in lane coordinates (x = lateral across the
+## lane, y = up). Returns {player, enemy, fill} or {} when staging fails.
+func _full_stack_aimed_at_enemy(aim_offset: Vector3) -> Dictionary:
+	var root := Node3D.new()
+	add_child_autofree(root)
+	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
+		var stub := UiStub.new()
+		stub.name = ui_name
+		root.add_child(stub)
+	var lm := LevelManager.new()
+	lm.name = "LevelManager"
+	var player := ShipController.new()
+	player.name = "Player"
+	var shape := CollisionShape3D.new()
+	shape.name = "CollisionShape3D"
+	shape.shape = SphereShape3D.new()
+	player.add_child(shape)
+	var gm := GameManager.new()
+	gm.fixed_seed = 1
+	root.add_child(lm)
+	root.add_child(player)
+	root.add_child(gm)
+	gm.clear_save_for_tests()
+
+	gm.start_new_game()
+	gm.advance_from_ship_select()
+	for _i in range(12):
+		if gm.get_phase_name() == "Playing":
+			break
+		gm.advance_from_bestiary()
+	assert_eq(gm.get_phase_name(), "Playing", "must reach Playing")
+	await wait_process_frames(2)
+
+	var enemy: RigidBody3D = lm.find_children("*", "EnemyDrone", true, false).front()
+	assert_not_null(enemy, "the pinned level must field at least one enemy")
+	if enemy == null:
+		return {}
+	var fill = enemy.get_node_or_null("HealthBarFill")
+	assert_not_null(fill, "the target needs a health bar to observe")
+	if fill == null:
+		return {}
+
+	var space := player.get_world_3d().direct_space_state
+	var target: Vector3 = enemy.global_position
+	var spot: Vector3 = target + Vector3(0, 0, 5)
+	var found_clear := false
+	for offset in [Vector3(0, 0, 5), Vector3(0, 0, -5), Vector3(5, 0, 0), Vector3(-5, 0, 0)]:
+		var candidate: Vector3 = target + offset
+		var query := PhysicsRayQueryParameters3D.create(target, candidate)
+		query.exclude = [enemy.get_rid()]
+		var hit := space.intersect_ray(query)
+		if hit.is_empty():
+			spot = candidate
+			found_clear = true
+			break
+	assert_true(found_clear, "the pinned level must offer one clear 5 m lane")
+	if not found_clear:
+		return {}
+	player.global_position = spot
+	# Lane coordinates: lateral = across the firing lane, up = world up.
+	var lane: Vector3 = (target - spot).normalized()
+	var lateral: Vector3 = lane.cross(Vector3.UP).normalized()
+	var aim_point: Vector3 = target + Vector3.DOWN * 0.5 \
+		+ lateral * aim_offset.x + Vector3.UP * aim_offset.y
+	player.look_at(aim_point)
+	player.reset_physics_interpolation()
+	return {"player": player, "enemy": enemy, "fill": fill}
+
+
+## Hold the trigger for up to 3 s WITHOUT re-aiming (the offset is the
+## point) and assert whether the enemy got hurt.
+func _assert_trigger_hurts(setup: Dictionary, expect_hurt: bool, message: String) -> void:
+	var enemy: RigidBody3D = setup["enemy"]
+	var fill = setup["fill"]
+	await wait_physics_frames(2, "let the bar render at full health")
+	var full_width: float = fill.global_transform.basis.x.length()
+	Input.action_press("fire")
+	var hurt := false
+	for _i in range(180):
+		await get_tree().physics_frame
+		if not is_instance_valid(enemy) or not enemy.visible:
+			hurt = true
+			break
+		if fill.global_transform.basis.x.length() < full_width * 0.9:
+			hurt = true
+			break
+	Input.action_release("fire")
+	assert_eq(hurt, expect_hurt, message)
+
+
+func test_valkyrie_cannon_fires_only_once_owned():
+	# The green keystone: buying the Valkyrie arms a heavy bolt alongside the
+	# Vanguard's hitscan lasers. Before ownership the trigger spawns no bolts
+	# at all (hitscan is beams, not pool slots) — so the pool is the witness.
+	var player = _spawn_player(Vector3.ZERO)
+	player.set_controls_enabled(true)
+	var pool := BoltPool.new()
+	pool.capacity = 8
+	add_child_autofree(pool)
+	await wait_physics_frames(1, "let the pool join its group")
+
+	Input.action_press("fire")
+	await wait_physics_frames(30, "an unowned cannon must stay silent")
+	assert_eq(pool.live_count(), 0,
+		"without the Valkyrie the trigger is hitscan only — no pooled bolts")
+
+	player.set_valkyrie_owned(true)
+	var fired := false
+	for _i in range(120):
+		await get_tree().physics_frame
+		if pool.live_count() > 0:
+			fired = true
+			break
+	Input.action_release("fire")
+	assert_true(fired, "owning the Valkyrie arms the heavy bolt on the same trigger")
+
+
 func test_swarmer_proximity_slows_player_instead_of_damaging():
 	# The four-legged QuadOrb (swarmer) bogs the player down while latched rather
 	# than dealing ram damage: sitting within latch range re-tags a compounding
@@ -123,32 +422,110 @@ func test_game_manager_class_exists():
 		"GameManager must expose health for HUD")
 	autofree(gm)
 
-# --- Node lifecycle: death drops exactly one (pre-built) lootbox ---
+# --- Node lifecycle: death drops exactly one (pre-built) blue cache ---
 
-func test_enemy_death_drops_one_pre_built_lootbox():
-	# Faucet Principle, tier 1: one lootbox per enemy is pre-built dormant during
-	# the level build; the enemy's death activates its bound box (a flip, not an
-	# instantiate). Killing one enemy leaves exactly one live box, and the level's
-	# total box count is unchanged (nothing was created on drop).
+func test_enemy_death_drops_one_pre_built_cache():
+	# Faucet Principle, tier 1: one blue currency cache per enemy is pre-built
+	# dormant during the level build; the enemy's death activates its bound cache
+	# (a flip, not an instantiate). Killing one enemy leaves exactly one live
+	# cache under the level, and the level's total cache count is unchanged
+	# (nothing was created on drop). Green loot-spawn caches live under room
+	# containers and start live, so the live-count check filters to the blue
+	# pool (caches parented directly under the LevelManager).
 	var lm := LevelManager.new()
 	lm.current_level = 2
 	add_child_autofree(lm)
 	lm.generate_level(4242, 8)
 
-	var boxes_before := lm.find_children("*", "Lootbox", true, false).size()
-	assert_gt(boxes_before, 0, "a level with enemies pre-builds lootboxes")
+	var caches_before := lm.find_children("*", "CurrencyCache", true, false).size()
+	assert_gt(caches_before, 0, "a level with enemies pre-builds blue caches")
 
 	var enemies := lm.find_children("*", "EnemyDrone", true, false)
 	assert_gt(enemies.size(), 0, "seed 4242 must place enemies")
 	var enemy: RigidBody3D = enemies.front()
 	enemy.take_damage(100.0)
-	await wait_physics_frames(10, "let the enemy die and drop its bound box")
+	await wait_physics_frames(10, "let the enemy die and drop its bound cache")
 
-	var boxes_after := lm.find_children("*", "Lootbox", true, false).size()
-	assert_eq(boxes_after, boxes_before,
-		"dropping a box must not instantiate — the pre-built count is unchanged")
+	var caches_after := lm.find_children("*", "CurrencyCache", true, false).size()
+	assert_eq(caches_after, caches_before,
+		"dropping a cache must not instantiate — the pre-built count is unchanged")
 	var live := 0
-	for box in lm.find_children("*", "Lootbox", true, false):
-		if box.visible:
+	for cache in lm.find_children("*", "CurrencyCache", true, false):
+		if cache.visible and cache.get_parent() == lm:
 			live += 1
-	assert_eq(live, 1, "exactly one box (the dead enemy's) is now live, got %d" % live)
+	assert_eq(live, 1, "exactly one blue cache (the dead enemy's) is now live, got %d" % live)
+
+
+func test_small_drones_are_hittable_with_aim_forgiveness():
+	# Playtest (2026-07-04): the little spheres (0.5 m models, 0.25 m hull
+	# radius) were nearly impossible to hit. The assist is ANGULAR
+	# (LASER_ASSIST_CONE_DEG = 2.5): at 20 m the sight line forgives
+	# hull + tan(2.5°)*20 ≈ 1.12 m — a drone 1.0 m off the center line
+	# misses the hull but sits inside the cone, and must connect.
+	var player = _spawn_player(Vector3.ZERO)
+	player.set_controls_enabled(true)
+	var enemy = load("res://scenes/enemies/enemy.tscn").instantiate()
+	enemy.enemy_type_id = 3  # EyeDrone — one of the tiny spheres
+	add_child_autofree(enemy)
+	enemy.global_position = Vector3(1.0, 0.5, -20)
+	enemy.freeze = true  # hold the geometry still for a precise ray test
+	await wait_physics_frames(2, "let the drone build its hull and bar")
+
+	var fill = enemy.get_node_or_null("HealthBarFill")
+	assert_not_null(fill, "the drone needs a health bar to observe")
+	if fill == null:
+		return
+	var full_width: float = fill.global_transform.basis.x.length()
+
+	Input.action_press("fire")
+	var hurt := false
+	for _i in range(120):  # 2 seconds of fire
+		await get_tree().physics_frame
+		if fill.global_transform.basis.x.length() < full_width * 0.9:
+			hurt = true
+			break
+	Input.action_release("fire")
+	assert_true(hurt, "a near-miss on a small drone must still connect")
+
+
+func test_item_trigger_reports_to_the_mediator():
+	# The Shield Surge press: the ship only reports intent — charges and
+	# the shield are RunState's, mediated by GameManager.
+	var player = _spawn_player(Vector3.ZERO)
+	player.set_controls_enabled(true)
+	watch_signals(player)
+	Input.action_press("use_item")
+	await wait_process_frames(2)
+	Input.action_release("use_item")
+	await wait_process_frames(1)
+	assert_signal_emitted(player, "shield_burst_requested",
+		"the item trigger must reach the mediator")
+
+
+func test_sphere_gunner_hull_is_hittable():
+	# Roster migration pin: the new sphere models must build colliders the
+	# hitscan can find, exactly like the drones they replace.
+	var player = _spawn_player(Vector3.ZERO)
+	player.set_controls_enabled(true)
+	var enemy = load("res://scenes/enemies/enemy.tscn").instantiate()
+	enemy.enemy_type_id = 6  # SphereGunner
+	add_child_autofree(enemy)
+	enemy.global_position = Vector3(0, 0.5, -15)
+	enemy.freeze = true
+	await wait_physics_frames(2, "let the sphere build its hull and bar")
+
+	var fill = enemy.get_node_or_null("HealthBarFill")
+	assert_not_null(fill, "the sphere needs a health bar to observe")
+	if fill == null:
+		return
+	var full_width: float = fill.global_transform.basis.x.length()
+
+	Input.action_press("fire")
+	var hurt := false
+	for _i in range(120):
+		await get_tree().physics_frame
+		if fill.global_transform.basis.x.length() < full_width * 0.9:
+			hurt = true
+			break
+	Input.action_release("fire")
+	assert_true(hurt, "a sphere dead ahead must take hitscan damage")

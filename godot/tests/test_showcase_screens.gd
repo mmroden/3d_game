@@ -106,10 +106,9 @@ func test_bestiary_shows_the_turntable_in_a_backdrop_room():
 	assert_not_null(room, "the bestiary briefing must show the shared backdrop room")
 	assert_true(room.visible, "the backdrop room must render behind the turntable, not be culled")
 
-func test_bestiary_pages_with_menu_buttons_not_left_stick():
-	# Every menu navigates with the leftmost menu buttons (d-pad / arrows), not
-	# the left analog stick. The bestiary briefing must follow suit: the stick
-	# (move_*) must not page it; the menu buttons (menu_up/menu_down) must.
+func test_bestiary_pages_left_right_not_up_down_or_stick():
+	# The bestiary is a horizontal catalog: LEFT/RIGHT page it (playtest
+	# 2026-07-03) — not up/down, and never the left analog stick.
 	var gm = main.get_node("GameManager")
 	gm.start_new_game()            # -> ShipSelect
 	await wait_process_frames(2)
@@ -120,7 +119,7 @@ func test_bestiary_pages_with_menu_buttons_not_left_stick():
 	assert_false(ui.input_locked(), "the entry lockout must expire before testing input")
 	watch_signals(ui)
 
-	# The left analog stick must no longer page the bestiary.
+	# The left analog stick must not page the bestiary.
 	Input.action_press("move_right")
 	await wait_process_frames(2)
 	Input.action_release("move_right")
@@ -128,13 +127,41 @@ func test_bestiary_pages_with_menu_buttons_not_left_stick():
 	assert_signal_not_emitted(ui, "bestiary_paged",
 		"the left stick must not page the bestiary")
 
-	# The menu buttons (leftmost d-pad / arrows) must page it, like every menu.
+	# Neither must up/down — the catalog reads sideways.
 	Input.action_press("menu_down")
 	await wait_process_frames(2)
 	Input.action_release("menu_down")
 	await wait_process_frames(1)
-	assert_signal_emitted(ui, "bestiary_paged",
-		"the menu buttons must page the bestiary")
+	assert_signal_not_emitted(ui, "bestiary_paged",
+		"up/down must not page the sideways catalog")
+
+	# Left/right page it.
+	Input.action_press("menu_right")
+	await wait_process_frames(2)
+	Input.action_release("menu_right")
+	await wait_process_frames(1)
+	assert_signal_emitted_with_parameters(ui, "bestiary_paged", [1])
+	Input.action_press("menu_left")
+	await wait_process_frames(2)
+	Input.action_release("menu_left")
+	await wait_process_frames(1)
+	assert_signal_emitted_with_parameters(ui, "bestiary_paged", [-1])
+
+func test_circle_backs_out_of_the_briefing_to_the_loadout():
+	# Circle (menu_back) is ALWAYS the back button. From the briefing that
+	# means returning to the loadout screen — same backdrop, no rebuild.
+	var gm = main.get_node("GameManager")
+	gm.start_new_game()
+	await wait_process_frames(2)
+	gm.advance_from_ship_select()
+	await wait_seconds(0.4)  # entry lockout
+	assert_eq(gm.get_phase_name(), "Bestiary")
+	Input.action_press("menu_back")
+	await wait_process_frames(2)
+	Input.action_release("menu_back")
+	await wait_process_frames(1)
+	assert_eq(gm.get_phase_name(), "ShipSelect",
+		"circle must back out of the briefing to the loadout")
 
 func test_bestiary_locks_input_briefly_on_entry():
 	# The button that opens the briefing (ship-select's Continue / Fire) must not
@@ -147,3 +174,21 @@ func test_bestiary_locks_input_briefly_on_entry():
 	var ui = main.get_node("BestiaryUI")
 	assert_true(ui.input_locked(),
 		"entering the bestiary must lock input so the entry press can't begin the mission")
+
+func test_bestiary_subject_starts_facing_the_camera():
+	# Playtest (2026-07-03): bestiary drones faced away from the player. The
+	# turntable spins, but the reveal must START with the subject fronting
+	# the camera — the same yaw idiom the level uses (face the viewer, then
+	# EnemyType::model_yaw_offset corrects the imported front axis).
+	var showcase = main.get_node("Turntable")
+	var cam = main.get_node("Player/Camera3D")
+	showcase.show_entry(2, 2)  # kind = enemy, Bomber — a -Z-fronting drone
+	await wait_process_frames(2)
+	var model = showcase.get_node_or_null("Model")
+	assert_not_null(model, "the subject model must spawn")
+	if model == null:
+		return
+	var to_cam: Vector3 = (cam.global_position - model.global_position).normalized()
+	var front: Vector3 = -model.global_transform.basis.z
+	assert_gt(front.dot(to_cam), 0.7,
+		"the subject must start facing the camera, got dot %f" % front.dot(to_cam))

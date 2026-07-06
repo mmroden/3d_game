@@ -1,12 +1,14 @@
 use godot::prelude::*;
 use godot::classes::{
     CanvasLayer, ICanvasLayer, Label, ColorRect, HBoxContainer, VBoxContainer, Control, Node,
-    Engine,
+    Camera3D, Engine, Polygon2D,
     control::LayoutPreset,
 };
 
-use crate::nodes::constants::{theme, signals, methods, nodes};
-use crate::nodes::live_handle::{LiveOpt, LiveRef};
+use super::map_panel::MapPanel;
+use crate::nodes::constants::{groups, theme, signals, methods, nodes};
+use crate::nodes::live_handle::{LiveOpt, LiveRef, LiveVec};
+use void_logic::radar::{self, BandRect};
 use void_logic::ui_style;
 
 /// Health/shield bar dimensions. Shared by `build_hud` (background + fill) and
@@ -25,6 +27,12 @@ const BAR_INSET: f32 = 20.0;
 /// spread, toward 0.4 for more central.
 const SBS_SAFE_AREA_MARGIN: f32 = 0.33;
 
+/// Fixed radar-arrow pool size (Faucet-style: allocated once at build, only
+/// visibility flips per frame). More simultaneous off-screen enemies than
+/// this just go unmarked — the first contacts in group order win, which is
+/// stable frame to frame (the group holds the level's fixed roster).
+const MAX_RADAR_ARROWS: usize = 16;
+
 /// In-game HUD: health bar, credits, laser level, level number.
 #[derive(GodotClass)]
 #[class(base=CanvasLayer)]
@@ -39,14 +47,31 @@ pub struct HUD {
     health_label: Option<LiveRef<Label>>,
     shield_fill: Option<LiveRef<ColorRect>>,
     shield_label: Option<LiveRef<Label>>,
+    /// Shield Surge charges — blank until the item is owned and stocked.
+    charges_label: Option<LiveRef<Label>>,
     power_mode_label: Option<LiveRef<Label>>,
     components_label: Option<LiveRef<Label>>,
+    lives_label: Option<LiveRef<Label>>,
     organics_label: Option<LiveRef<Label>>,
     laser_label: Option<LiveRef<Label>>,
     level_label: Option<LiveRef<Label>>,
     laser_indicator: Option<LiveRef<ColorRect>>,
     slow_overlay: Option<LiveRef<ColorRect>>,
     slow_label: Option<LiveRef<Label>>,
+    /// Permanent-unlock flags, pushed by GameManager (never self-invented):
+    /// the radar arrows and the recon map render only while these are set.
+    radar_unlocked: bool,
+    map_unlocked: bool,
+    /// The radar-arrow pool, children of `safe_area` so the SBS band confines
+    /// them structurally.
+    radar_arrows: LiveVec<Polygon2D>,
+    /// Enemy instance ids in radar scope — the lit neighborhood, computed by
+    /// LevelManager (RADAR_ROOM_DEPTH) and pushed by GameManager on room
+    /// changes. The HUD draws ONLY these; empty means silent (playtest
+    /// 2026-07-04: level-wide arrows are noise).
+    radar_contacts: std::collections::HashSet<i64>,
+    /// The recon-map corner widget (FogMap unlock), child of `safe_area`.
+    map_panel: Option<LiveRef<MapPanel>>,
 }
 
 #[godot_api]
@@ -59,14 +84,21 @@ impl ICanvasLayer for HUD {
             health_label: None,
             shield_fill: None,
             shield_label: None,
+            charges_label: None,
             power_mode_label: None,
             components_label: None,
+            lives_label: None,
             organics_label: None,
             laser_label: None,
             level_label: None,
             laser_indicator: None,
             slow_overlay: None,
             slow_label: None,
+            radar_unlocked: false,
+            map_unlocked: false,
+            radar_arrows: LiveVec::new(),
+            radar_contacts: std::collections::HashSet::new(),
+            map_panel: None,
         }
     }
 
@@ -75,8 +107,17 @@ impl ICanvasLayer for HUD {
             return;
         }
         self.build_hud();
+        self.build_radar_arrows();
+        self.build_map_panel();
         self.connect_options();
         self.base_mut().set_visible(false);
+    }
+
+    fn process(&mut self, _delta: f64) {
+        self.update_radar();
+        // The map renders only while its unlock flag is pushed.
+        let show_map = self.base().is_visible() && self.map_unlocked;
+        self.map_panel.with(|panel| panel.set_visible(show_map));
     }
 }
 
@@ -142,6 +183,185 @@ impl HUD {
     pub fn update_components(&mut self, components: i64) {
         self.components_label
             .with(|label| label.set_text(&format!("Components: {}", components)));
+    }
+
+    /// Pushed by GameManager with the authoritative unlock state. Cached so
+    /// the radar/map draw paths gate on it without asking anyone per frame.
+    #[func]
+    pub fn set_unlock_flags(&mut self, radar: bool, map: bool, tracker: bool) {
+        self.radar_unlocked = radar;
+        self.map_unlocked = map;
+        self.map_panel.with(|panel| panel.bind_mut().set_tracker(tracker));
+    }
+
+    /// The radar's scope, pushed by GameManager on every room change: the
+    /// instance ids of enemies in the lit neighborhood (LevelManager's
+    /// `radar_contacts`, RADAR_ROOM_DEPTH). The HUD never widens this.
+    #[func]
+    pub fn set_radar_contacts(&mut self, ids: PackedInt64Array) {
+        self.radar_contacts = ids.as_slice().iter().copied().collect();
+        // The Threat Tracker draws the same neighborhood on the recon map.
+        self.map_panel.with(|panel| panel.bind_mut().set_threats(ids.clone()));
+    }
+
+    /// Apply the HUD type ladder: an `ui_style` size plus the dark outline
+    /// every HUD label wears so it reads against the scene behind it.
+    fn style_hud_text(label: &mut Gd<Label>, size: i32) {
+        label.add_theme_font_size_override(theme::FONT_SIZE, size);
+        label.add_theme_constant_override(theme::OUTLINE_SIZE, ui_style::HUD_OUTLINE);
+        let c = ui_style::HUD_OUTLINE_COLOR;
+        label.add_theme_color_override(
+            theme::FONT_OUTLINE_COLOR,
+            Color::from_rgb(c[0], c[1], c[2]),
+        );
+    }
+
+    /// Pre-build the fixed arrow pool, dormant, under the safe band: the SBS
+    /// confinement is structural (band-local coordinates), and play only
+    /// flips visibility.
+    fn build_radar_arrows(&mut self) {
+        let Some(safe_area) = &self.safe_area else { return };
+        let mut arrows: Vec<Gd<Polygon2D>> = Vec::new();
+        safe_area.with(|sa| {
+            for _ in 0..MAX_RADAR_ARROWS {
+                let mut arrow = Polygon2D::new_alloc();
+                let mut points = PackedVector2Array::new();
+                // Resting size — arrow_scale looms this up as contacts close.
+                points.push(Vector2::new(22.0, 0.0));
+                points.push(Vector2::new(-16.0, -14.0));
+                points.push(Vector2::new(-16.0, 14.0));
+                arrow.set_polygon(&points);
+                arrow.set_visible(false);
+                sa.add_child(&arrow);
+                arrows.push(arrow);
+            }
+        });
+        for arrow in &arrows {
+            self.radar_arrows.push(arrow, ());
+        }
+    }
+
+    /// Build the recon-map widget in the band's bottom-left corner: inside
+    /// `safe_area` so SBS confinement is structural, sized as a fixed corner
+    /// panel, hidden until the FogMap unlock flag arrives.
+    fn build_map_panel(&mut self) {
+        use godot::builtin::Side;
+        let Some(safe_area) = &self.safe_area else { return };
+        let mut panel = MapPanel::new_alloc();
+        panel.set_anchor(Side::LEFT, 0.0);
+        panel.set_anchor(Side::RIGHT, 0.0);
+        panel.set_anchor(Side::TOP, 1.0);
+        panel.set_anchor(Side::BOTTOM, 1.0);
+        // Sized for legibility (playtest 2026-07-04: 200px was useless).
+        panel.set_offset(Side::LEFT, 16.0);
+        panel.set_offset(Side::RIGHT, 356.0);
+        panel.set_offset(Side::TOP, -356.0);
+        panel.set_offset(Side::BOTTOM, -16.0);
+        panel.set_visible(false);
+        safe_area.with(|sa| sa.add_child(&panel));
+        self.map_panel = Some(LiveRef::new(&panel));
+    }
+
+    /// Relay a freshly derived map view (GameManager pushes one per newly
+    /// visited room) to the corner widget.
+    #[func]
+    pub fn update_map(
+        &mut self,
+        rects: PackedFloat32Array,
+        flags: PackedByteArray,
+        projection: PackedFloat32Array,
+    ) {
+        self.map_panel.with(|panel| {
+            panel.bind_mut().update_map(rects.clone(), flags.clone(), projection.clone());
+        });
+    }
+
+    /// Per-frame radar pass: project every live enemy through the player
+    /// camera and pin an edge arrow (band-local math in `void_logic::radar`)
+    /// for each one not visibly on screen. Dormant and room-culled enemies
+    /// are skipped via `is_visible_in_tree` — the same authority that hides
+    /// them. Gated on the Radar unlock flag GameManager pushes.
+    fn update_radar(&mut self) {
+        if !self.base().is_visible() || !self.radar_unlocked {
+            self.radar_arrows.for_each_live(|_, arrow, _| arrow.set_visible(false));
+            return;
+        }
+        let Some(parent) = self.base().get_parent() else { return };
+        let Some(camera) = parent.try_get_node_as::<Camera3D>(nodes::PLAYER_CAMERA) else {
+            return;
+        };
+        let Some(safe_area) = &self.safe_area else { return };
+
+        // Band geometry from the safe-area control (already SBS-anchored).
+        let mut band_origin = Vector2::ZERO;
+        let mut band = BandRect { width: 0.0, height: 0.0 };
+        safe_area.with(|sa| {
+            let rect = sa.get_global_rect();
+            band_origin = rect.position;
+            band = BandRect { width: rect.size.x, height: rect.size.y };
+        });
+        if band.width <= 0.0 || band.height <= 0.0 {
+            return;
+        }
+
+        let tree = self.base().get_tree();
+        let camera_pos = camera.get_global_position();
+        let mut placements: Vec<(radar::ArrowPlacement, f32)> = Vec::new();
+        for node in tree.get_nodes_in_group(groups::ENEMIES).iter_shared() {
+            let Ok(enemy) = node.try_cast::<Node3D>() else { continue };
+            if !self.radar_contacts.contains(&enemy.instance_id().to_i64()) {
+                continue; // outside the lit neighborhood — out of radar scope
+            }
+            if !enemy.is_visible_in_tree() {
+                continue; // dormant minion or room-culled — not on the radar
+            }
+            let pos = enemy.get_global_position();
+            let projected = camera.unproject_position(pos);
+            let local = [projected.x - band_origin.x, projected.y - band_origin.y];
+            let behind = camera.is_position_behind(pos);
+            if let Some(placement) = radar::edge_arrow(local, behind, band) {
+                placements.push((placement, camera_pos.distance_to(pos)));
+                if placements.len() >= MAX_RADAR_ARROWS {
+                    break;
+                }
+            }
+        }
+
+        self.radar_arrows.for_each_live(|i, arrow, _| {
+            match placements.get(i) {
+                Some((placement, distance)) => {
+                    arrow.set_visible(true);
+                    arrow.set_position(Vector2::new(placement.pos[0], placement.pos[1]));
+                    arrow.set_rotation(placement.angle_rad);
+                    // Near threats loom larger and burn hot; far ones rest
+                    // small and fade — but never below legibility.
+                    let scale = radar::arrow_scale(*distance);
+                    arrow.set_scale(Vector2::new(scale, scale));
+                    let fade = (1.0 - (distance - 10.0) / 80.0).clamp(0.35, 1.0);
+                    arrow.set_color(Color::from_rgba(1.0, 0.35, 0.25, fade));
+                }
+                None => arrow.set_visible(false),
+            }
+        });
+    }
+
+    /// Shield Surge rack size. Zero blanks the line (unbought or spent —
+    /// either way there is nothing to press).
+    #[func]
+    pub fn update_charges(&mut self, charges: i32) {
+        self.charges_label.with(|label| {
+            if charges > 0 {
+                label.set_text(&format!("Surge ×{charges}"));
+            } else {
+                label.set_text("");
+            }
+        });
+    }
+
+    #[func]
+    pub fn update_lives(&mut self, lives: i32) {
+        self.lives_label
+            .with(|label| label.set_text(&format!("Lives: {}", lives)));
     }
 
     #[func]
@@ -246,7 +466,7 @@ impl HUD {
 
         let mut health_label = Label::new_alloc();
         health_label.set_text("100/100");
-        health_label.add_theme_font_size_override(theme::FONT_SIZE, 30);
+        Self::style_hud_text(&mut health_label, ui_style::FONT_HUD_PRIMARY);
         health_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.9, 0.9, 0.9));
         health_row.add_child(&health_label);
 
@@ -273,7 +493,7 @@ impl HUD {
 
         let mut shield_label = Label::new_alloc();
         shield_label.set_text("50/50");
-        shield_label.add_theme_font_size_override(theme::FONT_SIZE, 26);
+        Self::style_hud_text(&mut shield_label, ui_style::FONT_HUD_LABEL);
         shield_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.5, 0.7, 1.0));
         shield_row.add_child(&shield_label);
 
@@ -282,10 +502,18 @@ impl HUD {
         self.shield_fill = Some(LiveRef::new(&shield_fill));
         self.shield_label = Some(LiveRef::new(&shield_label));
 
+        // Shield Surge charges (below the shield it refills).
+        let mut charges_label = Label::new_alloc();
+        charges_label.set_text("");
+        Self::style_hud_text(&mut charges_label, ui_style::FONT_HUD_LABEL);
+        charges_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.5, 0.7, 1.0));
+        top_left.add_child(&charges_label);
+        self.charges_label = Some(LiveRef::new(&charges_label));
+
         // Power mode indicator (below shield bar)
         let mut power_mode_label = Label::new_alloc();
         power_mode_label.set_text("");
-        power_mode_label.add_theme_font_size_override(theme::FONT_SIZE, 22);
+        Self::style_hud_text(&mut power_mode_label, ui_style::FONT_HUD_FINE);
         power_mode_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgba(0.5, 0.5, 0.5, 0.5));
         top_left.add_child(&power_mode_label);
         self.power_mode_label = Some(LiveRef::new(&power_mode_label));
@@ -293,15 +521,23 @@ impl HUD {
         // Components (in-run currency)
         let mut components_label = Label::new_alloc();
         components_label.set_text("Components: 0");
-        components_label.add_theme_font_size_override(theme::FONT_SIZE, 26);
+        Self::style_hud_text(&mut components_label, ui_style::FONT_HUD_LABEL);
         components_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_COMPONENTS));
         top_left.add_child(&components_label);
         self.components_label = Some(LiveRef::new(&components_label));
 
+        // Lives, alongside the salvage they'll be spent protecting.
+        let mut lives_label = Label::new_alloc();
+        lives_label.set_text("Lives: 1");
+        Self::style_hud_text(&mut lives_label, ui_style::FONT_HUD_LABEL);
+        lives_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_SECONDARY));
+        top_left.add_child(&lives_label);
+        self.lives_label = Some(LiveRef::new(&lives_label));
+
         // Organics (permanent currency)
         let mut organics_label = Label::new_alloc();
         organics_label.set_text("Organics: 0");
-        organics_label.add_theme_font_size_override(theme::FONT_SIZE, 26);
+        Self::style_hud_text(&mut organics_label, ui_style::FONT_HUD_LABEL);
         organics_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_ORGANICS));
         top_left.add_child(&organics_label);
         self.organics_label = Some(LiveRef::new(&organics_label));
@@ -332,7 +568,7 @@ impl HUD {
 
         let mut laser_label = Label::new_alloc();
         laser_label.set_text("Laser: Red");
-        laser_label.add_theme_font_size_override(theme::FONT_SIZE, 26);
+        Self::style_hud_text(&mut laser_label, ui_style::FONT_HUD_LABEL);
         laser_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(1.0, 0.2, 0.2));
         laser_row.add_child(&laser_label);
         self.laser_label = Some(LiveRef::new(&laser_label));
@@ -342,7 +578,7 @@ impl HUD {
         // Level
         let mut level_label = Label::new_alloc();
         level_label.set_text("Level 1");
-        level_label.add_theme_font_size_override(theme::FONT_SIZE, 26);
+        Self::style_hud_text(&mut level_label, ui_style::FONT_HUD_LABEL);
         level_label.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_SECONDARY));
         top_right.add_child(&level_label);
         self.level_label = Some(LiveRef::new(&level_label));
@@ -358,7 +594,7 @@ impl HUD {
 
         let mut controls = Label::new_alloc();
         controls.set_text("WASD: Move | Arrows: Look | Space: Fire | R/F: Up/Down");
-        controls.add_theme_font_size_override(theme::FONT_SIZE, 22);
+        Self::style_hud_text(&mut controls, ui_style::FONT_HUD_FINE);
         controls.add_theme_color_override(theme::FONT_COLOR, Color::from_rgba(
             ui_style::TEXT_UNSELECTED[0], ui_style::TEXT_UNSELECTED[1], ui_style::TEXT_UNSELECTED[2], 0.7,
         ));
@@ -408,7 +644,7 @@ impl HUD {
         slow_label.set_anchors_preset(LayoutPreset::CENTER_TOP);
         slow_label.set_offset(godot::builtin::Side::TOP, 80.0);
         slow_label.set_text("SLOWED");
-        slow_label.add_theme_font_size_override(theme::FONT_SIZE, 30);
+        Self::style_hud_text(&mut slow_label, ui_style::FONT_HUD_PRIMARY);
         slow_label.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(1.0, 0.4, 0.4));
         slow_label.set_visible(false);
         safe_area.add_child(&slow_label);
