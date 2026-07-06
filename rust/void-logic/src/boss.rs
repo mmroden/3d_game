@@ -1,17 +1,8 @@
-//! Boss composition formulas. WHICH boss a level stages, its escorts,
-//! track, and reward policy are DECLARED per boss slot in the roster
-//! grammar (rosters/planets/*.toml); this module keeps the level-scaled
-//! formulas the slots reference: add counts, the hull-reward roll, and
-//! the consolation-pile economy.
-
-/// How many minions a boss fields at this level: the base trio grows by one
-/// per planet past the first, capped — fights escalate without drowning the
-/// arena. Applies to whichever trigger the boss kind uses.
-pub fn boss_adds(level: u32) -> u8 {
-    const BASE: u32 = 3;
-    const CAP: u32 = 6;
-    (BASE + (crate::planet::planet_of(level) - 1)).min(CAP) as u8
-}
+//! Boss reward formulas. WHICH boss a level stages, its escorts (kind,
+//! trigger, and count), track, and reward policy are DECLARED per boss
+//! slot in the roster grammar (rosters/planets/*.toml); this module keeps
+//! the level-scaled reward formulas the slots reference: the hull-reward
+//! roll and the consolation-pile economy.
 
 /// The hull a planet-final boss's red container grants: a seed-deterministic
 /// pick among the purchasable hulls not yet owned. `None` once the fleet is
@@ -121,15 +112,5 @@ mod tests {
         let p1: u32 = consolation_pile(3).iter().map(|(_, a)| a).sum();
         let p2: u32 = consolation_pile(9).iter().map(|(_, a)| a).sum();
         assert!(p2 > p1, "planet 2's bosses pay better than planet 1's");
-    }
-
-    #[test]
-    fn boss_adds_start_at_three_and_grow_one_per_planet_capped() {
-        assert_eq!(boss_adds(3), 3, "planet 1: the base trio");
-        assert_eq!(boss_adds(6), 3, "same planet, same adds");
-        assert_eq!(boss_adds(9), 4, "planet 2 adds one");
-        assert_eq!(boss_adds(15), 5, "planet 3");
-        assert_eq!(boss_adds(21), 6, "planet 4");
-        assert_eq!(boss_adds(27), 6, "capped — escalation, not a drowning");
     }
 }

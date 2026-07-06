@@ -35,13 +35,13 @@ enemies = ["sphere_gunner", "sphere_striker", "alien_troop", "sphere_carrier"]
 [[boss_slot]]
 at = { relative = 3 }
 boss = "boss_brute"
-escorts = { enemy = "spawn_drone", trigger = "on_death" }
+escorts = { enemy = "spawn_drone", trigger = "on_death", count = 4 }
 track = 1
 reward = "consolation_pile"
 
 [[boss_slot]]
 at = { relative = 6 }
 boss = "boss_latcher"
-escorts = { enemy = "spawn_drone", trigger = "on_engage" }
+escorts = { enemy = "spawn_drone", trigger = "on_engage", count = 4 }
 track = 2
 reward = "hull_container"

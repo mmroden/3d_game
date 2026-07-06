@@ -93,26 +93,6 @@ fn corner_interior_offset(pair: (ConnectorFacing, ConnectorFacing)) -> [f32; 2] 
 
 // ── Assembly ─────────────────────────────────────────────────────────────
 
-/// Build all geometry for a room. Dimensions derived from `wall_set`.
-///
-/// Returns mesh placements for floors, walls (5-layer stack), ceilings,
-/// corners, and doors.
-pub fn assemble(
-    template: &RoomTemplate,
-    active_connectors: &[Connector],
-    world_origin: [f32; 3],
-    wall_set: &WallSet,
-) -> Vec<MeshPlacement> {
-    let grid = CellGrid::new(
-        template,
-        active_connectors,
-        world_origin,
-        wall_set.tile_width,
-        wall_set.story_height,
-    );
-    assemble_from_grid(&grid, template, active_connectors, wall_set)
-}
-
 /// Panel-world assembly (B11): skin every sealed cell face with one panel
 /// from the set's single pool — floors, walls, and ceilings are the same
 /// plates at different rotations (there are no floors in 6DOF). Openings
@@ -129,7 +109,9 @@ pub fn assemble_panels_from_grid(
     // Salted stream (seed-hygiene standard): never the raw room seed.
     let mut rng = SmallRng::seed_from_u64(room_seed ^ crate::seed::salt::PANEL);
 
-    let p = panel_set.pitch;
+    // Cubic cells: the grid's tile IS the pitch (panel worlds have no
+    // distinguished axis; the linker derives it from the panel meshes).
+    let p = grid.tile;
     let half = p * 0.5;
     let mut out = Vec::new();
     for cell in grid.cells() {
@@ -179,7 +161,7 @@ pub fn assemble_from_grid(
     let mut out = Vec::new();
     let ey = grid.extents[1] as i32;
     let door = asset_catalog::DOOR;
-    let story_height = wall_set.story_height;
+    let story_height = grid.story;
 
     // A vertical shaft (an up/down corridor) reads as a square right-angle
     // tube: straight walls on every sealed face instead of rounded corner
@@ -210,7 +192,7 @@ pub fn assemble_from_grid(
                     cell.grid_pos[0], cell.grid_pos[1], cell.grid_pos[2])
                 {
                     if frame == FrameStyle::Door {
-                        let (door_pos, door_rot) = door_placement(pos, *facing, wall_set.tile_width);
+                        let (door_pos, door_rot) = door_placement(pos, *facing, grid.tile);
                         out.push(MeshPlacement { scene: door, position: door_pos, rotation_x: 0.0, rotation_y: door_rot, collision: Collision::Static });
                     }
                 }

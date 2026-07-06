@@ -76,7 +76,7 @@ mod tests {
         let graph = pinned_boss_graph();
         let boss_idx = graph.boss_room().expect("marked");
         let room = graph.room(boss_idx).expect("arena");
-        let story = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+        let story = 5.0; // planet-1 story — tests may hold literals
         let origin = room.world_position(CELL, story);
         let [ex, _ey, ez] = room.template.extents;
         let center_x = origin[0] + ex as f32 * CELL / 2.0;
@@ -113,7 +113,7 @@ mod tests {
         let first = graph.room_indices().next().expect("rooms");
         let far = graph.farthest_room_from(first).expect("farthest");
         let room = graph.room(far).expect("room");
-        let story = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+        let story = 5.0; // planet-1 story — tests may hold literals
         let origin = room.world_position(CELL, story);
         let [ex, _ey, ez] = room.template.extents;
         let portal = portal_position(&graph, TEST_PITCH).expect("portal placed");

@@ -7,11 +7,13 @@
 //! keys/ids, planet gaps, boss-slot collisions — into one error. The runtime
 //! model this module exposes contains no reference strings.
 //!
-//! Stage 1 (foundational): the TOML transcribes the Rust tables and the
-//! golden-equivalence tests below hold them identical. Stage 2 swaps
-//! consumers to this door and deletes the enum tables.
+//! The TOML is THE game data — hand-authored, machinery never writes it.
+//! The generated artifacts beside it (`TEMPLATE.toml`, `VOCABULARY.md`)
+//! are the opposite: never hand-edited, re-rendered by `make build`.
 
 pub mod schema;
+#[cfg(test)]
+mod probe;
 pub mod template;
 pub mod vocabulary;
 
@@ -25,10 +27,11 @@ use crate::level_assembly::MinionTrigger;
 
 const ENEMIES_TOML: &str = include_str!("../../../../rosters/enemies.toml");
 const KITS_TOML: &str = include_str!("../../../../rosters/kits.toml");
-const PLANET_TOMLS: &[&str] = &[
-    include_str!("../../../../rosters/planets/planet_1.toml"),
-    include_str!("../../../../rosters/planets/planet_2.toml"),
-];
+const MODELS_TOML: &str = include_str!("../../../../rosters/models.generated.toml");
+const KITS_GENERATED_TOML: &str = include_str!("../../../../rosters/kits.generated.toml");
+// PLANET_TOMLS: every rosters/planets/*.toml, embedded by build.rs — a new
+// planet file wires itself in by existing.
+include!(concat!(env!("OUT_DIR"), "/planet_tomls.rs"));
 
 // ── Typed ids: arena indices, no reference strings past the linker ──────
 
@@ -64,6 +67,37 @@ pub struct Behavior {
     pub shield: f32,
     pub disengage: f32,
     pub drain_dps: f32,
+    /// Projectile speed (m/s) for firing archetypes.
+    pub bolt_speed: f32,
+    /// Within this range (m) a latcher counts as attached: the slow re-tags
+    /// and the drain ticks. 0 = never latches.
+    pub latch_range: f32,
+    /// Per-tag speed multiplier compounded onto the player (1.0 = no slow).
+    pub slow_factor: f32,
+    /// Seconds each slow tag lasts.
+    pub slow_duration: f32,
+    /// Re-tag period while latched.
+    pub slow_interval: f32,
+}
+
+impl Default for Behavior {
+    /// Pre-`ready` placeholder for shell nodes — inert on every axis; a
+    /// live drone overwrites it from its def before the first tick.
+    fn default() -> Self {
+        Behavior {
+            standoff: 0.0,
+            fuse_seconds: 0.0,
+            blast_radius: 0.0,
+            shield: 0.0,
+            disengage: 0.0,
+            drain_dps: 0.0,
+            bolt_speed: 0.0,
+            latch_range: 0.0,
+            slow_factor: 1.0,
+            slow_duration: 0.0,
+            slow_interval: 0.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -71,6 +105,9 @@ pub struct Scaling {
     pub speed: CurveId,
     pub cooldown: CurveId,
     pub hp: CurveId,
+    pub damage: CurveId,
+    pub detection: CurveId,
+    pub attack_range: CurveId,
 }
 
 /// One bound-minion entry: for one-shot triggers `count` is the whole
@@ -105,38 +142,47 @@ pub struct EnemyDef {
     pub behavior: Behavior,
 }
 
-impl EnemyDef {
-    /// The AI configuration: ranges from the stats, archetype parameters
-    /// from the resolved behaviour switches.
-    pub fn ai_config(&self) -> crate::enemy_ai::DroneConfig {
-        crate::enemy_ai::DroneConfig {
-            archetype: self.ai,
-            detection_range: self.stats.detection,
-            attack_range: self.stats.attack_range,
-            disengage_range: self.behavior.disengage,
-            health: crate::newtypes::Health::new(self.stats.hp),
-            attack_cooldown: self.stats.cooldown,
-            standoff_range: self.behavior.standoff,
-            fuse_seconds: self.behavior.fuse_seconds,
-            blast_radius: self.behavior.blast_radius,
-            shield: (self.behavior.shield > 0.0)
-                .then(|| crate::newtypes::Shield::new(self.behavior.shield)),
+impl Roster {
+    /// A def's stats at a level: every one of the six baselines multiplied
+    /// by its DECLARED curve — the one door level scaling flows through.
+    pub fn stats_at(&self, id: EnemyId, level: u32) -> Stats {
+        let def = self.enemy(id);
+        let mul = |c: CurveId| self.curve(c).eval(level);
+        Stats {
+            hp: def.stats.hp * mul(def.scaling.hp),
+            speed: def.stats.speed * mul(def.scaling.speed),
+            damage: def.stats.damage * mul(def.scaling.damage),
+            detection: def.stats.detection * mul(def.scaling.detection),
+            attack_range: def.stats.attack_range * mul(def.scaling.attack_range),
+            cooldown: def.stats.cooldown * mul(def.scaling.cooldown),
         }
     }
-}
 
-impl Roster {
-    /// Per-level multipliers off a def's declared curves.
-    pub fn speed_multiplier(&self, id: EnemyId, level: u32) -> f32 {
-        self.curve(self.enemy(id).scaling.speed).eval(level)
-    }
-
-    pub fn cooldown_multiplier(&self, id: EnemyId, level: u32) -> f32 {
-        self.curve(self.enemy(id).scaling.cooldown).eval(level)
-    }
-
-    pub fn hp_multiplier(&self, id: EnemyId, level: u32) -> f32 {
-        self.curve(self.enemy(id).scaling.hp).eval(level)
+    /// The AI configuration at a level: ranges from the scaled stats,
+    /// archetype parameters from the resolved behaviour switches, with
+    /// every derived absolute riding its base stat's curve (standoff and
+    /// blast follow attack_range, disengage follows detection, shield
+    /// follows hp) — a declared ramp moves the whole machine.
+    pub fn ai_config_at(&self, id: EnemyId, level: u32) -> crate::enemy_ai::DroneConfig {
+        let def = self.enemy(id);
+        let stats = self.stats_at(id, level);
+        let mul = |c: CurveId| self.curve(c).eval(level);
+        let hp_mul = mul(def.scaling.hp);
+        let detection_mul = mul(def.scaling.detection);
+        let attack_mul = mul(def.scaling.attack_range);
+        crate::enemy_ai::DroneConfig {
+            archetype: def.ai,
+            detection_range: stats.detection,
+            attack_range: stats.attack_range,
+            disengage_range: def.behavior.disengage * detection_mul,
+            health: crate::newtypes::Health::new(stats.hp),
+            attack_cooldown: stats.cooldown,
+            standoff_range: def.behavior.standoff * attack_mul,
+            fuse_seconds: def.behavior.fuse_seconds,
+            blast_radius: def.behavior.blast_radius * attack_mul,
+            shield: (def.behavior.shield > 0.0)
+                .then(|| crate::newtypes::Shield::new(def.behavior.shield * hp_mul)),
+        }
     }
 
     /// Every enemy id in declaration order — THE catalog order.
@@ -209,9 +255,18 @@ pub struct PlanetDef {
 pub struct BossSlot {
     pub at_relative: u32,
     pub boss: EnemyId,
-    pub escorts: (EnemyId, MinionTrigger),
+    pub escorts: EscortDef,
     pub track: u8,
     pub reward: BossRewardPolicy,
+}
+
+/// The escort declaration on a boss slot: the boss's minions are the slot's
+/// call, count included — there is no formula behind it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EscortDef {
+    pub enemy: EnemyId,
+    pub trigger: MinionTrigger,
+    pub count: u8,
 }
 
 #[derive(Debug)]
@@ -238,6 +293,19 @@ impl Roster {
             .iter()
             .position(|e| e.crossing_id == crossing_id)
             .map(EnemyId)
+    }
+
+    /// The demanding door for LIVE references — spawners stamping drones,
+    /// kill events off living enemies: an id the grammar doesn't declare is
+    /// a bad config and dies here, loudly. History readers (saves, bestiary
+    /// summaries) use `enemy_by_crossing_id` and tolerate retired ids.
+    pub fn expect_enemy_by_crossing_id(&self, crossing_id: u16) -> EnemyId {
+        self.enemy_by_crossing_id(crossing_id).unwrap_or_else(|| {
+            panic!(
+                "crossing id {crossing_id} is not in rosters/enemies.toml — \
+                 a scene or spawner stamped an enemy the grammar doesn't declare"
+            )
+        })
     }
 
     pub fn curve(&self, id: CurveId) -> &CurveDef {
@@ -324,7 +392,7 @@ impl Roster {
 /// unresolved references, duplicate keys/ids, planet gaps, slot collisions —
 /// is collected; the Err carries them all.
 pub fn load() -> Result<Roster, String> {
-    load_from(ENEMIES_TOML, KITS_TOML, PLANET_TOMLS)
+    load_from(ENEMIES_TOML, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS)
 }
 
 /// The one shared instance (parsed on first use; a bad grammar panics with
@@ -334,7 +402,13 @@ pub fn roster() -> &'static Roster {
     ROSTER.get_or_init(|| load().expect("rosters/ must parse and link"))
 }
 
-fn load_from(enemies: &str, kits: &str, planets: &[&str]) -> Result<Roster, String> {
+fn load_from(
+    enemies: &str,
+    kits: &str,
+    kit_grids: &str,
+    models: &str,
+    planets: &[&str],
+) -> Result<Roster, String> {
     let mut errors: Vec<String> = Vec::new();
 
     let enemies_file: Option<EnemiesFile> = match toml::from_str(enemies) {
@@ -351,6 +425,20 @@ fn load_from(enemies: &str, kits: &str, planets: &[&str]) -> Result<Roster, Stri
             None
         }
     };
+    let models_file: Option<schema::ModelsFile> = match toml::from_str(models) {
+        Ok(f) => Some(f),
+        Err(e) => {
+            errors.push(format!("models.generated.toml: {e}"));
+            None
+        }
+    };
+    let kit_grids_file: Option<schema::GeneratedKitsFile> = match toml::from_str(kit_grids) {
+        Ok(f) => Some(f),
+        Err(e) => {
+            errors.push(format!("kits.generated.toml: {e}"));
+            None
+        }
+    };
     let planet_files: Vec<PlanetFile> = planets
         .iter()
         .enumerate()
@@ -363,16 +451,20 @@ fn load_from(enemies: &str, kits: &str, planets: &[&str]) -> Result<Roster, Stri
         })
         .collect();
 
-    let (Some(enemies_file), Some(kits_file)) = (enemies_file, kits_file) else {
+    let (Some(enemies_file), Some(kits_file), Some(kit_grids_file), Some(models_file)) =
+        (enemies_file, kits_file, kit_grids_file, models_file)
+    else {
         return Err(errors.join("\n"));
     };
 
-    link(enemies_file, kits_file, planet_files, errors)
+    link(enemies_file, kits_file, kit_grids_file, models_file, planet_files, errors)
 }
 
 fn link(
     enemies_file: EnemiesFile,
     kits_file: KitsFile,
+    kit_grids_file: schema::GeneratedKitsFile,
+    models_file: schema::ModelsFile,
     planet_files: Vec<PlanetFile>,
     mut errors: Vec<String>,
 ) -> Result<Roster, String> {
@@ -478,12 +570,27 @@ fn link(
                 }
             }
         };
-        let none = ScalingRaw { speed: None, cooldown: None, hp: None };
+        let none = ScalingRaw {
+            speed: None,
+            cooldown: None,
+            hp: None,
+            damage: None,
+            detection: None,
+            attack_range: None,
+        };
         let own = raw.unwrap_or(&none);
         Scaling {
             speed: pick("speed", &own.speed, &defaults.speed, errors),
             cooldown: pick("cooldown", &own.cooldown, &defaults.cooldown, errors),
             hp: pick("hp", &own.hp, &defaults.hp, errors),
+            damage: pick("damage", &own.damage, &defaults.damage, errors),
+            detection: pick("detection", &own.detection, &defaults.detection, errors),
+            attack_range: pick(
+                "attack_range",
+                &own.attack_range,
+                &defaults.attack_range,
+                errors,
+            ),
         }
     };
 
@@ -499,6 +606,11 @@ fn link(
                 ("shield_frac", e.shield_frac),
                 ("disengage_frac", e.disengage_frac),
                 ("drain_dps", e.drain_dps),
+                ("bolt_speed", e.bolt_speed),
+                ("latch_range", e.latch_range),
+                ("slow_factor", e.slow_factor),
+                ("slow_duration", e.slow_duration),
+                ("slow_interval", e.slow_interval),
             ] {
                 if let Some(v) = value {
                     if !v.is_finite() || v < 0.0 {
@@ -523,13 +635,39 @@ fn link(
                         * e.stats.hp,
                     disengage: e.disengage_frac.unwrap_or(1.2) * e.stats.detection,
                     drain_dps: e.drain_dps.unwrap_or(0.0),
+                    bolt_speed: e.bolt_speed.unwrap_or(13.0),
+                    // The latch set: live on swarmers, inert elsewhere.
+                    latch_range: e
+                        .latch_range
+                        .unwrap_or(if e.ai == Swarmer { 2.0 } else { 0.0 }),
+                    slow_factor: e
+                        .slow_factor
+                        .unwrap_or(if e.ai == Swarmer { 0.7 } else { 1.0 }),
+                    slow_duration: e
+                        .slow_duration
+                        .unwrap_or(if e.ai == Swarmer { 2.0 } else { 0.0 }),
+                    slow_interval: e
+                        .slow_interval
+                        .unwrap_or(if e.ai == Swarmer { 0.5 } else { 0.0 }),
                 }
             };
             EnemyDef {
                 key: e.key.clone(),
                 crossing_id: e.id,
                 name: e.name.clone(),
-                model: e.model.clone(),
+                // The def declares a model KEY; the linked def carries the
+                // catalog's res:// path, so consumers never see keys.
+                model: match models_file.models.get(&e.model) {
+                    Some(path) => path.clone(),
+                    None => {
+                        errors.push(format!(
+                            "{at}: unknown model '{}' — not in \
+                             rosters/models.generated.toml (run `make assets`)",
+                            e.model
+                        ));
+                        String::new()
+                    }
+                },
                 size: e.size,
                 yaw_offset_deg: e.yaw_offset_deg,
                 ai: e.ai,
@@ -649,16 +787,29 @@ fn link(
         }
     }
 
-    // Kits (BTreeMap: TOML rejects re-declared kit tables).
+    // Kits (BTreeMap: TOML rejects re-declared kit tables). The grid joins
+    // in from the probe's derived measurements — never authored.
     let kits: Vec<KitDef> = kits_file
         .kits
         .iter()
-        .map(|(key, raw)| KitDef {
-            key: key.clone(),
-            paradigm: raw.paradigm,
-            tile: raw.tile,
-            story: raw.story,
-            install_dir: raw.install_dir.clone(),
+        .map(|(key, raw)| {
+            let grid = match kit_grids_file.kits.get(key) {
+                Some(g) => g.clone(),
+                None => {
+                    errors.push(format!(
+                        "kit '{key}': no derived grid in \
+                         rosters/kits.generated.toml (run `make assets`)"
+                    ));
+                    schema::GeneratedKitRaw { tile: 0.0, story: 0.0 }
+                }
+            };
+            KitDef {
+                key: key.clone(),
+                paradigm: raw.paradigm,
+                tile: grid.tile,
+                story: grid.story,
+                install_dir: raw.install_dir.clone(),
+            }
         })
         .collect();
     let kit_by_key = |key: &str, errors: &mut Vec<String>, at: &str| -> KitId {
@@ -769,6 +920,12 @@ fn link(
                 ));
             }
             let escort_id = enemy_by_key(&slot.escorts.enemy, &mut errors, &at);
+            if slot.escorts.count == 0 {
+                errors.push(format!(
+                    "{at}: escort count must be at least 1 — the count is \
+                     the slot's declared call, and zero declares no fight"
+                ));
+            }
             if !raw_enemies[escort_id.0].minions.is_empty() {
                 errors.push(format!(
                     "{at}: escort '{}' has minions of its own — nesting is \
@@ -779,7 +936,11 @@ fn link(
             boss_slots.push(BossSlot {
                 at_relative: rel,
                 boss: boss_id,
-                escorts: (escort_id, slot.escorts.trigger),
+                escorts: EscortDef {
+                    enemy: escort_id,
+                    trigger: slot.escorts.trigger,
+                    count: slot.escorts.count,
+                },
                 track: slot.track,
                 reward: slot.reward,
             });
@@ -819,10 +980,11 @@ fn link(
 #[cfg(test)]
 mod property_tests;
 
-// ── Grammar tests: parse/link/validation, generated-reference currency,
-//    kit-install pins, and (in property_tests) the generative sweep. The
-//    golden-equivalence suite retired WITH the enum tables it mirrored —
-//    the game reads this grammar now; behavior pins live with consumers. ──
+// ── Grammar tests: parse/link/validation, the leveled-door scaling
+//    contracts, kit-install pins, and (in property_tests) the generative
+//    sweep. No goldens: the generated artifacts (TEMPLATE.toml,
+//    VOCABULARY.md) are re-rendered by `make build`, never pinned —
+//    behavior pins live with consumers. ──
 
 #[cfg(test)]
 mod tests {
@@ -842,8 +1004,203 @@ mod tests {
     #[test]
     fn a_negative_switch_is_a_link_error() {
         let doctored = ENEMIES_TOML.replace("drain_dps = 6.0", "drain_dps = -6.0");
-        let err = load_from(&doctored, KITS_TOML, PLANET_TOMLS).unwrap_err();
+        let err = load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS).unwrap_err();
         assert!(err.contains("drain_dps must be finite"), "{err}");
+    }
+
+    #[test]
+    fn a_kit_without_a_derived_grid_is_a_link_error() {
+        let doctored = KITS_GENERATED_TOML.replace("[kits.quaternius_megakit]", "[kits.renamed]");
+        let err =
+            load_from(ENEMIES_TOML, KITS_TOML, &doctored, MODELS_TOML, PLANET_TOMLS).unwrap_err();
+        assert!(
+            err.contains("kit 'quaternius_megakit': no derived grid"),
+            "the linker must name the unmeasured kit: {err}"
+        );
+    }
+
+    #[test]
+    fn the_derived_grids_match_the_recipes() {
+        // The committed grid file against a fresh derivation from the
+        // installed meshes — a re-authored asset or stale probe run
+        // surfaces here (run `make assets`).
+        assert_eq!(
+            KITS_GENERATED_TOML,
+            super::probe::kit_grids(),
+            "kits.generated.toml is stale — run `make assets`"
+        );
+    }
+
+    #[test]
+    fn an_unknown_model_key_is_a_link_error() {
+        let doctored = ENEMIES_TOML.replace(
+            "model = \"Enemy_Raptor\"",
+            "model = \"no_such_model\"",
+        );
+        let err = load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS).unwrap_err();
+        assert!(
+            err.contains("unknown model 'no_such_model'"),
+            "the linker must name the missing catalog key: {err}"
+        );
+    }
+
+    #[test]
+    fn every_catalog_model_is_installed_on_disk() {
+        // The committed catalog and the installed files must agree in both
+        // directions — a probe that ran against a different install, or a
+        // model deleted since, surfaces here (run `make assets`).
+        let repo = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+        let catalog: schema::ModelsFile =
+            toml::from_str(MODELS_TOML).expect("models.generated.toml parses");
+        for (key, res) in &catalog.models {
+            let disk = format!("{repo}/godot/{}", res.trim_start_matches("res://"));
+            assert!(
+                std::path::Path::new(&disk).is_file(),
+                "catalog model '{key}' missing on disk at {disk}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_planet_file_on_disk_is_embedded() {
+        // build.rs globs rosters/planets/ — this pin proves a dropped-in
+        // planet_N.toml can never be silently absent from the build (the
+        // hand-listed array this replaced could forget one).
+        let repo = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+        let on_disk = std::fs::read_dir(format!("{repo}/rosters/planets"))
+            .expect("rosters/planets/ exists")
+            .filter(|e| {
+                e.as_ref().is_ok_and(|e| {
+                    e.path().extension().is_some_and(|x| x == "toml")
+                })
+            })
+            .count();
+        assert_eq!(PLANET_TOMLS.len(), on_disk,
+            "every planet file on disk is embedded");
+    }
+
+    #[test]
+    fn every_stat_rides_its_declared_curve() {
+        // Point the three newly-opened defaults at the speed ramp (0.6 at
+        // level 1); the quoted values are unique to [scaling_defaults].
+        let doctored = ENEMIES_TOML
+            .replace("damage = \"flat\"", "damage = \"speed_standard\"")
+            .replace("detection = \"flat\"", "detection = \"speed_standard\"")
+            .replace("attack_range = \"flat\"", "attack_range = \"speed_standard\"");
+        let roster = load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS).unwrap();
+        let id = roster.enemy_by_key("sentry_drone").unwrap();
+        let base = roster.enemy(id).stats;
+        let l1 = roster.stats_at(id, 1);
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        assert!(close(l1.damage, base.damage * 0.6), "damage rides its ramp");
+        assert!(close(l1.detection, base.detection * 0.6), "detection rides");
+        assert!(close(l1.attack_range, base.attack_range * 0.6), "range rides");
+        assert!(close(l1.speed, base.speed * 0.6), "speed still rides");
+        assert!(close(l1.cooldown, base.cooldown * 1.4), "cooldown still rides");
+        assert!(close(l1.hp, base.hp), "hp stays flat — by declaration");
+    }
+
+    #[test]
+    fn derived_ranges_ride_their_base_stats_curve() {
+        // detection/attack_range/hp on the ramp: the AI's derived absolutes
+        // (disengage, standoff, shield) must follow their base stat, or a
+        // declared curve is a lever that only half-moves the machine.
+        let doctored = ENEMIES_TOML
+            .replace("detection = \"flat\"", "detection = \"speed_standard\"")
+            .replace("attack_range = \"flat\"", "attack_range = \"speed_standard\"")
+            .replace("hp = \"flat\"", "hp = \"speed_standard\"");
+        let roster = load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS).unwrap();
+        let id = roster.enemy_by_key("quad_shell").unwrap(); // tank: shielded
+        let def = roster.enemy(id);
+        let cfg = roster.ai_config_at(id, 1);
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        assert!(close(cfg.detection_range, def.stats.detection * 0.6));
+        assert!(close(cfg.attack_range, def.stats.attack_range * 0.6));
+        assert!(close(cfg.disengage_range, def.behavior.disengage * 0.6),
+            "disengage follows detection");
+        assert!(close(cfg.standoff_range, def.behavior.standoff * 0.6),
+            "standoff follows attack_range");
+        assert!(close(cfg.health.as_f32(), def.stats.hp * 0.6));
+        assert!(close(cfg.shield.expect("tanks are shielded").as_f32(),
+            def.behavior.shield * 0.6), "shield follows hp");
+    }
+
+    #[test]
+    fn scaling_defaults_must_cover_every_stat() {
+        let doctored = ENEMIES_TOML.replace("damage = \"flat\"\n", "");
+        let err = load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS).unwrap_err();
+        assert!(err.contains("no 'damage' curve"), "{err}");
+    }
+
+    #[test]
+    fn latch_and_bolt_switches_default_by_archetype() {
+        let roster = loaded();
+        let swarmer = roster.enemy(roster.enemy_by_key("quad_orb").unwrap());
+        assert_eq!(swarmer.behavior.latch_range, 2.0, "swarmers latch at 2 m");
+        assert_eq!(swarmer.behavior.slow_factor, 0.7, "each tag compounds 0.7");
+        assert_eq!(swarmer.behavior.slow_duration, 2.0);
+        assert_eq!(swarmer.behavior.slow_interval, 0.5);
+        let shooter = roster.enemy(roster.enemy_by_key("sphere_gunner").unwrap());
+        assert_eq!(shooter.behavior.bolt_speed, 13.0, "bolts fly 13 m/s by default");
+        assert_eq!(shooter.behavior.latch_range, 0.0, "non-swarmers never latch");
+        assert_eq!(shooter.behavior.slow_factor, 1.0, "1.0 = no slow per tag");
+        assert_eq!(shooter.behavior.slow_duration, 0.0);
+        assert_eq!(shooter.behavior.slow_interval, 0.0);
+    }
+
+    #[test]
+    fn a_declared_latch_switch_beats_its_archetype_default() {
+        let doctored = ENEMIES_TOML.replace(
+            "drain_dps = 6.0",
+            "drain_dps = 6.0\nlatch_range = 4.5\nbolt_speed = 20.0",
+        );
+        let roster = load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS).unwrap();
+        let latcher = roster.enemy(roster.enemy_by_key("boss_latcher").unwrap());
+        assert_eq!(latcher.behavior.latch_range, 4.5, "the declared reach wins");
+        assert_eq!(latcher.behavior.bolt_speed, 20.0, "declared even when unused");
+    }
+
+    #[test]
+    fn a_negative_latch_switch_is_a_link_error() {
+        let doctored = ENEMIES_TOML.replace(
+            "drain_dps = 6.0",
+            "drain_dps = 6.0\nslow_factor = -0.5",
+        );
+        let err = load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS).unwrap_err();
+        assert!(err.contains("slow_factor must be finite"), "{err}");
+    }
+
+    #[test]
+    fn a_zero_escort_count_is_a_link_error() {
+        let doctored = PLANET_TOMLS[0].replace(
+            "trigger = \"on_death\", count = 3",
+            "trigger = \"on_death\", count = 0",
+        );
+        let planets = [doctored.as_str(), PLANET_TOMLS[1]];
+        let err = load_from(ENEMIES_TOML, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, &planets).unwrap_err();
+        assert!(
+            err.contains("escort count must be at least 1"),
+            "the linker must name the zero-count rule: {err}"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "crossing id 9999 is not in rosters/enemies.toml")]
+    fn an_undeclared_crossing_id_dies_at_the_demand_door_naming_the_culprit() {
+        loaded().expect_enemy_by_crossing_id(9999);
+    }
+
+    #[test]
+    fn every_declared_crossing_id_resolves_at_the_demand_door() {
+        let roster = loaded();
+        for def in &roster.enemies {
+            assert_eq!(
+                roster.expect_enemy_by_crossing_id(def.crossing_id),
+                roster.enemy_by_crossing_id(def.crossing_id).unwrap(),
+                "'{}' must resolve identically through both doors",
+                def.key
+            );
+        }
     }
 
     #[test]
@@ -874,19 +1231,7 @@ mod tests {
     //    linker adds on top. ─────────────────────────────────────────────
 
     #[test]
-    fn the_committed_vocabulary_reference_is_current() {
-        // The closed vocabularies self-document: enum → renderer (exhaustive
-        // match, so a new variant refuses to compile undescribed) → this
-        // golden file. Regenerate with `make roster-vocab`.
-        assert_eq!(
-            include_str!("../../../../rosters/VOCABULARY.md"),
-            super::vocabulary::vocabulary(),
-            "rosters/VOCABULARY.md is stale — run `make roster-vocab`"
-        );
-    }
-
-    #[test]
-    #[ignore = "writes rosters/VOCABULARY.md — run via make roster-vocab"]
+    #[ignore = "writes rosters/VOCABULARY.md — `make build` runs it"]
     fn regenerate_vocabulary_reference() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../rosters/VOCABULARY.md");
         std::fs::write(path, super::vocabulary::vocabulary())
@@ -903,7 +1248,7 @@ mod tests {
     #[test]
     fn an_unknown_field_is_a_parse_error() {
         let doctored = ENEMIES_TOML.replace("yaw_offset_deg", "yaw_offest_deg");
-        let err = load_from(&doctored, KITS_TOML, PLANET_TOMLS).unwrap_err();
+        let err = load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS).unwrap_err();
         assert!(err.contains("yaw_offest_deg"), "typo'd field must be named: {err}");
     }
 
@@ -913,14 +1258,14 @@ mod tests {
             "minions = [{ enemy = \"spawn_drone\", count = 1, trigger = \"on_death\" }]",
             "minions = [{ enemy = \"spwan_drone\", count = 1, trigger = \"on_death\" }]",
         );
-        let err = load_from(&doctored, KITS_TOML, PLANET_TOMLS).unwrap_err();
+        let err = load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS).unwrap_err();
         assert!(err.contains("spwan_drone"), "bad ref must be named: {err}");
     }
 
     #[test]
     fn a_duplicated_crossing_id_is_a_link_error() {
         let doctored = ENEMIES_TOML.replace("id = 10", "id = 9");
-        let err = load_from(&doctored, KITS_TOML, PLANET_TOMLS).unwrap_err();
+        let err = load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS).unwrap_err();
         assert!(err.contains("duplicate enemy id 9"), "{err}");
     }
 
@@ -929,7 +1274,7 @@ mod tests {
         // Owner 2026-07-05: "if I ask for 7 levels but only populate 6 …
         // that's a problem" — both directions.
         let p2 = PLANET_TOMLS[1].replace("levels = 6", "levels = 7");
-        let err = load_from(ENEMIES_TOML, KITS_TOML, &[PLANET_TOMLS[0], &p2]).unwrap_err();
+        let err = load_from(ENEMIES_TOML, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, &[PLANET_TOMLS[0], &p2]).unwrap_err();
         assert!(
             err.contains("relative 7 has no"),
             "the unpopulated level must be named: {err}"
@@ -939,7 +1284,7 @@ mod tests {
     #[test]
     fn a_roster_outside_the_declared_length_is_a_link_error() {
         let p2 = PLANET_TOMLS[1].replacen("relative = 6", "relative = 8", 1);
-        let err = load_from(ENEMIES_TOML, KITS_TOML, &[PLANET_TOMLS[0], &p2]).unwrap_err();
+        let err = load_from(ENEMIES_TOML, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, &[PLANET_TOMLS[0], &p2]).unwrap_err();
         assert!(err.contains("outside the declared"), "{err}");
         assert!(
             err.contains("relative 6 has no"),
@@ -955,7 +1300,7 @@ mod tests {
             "enemies = [\"spawn_drone\"]",
             1,
         );
-        let err = load_from(ENEMIES_TOML, KITS_TOML, &[&p1, PLANET_TOMLS[1]]).unwrap_err();
+        let err = load_from(ENEMIES_TOML, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, &[&p1, PLANET_TOMLS[1]]).unwrap_err();
         assert!(err.contains("never spawns directly"), "{err}");
     }
 }

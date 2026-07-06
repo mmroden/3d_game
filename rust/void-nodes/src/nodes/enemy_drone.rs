@@ -14,26 +14,17 @@ use void_logic::enemy_ai::{strafe_velocity, Archetype, Attack, DroneAi, DroneCon
 use void_logic::audio_catalog::SfxEvent;
 use void_logic::currency::CurrencyKind;
 use void_logic::debuff::DrainDebuff;
-use void_logic::roster::roster;
+use void_logic::roster::{roster, Behavior};
 use void_logic::level_assembly::MinionTrigger;
 use void_logic::newtypes::{Health, Damage};
 use void_logic::ram_damage::{ram_damage, PLAYER_RAM_FRACTION};
 
-const BOLT_SPEED: f32 = 13.0;
 /// Clearance so a newborn bolt spawns clear of the firer's own hull.
 const MUZZLE_CLEARANCE: f32 = 0.6;
 /// Engine damping (≈ -ln(0.05/s) retention). The chase force is scaled by
 /// it so terminal cruise speed equals the AI's desired speed
 /// (`v* = force / (mass · damp)`).
 const ENEMY_LINEAR_DAMP: f32 = 3.0;
-/// Swarmer slow. Each tag compounds `SWARM_SLOW_FACTOR` onto the player's speed
-/// (see `SlowDebuff`) for `SWARM_SLOW_DURATION` seconds; while a swarmer stays
-/// within `SWARM_LATCH_RANGE` it re-tags every `SWARM_SLOW_INTERVAL`, so a
-/// sustained latch drives the player toward a crawl until they break free.
-const SWARM_SLOW_FACTOR: f32 = 0.7;
-const SWARM_SLOW_DURATION: f32 = 2.0;
-const SWARM_SLOW_INTERVAL: f32 = 0.5;
-const SWARM_LATCH_RANGE: f32 = 2.0;
 
 
 /// A hostile drone that chases and attacks the player. Motion and
@@ -45,30 +36,30 @@ const SWARM_LATCH_RANGE: f32 = 2.0;
 pub struct EnemyDrone {
     base: Base<RigidBody3D>,
 
+    /// The scene/spawner's ONE input: the def's crossing id. Every stat
+    /// below derives from the grammar in `ready` — never authored per-node.
     #[export]
     enemy_type_id: i32,
-    #[export]
     speed: f32,
-    #[export]
     health: f32,
-    #[export]
     detection_range: f32,
-    #[export]
     attack_range: f32,
-    #[export]
     damage: f32,
     /// Current level; scales speed and fire rate (set by the spawner).
     #[export]
     level: i32,
 
     ai: DroneAi,
+    /// The def's resolved behaviour switches (bolt speed, the latch set, …),
+    /// copied once in `ready` — the shell's share of the grammar.
+    behavior: Behavior,
     player: Option<LiveRef<Node3D>>,
     /// The visual model hangs off this pivot, not the body directly: the body
     /// is rotation-locked (impacts mustn't tumble it), so the pivot is what
     /// yaws each frame to keep the model's nose on the player.
     model_pivot: Option<LiveRef<Node3D>>,
     /// Per-type correction (radians) for the model's imported front axis,
-    /// applied on top of facing the player. Cached from `EnemyType` in `ready`.
+    /// applied on top of facing the player. Cached from the def in `ready`.
     model_yaw_offset: f32,
     /// Last tick's requested speed — the denominator of the movement
     /// feedback ratio reported to the AI (walls show up as actual << desired).
@@ -129,14 +120,17 @@ impl IRigidBody3D for EnemyDrone {
         let ai = DroneAi::new(config);
         Self {
             base,
-            enemy_type_id: 1, // QuadOrb (ALL[1]) unless the spawner stamps a type
-            speed: 8.0,
-            health: 3.0,
-            detection_range: 25.0,
-            attack_range: 5.0,
-            damage: 3.0,
+            enemy_type_id: 1, // quad_orb unless the spawner stamps a type
+            // Placeholders: ready() configures every stat from the def
+            // (or panics on an undeclared id).
+            speed: 0.0,
+            health: 0.0,
+            detection_range: 0.0,
+            attack_range: 0.0,
+            damage: 0.0,
             level: 1,
             ai,
+            behavior: Behavior::default(),
             player: None,
             model_pivot: None,
             model_yaw_offset: 0.0,
@@ -158,87 +152,72 @@ impl IRigidBody3D for EnemyDrone {
     }
 
     fn ready(&mut self) {
-        // Configure from the roster def (the grammar) when the crossing id
-        // resolves; otherwise use exported values (bare test scenes).
+        // Configure from the roster def (the grammar). The crossing id is
+        // the scene/spawner's one input; an id the grammar doesn't declare
+        // is a bad config and dies at the demand door — never a silent
+        // slide onto defaults.
         let grammar = roster();
-        if let Some(id) = grammar.enemy_by_crossing_id(self.enemy_type_id as u16) {
-            let def = grammar.enemy(id);
-            self.health = def.stats.hp;
-            self.speed = def.stats.speed;
-            self.damage = def.stats.damage;
-            self.detection_range = def.stats.detection;
-            self.attack_range = def.stats.attack_range;
-            // The def owns behaviour tuning (archetype + resolved switches).
-            self.ai = DroneAi::new(def.ai_config());
-            // The drain switch on the def (rosters/enemies.toml): today only
-            // the Lamprey Mech declares one; any swarmer may.
-            let drain_dps = def.behavior.drain_dps;
-            self.drain = (drain_dps > 0.0).then(|| DrainDebuff::new(drain_dps));
-            // Build the visual model from the def's model path, fit-scaled to
-            // its target size. Models live in the grammar, not baked per-.tscn,
-            // so a model swap is one TOML edit and every drone re-fits the
-            // mesh to size regardless of its native units.
-            // The model hangs off a pivot rather than the body directly: the
-            // body's rotation is locked (below), so the pivot is what we yaw to
-            // face the player. The pivot sits at the body origin with identity
-            // rotation, so at spawn the model's transform is still body-relative
-            // — the convex hull builds in the same frame as before.
-            self.model_yaw_offset = def.yaw_offset_deg.to_radians();
-            let mut pivot = Node3D::new_alloc();
-            pivot.set_name("ModelPivot");
-            self.base_mut().add_child(&pivot);
-            if let Some(model) = godot_util::spawn_model_fitted(
-                &mut pivot,
-                def.model.as_str(),
-                def.size,
-            ) {
-                // Mesh-hugging convex colliders (one per part), like the loose
-                // props — far better than a sphere wrapping a mech-shaped hull.
-                // Built on the body (which never rotates), so it stays put while
-                // the pivot yaws the visual — fine for a roughly radial drone.
-                let xform = model.get_transform();
-                let mut body: Gd<RigidBody3D> = self.base().clone();
-                godot_util::add_convex_collision(&mut body, &model, xform);
-            }
-            self.model_pivot = Some(LiveRef::new(&pivot));
-        } else {
-            self.ai = DroneAi::new(DroneConfig {
-                detection_range: self.detection_range,
-                attack_range: self.attack_range,
-                disengage_range: self.detection_range * 1.2,
-                health: Health::new(self.health),
-                attack_cooldown: 1.0,
-                ..DroneConfig::default()
-            });
-        }
-
-        // Scale by level through the def's DECLARED curves (per-enemy
-        // grammar): speed and fire rate ramp; hp rides its own curve —
-        // flat on fodder (a single shot still kills), free to climb on
-        // whatever the owner points at a ramp.
+        let id = grammar.expect_enemy_by_crossing_id(self.enemy_type_id as u16);
+        let def = grammar.enemy(id);
+        // Everything level-bound arrives through the grammar's leveled
+        // doors — six stats and the AI config, each stat riding its own
+        // declared curve (stamped by the spawner via `level`).
         let level = self.level.max(1) as u32;
-        if let Some(id) = grammar.enemy_by_crossing_id(self.enemy_type_id as u16) {
-            self.speed *= grammar.speed_multiplier(id, level);
-            self.ai.config.attack_cooldown *= grammar.cooldown_multiplier(id, level);
-            let hp_mul = grammar.hp_multiplier(id, level);
-            self.health *= hp_mul;
-            self.ai.health = Health::new(self.ai.health.as_f32() * hp_mul);
-            // Timed-emitter clocks from the def's minions list — the bound
-            // ring arrives via bind_minion after spawn.
-            self.emitters = grammar
-                .enemy(id)
-                .minions
-                .iter()
-                .filter_map(|m| match m.trigger {
-                    MinionTrigger::Every(secs) => Some((
-                        m.trigger,
-                        void_logic::level_assembly::EmitterTimer::new(secs),
-                        m.count,
-                    )),
-                    _ => None,
-                })
-                .collect();
+        let stats = grammar.stats_at(id, level);
+        self.health = stats.hp;
+        self.speed = stats.speed;
+        self.damage = stats.damage;
+        self.detection_range = stats.detection;
+        self.attack_range = stats.attack_range;
+        // The def owns behaviour tuning (archetype + resolved switches).
+        self.ai = DroneAi::new(grammar.ai_config_at(id, level));
+        self.behavior = def.behavior;
+        // The drain switch on the def (rosters/enemies.toml): today only
+        // the Lamprey Mech declares one; any swarmer may.
+        let drain_dps = def.behavior.drain_dps;
+        self.drain = (drain_dps > 0.0).then(|| DrainDebuff::new(drain_dps));
+        // Build the visual model from the def's model path, fit-scaled to
+        // its target size. Models live in the grammar, not baked per-.tscn,
+        // so a model swap is one TOML edit and every drone re-fits the
+        // mesh to size regardless of its native units.
+        // The model hangs off a pivot rather than the body directly: the
+        // body's rotation is locked (below), so the pivot is what we yaw to
+        // face the player. The pivot sits at the body origin with identity
+        // rotation, so at spawn the model's transform is still body-relative
+        // — the convex hull builds in the same frame as before.
+        self.model_yaw_offset = def.yaw_offset_deg.to_radians();
+        let mut pivot = Node3D::new_alloc();
+        pivot.set_name("ModelPivot");
+        self.base_mut().add_child(&pivot);
+        if let Some(model) = godot_util::spawn_model_fitted(
+            &mut pivot,
+            def.model.as_str(),
+            def.size,
+        ) {
+            // Mesh-hugging convex colliders (one per part), like the loose
+            // props — far better than a sphere wrapping a mech-shaped hull.
+            // Built on the body (which never rotates), so it stays put while
+            // the pivot yaws the visual — fine for a roughly radial drone.
+            let xform = model.get_transform();
+            let mut body: Gd<RigidBody3D> = self.base().clone();
+            godot_util::add_convex_collision(&mut body, &model, xform);
         }
+        self.model_pivot = Some(LiveRef::new(&pivot));
+
+        // Timed-emitter clocks from the def's minions list — the bound
+        // ring arrives via bind_minion after spawn.
+        self.emitters = def
+            .minions
+            .iter()
+            .filter_map(|m| match m.trigger {
+                MinionTrigger::Every(secs) => Some((
+                    m.trigger,
+                    void_logic::level_assembly::EmitterTimer::new(secs),
+                    m.count,
+                )),
+                _ => None,
+            })
+            .collect();
         self.spawn_health = self.health;
 
         // Engine owns motion: zero-g; damping is the decay; rotation is
@@ -414,10 +393,19 @@ impl EnemyDrone {
     /// is the grammar's def; exposed to GDScript for HUD and tests.
     #[func]
     pub fn cache_reward(&self) -> i64 {
-        roster()
-            .enemy_by_crossing_id(self.enemy_type_id as u16)
-            .map(|id| roster().enemy(id).reward as i64)
-            .unwrap_or(0)
+        let grammar = roster();
+        let id = grammar.expect_enemy_by_crossing_id(self.enemy_type_id as u16);
+        grammar.enemy(id).reward as i64
+    }
+
+    /// The def's `spawns_directly` — GDScript's grammar door for "is this a
+    /// line enemy" (bosses and minion-only types are false). Tests filter on
+    /// this, never on id ranges.
+    #[func]
+    pub fn spawns_directly(&self) -> bool {
+        let grammar = roster();
+        let id = grammar.expect_enemy_by_crossing_id(self.enemy_type_id as u16);
+        grammar.enemy(id).spawns_directly
     }
 
     /// Enter dormancy for a pre-built minion (Faucet Principle, tier 1): all
@@ -620,7 +608,7 @@ impl EnemyDrone {
         // Fire through the preallocated ring — never instantiate a bolt per shot.
         // The pool is built once during the load and lives under LevelManager.
         if let Some(mut pool) = godot_util::find_bolt_pool(self.base().get_tree()) {
-            pool.bind_mut().fire(muzzle, dir * BOLT_SPEED, self.damage);
+            pool.bind_mut().fire(muzzle, dir * self.behavior.bolt_speed, self.damage);
         }
         Self::spawn_muzzle_flash(&root, muzzle);
     }
@@ -669,10 +657,10 @@ impl EnemyDrone {
         // reward — the kill pays nothing except through this pickup. Activation
         // is a placement + flip, never an instantiate — `drop_at` sets the
         // position before it goes live so its bob anchors at the corpse.
-        let reward = roster()
-            .enemy_by_crossing_id(type_id as u16)
-            .map(|id| roster().enemy(id).reward)
-            .unwrap_or(0);
+        let grammar = roster();
+        let reward = grammar
+            .enemy(grammar.expect_enemy_by_crossing_id(type_id as u16))
+            .reward;
         let cache_kind = self.cache_kind;
         self.cache.with(|cache| cache.bind_mut().drop_at(pos, cache_kind, reward));
 
@@ -876,21 +864,28 @@ impl EnemyDrone {
         });
     }
 
-    /// While a swarmer sits within `SWARM_LATCH_RANGE` of the player, re-tag the
-    /// player's slow every `SWARM_SLOW_INTERVAL`. Each tag compounds (the ship's
-    /// `SlowDebuff` multiplies), so a sustained latch ramps from a noticeable
-    /// drag to a crawl; the ship plays the latch sound/shake on the fresh grab.
+    /// While a latcher sits within its def's `latch_range`, re-tag the
+    /// player's slow every `slow_interval`. Each tag compounds (the ship's
+    /// `SlowDebuff` multiplies by `slow_factor`), so a sustained latch ramps
+    /// from a noticeable drag to a crawl; the ship plays the latch
+    /// sound/shake on the fresh grab. All four knobs are behaviour switches
+    /// on the def (rosters/enemies.toml).
     fn tick_swarm_slow(&mut self, delta: f32, my_pos: Vector3, player_pos: Vector3) {
         self.swarm_reapply_timer -= delta;
-        if self.swarm_reapply_timer > 0.0 || my_pos.distance_to(player_pos) > SWARM_LATCH_RANGE {
+        if self.swarm_reapply_timer > 0.0
+            || my_pos.distance_to(player_pos) > self.behavior.latch_range
+        {
             return;
         }
-        self.swarm_reapply_timer = SWARM_SLOW_INTERVAL;
+        self.swarm_reapply_timer = self.behavior.slow_interval;
         self.player.with(|p| {
             if p.has_method(methods::APPLY_SLOW) {
                 p.call(
                     methods::APPLY_SLOW,
-                    &[Variant::from(SWARM_SLOW_FACTOR), Variant::from(SWARM_SLOW_DURATION)],
+                    &[
+                        Variant::from(self.behavior.slow_factor),
+                        Variant::from(self.behavior.slow_duration),
+                    ],
                 );
             }
         });
@@ -901,7 +896,7 @@ impl EnemyDrone {
     /// contact forfeits the fraction so a re-grab never banks damage.
     fn tick_drain(&mut self, delta: f32, my_pos: Vector3, player_pos: Vector3) {
         let Some(drain) = &mut self.drain else { return };
-        if my_pos.distance_to(player_pos) > SWARM_LATCH_RANGE {
+        if my_pos.distance_to(player_pos) > self.behavior.latch_range {
             drain.reset();
             return;
         }

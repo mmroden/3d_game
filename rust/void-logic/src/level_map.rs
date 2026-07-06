@@ -301,7 +301,7 @@ mod tests {
         let view = map_rects(&graph, &all_nodes(&graph), 0, true);
         let proj = map_projection(&graph, TEST_PITCH);
         let nodes: Vec<_> = graph.room_indices().collect();
-        let story = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+        let story = 5.0; // planet-1 story — tests may hold literals
         for r in &view {
             let room = graph.room(nodes[r.id]).unwrap();
             let origin = room.world_position(cell, story);

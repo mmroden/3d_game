@@ -53,8 +53,8 @@ func _teleport(pos: Vector3) -> void:
 func _one_live_enemy_per_type() -> Array:
 	var by_type := {}
 	for e in _lm.find_children("*", "EnemyDrone", true, false):
-		if e.visible and e.enemy_type_id < 11 and not by_type.has(e.enemy_type_id):
-			by_type[e.enemy_type_id] = e  # regulars only, never a boss
+		if e.visible and e.spawns_directly() and not by_type.has(e.enemy_type_id):
+			by_type[e.enemy_type_id] = e  # the line roster, by the def's own fact
 	return by_type.values()
 
 func _assert_enemies_close_on_player(level: int) -> void:

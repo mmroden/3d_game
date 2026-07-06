@@ -327,36 +327,38 @@ impl GameManager {
     /// Called when an enemy dies (connected to enemy_killed signal).
     #[func]
     pub fn on_enemy_killed(&mut self, type_id: i32) {
+        // A kill comes off a LIVE drone, so the id must resolve — the
+        // demand door panics on an undeclared one. Retired-id tolerance
+        // belongs to history readers (kill summary, bestiary), not here.
         let grammar = void_logic::roster::roster();
-        if let Some(id) = grammar.enemy_by_crossing_id(type_id as u16) {
-            let def = grammar.enemy(id);
-            self.run_state.record_kill(def.crossing_id);
-            godot_print!(
-                "Kill: {} | Cache dropped: {} components",
-                def.name, def.reward,
-            );
-            // A boss death advances the fight — but opens NOTHING: the gate
-            // stays sealed until the reward is taken (see on_cache_collected).
-            // "Is this the boss" is the STAGING's call, not a type check:
-            // the fight advances only for the enemy the slot staged.
-            let staged_boss = self
+        let id = grammar.expect_enemy_by_crossing_id(type_id as u16);
+        let def = grammar.enemy(id);
+        self.run_state.record_kill(def.crossing_id);
+        godot_print!(
+            "Kill: {} | Cache dropped: {} components",
+            def.name, def.reward,
+        );
+        // A boss death advances the fight — but opens NOTHING: the gate
+        // stays sealed until the reward is taken (see on_cache_collected).
+        // "Is this the boss" is the STAGING's call, not a type check:
+        // the fight advances only for the enemy the slot staged.
+        let staged_boss = self
+            .level_spec
+            .as_ref()
+            .and_then(|s| s.boss.as_ref())
+            .map(|b| b.boss);
+        if staged_boss == Some(id) {
+            let drops = self
                 .level_spec
                 .as_ref()
                 .and_then(|s| s.boss.as_ref())
-                .map(|b| b.boss);
-            if staged_boss == Some(id) {
-                let drops = self
-                    .level_spec
-                    .as_ref()
-                    .and_then(|s| s.boss.as_ref())
-                    .map(|b| b.drop_count())
-                    .unwrap_or(0);
-                if let Some(fight) = &mut self.boss_fight {
-                    if fight.defeat(drops) {
-                        godot_print!(
-                            "Boss down — gather all {drops} drops to open the arena"
-                        );
-                    }
+                .map(|b| b.drop_count())
+                .unwrap_or(0);
+            if let Some(fight) = &mut self.boss_fight {
+                if fight.defeat(drops) {
+                    godot_print!(
+                        "Boss down — gather all {drops} drops to open the arena"
+                    );
                 }
             }
         }

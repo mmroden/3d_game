@@ -98,6 +98,13 @@ assets: build deps-godot
 	@echo "==> Reimporting assets (pass 3: with restored materials)..."
 	@rm -f $(GODOT_DIR)/.godot/uid_cache.bin
 	$(GODOT) --headless --import --path $(GODOT_DIR)
+	@# Final accounting: probe the installed assets into the generated
+	@# catalogs the roster linker resolves against — the enemy-model map
+	@# (models.generated.toml) and each kit's recipe-derived grid
+	@# (kits.generated.toml).
+	@echo "==> Probing installed assets into the roster catalogs..."
+	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
+		cd $(RUST_DIR) && $(CARGO) test -p void_logic --quiet probe_installed_assets -- --ignored >/dev/null
 	@echo "Import complete."
 
 deps-gut:
@@ -138,15 +145,15 @@ test-rust:
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && $(CARGO) test $(FILTER) -- --nocapture
 
-# Regenerate rosters/VOCABULARY.md from the closed-vocabulary enums (the
-# golden test fails until this is rerun after any vocabulary change).
+# Regenerate rosters/VOCABULARY.md from the closed-vocabulary enums.
+# `make build` runs this; the standalone target is the fast manual path.
 roster-vocab:
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && $(CARGO) test -p void_logic regenerate_vocabulary_reference -- --ignored
 
 # Regenerate rosters/TEMPLATE.toml — the complete authoring scaffold (every
 # field of every entry kind, defaults spelled out; itself a loadable
-# grammar, test-enforced).
+# grammar, test-enforced). `make build` runs this too.
 roster-template:
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && $(CARGO) test -p void_logic regenerate_template -- --ignored
@@ -174,6 +181,10 @@ build: require-rust
 		cd $(RUST_DIR) && $(CARGO) build
 	@rm -f $(GODOT_DIR)/libvoid_scavenger.debug.dylib $(GODOT_DIR)/libvoid_scavenger.dylib
 	@cp $(RUST_DIR)/target/debug/libvoid_scavenger.dylib $(GODOT_DIR)/libvoid_scavenger.dylib
+	@# Re-render the generated roster artifacts (TEMPLATE.toml, VOCABULARY.md)
+	@# so they can never drift from the code — no golden pins to trip.
+	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
+		cd $(RUST_DIR) && $(CARGO) test -p void_logic --quiet regenerate_ -- --ignored >/dev/null
 	@echo "Build complete (debug)."
 
 build-release: require-rust

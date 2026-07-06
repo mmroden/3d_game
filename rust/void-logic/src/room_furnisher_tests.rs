@@ -261,7 +261,7 @@ fn corridor_gets_light_fixtures() {
 fn light_fixture_mesh_at_ceiling_height() {
     let template = room_3x3();
     let cell_size = 4.0;
-    let cell_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+    let cell_height = 5.0; // planet-1 story — tests may hold literals
     let origin_y = 0.0;
     let fixtures = light_fixtures(&template, &[], [0.0, origin_y, 0.0], crate::planet::Pitch { tile: cell_size, story: 5.0 }, 0);
     for (mesh, _) in &fixtures {
@@ -307,7 +307,7 @@ fn light_source_inside_room_bounds() {
     let fixtures = light_fixtures(&template, &[], origin, crate::planet::Pitch { tile: cell_size, story: 5.0 }, 0);
     let max_x = origin[0] + template.extents[0] as f32 * cell_size;
     let max_z = origin[2] + template.extents[2] as f32 * cell_size;
-    let cell_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+    let cell_height = 5.0; // planet-1 story — tests may hold literals
     let max_y = origin[1] + template.extents[1] as f32 * cell_height;
 
     for (_, light) in &fixtures {
@@ -354,7 +354,7 @@ fn multi_story_room_lights_only_at_top_floor() {
         extents: [3, 2, 3],
     };
     let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 0);
-    let cell_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+    let cell_height = 5.0; // planet-1 story — tests may hold literals
     // Only top floor (cy=1) has ceilings → 3x3 = 9 lights, NOT 18.
     assert_eq!(
         fixtures.len(), 9,

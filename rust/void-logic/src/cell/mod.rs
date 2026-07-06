@@ -46,8 +46,9 @@ pub struct Cell {
 pub struct CellGrid {
     cells: Vec<Cell>,
     pub extents: [usize; 3],
-    /// Story height (m) this grid was built at — the level's pitch, carried
-    /// so population math can never diverge from cell placement.
+    /// The pitch this grid was built at — the level's, carried so assembly
+    /// and population math can never diverge from cell placement.
+    pub tile: f32,
     pub story: f32,
 }
 
@@ -128,6 +129,7 @@ impl CellGrid {
         Self {
             cells,
             extents: [ex as usize, ey as usize, ez as usize],
+            tile: cell_size,
             story: story_height,
         }
     }

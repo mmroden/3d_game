@@ -5,10 +5,10 @@
 //! Copy the relevant block into `enemies.toml` / a new
 //! `planets/planet_N.toml` and fill it in — every field is present with
 //! its default spelled out, so nothing is discoverable only by reading
-//! Rust. Two tests keep it honest: the golden test pins the committed
-//! file to this renderer, and `the_template_is_a_valid_grammar` PARSES
-//! AND LINKS the template's sections — the scaffold can never drift into
-//! an example the loader would reject.
+//! Rust. `make build` regenerates the committed file mechanically (no
+//! golden pin to trip), and `the_template_is_a_valid_grammar` PARSES AND
+//! LINKS the template's sections — the scaffold can never drift into an
+//! example the loader would reject.
 
 /// Section separator: the validity test splits the rendered template on
 /// these to feed each part through the real loader.
@@ -20,7 +20,7 @@ pub fn template() -> String {
     )
 }
 
-const ENEMIES: &str = r#"# TEMPLATE — GENERATED, do not edit (make roster-template regenerates).
+const ENEMIES: &str = r#"# TEMPLATE — GENERATED, do not edit; `make build` re-renders this file.
 # Copy blocks into rosters/*.toml and fill them in. Every field appears
 # here with its default; the linker names anything you get wrong. The
 # closed vocabularies are listed in rosters/VOCABULARY.md.
@@ -38,18 +38,22 @@ at_peak = 1.15     # multiplier at peak_level (flat past it)
 peak_level = 10
 anchor = "absolute" # or "entry": restart from 1 at the fleet entry level
 
-# Fallback curve refs for any enemy that doesn't declare its own.
+# Fallback curve refs for any enemy that doesn't declare its own. All six
+# stats are declared — flat is a config call, not an absence.
 [scaling_defaults]
 speed = "example_ramp"
 cooldown = "example_ramp"
 hp = "flat"
+damage = "flat"
+detection = "flat"
+attack_range = "flat"
 
 [[enemy]]
 key = "template_enemy"   # stable identity (rosters, saves, linker refs)
 id = 1000                # GDScript/save crossing — append-only, never reuse
 name = "Template Enemy"
 blurb = "Bestiary lore — every enemy is catalogued."
-model = "res://addons/enemies/sphere_ship_01.glb"
+model = "sphere_ship_01"    # a KEY in models.generated.toml (make assets)
 size = 1.0               # metres, longest edge (fit-scaled)
 yaw_offset_deg = 180     # imported front-axis correction (0 or 180 so far)
 ai = "shooter"           # shooter | kiter | swarmer | tank | bomber
@@ -64,6 +68,13 @@ blast_frac = 0.0         # bomber blast radius, fraction of attack_range
 shield_frac = 0.0        # shield pool, fraction of hp (default 0.5 tanks)
 disengage_frac = 1.2     # give-up-the-chase, fraction of detection
 drain_dps = 0.0          # hull drain per second while latched (swarmers)
+bolt_speed = 13.0        # projectile speed, m/s (firing archetypes)
+latch_range = 0.0        # attached within this range: slow re-tags, drain
+                         # ticks (default 2.0 swarmers, else 0 = never)
+slow_factor = 1.0        # per-tag speed multiplier, compounds; 1.0 = none
+                         # (default 0.7 swarmers, else 1.0)
+slow_duration = 0.0      # seconds a tag lasts (default 2.0 swarmers)
+slow_interval = 0.0      # re-tag period while latched (default 0.5 swarmers)
 # Bound minions: one-shot broods and/or timed emitters.
 minions = [
   { enemy = "template_minion", count = 2, trigger = "on_death" },
@@ -76,17 +87,20 @@ damage = 5.0
 detection = 25.0
 attack_range = 10.0
 cooldown = 1.0
-[enemy.scaling]          # optional — falls back to [scaling_defaults]
+[enemy.scaling]          # optional, per-field — falls back to [scaling_defaults]
 speed = "example_ramp"
 cooldown = "example_ramp"
 hp = "flat"              # point at a ramp and this enemy toughens by level
+damage = "flat"          # every stat scales through its declared curve —
+detection = "flat"       # the AI's derived ranges (standoff, disengage,
+attack_range = "flat"    # blast, shield) follow their base stat's curve
 
 [[enemy]]
 key = "template_minion"
 id = 1001
 name = "Template Minion"
 blurb = "A lesser machine the template enemy fields."
-model = "res://addons/enemies/sphere_ship_02.glb"
+model = "sphere_ship_02"
 size = 0.5
 yaw_offset_deg = 180
 ai = "kiter"
@@ -105,7 +119,7 @@ key = "template_boss"
 id = 1002
 name = "Template Boss"
 blurb = "A staged fight. Its escorts are declared on the boss slot."
-model = "res://addons/enemies/evil_mech_03.glb"
+model = "evil_mech_03"
 size = 4.0               # arena scale
 yaw_offset_deg = 180
 ai = "kiter"
@@ -132,9 +146,9 @@ const KITS: &str = r#"# ── Section: kits.toml (interim; the make-assets prob
 
 [kits.template_kit]
 paradigm = "panel"       # layered (tile+story stacks) | panel (cubic cells)
-tile = 3.0               # metres — the planet's pitch DERIVES from this
-story = 3.0
 install_dir = "godot/addons/walls"  # repo-relative; disk-pinned populated
+# The kit's grid (tile/story) is NEVER authored: the make-assets probe
+# derives it from the assembly recipe into kits.generated.toml.
 "#;
 
 const PLANET: &str = r#"# ── Section: planets/planet_N.toml ──────────────────────────────────────
@@ -156,7 +170,7 @@ enemies = ["template_enemy"]
 [[boss_slot]]
 at = { relative = 2 }    # planet-relative level
 boss = "template_boss"   # the def it fights as (size/stats on the def)
-escorts = { enemy = "template_minion", trigger = "on_engage" }
+escorts = { enemy = "template_minion", trigger = "on_engage", count = 3 }
 track = 1                # boss music index (boss_N.mp3)
 reward = "hull_container" # or "consolation_pile"
 "#;
@@ -164,15 +178,6 @@ reward = "hull_container" # or "consolation_pile"
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_committed_template_is_current() {
-        assert_eq!(
-            include_str!("../../../../rosters/TEMPLATE.toml"),
-            template(),
-            "rosters/TEMPLATE.toml is stale — run `make roster-template`"
-        );
-    }
 
     #[test]
     fn the_template_is_a_valid_grammar() {
@@ -183,13 +188,23 @@ mod tests {
         let enemies = parts.next().expect("enemies section");
         let kits = parts.next().expect("kits section");
         let planet = parts.next().expect("planet section");
-        if let Err(e) = super::super::load_from(enemies, kits, &[planet]) {
+        // The template links against the REAL model catalog: its example
+        // enemies wear installed models, so the scaffold stays honest. Its
+        // kit grid stands in for what the probe would derive.
+        let template_grid = "[kits.template_kit]\ntile = 3.0\nstory = 3.0\n";
+        if let Err(e) = super::super::load_from(
+            enemies,
+            kits,
+            template_grid,
+            super::super::MODELS_TOML,
+            &[planet],
+        ) {
             panic!("the template no longer links:\n{e}");
         }
     }
 
     #[test]
-    #[ignore = "writes rosters/TEMPLATE.toml — run via make roster-template"]
+    #[ignore = "writes rosters/TEMPLATE.toml — `make build` runs it"]
     fn regenerate_template() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../rosters/TEMPLATE.toml");
         std::fs::write(path, template()).expect("write rosters/TEMPLATE.toml");

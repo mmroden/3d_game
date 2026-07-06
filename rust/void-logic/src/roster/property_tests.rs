@@ -28,6 +28,8 @@ const SEEDS: u64 = 48;
 struct Generated {
     enemies_toml: String,
     kits_toml: String,
+    kit_grids_toml: String,
+    models_toml: String,
     planet_tomls: Vec<String>,
     /// Facts the mutation catalog needs: keys of directly-spawning enemies,
     /// keys of the rest, and per-planet declared lengths.
@@ -48,10 +50,17 @@ fn generate(seed: u64) -> Generated {
     let archetypes = ["shooter", "kiter", "swarmer", "tank", "bomber"];
     let mut spawner_keys = Vec::new();
     let mut other_keys = Vec::new();
+    // The generated model catalog: one entry per enemy, referenced by key
+    // (the real catalog is probed from disk; the shape is identical).
+    let mut models_toml = String::from("[models]\n");
+    for i in 0..enemy_count {
+        models_toml.push_str(&format!("m{i} = \"res://generated/m{i}.glb\"\n"));
+    }
     let mut enemies_toml = String::from(
         "[curves.flat]\nkind = \"flat\"\n\n\
          [curves.main]\nkind = \"ramp\"\nat_level_1 = 0.5\nat_peak = 1.2\npeak_level = 8\n\n\
-         [scaling_defaults]\nspeed = \"main\"\ncooldown = \"main\"\nhp = \"flat\"\n\n",
+         [scaling_defaults]\nspeed = \"main\"\ncooldown = \"main\"\nhp = \"flat\"\n\
+         damage = \"flat\"\ndetection = \"flat\"\nattack_range = \"main\"\n\n",
     );
     for i in 0..enemy_count {
         let key = format!("enemy_{i}");
@@ -66,7 +75,7 @@ fn generate(seed: u64) -> Generated {
         enemies_toml.push_str(&format!(
             "[[enemy]]\nkey = \"{key}\"\nid = {}\nname = \"Enemy {i}\"\n\
              blurb = \"Generated hazard {i}.\"\n\
-             model = \"res://addons/enemies/e{i}.glb\"\nsize = {:.1}\n\
+             model = \"m{i}\"\nsize = {:.1}\n\
              yaw_offset_deg = {}\nai = \"{}\"\nreward = {}\n",
             ids[i],
             rng.random_range(0.5..4.0f32),
@@ -133,16 +142,20 @@ fn generate(seed: u64) -> Generated {
         swarm_keys.push(key);
     }
 
-    // ── Kits ──
+    // ── Kits: the authored manifest plus the probe-derived grid file ──
     let kit_count = rng.random_range(1..=3usize);
     let mut kits_toml = String::new();
+    let mut kit_grids_toml = String::new();
     for k in 0..kit_count {
         let cubic = rng.random_range(0..2u32) == 0;
         let tile = rng.random_range(2.0..6.0f32);
         kits_toml.push_str(&format!(
-            "[kits.kit_{k}]\nparadigm = \"{}\"\ntile = {tile:.1}\nstory = {:.1}\n\
+            "[kits.kit_{k}]\nparadigm = \"{}\"\n\
              install_dir = \"godot/addons/kit_{k}\"\n\n",
             if cubic { "panel" } else { "layered" },
+        ));
+        kit_grids_toml.push_str(&format!(
+            "[kits.kit_{k}]\ntile = {tile:.1}\nstory = {:.1}\n\n",
             if cubic { tile } else { tile + rng.random_range(0.5..2.0f32) },
         ));
     }
@@ -193,10 +206,11 @@ fn generate(seed: u64) -> Generated {
             let pool_max = (enemy_count / 2).max(1);
             t.push_str(&format!(
                 "[[boss_slot]]\nat = {{ relative = {rel} }}\nboss = \"enemy_{}\"\n\
-                 escorts = {{ enemy = \"enemy_{}\", trigger = \"on_engage\" }}\n\
+                 escorts = {{ enemy = \"enemy_{}\", trigger = \"on_engage\", count = {} }}\n\
                  track = {}\nreward = \"{}\"\n\n",
                 rng.random_range(0..pool_max),
                 rng.random_range(0..pool_max),
+                rng.random_range(1..=6u8),
                 rng.random_range(1..=6u32),
                 if rng.random_range(0..2u32) == 0 { "consolation_pile" } else { "hull_container" },
             ));
@@ -204,12 +218,27 @@ fn generate(seed: u64) -> Generated {
         planet_tomls.push(t);
     }
 
-    Generated { enemies_toml, kits_toml, planet_tomls, spawner_keys, other_keys, planet_levels }
+    Generated {
+        enemies_toml,
+        kits_toml,
+        kit_grids_toml,
+        models_toml,
+        planet_tomls,
+        spawner_keys,
+        other_keys,
+        planet_levels,
+    }
 }
 
 fn load_generated(g: &Generated) -> Result<super::Roster, String> {
     let planets: Vec<&str> = g.planet_tomls.iter().map(|s| s.as_str()).collect();
-    load_from(&g.enemies_toml, &g.kits_toml, &planets)
+    load_from(
+        &g.enemies_toml,
+        &g.kits_toml,
+        &g.kit_grids_toml,
+        &g.models_toml,
+        &planets,
+    )
 }
 
 #[test]
@@ -305,6 +334,8 @@ fn clone_generated(g: &Generated) -> Generated {
     Generated {
         enemies_toml: g.enemies_toml.clone(),
         kits_toml: g.kits_toml.clone(),
+        kit_grids_toml: g.kit_grids_toml.clone(),
+        models_toml: g.models_toml.clone(),
         planet_tomls: g.planet_tomls.clone(),
         spawner_keys: g.spawner_keys.clone(),
         other_keys: g.other_keys.clone(),

@@ -1,9 +1,8 @@
 # The enemy grammar: identity (global) + tuning (level-bound curves).
-# FOUNDATIONAL TRANSCRIPTION (B13 stage 1, 2026-07-05): mirrors the Rust
-# tables byte-for-byte — golden-equivalence tests in roster/ hold this file
-# and the code identical until the enum tables die (stage 2). Model values
-# are res:// paths for now; stage 3 re-keys them into the measured kit
-# manifest (paths stop being authored).
+# HAND-AUTHORED — this file IS the game data; machinery never writes it.
+# Copy blocks from TEMPLATE.toml; the linker names anything you get wrong.
+# model = a KEY in models.generated.toml (the catalog `make assets` probes
+# from the installed files) — the linker resolves it to the res:// path.
 #
 # ids are the GDScript/save crossing: APPEND-ONLY, never renumbered.
 
@@ -31,11 +30,15 @@ at_level_1 = 1.4
 at_peak = 0.85
 peak_level = 10
 
-# Every enemy rides these unless it overrides in [enemy.scaling].
+# Every enemy rides these unless it overrides in [enemy.scaling]. All six
+# stats are declared — flat IS a config call, not an absence.
 [scaling_defaults]
 speed = "speed_standard"
 cooldown = "cooldown_standard"
 hp = "flat"
+damage = "flat"
+detection = "flat"
+attack_range = "flat"
 
 # ── The roster ───────────────────────────────────────────────────────────
 
@@ -44,7 +47,7 @@ key = "gun_drone"
 id = 0
 name = "Gun Drone"
 blurb = "A lone picket gun. It hangs back at standoff range and strafes, peppering you with bolts while it keeps the gap open."
-model = "res://addons/enemies/evil_mech_03.glb"
+model = "evil_mech_03"
 size = 2.0
 yaw_offset_deg = 180
 ai = "kiter"
@@ -63,7 +66,7 @@ key = "quad_orb"
 id = 1
 name = "Quad Orb"
 blurb = "A four-legged swarm unit. It doesn't shoot — it closes and clamps on, dragging your thrust down so its friends get clean shots."
-model = "res://addons/enemies/evil_mech_01.glb"
+model = "evil_mech_01"
 size = 1.0
 yaw_offset_deg = 180
 ai = "swarmer"
@@ -82,7 +85,7 @@ key = "bomber"
 id = 2
 name = "Bomber"
 blurb = "A walking charge. It fuses up the moment it's in range and detonates, trading itself for a hole in your shields. Kill it early or get clear."
-model = "res://addons/quaternius/essentials/enemies/Enemy_QuadOrb.gltf"
+model = "Enemy_QuadOrb"
 size = 0.5
 yaw_offset_deg = 0
 ai = "bomber"
@@ -100,7 +103,7 @@ key = "eye_drone"
 id = 3
 name = "Eye Drone"
 blurb = "An optical sentry. It takes a few shots, then breaks off to round up other machines and herd them onto you — death by overwhelming odds."
-model = "res://addons/quaternius/essentials/enemies/Enemy_EyeDrone.gltf"
+model = "Enemy_EyeDrone"
 size = 0.5
 yaw_offset_deg = 0
 ai = "kiter"
@@ -119,7 +122,7 @@ key = "quad_shell"
 id = 4
 name = "Quad Shell"
 blurb = "A shielded tank. Its plating soaks damage before its hull ever feels it; patient fire, or a flank while it's busy, is the only way through."
-model = "res://addons/quaternius/essentials/enemies/Enemy_QuadShell.gltf"
+model = "Enemy_QuadShell"
 size = 0.5
 yaw_offset_deg = 0
 ai = "tank"
@@ -137,7 +140,7 @@ key = "spawn_drone"
 id = 5
 name = "Spawn Drone"
 blurb = "A scrap-built picket ejected by a dying carrier. Lighter and quicker than the fleet it defends but flimsy — it buys the swarm a few more seconds of fire."
-model = "res://addons/quaternius/essentials/enemies/Enemy_GunDrone.gltf"
+model = "Enemy_GunDrone"
 size = 0.5
 yaw_offset_deg = 0
 ai = "kiter"
@@ -156,7 +159,7 @@ key = "sphere_gunner"
 id = 6
 name = "Sphere Gunner"
 blurb = "The fleet's standard picket sphere. It advances and fires in steady volleys — nothing fancy, but there are always more of them."
-model = "res://addons/enemies/sphere_ship_01.glb"
+model = "sphere_ship_01"
 size = 1.0
 yaw_offset_deg = 180
 ai = "shooter"
@@ -174,7 +177,7 @@ key = "sphere_striker"
 id = 7
 name = "Sphere Striker"
 blurb = "A stripped-down sphere built for the gap. It orbits at standoff range and rakes you from the flank, never sitting still for a clean return shot."
-model = "res://addons/enemies/sphere_ship_02.glb"
+model = "sphere_ship_02"
 size = 1.0
 yaw_offset_deg = 180
 ai = "kiter"
@@ -192,7 +195,7 @@ key = "sphere_carrier"
 id = 8
 name = "Sphere Carrier"
 blurb = "An armored brood sphere. Its shell soaks fire, and cracking it open releases the pickets it carries — killing it is the start of a fight, not the end."
-model = "res://addons/enemies/sphere_ship_03.glb"
+model = "sphere_ship_03"
 size = 1.4
 yaw_offset_deg = 180
 ai = "tank"
@@ -211,7 +214,7 @@ key = "alien_troop"
 id = 9
 name = "Alien Troop"
 blurb = "A grown thing among the machines. It closes and clamps on, dragging your thrust down so the spheres get clean shots."
-model = "res://addons/enemies/alien_troop_01.glb"
+model = "alien_troop_01"
 size = 1.0
 yaw_offset_deg = 180
 ai = "swarmer"
@@ -229,7 +232,7 @@ key = "sentry_drone"
 id = 10
 name = "Sentry Drone"
 blurb = "The occupation's standard sentry. It walks its beat, spots you, and shoots — the first machine every scavenger learns to kill."
-model = "res://addons/quaternius/essentials/enemies/Enemy_Raptor.gltf"
+model = "Enemy_Raptor"
 size = 0.5
 yaw_offset_deg = 0
 ai = "shooter"
@@ -247,7 +250,7 @@ key = "boss_brute"
 id = 11
 name = "Siege Mech"
 blurb = "A siege engine that guards the deep vaults. It holds the range, shrugs off fire, and hits hard enough to crack a hull in moments — and killing it only wakes what it carries."
-model = "res://addons/enemies/evil_mech_03.glb"
+model = "evil_mech_03"
 size = 4.0
 yaw_offset_deg = 180
 ai = "kiter"
@@ -266,7 +269,7 @@ key = "boss_latcher"
 id = 12
 name = "Lamprey Mech"
 blurb = "The planet warden. It clamps onto your hull and drinks it dry while its escort circles — break its grip or die by inches. Beyond it lies the next world."
-model = "res://addons/enemies/evil_mech_01.glb"
+model = "evil_mech_01"
 size = 3.0
 yaw_offset_deg = 180
 ai = "swarmer"

@@ -96,22 +96,18 @@ mod tests {
     }
 
     #[test]
-    fn the_pitch_is_single_sourced_and_matches_the_megakit_on_planet_one() {
-        // Planet 1 rooms are ASSEMBLED from megakit pieces authored at
-        // 4 m × 5 m — the pitch and the wall set must agree or every wall
-        // gaps. Cross-pinned here so neither can drift alone.
-        let astra = crate::asset_catalog::WALL_SET_ASTRA;
+    fn the_pitch_is_single_sourced_and_derives_from_the_kit_meshes() {
+        // The pitch's ONE source is the probe-derived kit grid
+        // (kits.generated.toml, measured from the recipe meshes) — there is
+        // no second constant to drift against. These literals pin what the
+        // megakit and panel meshes measure (tests may hold literals).
         for level in 1..=6 {
             let p = Pitch::for_level(level);
-            assert_eq!(p.tile, astra.tile_width, "level {level} tile");
-            assert_eq!(p.story, astra.story_height, "level {level} story");
+            assert_eq!((p.tile, p.story), (4.0, 5.0), "level {level}: megakit grid");
         }
-        // Planet 2+: cubic panel cells — tile == story, pinned against the
-        // panel set so the plates and the cells can never drift apart.
-        let panel = crate::asset_catalog::PANEL_SET_VOL01;
+        // Planet 2+: cubic panel cells — tile == story at the panel extent.
         let p2 = Pitch::for_level(7);
-        assert_eq!((p2.tile, p2.story), (panel.pitch, panel.pitch),
-            "planet 2 is cubic at the panel pitch");
+        assert_eq!((p2.tile, p2.story), (3.0, 3.0), "planet 2 is cubic at 3 m");
     }
 
     #[test]

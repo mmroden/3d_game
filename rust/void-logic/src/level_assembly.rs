@@ -321,7 +321,7 @@ impl LevelManifest {
     }
 
     /// Every enemy type that can appear this level — direct spawns *and* the
-    /// death-spawn minions they cough up — deduplicated, in `EnemyType::ALL`
+    /// death-spawn minions they cough up — deduplicated, in roster declaration
     /// order. This is what the bestiary marks as seen, so a death-only type (the
     /// SpawnDrone) enters the catalog the moment a level can produce it, which
     /// `enemies_for_level` (direct-only) could never surface.
@@ -519,7 +519,7 @@ mod tests {
             // Centered on the start room's footprint, at flight height.
             let idx = graph.room_indices().next().unwrap();
             let room = graph.room(idx).unwrap();
-            let story = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+            let story = 5.0; // planet-1 story — tests may hold literals
             let origin = room.world_position(cell, story);
             let [ex, _ey, ez] = room.template.extents;
             assert!((pos[0] - (origin[0] + ex as f32 * cell * 0.5)).abs() < 0.01,
@@ -632,7 +632,7 @@ mod tests {
     #[test]
     fn vertical_passages_are_unobstructed() {
         let cell = 4.0_f32;
-        let story = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+        let story = 5.0_f32; // planet-1 story — tests may hold literals
         let mut passages_checked = 0u32;
 
         for seed in 0..30u64 {
@@ -1059,12 +1059,12 @@ mod tests {
     }
 
     #[test]
-    fn boss_adds_grow_with_the_planet() {
+    fn escort_counts_come_from_the_slot_declaration() {
         let graph = pinned_boss_graph(9); // planet 2's mid-boss
         let m = manifest(&graph, &spec_for(9), Seed::new(1));
         let boss = &m.rooms[arena_position(&graph)].enemies[0];
         assert_eq!(boss.enemy_type, eid("boss_brute"));
-        assert_eq!(boss.minions.len(), 4, "planet 2 adds one to the trio");
+        assert_eq!(boss.minions.len(), 4, "planet 2's slots declare four");
     }
 
     #[test]

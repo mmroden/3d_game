@@ -31,8 +31,7 @@ pub enum Paradigm {
 pub struct BossStaging {
     /// The enemy def this boss fights as (declared on the boss slot).
     pub boss: EnemyId,
-    /// The escort kind and its rise trigger (declared on the boss slot);
-    /// the COUNT is the level-scaled `boss::boss_adds` formula.
+    /// The escort kind and its rise trigger (declared on the boss slot).
     pub escorts: (EnemyId, MinionTrigger),
     /// The fight's music track (never relooped — a fight outlasting it
     /// continues on combat stingers).
@@ -43,7 +42,7 @@ pub struct BossStaging {
     /// The consolation pile (kind, amount) — empty when the red container
     /// is staged.
     pub pile: Vec<(crate::currency::CurrencyKind, u32)>,
-    /// Minions the boss fields (planet-scaled).
+    /// Minions the boss fields — the slot's declared escort count.
     pub adds: u8,
 }
 
@@ -118,11 +117,11 @@ impl LevelSpec {
             };
             BossStaging {
                 boss: slot.boss,
-                escorts: slot.escorts,
+                escorts: (slot.escorts.enemy, slot.escorts.trigger),
                 track: crate::audio_catalog::boss_track(slot.track as u32),
                 hull_reward,
                 pile,
-                adds: crate::boss::boss_adds(level),
+                adds: slot.escorts.count,
             }
         });
 
@@ -244,7 +243,7 @@ mod tests {
         assert_eq!(staging.hull_reward, None, "mid-bosses drop the pile");
         assert_eq!(staging.pile.len(), 3, "the pile of three stages with it");
         assert_eq!(staging.drop_count(), 4, "bound cache + the pile of three");
-        assert_eq!(staging.adds, 3, "planet 1 fields the base trio");
+        assert_eq!(staging.adds, 3, "planet 1's slot declares a trio");
 
         let spec6 = fresh(6);
         let staging = spec6.boss.expect("rel-6 stages the planet final");

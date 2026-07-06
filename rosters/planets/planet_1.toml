@@ -1,7 +1,6 @@
 # Planet 1 — the terrestrial opening: the Quaternius fleet, layered megakit.
-# FOUNDATIONAL TRANSCRIPTION (B13 stage 1): each level lists EXACTLY what it
-# fields (owner 2026-07-05 — no cumulative add-only fleets); the lists below
-# reproduce today's schedule and the golden-equivalence pins hold them to it.
+# HAND-AUTHORED. Each level lists EXACTLY what it fields (owner 2026-07-05 —
+# no cumulative add-only fleets, nothing carries over between levels).
 
 planet = 1
 levels = 6
@@ -35,13 +34,13 @@ enemies = ["sentry_drone", "bomber", "eye_drone", "quad_shell"]
 [[boss_slot]]
 at = { relative = 3 }
 boss = "boss_brute"
-escorts = { enemy = "spawn_drone", trigger = "on_death" }
+escorts = { enemy = "spawn_drone", trigger = "on_death", count = 3 }
 track = 1
 reward = "consolation_pile"
 
 [[boss_slot]]
 at = { relative = 6 }
 boss = "boss_latcher"
-escorts = { enemy = "spawn_drone", trigger = "on_engage" }
+escorts = { enemy = "spawn_drone", trigger = "on_engage", count = 3 }
 track = 2
 reward = "hull_container"

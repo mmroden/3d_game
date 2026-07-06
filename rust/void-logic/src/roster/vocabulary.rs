@@ -3,9 +3,9 @@
 //!
 //! Each renderer matches EXHAUSTIVELY over its enum — adding a behaviour (a
 //! new [`Archetype`] variant, a new curve kind…) refuses to compile until it
-//! is described here, and the golden test in `super::tests` refuses to pass
-//! until `rosters/VOCABULARY.md` is regenerated to match. The doc cannot
-//! drift: code → this renderer → the committed reference, one direction.
+//! is described here, and `make build` re-renders the committed file
+//! mechanically. The doc cannot drift: code → this renderer → the committed
+//! reference, one direction — machinery writes it, hands never do.
 
 use crate::enemy_ai::Archetype;
 use crate::level_assembly::MinionTrigger;
@@ -102,13 +102,12 @@ fn section(out: &mut String, title: &str, field: &str, rows: &[(&str, &str)]) {
 pub fn vocabulary() -> String {
     let mut out = String::from(
         "# Roster grammar vocabulary\n\n\
-         GENERATED — do not edit. Regenerate whenever the golden test\n\
-         `the_committed_vocabulary_reference_is_current` fails:\n\
-         `make roster-vocab` (or copy the test's expected output).\n\
+         GENERATED — do not edit; `make build` re-renders this file\n\
+         (`make roster-vocab` runs just this step).\n\
          Every list below is a CLOSED vocabulary: any other value is a\n\
          parse error naming the legal options. Open references (enemy,\n\
-         swarm, kit, curve keys) are declared by the data itself and\n\
-         checked by the linker.\n\n",
+         swarm, kit, curve, and model keys) are declared by the data —\n\
+         models by the probed catalog — and checked by the linker.\n\n",
     );
     section(
         &mut out,
@@ -172,7 +171,9 @@ const SHAPES: &str = "\
 ### `[[enemy]]` (enemies.toml)
 
 Identity (global): `key`, `id` (append-only numeric crossing), `name`,
-`model`, `size` (metres, longest edge), `yaw_offset_deg`, `ai`, `reward`,
+`model` (a key in models.generated.toml — the catalog `make assets` probes
+from the installed files), `size` (metres, longest edge), `yaw_offset_deg`,
+`ai`, `reward`,
 `spawns_directly` (default true; false = death-spawned/escort/staged only).
 
 Minions — pre-staged bound drones and when they rise:
@@ -208,11 +209,13 @@ Only `spawns_directly` enemies may be listed. Planets past the last declared
 file repeat the newest planet (its final roster at every level, its boss
 slots and kits) until their own files arrive.
 
-### Kits (kits.toml — interim; stage 3 generates it)
+### Kits (kits.toml, hand-authored + kits.generated.toml, probed)
 
-`[kits.<name>]`: `paradigm`, `tile`, `story` (metres — the planet's pitch
-DERIVES from its kit), `install_dir` (repo-relative; a disk pin holds it
-populated by `make assets`).
+`[kits.<name>]`: `paradigm` and `install_dir` (repo-relative; a disk pin
+holds it populated by `make assets`). The kit's GRID — `tile`/`story`,
+which the planet's pitch derives from — is never authored: the probe
+derives it from the assembly recipe's meshes into kits.generated.toml and
+the linker joins the two.
 
 Further rules the linker enforces: swarm members must spawn directly;
 minions never nest (the engine binds one level deep); a slot's boss must
@@ -235,22 +238,32 @@ archetype's default derivation. This is the complete list:
   `detection` (default 1.2)
 - `drain_dps` — hull drain per second while latched (default 0; the
   boss latcher declares 6.0)
+- `bolt_speed` — projectile speed in m/s for firing archetypes
+  (default 13.0)
+- `latch_range` — metres within which a latcher counts as attached;
+  the slow re-tags and the drain ticks inside it (default 2.0 on
+  swarmers, else 0 = never latches)
+- `slow_factor` — per-tag speed multiplier compounded onto the player,
+  1.0 = no slow (default 0.7 on swarmers, else 1.0)
+- `slow_duration` — seconds each slow tag lasts (default 2.0 on
+  swarmers, else 0)
+- `slow_interval` — re-tag period while latched (default 0.5 on
+  swarmers, else 0)
 
 These are LIVE: `ai_config` builds from the resolved switches, drones
 scale by the declared curves, and the roster/boss slots drive level
 construction — edits here change the game. Shared feel constants
-(escape-ladder timings, strafe/retreat speed multipliers, damping,
-projectile speed) are engine tuning, not per-enemy balance — they stay
-code.
+(escape-ladder timings, strafe/retreat speed multipliers, damping)
+are engine tuning, not per-enemy balance — they stay code.
 
 ```toml
 [[boss_slot]]
 at = { relative = N }          # planet-relative level, 1..=6
 boss = \"<enemy key>\"           # the def it fights as (size on the def)
-escorts = { enemy = \"<enemy key>\", trigger = \"on_engage\" }
+escorts = { enemy = \"<enemy key>\", trigger = \"on_engage\", count = N }
 track = N                      # boss music index
 reward = \"hull_container\"      # or \"consolation_pile\"
 ```
 
-Escort COUNT is level-scaled by the game (boss adds formula), not declared.
+Escort count is the slot's declared call — at least 1; there is no formula.
 ";

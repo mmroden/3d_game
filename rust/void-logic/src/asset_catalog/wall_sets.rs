@@ -45,10 +45,6 @@ pub struct WallSet {
     pub short_wall: LayerSet,
     /// Baseboard decorative trim (y ≈ 0–0.02m), at the base of every wall.
     pub bottom: LayerSet,
-    /// Width of one tile in meters, derived from mesh z-range.
-    pub tile_width: f32,
-    /// Height of one story in meters, derived from top-layer y-max.
-    pub story_height: f32,
 }
 
 pub const WALL_SET_ASTRA: WallSet = WallSet {
@@ -78,8 +74,6 @@ pub const WALL_SET_ASTRA: WallSet = WallSet {
         corner_inner: megakit_wall!("BottomAccent_Corner_Round_Inner.gltf"),
         corner_outer: megakit_wall!("BottomAccent_Corner_Round_Outer.gltf"),
     },
-    tile_width: 4.0,
-    story_height: 5.0,
 };
 
 pub const WALL_SET_BAND: WallSet = WallSet {
@@ -109,8 +103,6 @@ pub const WALL_SET_BAND: WallSet = WallSet {
         corner_inner: megakit_wall!("BottomSimple_Corner_Round_Inner.gltf"),
         corner_outer: megakit_wall!("BottomSimple_Corner_Round_Outer.gltf"),
     },
-    tile_width: 4.0,
-    story_height: 5.0,
 };
 
 pub const WALL_SET_PIPE: WallSet = WallSet {
@@ -140,8 +132,6 @@ pub const WALL_SET_PIPE: WallSet = WallSet {
         corner_inner: megakit_wall!("BottomMetal_Corner_Round_Inner.gltf"),
         corner_outer: megakit_wall!("BottomMetal_Corner_Round_Outer.gltf"),
     },
-    tile_width: 4.0,
-    story_height: 5.0,
 };
 
 pub const WALL_SET_WIDEBAND: WallSet = WallSet {
@@ -171,8 +161,6 @@ pub const WALL_SET_WIDEBAND: WallSet = WallSet {
         corner_inner: megakit_wall!("BottomSimple_Corner_Round_Inner.gltf"),
         corner_outer: megakit_wall!("BottomSimple_Corner_Round_Outer.gltf"),
     },
-    tile_width: 4.0,
-    story_height: 5.0,
 };
 
 pub const WALL_SET_WINDOW: WallSet = WallSet {
@@ -202,8 +190,6 @@ pub const WALL_SET_WINDOW: WallSet = WallSet {
         corner_inner: megakit_wall!("BottomSimple_Corner_Round_Inner.gltf"),
         corner_outer: megakit_wall!("BottomSimple_Corner_Round_Outer.gltf"),
     },
-    tile_width: 4.0,
-    story_height: 5.0,
 };
 
 pub const WALL_SET_PADDED: WallSet = WallSet {
@@ -233,8 +219,6 @@ pub const WALL_SET_PADDED: WallSet = WallSet {
         corner_inner: megakit_wall!("BottomMetal_Corner_Round_Inner.gltf"),
         corner_outer: megakit_wall!("BottomMetal_Corner_Round_Outer.gltf"),
     },
-    tile_width: 4.0,
-    story_height: 5.0,
 };
 
 pub const ALL_WALL_SETS: &[WallSet] = &[
@@ -259,8 +243,8 @@ pub const DOOR: &str = megakit_platform!("Door_Frame_Square.gltf");
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PanelSet {
     pub id: &'static str,
-    /// Every panel spans exactly one cell face at this pitch (meters).
-    pub pitch: f32,
+    /// Every panel spans exactly one cell face; the pitch derives from the
+    /// pool's measured extent (the probe, `make assets`) — never authored.
     pub panels: &'static [&'static str],
 }
 
@@ -270,11 +254,13 @@ macro_rules! wall_panel {
     };
 }
 
+/// Every panel set — the probe walks these to derive kit pitches.
+pub const ALL_PANEL_SETS: &[PanelSet] = &[PANEL_SET_VOL01];
+
 /// Planet 2's kit: the 3 m plates of cgtrader Sci-Fi Parts Kit Vol 01
 /// (wider plates in the kit are reserved for props / multi-cell faces).
 pub const PANEL_SET_VOL01: PanelSet = PanelSet {
     id: "vol01",
-    pitch: 3.0,
     panels: &[
         wall_panel!("sf_pp01_a_001.glb"),
         wall_panel!("sf_pp01_a_006.glb"),

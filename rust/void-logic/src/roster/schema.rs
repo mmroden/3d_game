@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::enemy_ai::Archetype;
 use crate::level_assembly::MinionTrigger;
@@ -62,6 +62,9 @@ pub struct ScalingRaw {
     pub speed: Option<String>,
     pub cooldown: Option<String>,
     pub hp: Option<String>,
+    pub damage: Option<String>,
+    pub detection: Option<String>,
+    pub attack_range: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,6 +99,11 @@ pub struct EnemyRaw {
     pub shield_frac: Option<f32>,
     pub disengage_frac: Option<f32>,
     pub drain_dps: Option<f32>,
+    pub bolt_speed: Option<f32>,
+    pub latch_range: Option<f32>,
+    pub slow_factor: Option<f32>,
+    pub slow_duration: Option<f32>,
+    pub slow_interval: Option<f32>,
 }
 
 fn default_true() -> bool {
@@ -161,10 +169,10 @@ pub struct KitsFile {
 #[serde(deny_unknown_fields)]
 pub struct KitRaw {
     pub paradigm: KitParadigm,
-    pub tile: f32,
-    pub story: f32,
     /// Repo-relative directory `make assets` populates for this kit — the
-    /// disk pin ties the kit's claim to installed reality.
+    /// disk pin ties the kit's claim to installed reality. The kit's GRID
+    /// (tile/story) is never authored: the probe derives it into
+    /// kits.generated.toml and the linker joins the two.
     pub install_dir: String,
 }
 
@@ -227,11 +235,37 @@ pub struct BossAtRaw {
     pub relative: u32,
 }
 
+// ── Generated catalogs (written by the roster probe via `make assets`;
+//    Serialize so emission round-trips through the exact reading schema) ──
+
+/// rosters/models.generated.toml: model key (file stem) → res:// path.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelsFile {
+    pub models: BTreeMap<String, String>,
+}
+
+/// rosters/kits.generated.toml: each kit's grid, DERIVED by the probe from
+/// its assembly recipe + installed meshes (no dimension is ever authored).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GeneratedKitsFile {
+    pub kits: BTreeMap<String, GeneratedKitRaw>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GeneratedKitRaw {
+    pub tile: f32,
+    pub story: f32,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EscortRaw {
     pub enemy: String,
     pub trigger: MinionTrigger,
+    pub count: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

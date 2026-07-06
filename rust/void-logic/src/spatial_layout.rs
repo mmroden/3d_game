@@ -546,7 +546,7 @@ mod tests {
         let portal = crate::portal::portal_position(&level, TEST_PITCH)
             .expect("portal placed");
         let room = level.room(boss).unwrap();
-        let story_height = crate::asset_catalog::WALL_SET_ASTRA.story_height;
+        let story_height = 5.0; // planet-1 story — tests may hold literals
         let origin = room.world_position(cell_size, story_height);
         let ex = room.template.extents[0] as f32 * cell_size;
         let ez = room.template.extents[2] as f32 * cell_size;

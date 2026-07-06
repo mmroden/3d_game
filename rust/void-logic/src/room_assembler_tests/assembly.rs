@@ -30,7 +30,7 @@ fn every_xz_sealed_boundary_has_wall_or_corner() {
 
     for (template, active) in &test_cases {
         let placements = assemble_default(template, active, [0.0, 0.0, 0.0]);
-        let grid = CellGrid::new(template, active, [0.0, 0.0, 0.0], asset_catalog::WALL_SET_ASTRA.tile_width, asset_catalog::WALL_SET_ASTRA.story_height);
+        let grid = CellGrid::new(template, active, [0.0, 0.0, 0.0], TILE_WIDTH, STORY_HEIGHT);
 
         for cell in grid.cells() {
             // Only check cells that have at least one XZ sealed face.
@@ -68,7 +68,7 @@ fn y_only_sealed_cells_have_floor_ceiling_not_walls() {
     use crate::cell::CellGrid;
 
     // 3x1x3 sealed room: center cell (1,0,1) has only NegY+PosY sealed faces.
-    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], asset_catalog::WALL_SET_ASTRA.tile_width, asset_catalog::WALL_SET_ASTRA.story_height);
+    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], TILE_WIDTH, STORY_HEIGHT);
     let placements = assemble_default(&room_3x3(), &[], [0.0, 0.0, 0.0]);
 
     let center = grid.cell_at(1, 0, 1).expect("center cell should exist");
@@ -631,7 +631,7 @@ fn ceiling_tile_emits_flipped_platform() {
 fn no_geometry_at_interior_positions() {
     use crate::cell::CellGrid;
     let ws = &asset_catalog::WALL_SET_ASTRA;
-    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], ws.tile_width, ws.story_height);
+    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], TILE_WIDTH, STORY_HEIGHT);
     let placements = assemble_default(&room_3x3(), &[], [0.0, 0.0, 0.0]);
 
     // Center cell (1,0,1) is interior — should have no wall/corner geometry at its center.
@@ -661,39 +661,40 @@ fn multi_story_room_has_floor_only_at_bottom_ceiling_only_at_top() {
     };
     let ws = &asset_catalog::WALL_SET_ASTRA;
     let placements = assemble(&two_story, &[], [0.0, 0.0, 0.0], ws);
-    let max_y = 2.0 * ws.story_height;
+    let max_y = 2.0 * STORY_HEIGHT;
 
     assert_eq!(count_floors(&placements, 0.0), 1, "floor at y=0");
     assert_eq!(count_ceiling_tiles(&placements, 0.0, max_y), 1, "ceiling at y=2*story_height");
     // No floor/ceiling at intermediate y = story_height
     let mid_floors = placements.iter().filter(|p| {
-        is_floor_scene(p.scene) && (p.position[1] - ws.story_height).abs() < 0.001
+        is_floor_scene(p.scene) && (p.position[1] - STORY_HEIGHT).abs() < 0.001
     }).count();
     assert_eq!(mid_floors, 0, "no floor/ceiling at intermediate y");
 }
 
-/// Room dimensions use wall set's tile_width, not a hardcoded 4.0.
+/// Room dimensions use the grid's tile — the level pitch the grid was
+/// built at — not a constant baked into any wall set.
 #[test]
-fn room_dimensions_use_wall_set_tile_width() {
+fn room_dimensions_use_the_grid_tile() {
     let ws = &asset_catalog::WALL_SET_ASTRA;
     let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], ws);
 
-    // In a 3x3 room, the rightmost cell center is at (0 + 2.5 * tile_width, 0, ...).
-    // Floor tiles span from tile_width/2 to 2.5*tile_width in X.
+    // In a 3x3 room, the rightmost cell center is at (0 + 2.5 * tile, 0, ...).
+    // Floor tiles span from tile/2 to 2.5*tile in X.
     let max_floor_x = placements.iter()
         .filter(|p| is_floor_scene(p.scene) && p.position[1].abs() < 0.001)
         .map(|p| p.position[0])
         .fold(f32::NEG_INFINITY, f32::max);
-    let expected_max_x = (2.0 + 0.5) * ws.tile_width; // cell 2 center
+    let expected_max_x = (2.0 + 0.5) * TILE_WIDTH; // cell 2 center
     assert!(
         (max_floor_x - expected_max_x).abs() < 0.1,
         "max floor X should be ~{expected_max_x}, got {max_floor_x}"
     );
 }
 
-/// Room height uses wall set's story_height, not a hardcoded 5.0.
+/// Room height uses the grid's story — the level pitch — end to end.
 #[test]
-fn room_height_uses_wall_set_story_height() {
+fn room_height_uses_the_grid_story() {
     let ws = &asset_catalog::WALL_SET_ASTRA;
     let placements = assemble(&small_room(), &[], [0.0, 0.0, 0.0], ws);
     let ceiling_y = placements.iter()
@@ -702,9 +703,8 @@ fn room_height_uses_wall_set_story_height() {
         .next()
         .expect("should have a ceiling tile");
     assert!(
-        (ceiling_y - ws.story_height).abs() < 0.001,
-        "ceiling at y={ceiling_y}, expected story_height={}",
-        ws.story_height
+        (ceiling_y - STORY_HEIGHT).abs() < 0.001,
+        "ceiling at y={ceiling_y}, expected story {STORY_HEIGHT}"
     );
 }
 
@@ -716,7 +716,7 @@ fn floor_tiles_at_corner_cells_are_at_cell_center() {
     use crate::cell::CellGrid;
     let ws = &asset_catalog::WALL_SET_ASTRA;
     let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], ws);
-    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], ws.tile_width, ws.story_height);
+    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], TILE_WIDTH, STORY_HEIGHT);
 
     // Collect all cell centers
     let cell_centers: Vec<(i32, i32)> = grid.cells().iter()
@@ -745,14 +745,14 @@ fn ceiling_tiles_at_corner_cells_are_at_cell_center() {
     use crate::cell::CellGrid;
     let ws = &asset_catalog::WALL_SET_ASTRA;
     let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], ws);
-    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], ws.tile_width, ws.story_height);
+    let grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], TILE_WIDTH, STORY_HEIGHT);
 
     let cell_centers: Vec<(i32, i32)> = grid.cells().iter()
         .map(|c| ((c.world_center[0] * 100.0) as i32, (c.world_center[2] * 100.0) as i32))
         .collect();
 
     let ceiling_tiles: Vec<_> = placements.iter()
-        .filter(|p| is_floor_scene(p.scene) && (p.position[1] - ws.story_height).abs() < 0.001)
+        .filter(|p| is_floor_scene(p.scene) && (p.position[1] - STORY_HEIGHT).abs() < 0.001)
         .collect();
     assert_eq!(ceiling_tiles.len(), 9, "3x3 room should have 9 ceiling tiles");
 
