@@ -47,8 +47,12 @@ fn trigger_line(t: MinionTrigger) -> (&'static str, &'static str) {
         MinionTrigger::OnEngage => ("on_engage", "bound minions rise the moment the fight starts"),
         MinionTrigger::Every(_) => (
             "{ every_seconds = N }",
-            "a batch of `count` rises every N seconds while the parent lives, \
-             drawn from a pre-built ring of `cap` (dead minions return to it)",
+            "a timed emitter: a batch of `count` rises every N seconds while \
+             the parent lives. `cap` is REQUIRED and is the size of the \
+             pre-built ring the batches draw from — at most `cap` are afield \
+             at once, dead ring members recycle back in, so the pressure \
+             never runs dry (the linker requires cap >= count). One-shot \
+             triggers take no cap: their `count` IS the whole brood",
         ),
     }
 }
@@ -218,8 +222,9 @@ derives it from the assembly recipe's meshes into kits.generated.toml and
 the linker joins the two.
 
 Further rules the linker enforces: swarm members must spawn directly;
-minions never nest (the engine binds one level deep); a slot's boss must
-not declare def-level minions (the slot's escorts ARE its minions).
+minions never nest (the engine binds one level deep); a slot's boss may
+field its own TIMED emitters but never one-shot broods (the slot's
+escorts ARE its on-death/on-engage minions — one door).
 
 ## Behaviour switches (optional per-enemy fields)
 

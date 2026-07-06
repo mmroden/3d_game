@@ -16,7 +16,8 @@
 //! Designing the generator surfaced three corners that became linker rules
 //! before this file first ran: swarm members must spawn directly, minions
 //! must not nest (the engine binds one level deep), and a slot's boss must
-//! not declare def-level minions beside the slot's escorts.
+//! not declare one-shot broods beside the slot's escorts (timed emitters
+//! are the def's own character and may ride it — owner 2026-07-05).
 
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};

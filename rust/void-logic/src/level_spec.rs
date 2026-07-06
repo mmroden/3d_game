@@ -216,10 +216,11 @@ mod tests {
 
     #[test]
     fn coverage_closes_the_roster_over_death_spawns() {
-        assert!(!fresh(1).coverage.contains(&eid("spawn_drone")),
-            "level 1 cannot produce a SpawnDrone");
-        assert!(fresh(2).coverage.contains(&eid("spawn_drone")),
-            "the EyeDrone's death spawn enters the bestiary horizon with it");
+        assert!(!fresh(2).coverage.contains(&eid("spawn_drone")),
+            "level 2 cannot produce a SpawnDrone");
+        assert!(fresh(3).coverage.contains(&eid("spawn_drone")),
+            "the EyeDrone's death spawn enters the bestiary horizon with it \
+             (the EyeDrone arrives at relative 3, owner's schedule)");
         // Coverage is a superset of the roster …
         let spec = fresh(11);
         for direct in &spec.roster {

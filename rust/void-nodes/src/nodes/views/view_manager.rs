@@ -98,12 +98,16 @@ impl ViewManager {
     #[signal]
     fn render_viewports_changed(viewports: Array<Rid>);
 
-    /// Called when the window resizes (fullscreen transition, manual resize, etc.)
-    /// Recomputes all viewport and container sizes from the actual window dims.
+    /// Called when the window resizes (fullscreen transition, manual resize,
+    /// etc.) Recomputes viewport and container sizes from the actual window
+    /// dims in BOTH modes — mono is the no-goggles way to play, and its
+    /// single eye must follow the window too (a mode-gated resize left the
+    /// 3D view frozen at its old size, playtest 2026-07-05). The 3D UI
+    /// plane only exists in SBS.
     #[func]
     pub fn on_window_size_changed(&mut self) {
+        self.resize_viewports();
         if self.current_mode == DisplayMode::SideBySide {
-            self.resize_viewports();
             self.resize_ui_plane();
         }
     }

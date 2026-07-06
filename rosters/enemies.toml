@@ -270,7 +270,7 @@ yaw_offset_deg = 180
 ai = "kiter"
 reward = 10000
 spawns_directly = false # staged by boss slots, never rolled into rooms
-minions = [{ enemy = "spawn_drone", count = 1, trigger = "{ every_seconds = 5 }" }]
+minions = [{ enemy = "spawn_drone", count = 1, trigger = { every_seconds = 5.0 }, cap = 3 }]
 [enemy.stats]
 hp = 60.0
 speed = 8.0
@@ -291,7 +291,7 @@ ai = "swarmer"
 reward = 12000
 spawns_directly = false # staged by boss slots, never rolled into rooms
 drain_dps = 6.0 # hull drain while latched — any swarmer may carry this
-minions = [{ enemy = "spawn_drone", count = 2, trigger = "{ every_seconds = 5 }" }]
+minions = [{ enemy = "spawn_drone", count = 2, trigger = { every_seconds = 5.0 }, cap = 6 }]
 [enemy.stats]
 hp = 80.0
 speed = 10.0

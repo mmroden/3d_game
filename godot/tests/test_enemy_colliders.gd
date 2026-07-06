@@ -52,7 +52,7 @@ func test_the_collider_covers_the_visual_silhouette():
 				aabb.position.z + aabb.size.z + 1.0)
 			var to := from + Vector3(0, 0, -(aabb.size.z + 2.0))
 			var query := PhysicsRayQueryParameters3D.create(from, to)
-			var result := space.intersect_ray(query)
+			var result: Dictionary = space.intersect_ray(query)
 			total += 1
 			if not result.is_empty() and result["collider"] == enemy:
 				hits += 1

@@ -912,10 +912,19 @@ fn link(
                 errors.push(format!("{at}: boss track indices start at 1"));
             }
             let boss_id = enemy_by_key(&slot.boss, &mut errors, &at);
-            if !raw_enemies[boss_id.0].minions.is_empty() {
+            // A slot-staged boss may field TIMED emitters — sustained
+            // pressure is the def's own character (owner 2026-07-05). One-
+            // shot broods stay forbidden: they'd double-dip against the
+            // slot's declared escorts (one door).
+            if raw_enemies[boss_id.0]
+                .minions
+                .iter()
+                .any(|m| matches!(m.trigger, schema::TriggerRaw::Named(_)))
+            {
                 errors.push(format!(
-                    "{at}: boss '{}' declares def-level minions — a staged \
-                     boss's minions are the slot's escorts (one door)",
+                    "{at}: boss '{}' declares a one-shot brood — a staged \
+                     boss's on_death/on_engage minions are the slot's \
+                     escorts (one door); only timed emitters may ride the def",
                     slot.boss
                 ));
             }
@@ -1034,7 +1043,7 @@ mod tests {
     #[test]
     fn an_unknown_model_key_is_a_link_error() {
         let doctored = ENEMIES_TOML.replace(
-            "model = \"Enemy_Raptor\"",
+            "model = \"Enemy_QuadShell\"",
             "model = \"no_such_model\"",
         );
         let err = load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS).unwrap_err();
@@ -1081,55 +1090,59 @@ mod tests {
 
     #[test]
     fn every_stat_rides_its_declared_curve() {
-        // Point the three newly-opened defaults at the speed ramp (0.6 at
-        // level 1); the quoted values are unique to [scaling_defaults].
-        let doctored = ENEMIES_TOML
-            .replace("damage = \"flat\"", "damage = \"speed_standard\"")
-            .replace("detection = \"flat\"", "detection = \"speed_standard\"")
-            .replace("attack_range = \"flat\"", "attack_range = \"speed_standard\"");
-        let roster = load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS).unwrap();
+        // The PRODUCTION declarations at the peak level (owner's tuning):
+        // speed 1.15, cooldown 0.85, hp 3.0, damage 1.5; detection and
+        // attack_range declared flat.
+        let roster = loaded();
         let id = roster.enemy_by_key("sentry_drone").unwrap();
         let base = roster.enemy(id).stats;
-        let l1 = roster.stats_at(id, 1);
         let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
-        assert!(close(l1.damage, base.damage * 0.6), "damage rides its ramp");
-        assert!(close(l1.detection, base.detection * 0.6), "detection rides");
-        assert!(close(l1.attack_range, base.attack_range * 0.6), "range rides");
-        assert!(close(l1.speed, base.speed * 0.6), "speed still rides");
-        assert!(close(l1.cooldown, base.cooldown * 1.4), "cooldown still rides");
-        assert!(close(l1.hp, base.hp), "hp stays flat — by declaration");
+        let peak = roster.stats_at(id, 10);
+        assert!(close(peak.speed, base.speed * 1.15), "speed rides its ramp");
+        assert!(close(peak.cooldown, base.cooldown * 0.85), "cooldown rides");
+        assert!(close(peak.hp, base.hp * 3.0), "hp toughens on hp_standard");
+        assert!(close(peak.damage, base.damage * 1.5), "damage rides");
+        assert!(close(peak.detection, base.detection), "detection: flat by call");
+        assert!(close(peak.attack_range, base.attack_range), "range: flat by call");
+        let l1 = roster.stats_at(id, 1);
+        assert!(close(l1.speed, base.speed * 0.6), "level 1 crawls");
+        assert!(close(l1.cooldown, base.cooldown * 1.4), "level 1 shoots slow");
+        assert!(close(l1.hp, base.hp), "hp_standard starts at baseline");
     }
 
     #[test]
     fn derived_ranges_ride_their_base_stats_curve() {
-        // detection/attack_range/hp on the ramp: the AI's derived absolutes
-        // (disengage, standoff, shield) must follow their base stat, or a
-        // declared curve is a lever that only half-moves the machine.
+        // detection/attack_range pointed at the speed ramp: the AI's derived
+        // absolutes (disengage, standoff) must follow their base stat, and
+        // shield follows the production hp ramp — or a declared curve is a
+        // lever that only half-moves the machine.
         let doctored = ENEMIES_TOML
             .replace("detection = \"flat\"", "detection = \"speed_standard\"")
-            .replace("attack_range = \"flat\"", "attack_range = \"speed_standard\"")
-            .replace("hp = \"flat\"", "hp = \"speed_standard\"");
-        let roster = load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS).unwrap();
+            .replace("attack_range = \"flat\"", "attack_range = \"speed_standard\"");
+        let roster =
+            load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS)
+                .unwrap();
         let id = roster.enemy_by_key("quad_shell").unwrap(); // tank: shielded
         let def = roster.enemy(id);
-        let cfg = roster.ai_config_at(id, 1);
-        let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
-        assert!(close(cfg.detection_range, def.stats.detection * 0.6));
-        assert!(close(cfg.attack_range, def.stats.attack_range * 0.6));
-        assert!(close(cfg.disengage_range, def.behavior.disengage * 0.6),
+        let cfg = roster.ai_config_at(id, 10); // peak: speed ramp 1.15, hp 3.0
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        assert!(close(cfg.detection_range, def.stats.detection * 1.15));
+        assert!(close(cfg.attack_range, def.stats.attack_range * 1.15));
+        assert!(close(cfg.disengage_range, def.behavior.disengage * 1.15),
             "disengage follows detection");
-        assert!(close(cfg.standoff_range, def.behavior.standoff * 0.6),
+        assert!(close(cfg.standoff_range, def.behavior.standoff * 1.15),
             "standoff follows attack_range");
-        assert!(close(cfg.health.as_f32(), def.stats.hp * 0.6));
+        assert!(close(cfg.health.as_f32(), def.stats.hp * 3.0));
         assert!(close(cfg.shield.expect("tanks are shielded").as_f32(),
-            def.behavior.shield * 0.6), "shield follows hp");
+            def.behavior.shield * 3.0), "shield follows hp");
     }
 
     #[test]
     fn scaling_defaults_must_cover_every_stat() {
-        let doctored = ENEMIES_TOML.replace("damage = \"flat\"\n", "");
-        let err = load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS).unwrap_err();
-        assert!(err.contains("no 'damage' curve"), "{err}");
+        let doctored = ENEMIES_TOML.replace("detection = \"flat\"\n", "");
+        let err = load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS)
+            .unwrap_err();
+        assert!(err.contains("no 'detection' curve"), "{err}");
     }
 
     #[test]
@@ -1168,6 +1181,31 @@ mod tests {
         );
         let err = load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS).unwrap_err();
         assert!(err.contains("slow_factor must be finite"), "{err}");
+    }
+
+    #[test]
+    fn a_slot_boss_may_field_timed_emitters_but_never_broods() {
+        // Sustained pressure is the def's own character (owner 2026-07-05:
+        // the Brute fields a spawn ring); one-shot broods stay forbidden —
+        // they'd double-dip against the slot's declared escorts.
+        let emitter = ENEMIES_TOML.replace(
+            "spawns_directly = false # staged by boss slots, never rolled into rooms\nminions = [{ enemy = \"spawn_drone\", count = 1, trigger = { every_seconds = 5.0 }, cap = 3 }]",
+            "spawns_directly = false\nminions = [{ enemy = \"spawn_drone\", count = 1, trigger = { every_seconds = 5.0 }, cap = 3 }]",
+        );
+        assert!(
+            load_from(&emitter, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS).is_ok(),
+            "a timed emitter on a slot-staged boss must link"
+        );
+        let brood = ENEMIES_TOML.replace(
+            "trigger = { every_seconds = 5.0 }, cap = 3",
+            "trigger = \"on_death\"",
+        );
+        let err = load_from(&brood, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS)
+            .unwrap_err();
+        assert!(
+            err.contains("one-shot brood"),
+            "a brood on a slot-staged boss must be a link error naming the rule: {err}"
+        );
     }
 
     #[test]

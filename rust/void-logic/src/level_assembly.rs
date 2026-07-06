@@ -367,17 +367,34 @@ pub fn manifest(
                 if room_pos == arena_pos {
                     let boss_type = staging.boss;
                     let adds = staging.adds;
-                    // Declared on the boss slot; count is the staged adds.
+                    // Escorts are declared on the boss slot (count = the
+                    // staged adds); the def's own TIMED emitters reserve
+                    // their rings beside them (cap slots each — the Faucet
+                    // reservation, same as any enemy's declared minions).
                     let (minion_type, trigger) = staging.escorts;
+                    let minions: Vec<MinionSpawn> = (0..adds)
+                        .map(|_| MinionSpawn { enemy_type: minion_type, trigger })
+                        .chain(
+                            roster()
+                                .enemy(boss_type)
+                                .minions
+                                .iter()
+                                .filter(|m| matches!(m.trigger, MinionTrigger::Every(_)))
+                                .flat_map(|m| {
+                                    (0..m.cap).map(move |_| MinionSpawn {
+                                        enemy_type: m.enemy,
+                                        trigger: m.trigger,
+                                    })
+                                }),
+                        )
+                        .collect();
                     let enemies = room
                         .enemies
                         .iter()
                         .map(|pos| EnemySpawn {
                             enemy_type: boss_type,
                             position: *pos,
-                            minions: (0..adds)
-                                .map(|_| MinionSpawn { enemy_type: minion_type, trigger })
-                                .collect(),
+                            minions: minions.clone(),
                         })
                         .collect();
                     return RoomManifest { enemies };
@@ -975,12 +992,12 @@ mod tests {
     /// pre-instantiates under the parent's room.
     #[test]
     fn manifest_expands_declared_minions() {
-        // Level 2 admits the EyeDrone (its min_level); run enough seeds that at
-        // least one EyeDrone is placed, and check the expansion on every enemy.
+        // Level 3 fields the EyeDrone (owner's schedule); run enough seeds
+        // that at least one is placed, and check the expansion on every enemy.
         let mut saw_eye_drone = false;
         for seed in 0..40u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let m = manifest(&graph, &spec_for(2), Seed::new(seed));
+            let m = manifest(&graph, &spec_for(3), Seed::new(seed));
             for room in &m.rooms {
                 for enemy in &room.enemies {
                     let declared = &roster().enemy(enemy.enemy_type).minions;
@@ -1040,10 +1057,18 @@ mod tests {
         assert_eq!(arena.enemies.len(), 1, "the arena holds the boss, nothing else");
         let boss = &arena.enemies[0];
         assert_eq!(boss.enemy_type, eid("boss_brute"), "rel-3 stages the Brute");
-        assert_eq!(boss.minions.len(), 3, "planet 1 fields the base drone trio");
-        assert!(boss.minions.iter().all(|mn| {
+        // The slot's escorts AND the def's own emitter ring both reserve
+        // (Faucet: cap slots pre-built) — the Brute declares a cap-3 ring.
+        let escorts = boss.minions.iter().filter(|mn| {
             mn.enemy_type == eid("spawn_drone") && mn.trigger == MinionTrigger::OnDeath
-        }), "the Brute's trio rises when it falls");
+        }).count();
+        let ring = boss.minions.iter().filter(|mn| {
+            mn.enemy_type == eid("spawn_drone")
+                && matches!(mn.trigger, MinionTrigger::Every(_))
+        }).count();
+        assert_eq!(escorts, 3, "planet 1's slot declares a trio");
+        assert_eq!(ring, 3, "the def's cap-3 emitter ring reserves with it");
+        assert_eq!(boss.minions.len(), 6, "escorts + ring, nothing else");
     }
 
     #[test]
@@ -1052,10 +1077,15 @@ mod tests {
         let m = manifest(&graph, &spec_for(6), Seed::new(1));
         let boss = &m.rooms[arena_position(&graph)].enemies[0];
         assert_eq!(boss.enemy_type, eid("boss_latcher"), "rel-6 stages the Latcher");
-        assert_eq!(boss.minions.len(), 3);
-        assert!(boss.minions.iter().all(|mn| {
+        let engage = boss.minions.iter().filter(|mn| {
             mn.enemy_type == eid("spawn_drone") && mn.trigger == MinionTrigger::OnEngage
-        }), "the escort is up from first contact, not on death");
+        }).count();
+        let ring = boss.minions.iter().filter(|mn| {
+            matches!(mn.trigger, MinionTrigger::Every(_))
+        }).count();
+        assert_eq!(engage, 3, "the escort is up from first contact, not on death");
+        assert_eq!(ring, 6, "the Latcher's cap-6 emitter ring reserves with it");
+        assert_eq!(boss.minions.len(), 9, "escorts + ring, nothing else");
     }
 
     #[test]
@@ -1064,7 +1094,10 @@ mod tests {
         let m = manifest(&graph, &spec_for(9), Seed::new(1));
         let boss = &m.rooms[arena_position(&graph)].enemies[0];
         assert_eq!(boss.enemy_type, eid("boss_brute"));
-        assert_eq!(boss.minions.len(), 4, "planet 2's slots declare four");
+        let escorts = boss.minions.iter()
+            .filter(|mn| mn.trigger == MinionTrigger::OnDeath)
+            .count();
+        assert_eq!(escorts, 4, "planet 2's slots declare four");
     }
 
     #[test]

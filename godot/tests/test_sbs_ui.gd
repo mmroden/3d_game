@@ -105,6 +105,21 @@ func test_sbs_hides_the_mono_ui_layer():
 	var mono = _main.get_node("ViewManager/MonoUILayer")
 	assert_false(mono.visible, "MonoUILayer must hide in SBS")
 
+func test_mono_view_recovers_the_window_after_a_resize():
+	# Mono is the no-goggles way to play; the single-eye view must follow
+	# the window (playtest 2026-07-05: a resized window left the 3D view
+	# frozen at its old size in a sea of dead gray, reticle divorced from
+	# the optical center). Simulate the stale state a resize used to leave
+	# behind, then fire the resize handler: the eye must re-cover the
+	# window.
+	var vm = _main.get_node("ViewManager")
+	var left = _main.get_node("ViewManager/StereoCanvas/LeftContainer")
+	left.size = Vector2(123, 77) # the stale pre-resize footprint
+	vm.on_window_size_changed()
+	var win := Vector2(DisplayServer.window_get_size())
+	assert_eq(left.size, win,
+		"mono's single eye must re-cover the window after a resize")
+
 # --- helpers ---
 
 func _find_panel_container(node: Node) -> PanelContainer:

@@ -53,7 +53,13 @@ slow_factor = 1.0        # per-tag speed multiplier, compounds; 1.0 = none
                          # (default 0.7 swarmers, else 1.0)
 slow_duration = 0.0      # seconds a tag lasts (default 2.0 swarmers)
 slow_interval = 0.0      # re-tag period while latched (default 0.5 swarmers)
-# Bound minions: one-shot broods and/or timed emitters.
+# Bound minions — two kinds, told apart by the trigger:
+#   one-shot brood: `count` is the WHOLE brood, released once (on_death /
+#   on_engage). No cap — the brood is its own ceiling.
+#   timed emitter: `count` is the BATCH released every interval; `cap` is
+#   the SIZE OF THE PRE-BUILT RING it draws from — never more than `cap`
+#   afield at once, and dead ring members recycle back into it, so the
+#   pressure lasts forever (the linker requires cap >= count).
 minions = [
   { enemy = "template_minion", count = 2, trigger = "on_death" },
   { enemy = "template_minion", count = 1, trigger = { every_seconds = 10.0 }, cap = 4 },
