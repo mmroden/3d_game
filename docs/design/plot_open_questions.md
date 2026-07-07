@@ -105,7 +105,7 @@ order and a reason for it.
   launch, the trap. Making it the terminal room means the amnesia arc
   resolves environmentally — the Player fights through the place they forgot
   and remembers — mirroring ch 4's walked confession. Handler Pool C lines
-  coordinate (Maya reacting to the Player suddenly remembering).
+  coordinate (the handler reacting to the Player suddenly remembering).
 - Alternative: authored thematic order with no biographical logic; hangar is
   just a cool room. Cheaper to think about, wastes the arc.
 - Texture note regardless: rendered text (classroom!) garbles exactly like
@@ -126,7 +126,7 @@ written, because it constrains M5 (the ask):
 - **M5 as inventory:** darker — it is checking whether the network still
   answers, and the Player can't tell which of the above it is (fits bible
   rule 2).
-- Cross-channel corroboration regardless of choice: Maya reports other
+- Cross-channel corroboration regardless of choice: the handler reports other
   survey drones going dark across the belt. The Player assembles the
   many-sites truth from two voices that cannot hear each other.
 - **Recommendation:** decide the M5 *shape* now (warning/plea/inventory or

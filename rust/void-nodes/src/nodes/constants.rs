@@ -18,6 +18,7 @@ pub mod signals {
     pub const RETURN_PRESSED: &str = "return_pressed";
     pub const RESPAWN_PRESSED: &str = "respawn_pressed";
     pub const NEW_GAME_SELECTED: &str = "new_game_selected";
+    pub const BESTIARY_SELECTED: &str = "bestiary_selected";
     pub const CONTINUE_SELECTED: &str = "continue_selected";
     pub const SBS_TOGGLED: &str = "sbs_toggled";
     pub const MSAA_TOGGLED: &str = "msaa_toggled";
@@ -47,6 +48,7 @@ pub mod signals {
 pub mod methods {
     pub const START_NEW_GAME: &str = "start_new_game";
     pub const CONTINUE_GAME: &str = "continue_game";
+    pub const SHOW_BESTIARY_FROM_MENU: &str = "show_bestiary_from_menu";
     pub const ON_ENEMY_KILLED: &str = "on_enemy_killed";
     pub const ON_PORTAL_ENTERED: &str = "on_portal_entered";
     pub const ON_SBS_TOGGLED: &str = "on_sbs_toggled";

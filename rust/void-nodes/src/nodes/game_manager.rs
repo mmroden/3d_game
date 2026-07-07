@@ -56,6 +56,10 @@ pub struct GameManager {
     current_power_mode: i32,
     /// Which bestiary entry the pre-level briefing is currently showing.
     bestiary_index: usize,
+    /// The bestiary was opened from the main menu (root-level catalog),
+    /// not the pre-level briefing — so select/back return to the menu
+    /// instead of starting a mission (playtest 2026-07-07).
+    bestiary_from_menu: bool,
     /// Set when the shop was entered by losing a life: its Continue restarts
     /// the current level (same seed) instead of advancing to the next.
     pending_respawn: bool,
@@ -101,6 +105,7 @@ impl INode for GameManager {
             pending_level_build: 0,
             current_power_mode: 0,
             bestiary_index: 0,
+            bestiary_from_menu: false,
             pending_respawn: false,
             boss_fight: None,
             level_spec: None,
@@ -690,21 +695,50 @@ impl GameManager {
         }
     }
 
-    /// Called from the bestiary UI's Select/Fire: begin the mission. Browsing is
-    /// separate (see `on_bestiary_paged`), so this always drops into the level.
+    /// Open the bestiary as a root-level catalog from the main menu
+    /// (playtest 2026-07-07). The saved profile's sightings are the source,
+    /// so sync them into the run state first; the `bestiary_from_menu` flag
+    /// routes select/back back to the menu instead of a mission.
+    #[func]
+    pub fn show_bestiary_from_menu(&mut self) {
+        if self.phase != GamePhase::MainMenu {
+            return;
+        }
+        if let Some(save) = &self.save_game {
+            self.run_state.profile = save.profile.clone();
+        }
+        self.bestiary_from_menu = true;
+        self.transition_to(GamePhase::Bestiary);
+    }
+
+    /// Called from the bestiary UI's Select/Fire. From the pre-level briefing
+    /// this begins the mission; from the root-level menu browse it returns to
+    /// the menu (browsing is separate — see `on_bestiary_paged`).
     #[func]
     pub fn advance_from_bestiary(&mut self) {
-        if self.phase == GamePhase::Bestiary {
+        if self.phase != GamePhase::Bestiary {
+            return;
+        }
+        if self.bestiary_from_menu {
+            self.bestiary_from_menu = false;
+            self.transition_to(GamePhase::MainMenu);
+        } else {
             self.transition_to(GamePhase::Playing);
         }
     }
 
-    /// Called from the bestiary UI's back press (circle is always back):
-    /// return to the loadout screen. The two share one backdrop, so this is
-    /// a content flip, not a rebuild.
+    /// Called from the bestiary UI's back press (circle is always back).
+    /// From the briefing this returns to the loadout (a content flip on the
+    /// shared backdrop, no rebuild); from the menu browse, back to the menu.
     #[func]
     pub fn back_from_bestiary(&mut self) {
-        if self.phase == GamePhase::Bestiary {
+        if self.phase != GamePhase::Bestiary {
+            return;
+        }
+        if self.bestiary_from_menu {
+            self.bestiary_from_menu = false;
+            self.transition_to(GamePhase::MainMenu);
+        } else {
             self.transition_to(GamePhase::ShipSelect);
             self.show_ship_select_ui();
         }
@@ -1683,6 +1717,8 @@ impl GameManager {
                 menu.connect(signals::NEW_GAME_SELECTED, &new_game);
                 let continue_game = self.base().callable(methods::CONTINUE_GAME);
                 menu.connect(signals::CONTINUE_SELECTED, &continue_game);
+                let bestiary = self.base().callable(methods::SHOW_BESTIARY_FROM_MENU);
+                menu.connect(signals::BESTIARY_SELECTED, &bestiary);
                 let sbs = self.base().callable(methods::ON_SBS_TOGGLED);
                 menu.connect(signals::SBS_TOGGLED, &sbs);
                 let msaa = self.base().callable(methods::ON_MSAA_TOGGLED);

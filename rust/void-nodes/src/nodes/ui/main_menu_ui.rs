@@ -16,6 +16,7 @@ use void_logic::ui_style;
 enum MenuAction {
     Continue,
     NewGame,
+    Bestiary,
     Options,
     Exit,
 }
@@ -25,6 +26,7 @@ impl MenuAction {
         match self {
             Self::Continue => "Continue",
             Self::NewGame => "New Game",
+            Self::Bestiary => "Bestiary",
             Self::Options => "Options",
             Self::Exit => "Exit",
         }
@@ -63,10 +65,12 @@ pub struct MainMenuUI {
 /// The menu rows for a given Continue availability. New Game always leads
 /// when Continue is absent.
 fn actions_for(continue_available: bool) -> Vec<MenuAction> {
+    // The bestiary is always browsable (it opens on the two currency entries
+    // even before an enemy is sighted) — a root-level catalog, not a run.
     if continue_available {
-        vec![MenuAction::Continue, MenuAction::NewGame, MenuAction::Options, MenuAction::Exit]
+        vec![MenuAction::Continue, MenuAction::NewGame, MenuAction::Bestiary, MenuAction::Options, MenuAction::Exit]
     } else {
-        vec![MenuAction::NewGame, MenuAction::Options, MenuAction::Exit]
+        vec![MenuAction::NewGame, MenuAction::Bestiary, MenuAction::Options, MenuAction::Exit]
     }
 }
 
@@ -115,6 +119,9 @@ impl ICanvasLayer for MainMenuUI {
 impl MainMenuUI {
     #[signal]
     fn new_game_selected();
+
+    #[signal]
+    fn bestiary_selected();
 
     #[signal]
     fn continue_selected();
@@ -290,6 +297,9 @@ impl MainMenuUI {
             }
             MenuAction::NewGame => {
                 self.base_mut().emit_signal(signals::NEW_GAME_SELECTED, &[]);
+            }
+            MenuAction::Bestiary => {
+                self.base_mut().emit_signal(signals::BESTIARY_SELECTED, &[]);
             }
             MenuAction::Options => {
                 self.in_options = true;

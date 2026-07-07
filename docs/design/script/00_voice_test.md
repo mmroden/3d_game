@@ -7,7 +7,7 @@ counterfeit); redline those too if the presumption is wrong.
 
 ---
 
-## THE HANDLER — "Maya" (working name)
+## THE HANDLER (working name)
 
 Comms discipline eroding into a person. Always 2–3s lagged.
 
@@ -26,7 +26,7 @@ Run one, cold open (the tutorial-as-diagnostics):
 > **[sample H4]** "Your loadout reads armed. Anything moves out there and
 > isn't tagged blue, it isn't ours."
 
-Reacting to telemetry only (she cannot see what the player sees):
+Reacting to telemetry only (the handler cannot see what the player sees):
 
 > **[sample H5]** "Your readings just spiked. Talk to me — what's in there?"
 
@@ -35,8 +35,8 @@ Reacting to telemetry only (she cannot see what the player sees):
 
 Amnesia beat, early:
 
-> **[sample H7]** *(a beat of dead air longer than the lag)* "…It's Maya,
-> Dawn Six. It's still Maya."
+> **[sample H7]** *(a beat of dead air longer than the lag)* "…It's me,
+> Dawn Six. It's still me."
 
 Protocol erosion, late meta-tier:
 
@@ -108,7 +108,7 @@ Death fragments (post-first-clear pool, T2–T3):
 Only what the person holding the controller could be thinking. Handler
 channel only.
 
-> **[sample P1]** "Talk to me, Maya — up is not staying up."
+> **[sample P1]** "Talk to me — up is not staying up."
 
 > **[sample P2]** "There's a chair. There's a— there's a whole living room
 > out here."
@@ -125,7 +125,8 @@ channel only.
 ## What to redline
 
 1. **Handler:** how much warmth under the procedure? H7/H8 set the ceiling.
-   Is "Maya" a keeper or does the handler stay callsign-only longer?
+   The handler stays unnamed and ungendered — how much does it individuate
+   through voice alone before that reads as a name-by-another-means?
 2. **The Other:** O4/O5 set the register — instrumentation-speak about
    emotion. Too clinical? Not clinical enough? Does the tier ladder read as
    an arc in these ten lines alone? (It should.)

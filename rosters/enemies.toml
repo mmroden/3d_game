@@ -213,7 +213,7 @@ model = "sphere_ship_03"
 size = 1.4
 yaw_offset_deg = 180
 ai = "tank"
-reward = 2200
+reward = 1200
 minions = [{ enemy = "spawn_drone", count = 2, trigger = "on_death" }]
 [enemy.stats]
 hp = 10.0
@@ -258,6 +258,27 @@ damage = 5.0
 detection = 25.0
 attack_range = 10.0
 cooldown = 1.0
+
+[[enemy]]
+key = "miniboss_brute"
+id = 11
+name = "Siege Miniboss Mech"
+blurb = "A siege engine that guards the deep vaults. It holds the range, shrugs off fire, and hits hard enough to crack a hull in moments — and killing it only wakes what it carries."
+model = "evil_mech_03"
+size = 2.5
+yaw_offset_deg = 180
+ai = "kiter"
+reward = 3000
+miniboss = true
+spawns_directly = true # this is a miniboss
+minions = [{ enemy = "spawn_drone", count = 1, trigger = { every_seconds = 5.0 }, cap = 3 }]
+[enemy.stats]
+hp = 30.0
+speed = 8.0
+damage = 16.0
+detection = 45.0
+attack_range = 14.0
+cooldown = 1.4
 
 [[enemy]]
 key = "boss_brute"

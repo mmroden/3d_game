@@ -12,6 +12,8 @@ signal new_game_selected
 @warning_ignore("unused_signal")
 signal continue_selected
 @warning_ignore("unused_signal")
+signal bestiary_selected
+@warning_ignore("unused_signal")
 signal sbs_toggled(enabled: bool)
 @warning_ignore("unused_signal")
 signal msaa_toggled(enabled: bool)
@@ -63,4 +65,5 @@ func update_map(_rects: PackedFloat32Array, _flags: PackedByteArray, _projection
 func update_organics(_o: int) -> void: pass
 func update_laser(_n: String, _c: Color) -> void: pass
 func update_slow(_a: bool) -> void: pass
+func flash_damage(_hull: bool) -> void: pass
 func update_level(_l: int) -> void: pass
