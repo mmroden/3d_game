@@ -1037,6 +1037,7 @@ impl GameManager {
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
             audio.bind_mut().play_event_at(event, hit_position);
         }
+        self.flash_hud_damage(outcome);
         if !self.run_state.is_alive() {
             self.on_player_death();
         }
@@ -1059,6 +1060,7 @@ impl GameManager {
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
             audio.bind_mut().play_event(event);
         }
+        self.flash_hud_damage(outcome);
         if !self.run_state.is_alive() {
             self.on_player_death();
         }
@@ -1070,6 +1072,16 @@ impl GameManager {
         let Some(parent) = self.base().get_parent() else { return };
         if let Some(mut hud) = Self::find_ui_node(&parent, nodes::HUD) {
             hud.call(methods::UPDATE_SLOW, &[Variant::from(active)]);
+        }
+    }
+
+    /// Flash the HUD damage tint at the struck layer's color (playtest
+    /// 2026-07-06): red on a hull breach, amber on a held shield.
+    fn flash_hud_damage(&self, outcome: DamageOutcome) {
+        let Some(parent) = self.base().get_parent() else { return };
+        if let Some(mut hud) = Self::find_ui_node(&parent, nodes::HUD) {
+            let hull = matches!(outcome, DamageOutcome::HullHit);
+            hud.call(methods::FLASH_DAMAGE, &[Variant::from(hull)]);
         }
     }
 

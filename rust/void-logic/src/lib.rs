@@ -26,6 +26,7 @@ pub mod enemy_ai;
 pub mod laser;
 pub mod bestiary;
 pub mod currency;
+pub mod damage_flash;
 pub mod debuff;
 pub mod kill_tracker;
 pub mod kinetics;

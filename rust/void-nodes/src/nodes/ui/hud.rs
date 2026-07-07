@@ -11,6 +11,8 @@ use crate::nodes::constants::{groups, theme, signals, methods, nodes};
 use crate::nodes::live_handle::{LiveOpt, LiveRef, LiveVec};
 use void_logic::radar::{self, BandRect};
 use void_logic::ui_style;
+use void_logic::damage_flash::DamageFlash;
+use void_logic::run_state::DamageOutcome;
 
 /// Health/shield bar dimensions. Shared by `build_hud` (background + fill) and
 /// the `update_*` resizers so the two can't drift out of sync.
@@ -80,6 +82,11 @@ pub struct HUD {
     radar_contacts: std::collections::HashSet<i64>,
     /// The recon-map corner widget (FogMap unlock), child of `safe_area`.
     map_panel: Option<LiveRef<MapPanel>>,
+    /// Decaying screen damage tint (playtest 2026-07-06): amber on a held
+    /// shield, red on a hull breach. The pure decay lives in void-logic;
+    /// this overlay renders its current color+alpha each frame.
+    damage_flash: DamageFlash,
+    damage_tint: Option<LiveRef<ColorRect>>,
     /// The Valkyrie charge row (playtest 2026-07-06): fixed slot pool of
     /// backgrounds + fills, children of `safe_area`; hidden until the
     /// cannon is owned, lighting left-to-right as the charge crosses.
@@ -113,6 +120,8 @@ impl ICanvasLayer for HUD {
             radar_arrows: LiveVec::new(),
             radar_contacts: std::collections::HashSet::new(),
             map_panel: None,
+            damage_flash: DamageFlash::new(),
+            damage_tint: None,
             valkyrie_row: None,
             valkyrie_slots: LiveVec::new(),
             valkyrie_fills: LiveVec::new(),
@@ -130,9 +139,10 @@ impl ICanvasLayer for HUD {
         self.base_mut().set_visible(false);
     }
 
-    fn process(&mut self, _delta: f64) {
+    fn process(&mut self, delta: f64) {
         self.update_radar();
         self.update_valkyrie_row();
+        self.update_damage_tint(delta as f32);
         // The map renders only while its unlock flag is pushed.
         let show_map = self.base().is_visible() && self.map_unlocked;
         self.map_panel.with(|panel| panel.set_visible(show_map));
@@ -291,6 +301,29 @@ impl HUD {
     ) {
         self.map_panel.with(|panel| {
             panel.bind_mut().update_map(rects.clone(), flags.clone(), projection.clone());
+        });
+    }
+
+    /// A hit landed — flash the screen tint at the struck layer's color
+    /// (playtest 2026-07-06). GameManager reports the outcome (`hull` true
+    /// = hull breach → red; false = shield held → amber). The decay runs
+    /// in `process`.
+    #[func]
+    pub fn flash_damage(&mut self, hull: bool) {
+        let outcome = if hull { DamageOutcome::HullHit } else { DamageOutcome::ShieldHeld };
+        self.damage_flash.strike(outcome);
+    }
+
+    /// Fade and render the damage tint. Alpha and color come from the pure
+    /// `DamageFlash`; the overlay hides once it has faded to nothing.
+    fn update_damage_tint(&mut self, delta: f32) {
+        self.damage_flash.tick(delta);
+        let visible = self.damage_flash.is_visible();
+        let [r, g, b] = self.damage_flash.color();
+        let a = self.damage_flash.alpha();
+        self.damage_tint.with(|tint| {
+            tint.set_visible(visible);
+            tint.set_color(Color::from_rgba(r, g, b, a));
         });
     }
 
@@ -701,6 +734,18 @@ impl HUD {
             reticle.add_child(&tick);
         }
         safe_area.add_child(&reticle);
+
+        // === Damage tint (hidden until a hit lands; amber shield / red hull) ===
+        // A deep full-screen tinge that fades over ~5s (playtest 2026-07-06).
+        // Sits under the slow overlay so a swarmer slow reads over a fresh hit.
+        let mut damage_tint = ColorRect::new_alloc();
+        damage_tint.set_name("DamageTint");
+        damage_tint.set_anchors_preset(LayoutPreset::FULL_RECT);
+        damage_tint.set_color(Color::from_rgba(0.0, 0.0, 0.0, 0.0));
+        damage_tint.set_mouse_filter(godot::classes::control::MouseFilter::IGNORE);
+        damage_tint.set_visible(false);
+        safe_area.add_child(&damage_tint);
+        self.damage_tint = Some(LiveRef::new(&damage_tint));
 
         // === Slow debuff indicator (hidden until a swarmer slows the player) ===
         let mut slow_overlay = ColorRect::new_alloc();

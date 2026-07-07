@@ -130,6 +130,7 @@ pub mod methods {
     pub const ON_PLAYER_SLOWED: &str = "on_player_slowed";
     pub const APPLY_SLOW: &str = "apply_slow";
     pub const UPDATE_SLOW: &str = "update_slow";
+    pub const FLASH_DAMAGE: &str = "flash_damage";
     pub const ON_POWER_MODE_CHANGED: &str = "on_power_mode_changed";
     pub const APPLY_DORMANCY: &str = "apply_dormancy";
     pub const ENTER_INITIAL_PHASE: &str = "enter_initial_phase";
