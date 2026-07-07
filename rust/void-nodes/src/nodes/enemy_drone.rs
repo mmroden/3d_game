@@ -419,6 +419,32 @@ impl EnemyDrone {
         grammar.enemy(id).spawns_directly
     }
 
+    /// Total minion slots this def declares (Σ cap across every entry) —
+    /// the dormant reservation the build pre-instantiates. A grammar door
+    /// so tests derive expectations instead of naming defs (the TOML is
+    /// the owner's to retune, feedback 2026-07-06).
+    #[func]
+    pub fn declared_minion_total(&self) -> i64 {
+        let grammar = roster();
+        let id = grammar.expect_enemy_by_crossing_id(self.enemy_type_id as u16);
+        grammar.enemy(id).minions.iter().map(|m| m.cap as i64).sum()
+    }
+
+    /// Minion slots that rise on THIS drone's death (Σ cap over the
+    /// OnDeath entries) — what a lethal hit flips live.
+    #[func]
+    pub fn declared_death_minion_total(&self) -> i64 {
+        let grammar = roster();
+        let id = grammar.expect_enemy_by_crossing_id(self.enemy_type_id as u16);
+        grammar
+            .enemy(id)
+            .minions
+            .iter()
+            .filter(|m| m.trigger == MinionTrigger::OnDeath)
+            .map(|m| m.cap as i64)
+            .sum()
+    }
+
     /// Enter dormancy for a pre-built minion (Faucet Principle, tier 1): all
     /// three flags together — invisible, non-processing, non-colliding — plus a
     /// physics freeze so the RigidBody neither simulates nor is pushed while it

@@ -48,6 +48,11 @@ pub struct RoomAssembly {
     /// Enemy spawn positions, from the template's enemy spawns.
     pub enemies: Vec<[f32; 3]>,
     pub bounds: RoomBounds,
+    /// The watertight collision shell (one solid slab per sealed cell
+    /// face). The structure meshes above are the room's LOOK; these boxes
+    /// are its PHYSICS (playtest 2026-07-06: render-triangle trimesh
+    /// collision had the art's seam holes and caged grinding bodies).
+    pub shell: Vec<crate::room_assembler::ShellSlab>,
 }
 
 /// Walk a generated level graph, assemble room geometry, furnish rooms,
@@ -195,6 +200,7 @@ pub fn spawn_list_full(
             containers,
             enemies,
             bounds: RoomBounds { min, max },
+            shell: crate::room_assembler::shell_slabs(&grid),
         });
     }
 
@@ -986,48 +992,50 @@ mod tests {
         }
     }
 
-    /// Every EyeDrone the manifest places carries exactly one dormant SpawnDrone
-    /// minions (the def's declared list, with each entry's trigger); every
-    /// type declaring none carries none. This is the expansion the shell
-    /// pre-instantiates under the parent's room.
+    /// Every enemy the manifest places carries exactly its def's declared
+    /// minion expansion — Σ cap dormant slots, each matching a declared
+    /// (type, trigger) — and types declaring none carry none. Derived from
+    /// the grammar, never from named defs: the TOML is the owner's to
+    /// retune (feedback 2026-07-06).
     #[test]
     fn manifest_expands_declared_minions() {
-        // Level 3 fields the EyeDrone (owner's schedule); run enough seeds
-        // that at least one is placed, and check the expansion on every enemy.
-        let mut saw_eye_drone = false;
-        for seed in 0..40u64 {
-            let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let m = manifest(&graph, &spec_for(3), Seed::new(seed));
-            for room in &m.rooms {
-                for enemy in &room.enemies {
-                    let declared = &roster().enemy(enemy.enemy_type).minions;
-                    match declared.first() {
-                        Some(first) => {
-                            let total: usize =
-                                declared.iter().map(|m| m.cap as usize).sum();
-                            assert_eq!(enemy.minions.len(), total);
-                            let _ = first;
-                            assert!(enemy.minions.iter().all(|mn| declared
-                                .iter()
-                                .any(|m| m.enemy == mn.enemy_type)));
-                            if enemy.enemy_type == eid("eye_drone") {
-                                saw_eye_drone = true;
-                                assert_eq!(
-                                    enemy.minions,
-                                    vec![MinionSpawn {
-                                        enemy_type: eid("spawn_drone"),
-                                        trigger: MinionTrigger::OnDeath,
-                                    }],
-                                );
-                            }
+        let mut saw_declaring_parent = false;
+        for level in 1..=6u32 {
+            for seed in 0..10u64 {
+                let Ok(graph) = generate(&test_config(seed)) else { continue };
+                let m = manifest(&graph, &spec_for(level), Seed::new(seed));
+                for room in &m.rooms {
+                    for enemy in &room.enemies {
+                        let declared = &roster().enemy(enemy.enemy_type).minions;
+                        if declared.is_empty() {
+                            assert!(enemy.minions.is_empty(),
+                                "{:?} declares no minions but carries some", enemy.enemy_type);
+                            continue;
                         }
-                        None => assert!(enemy.minions.is_empty(),
-                            "{:?} has no death spawn but carries minions", enemy.enemy_type),
+                        saw_declaring_parent = true;
+                        let total: usize = declared.iter().map(|m| m.cap as usize).sum();
+                        assert_eq!(enemy.minions.len(), total,
+                            "{:?} must reserve exactly its declared cap total", enemy.enemy_type);
+                        for mn in &enemy.minions {
+                            assert!(
+                                declared.iter().any(|d| d.enemy == mn.enemy_type
+                                    && d.trigger == mn.trigger),
+                                "{:?} expanded a (type, trigger) its def never declared",
+                                enemy.enemy_type,
+                            );
+                        }
                     }
                 }
             }
         }
-        assert!(saw_eye_drone, "no EyeDrone placed across 40 seeds at level 2");
+        // Non-vacuity, itself derived: demanded only while some scanned
+        // roster actually stocks a minion-declaring def.
+        let eligible = (1..=6u32).any(|lvl| spec_for(lvl).roster.iter()
+            .any(|id| !roster().enemy(*id).minions.is_empty()));
+        if eligible {
+            assert!(saw_declaring_parent,
+                "a minion-declaring def is rostered but never placed — widen the scan");
+        }
     }
 
     // --- Boss staging (B5) ---
@@ -1157,18 +1165,22 @@ mod tests {
     // the constant here AND its mirror in the named GUT file — never by
     // reintroducing a seed scan on the engine side.
 
-    /// Mirror: godot/tests/test_faucet_pools.gd `EYE_DRONE_SEED`.
-    /// Seed 1 at level 3 (8 rooms) places at least one EyeDrone, whose
-    /// death-spawn minion the shell pre-instantiates dormant.
+    /// Mirror: godot/tests/test_faucet_pools.gd `MINION_PARENT_SEED`.
+    /// Seed 1 at level 4 (8 rooms) fields at least one enemy whose def
+    /// declares minions — the GUT suite builds this exact level and pins
+    /// the dormant reservation GENERICALLY, never by def name (feedback
+    /// 2026-07-06: the TOML is the owner's to retune). If a retune empties
+    /// the scanned roster of minions, re-pin the scenario here and in the
+    /// GUT constants together.
     #[test]
-    fn pinned_gut_seed_places_an_eye_drone() {
+    fn pinned_gut_seed_places_a_minion_declaring_parent() {
         let seed = Seed::from_i64(1);
         let graph = generate(&crate::generator::GeneratorConfig::for_spec(&spec_for(1), seed))
             .expect("the pinned seed must generate");
-        let m = manifest(&graph, &spec_for(3), seed);
+        let m = manifest(&graph, &spec_for(4), seed);
         assert!(
-            m.rooms.iter().any(|r| r.enemies.iter().any(|e| e.enemy_type == eid("eye_drone"))),
-            "seed 1 must place an EyeDrone at level 3 — the GUT suite builds this exact level"
+            m.rooms.iter().any(|r| r.enemies.iter().any(|e| !e.minions.is_empty())),
+            "seed 1 must field a minion-declaring parent at level 4 — the GUT suite builds this exact level"
         );
     }
 
@@ -1198,48 +1210,68 @@ mod tests {
         }
     }
 
-    /// Coverage includes death-spawn-only types (the SpawnDrone) once the level
-    /// can produce them — via an EyeDrone parent — which `enemies_for_level`
-    /// (direct-only) never surfaces. This is what fixes the bestiary gap.
+    /// Coverage includes death-spawn-only types once the level can produce
+    /// them — via ANY covered parent whose def declares them — which the
+    /// direct roster never surfaces. This is what fixes the bestiary gap.
+    /// Derived from the grammar, never from named defs (feedback
+    /// 2026-07-06).
     #[test]
     fn manifest_coverage_includes_death_spawn_types_at_level() {
-        // At level 3+, the EyeDrone is admitted and its death SpawnDrone should
-        // appear in coverage on at least one seed.
-        let mut covered_spawn_drone = false;
-        for seed in 0..40u64 {
-            let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let m = manifest(&graph, &spec_for(3), Seed::new(seed));
-            let coverage = m.enemy_coverage();
-            // Coverage is a subset of ALL, deduplicated and ALL-ordered.
-            let mut sorted = coverage.clone();
-            sorted.dedup();
-            assert_eq!(sorted, coverage, "coverage must be deduplicated");
-            if coverage.contains(&eid("eye_drone")) {
-                assert!(
-                    coverage.contains(&eid("spawn_drone")),
-                    "seed {seed}: EyeDrone present but SpawnDrone missing from coverage",
-                );
-                covered_spawn_drone = true;
+        let mut saw_declaring_parent = false;
+        for level in 1..=6u32 {
+            for seed in 0..10u64 {
+                let Ok(graph) = generate(&test_config(seed)) else { continue };
+                let m = manifest(&graph, &spec_for(level), Seed::new(seed));
+                let coverage = m.enemy_coverage();
+                let mut sorted = coverage.clone();
+                sorted.dedup();
+                assert_eq!(sorted, coverage, "coverage must be deduplicated");
+                for id in &coverage {
+                    let declared = &roster().enemy(*id).minions;
+                    if declared.is_empty() {
+                        continue;
+                    }
+                    saw_declaring_parent = true;
+                    for d in declared {
+                        assert!(
+                            coverage.contains(&d.enemy),
+                            "seed {seed} level {level}: {:?} covered but its declared minion {:?} missing",
+                            id, d.enemy,
+                        );
+                    }
+                }
             }
         }
-        assert!(covered_spawn_drone, "no seed at level 3 produced an EyeDrone");
+        let eligible = (1..=6u32).any(|lvl| spec_for(lvl).roster.iter()
+            .any(|id| !roster().enemy(*id).minions.is_empty()));
+        if eligible {
+            assert!(saw_declaring_parent,
+                "a minion-declaring def is rostered but never covered — widen the scan");
+        }
     }
 
-    /// Below its min_level the SpawnDrone can't appear: no EyeDrone is admitted
-    /// (level 1 is GunDrone-only), so coverage never contains it.
+    /// Coverage never invents types: every covered id is in the level's
+    /// roster or declared as a minion by another covered def. The
+    /// complement of the inclusion test above — derived, never named.
     #[test]
-    fn manifest_coverage_excludes_death_spawn_types_below_level() {
-        for seed in 0..20u64 {
-            let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let coverage = manifest(&graph, &spec_for(1), Seed::new(seed)).enemy_coverage();
-            assert!(
-                !coverage.contains(&eid("spawn_drone")),
-                "seed {seed}: SpawnDrone in coverage at level 1 (below its min_level)",
-            );
-            assert!(
-                !coverage.contains(&eid("eye_drone")),
-                "seed {seed}: EyeDrone in coverage at level 1",
-            );
+    fn manifest_coverage_never_exceeds_the_rosters_reach() {
+        for level in 1..=6u32 {
+            for seed in 0..10u64 {
+                let Ok(graph) = generate(&test_config(seed)) else { continue };
+                let spec = spec_for(level);
+                let coverage = manifest(&graph, &spec, Seed::new(seed)).enemy_coverage();
+                for id in &coverage {
+                    let direct = spec.roster.contains(id);
+                    let via_parent = coverage.iter().any(|p| roster()
+                        .enemy(*p)
+                        .minions
+                        .iter()
+                        .any(|m| m.enemy == *id));
+                    assert!(direct || via_parent,
+                        "seed {seed} level {level}: {:?} covered but neither rostered nor declared by a covered parent",
+                        id);
+                }
+            }
         }
     }
 }

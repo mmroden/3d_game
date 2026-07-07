@@ -78,6 +78,9 @@ pub struct Behavior {
     pub slow_duration: f32,
     /// Re-tag period while latched.
     pub slow_interval: f32,
+    /// While this enemy lives, its room's exits seal red and the boss
+    /// bed plays — death re-opens them (design 2026-07-06).
+    pub miniboss: bool,
 }
 
 impl Default for Behavior {
@@ -96,6 +99,7 @@ impl Default for Behavior {
             slow_factor: 1.0,
             slow_duration: 0.0,
             slow_interval: 0.0,
+            miniboss: false,
         }
     }
 }
@@ -649,6 +653,7 @@ fn link(
                     slow_interval: e
                         .slow_interval
                         .unwrap_or(if e.ai == Swarmer { 0.5 } else { 0.0 }),
+                    miniboss: e.miniboss.unwrap_or(false),
                 }
             };
             EnemyDef {
@@ -1042,10 +1047,14 @@ mod tests {
 
     #[test]
     fn an_unknown_model_key_is_a_link_error() {
-        let doctored = ENEMIES_TOML.replace(
-            "model = \"Enemy_QuadShell\"",
-            "model = \"no_such_model\"",
-        );
+        // Doctor the FIRST model line, whatever key it names — anchoring
+        // on a specific model broke the moment the owner retuned the TOML
+        // (feedback 2026-07-06: tuning must never break tests).
+        let model_line = ENEMIES_TOML
+            .lines()
+            .find(|l| l.trim_start().starts_with("model = "))
+            .expect("the shipped grammar declares models");
+        let doctored = ENEMIES_TOML.replacen(model_line, "model = \"no_such_model\"", 1);
         let err = load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS).unwrap_err();
         assert!(
             err.contains("unknown model 'no_such_model'"),
@@ -1171,6 +1180,33 @@ mod tests {
         let latcher = roster.enemy(roster.enemy_by_key("boss_latcher").unwrap());
         assert_eq!(latcher.behavior.latch_range, 4.5, "the declared reach wins");
         assert_eq!(latcher.behavior.bolt_speed, 20.0, "declared even when unused");
+    }
+
+    #[test]
+    fn a_declared_miniboss_switch_marks_the_room_sealer() {
+        // The miniboss grammar (design 2026-07-06): any enemy may declare
+        // `miniboss = true` — while it lives, its room's exits seal red
+        // and the boss bed plays; death re-opens them. Off by default for
+        // every archetype: a miniboss is a declared switch, not an engine
+        // concept.
+        let roster = loaded();
+        for id in roster.enemy_ids() {
+            assert!(
+                !roster.enemy(id).behavior.miniboss,
+                "no shipped enemy declares the miniboss switch yet: {}",
+                roster.enemy(id).key
+            );
+        }
+        // Doctor the FIRST enemy block, whatever def it is — never a named
+        // anchor (feedback 2026-07-06).
+        let doctored = ENEMIES_TOML.replacen("ai = ", "miniboss = true\nai = ", 1);
+        let roster =
+            load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS)
+                .unwrap();
+        assert!(
+            roster.enemy_ids().any(|id| roster.enemy(id).behavior.miniboss),
+            "the declared switch reads back"
+        );
     }
 
     #[test]

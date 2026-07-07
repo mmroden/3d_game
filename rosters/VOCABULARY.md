@@ -137,6 +137,9 @@ archetype's default derivation. This is the complete list:
   swarmers, else 0)
 - `slow_interval` — re-tag period while latched (default 0.5 on
   swarmers, else 0)
+- `miniboss` — while this enemy lives, its room's exits seal red and
+  the boss music plays; death re-opens them. Declare it on any def
+  (default false)
 
 These are LIVE: `ai_config` builds from the resolved switches, drones
 scale by the declared curves, and the roster/boss slots drive level

@@ -248,7 +248,7 @@ pub fn fit_model_to_length(model: &mut Gd<Node3D>, target: f32) {
 /// allows convex hulls on dynamic bodies; concave trimesh is static-only). The
 /// player ship deliberately uses a capsule instead — a mesh hull baked with the
 /// model's extreme fit-scale confused Jolt and snagged the ship on doorways.
-pub fn add_convex_collision(body: &mut Gd<RigidBody3D>, node: &Gd<Node3D>, xform: Transform3D) {
+pub fn add_convex_collision(body: &mut Gd<godot::classes::Node>, node: &Gd<Node3D>, xform: Transform3D) {
     if let Ok(mesh_inst) = node.clone().try_cast::<MeshInstance3D>() {
         if let Some(mesh) = mesh_inst.get_mesh() {
             // simplify(true) collapses near-coplanar faces, so the hull is a

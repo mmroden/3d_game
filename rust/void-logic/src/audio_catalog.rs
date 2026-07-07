@@ -73,6 +73,7 @@ impl MusicBed {
 pub fn music_bed(
     phase: crate::game_phase::GamePhase,
     boss: Option<crate::boss_fight::BossFightState>,
+    miniboss_engaged: bool,
     enemies_in_room: bool,
 ) -> MusicBed {
     use crate::boss_fight::BossFightState;
@@ -85,6 +86,11 @@ pub fn music_bed(
         boss,
         Some(BossFightState::Engaged) | Some(BossFightState::Defeated)
     ) {
+        return MusicBed::Boss;
+    }
+    if miniboss_engaged {
+        // The miniboss (design 2026-07-06): boss music while its room is
+        // sealed — outranked only by the staged boss itself.
         return MusicBed::Boss;
     }
     if enemies_in_room {
@@ -155,6 +161,13 @@ pub enum SfxEvent {
     LowHealthAlert,
     /// Game start / new level boot-up.
     WeaponBoot,
+    /// A Shield Surge charge spent — the emergency recharge landing.
+    ShieldBurst,
+    /// The Valkyrie dumps its stored bolts (playtest 2026-07-06 redesign).
+    ValkyrieFire,
+    /// A Valkyrie charge bar completes — played pitched-up per bar, so
+    /// the fill reads as a rising scale.
+    ValkyrieBarReady,
 }
 
 /// All `SfxEvent` variants, for exhaustive iteration in tests.
@@ -171,6 +184,9 @@ const ALL_SFX_EVENTS: &[SfxEvent] = &[
     SfxEvent::LootPickup,
     SfxEvent::LowHealthAlert,
     SfxEvent::WeaponBoot,
+    SfxEvent::ShieldBurst,
+    SfxEvent::ValkyrieFire,
+    SfxEvent::ValkyrieBarReady,
 ];
 
 impl SfxEvent {
@@ -235,6 +251,22 @@ impl SfxEvent {
                 sfx!("WeaponSystems/system_weapon_boot_01.wav"),
                 sfx!("WeaponSystems/system_weapon_boot_02.wav"),
                 sfx!("WeaponSystems/system_weapon_boot_03.wav"),
+            ],
+            Self::ShieldBurst => &[
+                sfx!("WeaponSystems/system_weapon_energy_charge_01.wav"),
+                sfx!("WeaponSystems/system_weapon_energy_charge_02.wav"),
+            ],
+            Self::ValkyrieFire => &[
+                sfx!("Valkyrie/LASRGun_Valkyrie_01_SFRMS_SCIWPNS.wav"),
+                sfx!("Valkyrie/LASRGun_Valkyrie_02_SFRMS_SCIWPNS.wav"),
+                sfx!("Valkyrie/LASRGun_Valkyrie_03_SFRMS_SCIWPNS.wav"),
+                sfx!("Valkyrie/LASRGun_Valkyrie_04_SFRMS_SCIWPNS.wav"),
+                sfx!("Valkyrie/LASRGun_Valkyrie_05_SFRMS_SCIWPNS.wav"),
+                sfx!("Valkyrie/LASRGun_Valkyrie_06_SFRMS_SCIWPNS.wav"),
+            ],
+            Self::ValkyrieBarReady => &[
+                sfx!("WeaponSystems/system_weapon_energy_aim_lock_01.wav"),
+                sfx!("WeaponSystems/system_weapon_energy_aim_lock_02.wav"),
             ],
         }
     }
@@ -313,27 +345,33 @@ mod tests {
     }
 
     #[test]
-    fn the_bed_derivation_ranks_boss_over_combat_over_level() {
+    fn the_bed_derivation_ranks_boss_over_miniboss_over_combat_over_level() {
         use crate::boss_fight::BossFightState as B;
         use crate::game_phase::GamePhase as P;
 
-        assert_eq!(music_bed(P::MainMenu, None, false), MusicBed::Menu);
-        assert_eq!(music_bed(P::Playing, None, false), MusicBed::Level);
-        assert_eq!(music_bed(P::Playing, None, true), MusicBed::Combat,
+        assert_eq!(music_bed(P::MainMenu, None, false, false), MusicBed::Menu);
+        assert_eq!(music_bed(P::Playing, None, false, false), MusicBed::Level);
+        assert_eq!(music_bed(P::Playing, None, false, true), MusicBed::Combat,
             "live enemies in the room bring the stinger in");
-        assert_eq!(music_bed(P::Playing, Some(B::Engaged), true), MusicBed::Boss,
+        assert_eq!(music_bed(P::Playing, Some(B::Engaged), false, true), MusicBed::Boss,
             "the arena outranks the stinger");
-        assert_eq!(music_bed(P::Playing, Some(B::Defeated), false), MusicBed::Boss,
+        assert_eq!(music_bed(P::Playing, Some(B::Defeated), false, false), MusicBed::Boss,
             "the fight owns the bed until the loot closes it");
-        assert_eq!(music_bed(P::Playing, Some(B::Dormant), false), MusicBed::Level,
+        assert_eq!(music_bed(P::Playing, Some(B::Dormant), false, false), MusicBed::Level,
             "a dormant fight is no fight");
-        assert_eq!(music_bed(P::Playing, Some(B::RewardCollected), false),
+        assert_eq!(music_bed(P::Playing, Some(B::RewardCollected), false, false),
             MusicBed::Level, "the loot closes it — back to the level bed");
+        // The miniboss (design 2026-07-06): boss music while its room is
+        // sealed, outranked only by the staged boss itself.
+        assert_eq!(music_bed(P::Playing, None, true, true), MusicBed::Boss,
+            "an engaged miniboss raises the boss bed");
+        assert_eq!(music_bed(P::Playing, Some(B::Dormant), true, false), MusicBed::Boss,
+            "a dormant staged fight doesn't mute a live miniboss");
         // In-run menus keep the level bed (phase volume ducking handles feel).
-        assert_eq!(music_bed(P::Shop, None, false), MusicBed::Level);
-        assert_eq!(music_bed(P::Paused, Some(B::Engaged), true), MusicBed::Boss,
+        assert_eq!(music_bed(P::Shop, None, false, false), MusicBed::Level);
+        assert_eq!(music_bed(P::Paused, Some(B::Engaged), false, true), MusicBed::Boss,
             "pausing mid-fight doesn't end the fight");
-        assert_eq!(music_bed(P::Death, None, false), MusicBed::Level);
+        assert_eq!(music_bed(P::Death, None, false, false), MusicBed::Level);
     }
 
     #[test]
@@ -359,6 +397,38 @@ mod tests {
         assert_eq!(pool.len(), 9);
         assert!(pool[0].ends_with("combat_11.mp3"));
         assert!(pool[8].ends_with("combat_19.mp3"));
+    }
+
+    #[test]
+    fn the_shield_burst_speaks_with_the_energy_charge_voice() {
+        // Playtest 2026-07-06: the surge needs a sound of its own — the
+        // energy-charge pair, distinct from every combat impact.
+        let variants = SfxEvent::ShieldBurst.variants();
+        assert_eq!(variants.len(), 2, "both energy-charge takes");
+        for path in variants {
+            assert!(
+                path.contains("system_weapon_energy_charge"),
+                "the surge voice is the energy charge, got {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_valkyrie_speaks_with_its_own_voices() {
+        // The dump: the six-take Valkyrie gun pack. The bar-ready tick:
+        // the aim-lock pair, pitched up per bar by the shell.
+        let fire = SfxEvent::ValkyrieFire.variants();
+        assert_eq!(fire.len(), 6, "all six gun takes");
+        for path in fire {
+            assert!(path.contains("Valkyrie/LASRGun_Valkyrie"),
+                "the dump speaks with the Valkyrie gun pack, got {path}");
+        }
+        let ready = SfxEvent::ValkyrieBarReady.variants();
+        assert_eq!(ready.len(), 2, "both aim-lock takes");
+        for path in ready {
+            assert!(path.contains("system_weapon_energy_aim_lock"),
+                "the bar tick is the aim-lock blip, got {path}");
+        }
     }
 
     #[test]

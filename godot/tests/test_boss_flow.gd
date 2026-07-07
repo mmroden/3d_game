@@ -111,12 +111,29 @@ func test_the_boss_fight_walks_seal_kill_collect_open():
 	assert_not_null(boss, "the Siege Mech waits in the arena")
 	if boss == null:
 		return
+	# Pre-entry the boss is DORMANT (playtest 2026-07-06: a live boss could
+	# be sniped from the corridor and die before the fight ever engaged):
+	# intangible to the hitscan and invisible until the arena trigger rises it.
+	assert_eq(boss.collision_layer, 0, "the staged boss is intangible before entry")
+	assert_false(boss.visible, "the staged boss is invisible before entry")
 
-	# --- Entry engages: gate slams, fight is on ---
+	# Bruise the shield on the approach: the arena seal must clear it (owner's
+	# call 2026-07-06 — otherwise waiting out the regen at the door is
+	# strictly optimal play).
+	_gm.on_player_damaged(20.0, Vector3.ZERO)
+	assert_lt(_gm.get_shield(), _gm.get_max_shield(),
+		"fixture sanity: the approach hit landed on the shield")
+
+	# --- Entry engages: gate slams, fight is on, the boss rises ---
 	_teleport(_lm.boss_arena_center())
 	await wait_physics_frames(5, "the arena trigger must see the player")
 	assert_eq(_gm.boss_fight_state(), 1, "crossing in engages the fight")
 	assert_true(gate.is_sealed(), "the gate slams behind the player")
+	assert_almost_eq(_gm.get_shield(), _gm.get_max_shield(), 0.01,
+		"the arena seal restores shields — no loitering for regen at the door")
+	await wait_process_frames(2)  # the rise flips ride call_deferred
+	assert_eq(boss.collision_layer, 1, "engagement rises the boss — tangible again")
+	assert_true(boss.visible, "engagement rises the boss — visible again")
 
 	# --- The kill alone opens nothing ---
 	boss.take_damage(100000.0)

@@ -109,9 +109,17 @@ pub struct ShipController {
     /// weapons pass (piloting only).
     subdrone_regen: subdrone::RegenTimer,
     /// The Vanguard's purchasable heavy cannon: `Some` once the green
-    /// keystone is owned (pushed by GameManager), firing alongside the
-    /// hitscan lasers on the same trigger.
-    valkyrie: Option<WeaponState>,
+    /// keystone is owned (pushed by GameManager). The left trigger dumps
+    /// its stored charge bars (playtest 2026-07-06 redesign).
+    valkyrie: Option<valkyrie::ChargeState>,
+    /// Blue charge-row upgrades, pushed by GameManager with every
+    /// player-state sync; the node never reads the run itself.
+    valkyrie_bars_bought: u32,
+    valkyrie_refill_level: u32,
+    /// Last tick's left-trigger state — the dump fires on OUR rising
+    /// edge, not the engine's just_pressed frame stamp (which misses
+    /// presses injected between physics frames — the GUT door).
+    fire_secondary_held: bool,
     /// Bursts fired — seeds each burst's deterministic fan.
     valkyrie_bursts: u64,
     /// Pilot input (fly, fire, view toggle) is only live during gameplay. On
@@ -144,6 +152,9 @@ impl IRigidBody3D for ShipController {
             ship_rotation_mul: 1.0,
             subdrone_regen: subdrone::RegenTimer::new(subdrone::REGEN_SECONDS),
             valkyrie: None,
+            valkyrie_bars_bought: 0,
+            valkyrie_refill_level: 0,
+            fire_secondary_held: false,
             valkyrie_bursts: 0,
             controls_enabled: false,
         }
@@ -500,10 +511,23 @@ impl ShipController {
         self.weapon.fire_rate = self.loadout.fire_rate() * self.power_mode.fire_rate_multiplier();
         self.weapon.damage = void_logic::newtypes::Damage::new(self.laser_level.damage());
         self.weapon.tick(delta);
+        // The charge row fills whenever the cannon is armed; the punch
+        // follows the equipped laser at fire time. Each bar completion
+        // blips a step higher — the fill reads as a rising scale
+        // (playtest 2026-07-06).
+        let mut bar_ready_pitch = None;
         if let Some(cannon) = self.valkyrie.as_mut() {
-            // Cadence stays fixed; the punch follows the equipped laser.
-            cannon.damage = valkyrie::state(self.weapon.damage).damage;
+            let before = cannon.stored();
             cannon.tick(delta);
+            let after = cannon.stored();
+            if after > before {
+                bar_ready_pitch = Some(1.0 + 0.15 * after as f32);
+            }
+        }
+        if let Some(pitch) = bar_ready_pitch {
+            if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+                audio.bind_mut().play_event_pitched(SfxEvent::ValkyrieBarReady, pitch);
+            }
         }
         self.subdrone_regen.tick(delta);
         self.age_beams(delta);
@@ -523,12 +547,6 @@ impl ShipController {
                     if let FireResult::Fired { damage } = self.weapon.try_fire() {
                         self.fire_dual_lasers(damage.as_f32());
                     }
-                    // The Valkyrie rides the same trigger with its own,
-                    // slower clock — a heavy center bolt over the beams.
-                    let cannon_shot = self.valkyrie.as_mut().map(WeaponState::try_fire);
-                    if let Some(FireResult::Fired { damage }) = cannon_shot {
-                        self.fire_valkyrie(damage.as_f32());
-                    }
                 }
                 WeaponKind::TrackingLaser => {
                     if let FireResult::Fired { damage } = self.weapon.try_fire() {
@@ -544,6 +562,22 @@ impl ShipController {
                     if self.subdrone_regen.ready() {
                         self.launch_subdrone();
                     }
+                }
+            }
+        }
+        let secondary_now = input.is_action_pressed(actions::FIRE_SECONDARY);
+        let secondary_edge = secondary_now && !self.fire_secondary_held;
+        self.fire_secondary_held = secondary_now;
+        if secondary_edge {
+            // The Valkyrie owns the left trigger (playtest 2026-07-06): the
+            // press dumps every stored charge bar as one fanned burst — an
+            // empty rack dumps nothing. Hull-gated exactly as when it rode
+            // the primary — the beam hulls carry it.
+            if matches!(self.ship_type.spec().weapon, WeaponKind::HitscanLaser) {
+                let bolts = self.valkyrie.as_mut().map(|c| c.fire()).unwrap_or(0);
+                if bolts > 0 {
+                    let damage = self.laser_level.damage() * valkyrie::DAMAGE_MULT;
+                    self.fire_valkyrie(damage, bolts as usize);
                 }
             }
         }
@@ -594,15 +628,52 @@ impl ShipController {
     #[func]
     pub fn set_valkyrie_owned(&mut self, owned: bool) {
         self.valkyrie = if owned {
-            Some(valkyrie::state(self.weapon.damage))
+            Some(self.configured_charge())
         } else {
             None
         };
     }
 
+    /// Blue charge-row upgrades (bars bought, refill level), pushed with
+    /// every player-state sync. An armed cannon re-racks to the new
+    /// config (the shop sits between levels — an empty rack is fair).
+    #[func]
+    pub fn set_valkyrie_upgrades(&mut self, bars_bought: i32, refill_level: i32) {
+        self.valkyrie_bars_bought = bars_bought.max(0) as u32;
+        self.valkyrie_refill_level = refill_level.max(0) as u32;
+        if self.valkyrie.is_some() {
+            self.valkyrie = Some(self.configured_charge());
+        }
+    }
+
+    /// A charge row at the pushed upgrade config, built through the same
+    /// doors the shop's receipts describe.
+    fn configured_charge(&self) -> valkyrie::ChargeState {
+        let mut charge = valkyrie::ChargeState::new();
+        for _ in 0..self.valkyrie_bars_bought {
+            charge.add_bar();
+        }
+        for _ in 0..self.valkyrie_refill_level {
+            charge.add_refill_level();
+        }
+        charge
+    }
+
     #[func]
     pub fn is_valkyrie_owned(&self) -> bool {
         self.valkyrie.is_some()
+    }
+
+    /// The HUD's per-frame reads: bars in the row (0 = unowned) and the
+    /// continuous fill across it, in bar units.
+    #[func]
+    pub fn valkyrie_bars(&self) -> i32 {
+        self.valkyrie.as_ref().map(|c| c.bars() as i32).unwrap_or(0)
+    }
+
+    #[func]
+    pub fn valkyrie_charge(&self) -> f32 {
+        self.valkyrie.as_ref().map(|c| c.charge_units()).unwrap_or(0.0)
     }
 
     #[func]
@@ -688,13 +759,13 @@ impl ShipController {
     /// whatever the reticle holds (the cannon's job is CONNECTING when raw
     /// aim can't — playtest 2026-07-04: one straight bolt read as nothing).
     /// With no lock the fan flies ballistic.
-    fn fire_valkyrie(&mut self, damage: f32) {
+    fn fire_valkyrie(&mut self, damage: f32, bolts: usize) {
         let (muzzle, forward) = self.muzzle();
         let lock = self.acquire_lock(muzzle, forward);
         self.valkyrie_bursts = self.valkyrie_bursts.wrapping_add(1);
         let directions = cluster::fragment_directions(
             [forward.x, forward.y, forward.z],
-            valkyrie::BURST_COUNT,
+            bolts,
             valkyrie::BURST_SPREAD,
             self.valkyrie_bursts,
         );
@@ -709,7 +780,7 @@ impl ShipController {
             }
         }
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
-            audio.bind_mut().play_event(SfxEvent::LaserFire);
+            audio.bind_mut().play_event(SfxEvent::ValkyrieFire);
         }
     }
 
@@ -754,12 +825,16 @@ impl ShipController {
         let left_origin = center - right * WING_OFFSET;
         let right_origin = center + right * WING_OFFSET;
 
-        // Hit-test down the reticle (centre line) with an aim-assist spread, then
-        // converge both visible beams on whatever it found — so the lasers hit
-        // where the crosshair points, not parallel-offset from the wings.
-        let hit_point = self.cast_forgiving(center, forward, damage * 2.0);
-        self.spawn_beam(left_origin, hit_point);
-        self.spawn_beam(right_origin, hit_point);
+        // Damage rides the reticle line with angular forgiveness (the aim
+        // assist below); the VISIBLE beams are lasers (owner's call
+        // 2026-07-06): each runs straight from its wing until it hits
+        // something on its own line, else full range. Never converged.
+        self.cast_forgiving(center, forward, damage * 2.0);
+        let max_range = self.weapon.max_range;
+        for origin in [left_origin, right_origin] {
+            let end = self.clip_beam(origin, forward, max_range);
+            self.spawn_beam(origin, end);
+        }
 
         // Laser fire SFX (non-positional — it's the player's own gun)
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
@@ -774,15 +849,15 @@ impl ShipController {
     /// — takes the hit instead. A cone is constant on-screen generosity at
     /// every range; the old fixed-radius ray ring was statistically dead
     /// (nine discrete spokes, playtest 2026-07-05: only exact hits landed).
-    fn cast_forgiving(&mut self, center: Vector3, forward: Vector3, damage: f32) -> Vector3 {
+    /// Damage and sparks only — the beam visuals clip on their own lines
+    /// (`clip_beam`), never on what this connected with.
+    fn cast_forgiving(&mut self, center: Vector3, forward: Vector3, damage: f32) {
         let max_range = self.weapon.max_range;
-        let fallback = center + forward * max_range;
-        let Some(world) = self.base().get_world_3d() else { return fallback };
-        let Some(mut space) = world.get_direct_space_state() else { return fallback };
+        let Some(world) = self.base().get_world_3d() else { return };
+        let Some(mut space) = world.get_direct_space_state() else { return };
         let self_rid = self.base().get_rid();
 
-        // Exact aim first: walls clip the beam, a struck enemy ends it.
-        let mut beam_end = fallback;
+        // Exact aim first: a struck enemy takes the hit and ends the search.
         if let Some(mut query) =
             PhysicsRayQueryParameters3D::create(center, center + forward * max_range)
         {
@@ -792,19 +867,20 @@ impl ShipController {
             query.set_hit_from_inside(true);
             let result = space.intersect_ray(&query);
             if !result.is_empty() {
-                if let Some(pos) = result.get("position") {
-                    beam_end = pos.to::<Vector3>();
-                }
                 if let Some(collider) = result.get("collider") {
                     let mut obj = collider.to::<Gd<Node3D>>();
                     if obj.has_method(methods::TAKE_DAMAGE) {
                         obj.call(methods::TAKE_DAMAGE, &[Variant::from(damage)]);
+                        let hit = result
+                            .get("position")
+                            .map(|p| p.to::<Vector3>())
+                            .unwrap_or(center + forward * max_range);
                         let normal = result
                             .get("normal")
                             .unwrap_or(Variant::from(Vector3::UP))
                             .to::<Vector3>();
-                        self.spawn_hit_sparks(beam_end, normal);
-                        return beam_end;
+                        self.spawn_hit_sparks(hit, normal);
+                        return;
                     }
                 }
             }
@@ -866,9 +942,25 @@ impl ShipController {
                 .unwrap_or(Variant::from(Vector3::UP))
                 .to::<Vector3>();
             self.spawn_hit_sparks(hit_pos, normal);
-            return hit_pos;
+            return;
         }
-        beam_end
+    }
+
+    /// Where a wing beam ends: straight down its own line until it strikes
+    /// the world, else max range. Visual only — damage never rides this.
+    fn clip_beam(&mut self, origin: Vector3, forward: Vector3, max_range: f32) -> Vector3 {
+        let fallback = origin + forward * max_range;
+        let Some(world) = self.base().get_world_3d() else { return fallback };
+        let Some(mut space) = world.get_direct_space_state() else { return fallback };
+        if let Some(mut query) = PhysicsRayQueryParameters3D::create(origin, fallback) {
+            query.set_exclude(&array![self.base().get_rid()]);
+            query.set_hit_from_inside(true);
+            let result = space.intersect_ray(&query);
+            if let Some(pos) = result.get("position") {
+                return pos.to::<Vector3>();
+            }
+        }
+        fallback
     }
 
     fn spawn_hit_sparks(&mut self, position: Vector3, normal: Vector3) {

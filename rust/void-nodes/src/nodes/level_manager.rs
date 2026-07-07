@@ -1,7 +1,7 @@
 use godot::prelude::*;
 use godot::classes::{
-    CollisionShape3D, ConcavePolygonShape3D, MeshInstance3D, Node3D, INode3D, OmniLight3D,
-    PackedScene, ResourceLoader, RigidBody3D, StaticBody3D,
+    BoxShape3D, CollisionShape3D, ConcavePolygonShape3D, MeshInstance3D, Node3D, INode3D,
+    OmniLight3D, PackedScene, ResourceLoader, RigidBody3D, StaticBody3D,
 };
 
 use super::constants::{groups, methods, nodes, scenes, signals};
@@ -95,6 +95,10 @@ pub struct LevelManager {
     /// The exit portal on a boss level (`None` elsewhere) — pre-built
     /// dormant; activates when the fight's reward is collected.
     boss_portal: Option<LiveRef<Portal>>,
+    /// The staged boss on a boss level (`None` elsewhere) — pre-built
+    /// DORMANT like any reserved minion; the arena entry rises it
+    /// (playtest 2026-07-06: a live boss died to corridor sniping).
+    staged_boss: Option<LiveRef<EnemyDrone>>,
     /// The typed description of the level under (or after) construction —
     /// THE door for every level attribute (pitch, paradigm, roster, boss
     /// staging). Constructed by GameManager (production) or the test door
@@ -127,6 +131,7 @@ impl INode3D for LevelManager {
             player_drones: LiveVec::new(),
             boss_gate: None,
             boss_portal: None,
+            staged_boss: None,
             spec: None,
             blinking_lights: LiveVec::new(),
             blink_time: 0.0,
@@ -236,6 +241,20 @@ impl LevelManager {
         if let Some(gate) = &self.boss_gate {
             gate.with(|g| {
                 g.call_deferred(methods::SET_SEALED, &[Variant::from(sealed)]);
+            });
+        }
+    }
+
+    /// Rise the staged boss (no-op off boss levels): dormant since the
+    /// build, it becomes visible and tangible exactly when the fight
+    /// engages — `activate_at` rides the same deferred dormancy flip as
+    /// every reserved minion.
+    #[func]
+    pub fn rise_boss(&mut self) {
+        if let Some(boss) = &self.staged_boss {
+            boss.with(|b| {
+                let pos = b.get_global_position();
+                b.bind_mut().activate_at(pos);
             });
         }
     }
@@ -451,9 +470,11 @@ impl LevelManager {
         self.player_drones.for_each_live(|_, node, _| node.queue_free());
         self.player_drones.clear();
         // Boss fixtures (gate + trigger are LM children freed below with a
-        // fresh handle set; the portal is freed with its room).
+        // fresh handle set; the portal is freed with its room; the boss is
+        // freed with its room like every enemy).
         self.boss_gate = None;
         self.boss_portal = None;
+        self.staged_boss = None;
 
         // The bolt ring survives the rebuild: build it once, then re-dormant it
         // so any bolt from the previous level is cleared. It is a sibling of the
@@ -490,8 +511,9 @@ impl LevelManager {
             // ONE merged collider per room instead of a body per tile (keeps
             // Jolt's broadphase and gen time sane).
             let mut static_meshes: Vec<Gd<Node3D>> = Vec::new();
+            let mut solid_meshes: Vec<Gd<Node3D>> = Vec::new();
             for entry in &room.structure {
-                if Self::place_mesh(&mut loader, &mut room_node, entry, &mut static_meshes, &mut loose_rng) {
+                if Self::place_mesh(&mut loader, &mut room_node, entry, &mut static_meshes, &mut solid_meshes, &mut loose_rng) {
                     mesh_count += 1;
                 }
             }
@@ -525,7 +547,7 @@ impl LevelManager {
                 // --- Step 2: non-enemy inhabitants — furnished props (cell-rolled)
                 // and organics containers (template loot spawns).
                 for entry in &room.props {
-                    if Self::place_mesh(&mut loader, &mut room_node, entry, &mut static_meshes, &mut loose_rng) {
+                    if Self::place_mesh(&mut loader, &mut room_node, entry, &mut static_meshes, &mut solid_meshes, &mut loose_rng) {
                         mesh_count += 1;
                     }
                 }
@@ -541,10 +563,20 @@ impl LevelManager {
                 // the parent's death it activates them — no death-path or
                 // per-drop instantiate remains.
                 for spawn in &manifest.rooms[room_index].enemies {
+                    // "Is this the boss" is the staging's call, not a type
+                    // check: exactly the enemy the level's slot staged. The
+                    // boss spawns DORMANT like a reserved minion — the arena
+                    // entry is its spawn beat (playtest 2026-07-06: a live
+                    // boss died to corridor sniping before the fight began).
+                    let is_boss =
+                        spec.boss.as_ref().map(|b| b.boss) == Some(spawn.enemy_type);
                     let Some(mut parent) = Self::spawn_enemy(
-                        &mut loader, &mut room_node, spawn.enemy_type, level, spawn.position, false,
+                        &mut loader, &mut room_node, spawn.enemy_type, level, spawn.position, is_boss,
                     ) else { continue };
                     enemy_count += 1;
+                    if is_boss {
+                        self.staged_boss = Some(LiveRef::new(&parent));
+                    }
 
                     for minion in &spawn.minions {
                         if let Some(minion_node) = Self::spawn_enemy(
@@ -553,11 +585,6 @@ impl LevelManager {
                             parent.bind_mut().bind_minion(&minion_node, minion.trigger);
                         }
                     }
-
-                    // "Is this the boss" is the staging's call, not a type
-                    // check: exactly the enemy the level's slot staged.
-                    let is_boss =
-                        spec.boss.as_ref().map(|b| b.boss) == Some(spawn.enemy_type);
                     let mut level_mgr: Gd<Node3D> = self.base().clone().cast();
                     if let Some(mut cache_node) = Self::build_cache(&mut loader, &mut level_mgr) {
                         parent.bind_mut().bind_cache(&cache_node);
@@ -591,8 +618,33 @@ impl LevelManager {
                 }
             }
 
-            // Fuse the room's statics — structure AND surface-mounted props —
-            // now that every Static placement has been collected.
+            // The room's PHYSICS: ONE static body carrying the watertight
+            // shell (a solid box per sealed cell face, doorways open —
+            // derived and unit-tested in void-logic) plus a snug convex
+            // hull per protruding corner piece. Built after populace so a
+            // late ConvexSolid placement can never be dropped. The skin
+            // meshes are the room's LOOK; this body is the wall the
+            // engine knows.
+            if !room.shell.is_empty() || !solid_meshes.is_empty() {
+                let mut shell_body = StaticBody3D::new_alloc();
+                shell_body.set_name("RoomShell");
+                for slab in &room.shell {
+                    let mut boxy = BoxShape3D::new_gd();
+                    boxy.set_size(vec3(slab.size));
+                    let mut col = CollisionShape3D::new_alloc();
+                    col.set_shape(&boxy);
+                    col.set_position(vec3(slab.center));
+                    shell_body.add_child(&col);
+                }
+                let mut shell_node = shell_body.clone().upcast::<Node>();
+                for solid in &solid_meshes {
+                    godot_util::add_convex_collision(&mut shell_node, solid, solid.get_transform());
+                }
+                room_node.add_child(&shell_body);
+            }
+            // Fuse the room's statics — surface-mounted props only now
+            // (structure is Skin/ConvexSolid) — after every Static
+            // placement has been collected.
             Self::build_merged_collision(&mut room_node, &static_meshes);
 
             self.room_bounds.push(room.bounds.clone());
@@ -773,10 +825,11 @@ impl LevelManager {
         }
     }
 
-    /// Fuse every structural mesh's triangles into one `ConcavePolygonShape3D`
-    /// on a single `StaticBody3D` for the whole room. Same triangles as a
-    /// per-mesh trimesh — so collision still hugs corners — but Jolt tracks
-    /// one body instead of thousands. One source: the meshes.
+    /// Fuse the remaining `Static` meshes' triangles (surface-mounted props
+    /// and equipment — never the room skin, whose physics is the watertight
+    /// shell, nor the corner curves, which carry solid convex hulls) into
+    /// one `ConcavePolygonShape3D` on a single `StaticBody3D` per room.
+    /// Jolt tracks one body instead of thousands. One source: the meshes.
     fn build_merged_collision(room_node: &mut Gd<Node3D>, static_meshes: &[Gd<Node3D>]) {
         let mut faces = PackedVector3Array::new();
         for node in static_meshes {
@@ -1009,6 +1062,7 @@ impl LevelManager {
         room_node: &mut Gd<Node3D>,
         entry: &MeshPlacement,
         statics: &mut Vec<Gd<Node3D>>,
+        solids: &mut Vec<Gd<Node3D>>,
         loose_rng: &mut SmallRng,
     ) -> bool {
         let Some(resource) = loader.load(entry.scene) else {
@@ -1040,7 +1094,8 @@ impl LevelManager {
 
                 body.add_child(&node);
                 let node_xform = node.get_transform();
-                godot_util::add_convex_collision(&mut body, &node, node_xform);
+                let mut body_node = body.clone().upcast::<Node>();
+                godot_util::add_convex_collision(&mut body_node, &node, node_xform);
                 room_node.add_child(&body);
                 body.reset_physics_interpolation();
             }
@@ -1052,12 +1107,26 @@ impl LevelManager {
                 room_node.add_child(&node);
                 statics.push(node);
             }
-            Collision::Passable => {
+            Collision::Skin | Collision::Passable => {
+                // Skin: render-only by design — the room's watertight shell
+                // owns that plane's physics (see build's shell emission).
                 node.set_position(vec3(entry.position));
                 if entry.rotation_x.abs() > 0.001 || entry.rotation_y.abs() > 0.001 {
                     node.set_rotation(Vector3::new(entry.rotation_x, entry.rotation_y, 0.0));
                 }
                 room_node.add_child(&node);
+            }
+            Collision::ConvexSolid => {
+                // A protruding solid (curved corner stack): rendered here,
+                // hulled onto the room's ONE shell body by the caller — a
+                // per-piece body would re-explode Jolt's broadphase, the
+                // exact regression the merged-collision pin guards.
+                node.set_position(vec3(entry.position));
+                if entry.rotation_x.abs() > 0.001 || entry.rotation_y.abs() > 0.001 {
+                    node.set_rotation(Vector3::new(entry.rotation_x, entry.rotation_y, 0.0));
+                }
+                room_node.add_child(&node);
+                solids.push(node);
             }
         }
         true

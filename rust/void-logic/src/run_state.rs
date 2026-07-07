@@ -78,6 +78,11 @@ pub struct RunState {
     /// the rack restocks to its starting three wherever the item would be
     /// handed over fresh — grant, run-over, profile-only load).
     pub shield_charges: u32,
+    /// Valkyrie charge-row upgrades bought this run (blue, playtest
+    /// 2026-07-06): extra bars and refill levels. The shop's ratchet keys
+    /// AND the node's ChargeState config — see `armament::valkyrie`.
+    pub valkyrie_bars_bought: u32,
+    pub valkyrie_refill_level: u32,
 }
 
 impl RunState {
@@ -130,6 +135,8 @@ impl RunState {
             lives: 1,
             lives_purchased: 0,
             shield_charges: 0,
+            valkyrie_bars_bought: 0,
+            valkyrie_refill_level: 0,
         }
     }
 
@@ -144,7 +151,19 @@ impl RunState {
         let boosted = (self.shield.current.as_f32() + SHIELD_BURST_AMOUNT)
             .min(self.shield.max_capacity.as_f32());
         self.shield.current = Shield::new(boosted);
+        // The emergency recharge also wakes regen — a surge that then sits
+        // dead for the post-hit delay reads as broken (playtest 2026-07-06).
+        self.shield.wake_regen();
         true
+    }
+
+    /// Full shields on the spot — the mechanism a room seal invokes when
+    /// its `restore_shields` flag is set (owner's call 2026-07-06):
+    /// without it, loitering outside the door until the shield regenerated
+    /// was strictly optimal play. Health stays as it stands — you fight
+    /// with the hull you brought.
+    pub fn restore_shields(&mut self) {
+        self.shield.current = self.shield.max_capacity;
     }
 
     /// Whether death costs a life instead of the run.
@@ -287,6 +306,8 @@ impl RunState {
         self.laser_level = LaserLevel::Red;
         self.components = ComponentAccount::new();
         self.loadout.upgrades.clear();
+        self.valkyrie_bars_bought = 0;
+        self.valkyrie_refill_level = 0;
         self.lives = 1;
         self.lives_purchased = 0;
         // The Surge item is green-permanent and arrives stocked on a fresh
@@ -429,6 +450,38 @@ mod tests {
         assert!(run.use_shield_burst());
         assert!(run.shield.current <= run.shield.max_capacity);
         assert_eq!(run.shield_charges, 1);
+    }
+
+    #[test]
+    fn the_surge_wakes_the_shield_regen() {
+        // An emergency recharge that then sits dead for the post-hit delay
+        // reads as broken (playtest 2026-07-06): spending a charge starts
+        // regen on the next tick. A roomier shield makes the regen visible
+        // past the burst's clamp — same production tuning fields shield_for
+        // sets, just wider.
+        let mut run = RunState::new(Seed::new(42));
+        run.shield = ShieldState::new(Shield::new(200.0), 1.5, 5.0);
+        run.shield_charges = 1;
+        run.take_damage(Damage::new(150.0)); // at 50, the 5s delay armed
+        assert!(run.use_shield_burst(), "the stocked rack fires");
+        let after_burst = run.shield.current.as_f32(); // 100, under the cap
+
+        run.shield.tick(1.0);
+        assert!(
+            run.shield.current.as_f32() > after_burst,
+            "the surge wakes regen immediately — no post-hit dead time (got {} from {after_burst})",
+            run.shield.current.as_f32()
+        );
+    }
+
+    #[test]
+    fn restore_shields_tops_up_on_the_spot() {
+        let mut run = RunState::new(Seed::new(42));
+        run.take_damage(Damage::new(30.0));
+        assert!(run.shield.current < run.shield.max_capacity, "fixture sanity");
+        run.restore_shields();
+        assert_eq!(run.shield.current, run.shield.max_capacity,
+            "the seal's mercy: full shields, on the spot");
     }
 
     #[test]

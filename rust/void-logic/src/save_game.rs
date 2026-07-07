@@ -33,6 +33,9 @@ pub struct RunSnapshot {
     pub lives: u32,
     pub lives_purchased: u32,
     pub shield_charges: u32,
+    /// Valkyrie charge-row upgrades (blue, playtest 2026-07-06).
+    pub valkyrie_bars_bought: u32,
+    pub valkyrie_refill_level: u32,
 }
 
 /// Everything persisted to disk: the permanent profile plus, while a run is
@@ -76,6 +79,8 @@ impl SaveGame {
                 lives: run.lives,
                 lives_purchased: run.lives_purchased,
                 shield_charges: run.shield_charges,
+                valkyrie_bars_bought: run.valkyrie_bars_bought,
+                valkyrie_refill_level: run.valkyrie_refill_level,
             }),
         }
     }
@@ -124,6 +129,8 @@ impl SaveGame {
             run.lives = snapshot.lives;
             run.lives_purchased = snapshot.lives_purchased;
             run.shield_charges = snapshot.shield_charges;
+            run.valkyrie_bars_bought = snapshot.valkyrie_bars_bought;
+            run.valkyrie_refill_level = snapshot.valkyrie_refill_level;
         }
         // A profile-only load hands the owned Surge item over freshly
         // stocked (a snapshot's rack, restored above, wins when present).
@@ -167,6 +174,21 @@ mod tests {
         assert_eq!(run.current_level, 4);
         assert_eq!(run.lives, 3);
         assert_eq!(run.lives_purchased, 2);
+    }
+
+    #[test]
+    fn the_valkyrie_charge_upgrades_survive_the_snapshot() {
+        // Blue upgrades bought this run must ride save-and-exit like every
+        // other blue (playtest 2026-07-06 charge redesign).
+        let mut run = seasoned_run();
+        run.valkyrie_bars_bought = 2;
+        run.valkyrie_refill_level = 3;
+        let save = SaveGame::from_run_state(&run);
+        let restored = SaveGame::from_json(&save.to_json()).expect("round-trips");
+        let mut fresh = RunState::new(Seed::new(1));
+        restored.apply_to(&mut fresh);
+        assert_eq!(fresh.valkyrie_bars_bought, 2, "bought bars ride the snapshot");
+        assert_eq!(fresh.valkyrie_refill_level, 3, "refill levels too");
     }
 
     #[test]

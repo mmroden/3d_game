@@ -289,6 +289,16 @@ impl AudioManager {
         self.spawn_sfx_player(path);
     }
 
+    /// Play a typed SFX event non-positionally at a pitch multiple —
+    /// the Valkyrie's bar-ready ticks climb a scale as the row fills.
+    pub fn play_event_pitched(&mut self, event: SfxEvent, pitch: f32) {
+        if self.active_sfx_count >= MAX_SFX_POLYPHONY {
+            return;
+        }
+        let path = Self::pick_variant(event);
+        self.spawn_sfx_player_pitched(path, pitch);
+    }
+
     /// Play a typed SFX event at a 3D position.
     pub fn play_event_at(&mut self, event: SfxEvent, position: Vector3) {
         if self.active_sfx_count >= MAX_SFX_POLYPHONY {
@@ -392,11 +402,16 @@ impl AudioManager {
     }
 
     fn spawn_sfx_player(&mut self, path: &str) {
+        self.spawn_sfx_player_pitched(path, 1.0);
+    }
+
+    fn spawn_sfx_player_pitched(&mut self, path: &str, pitch: f32) {
         let Some(stream) = Self::load_audio_stream(path) else { return };
 
         let mut player = AudioStreamPlayer::new_alloc();
         player.set_bus("SFX");
         player.set_stream(&stream);
+        player.set_pitch_scale(pitch.max(0.1));
 
         self.base_mut().add_child(&player);
         self.active_sfx_count += 1;

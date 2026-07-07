@@ -118,11 +118,10 @@ id = 3
 name = "Eye Drone"
 blurb = "An optical sentry. It takes a few shots, then breaks off to round up other machines and herd them onto you — death by overwhelming odds."
 model = "Enemy_EyeDrone"
-size = 0.5
-yaw_offset_deg = 0
+size = 1.0
+yaw_offset_deg = 180
 ai = "kiter"
 reward = 1500
-minions = [{ enemy = "spawn_drone", count = 1, trigger = "on_death" }]
 [enemy.stats]
 hp = 5.0
 speed = 7.0
@@ -136,11 +135,12 @@ key = "quad_shell"
 id = 4
 name = "Quad Shell"
 blurb = "A shielded tank. Its plating soaks damage before its hull ever feels it; patient fire, or a flank while it's busy, is the only way through."
-model = "Enemy_QuadShell"
-size = 0.5
-yaw_offset_deg = 0
+model = "Enemy_EyeDrone"
+size = 1.0
+yaw_offset_deg = 180
 ai = "tank"
 reward = 2500
+minions = [{ enemy = "spawn_drone", count = 1, trigger = "on_death" }]
 [enemy.stats]
 hp = 12.0
 speed = 6.0
@@ -155,8 +155,8 @@ id = 5
 name = "Spawn Drone"
 blurb = "A scrap-built picket ejected by a dying carrier. Lighter and quicker than the fleet it defends but flimsy — it buys the swarm a few more seconds of fire."
 model = "Enemy_GunDrone"
-size = 0.5
-yaw_offset_deg = 0
+size = 0.75
+yaw_offset_deg = 180
 ai = "kiter"
 reward = 400
 spawns_directly = false # only ever death-spawned / escort-bound
@@ -247,8 +247,8 @@ id = 10
 name = "Sentry Drone"
 blurb = "The occupation's standard sentry. It walks its beat, spots you, and shoots — the first machine every scavenger learns to kill."
 model = "Enemy_EyeDrone"
-size = 0.5
-yaw_offset_deg = 0
+size = 1.0
+yaw_offset_deg = 180
 ai = "shooter"
 reward = 800
 [enemy.stats]

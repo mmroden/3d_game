@@ -203,36 +203,45 @@ mod tests {
 
     #[test]
     fn the_reserves_never_enter_any_roster() {
+        // Anything the grammar keeps off the direct line (spawns_directly
+        // = false) stays out of every roster — derived from the grammar,
+        // never a named list (feedback 2026-07-06).
+        use crate::roster::roster;
         for level in 1..=24 {
             let spec = fresh(level);
-            for reserve in [eid("gun_drone"), eid("quad_orb"),
-                            eid("boss_brute"), eid("boss_latcher"),
-                            eid("spawn_drone")] {
-                assert!(!spec.roster.contains(&reserve),
-                    "level {level}: {reserve:?} is not pool stock");
+            for id in roster().enemy_ids() {
+                if !roster().enemy(id).spawns_directly {
+                    assert!(!spec.roster.contains(&id),
+                        "level {level}: {} is not pool stock", roster().enemy(id).key);
+                }
             }
         }
     }
 
     #[test]
     fn coverage_closes_the_roster_over_death_spawns() {
-        assert!(!fresh(2).coverage.contains(&eid("spawn_drone")),
-            "level 2 cannot produce a SpawnDrone");
-        assert!(fresh(3).coverage.contains(&eid("spawn_drone")),
-            "the EyeDrone's death spawn enters the bestiary horizon with it \
-             (the EyeDrone arrives at relative 3, owner's schedule)");
-        // Coverage is a superset of the roster …
-        let spec = fresh(11);
-        for direct in &spec.roster {
-            assert!(spec.coverage.contains(direct));
+        // The spec's coverage is its roster closed over declared minions —
+        // the bestiary horizon — declaration-ordered and deduplicated.
+        // Derived from the grammar, never from named defs (feedback
+        // 2026-07-06).
+        use crate::roster::roster;
+        for level in 1..=12u32 {
+            let spec = fresh(level);
+            for direct in &spec.roster {
+                assert!(spec.coverage.contains(direct),
+                    "level {level}: the roster is inside its own horizon");
+                for d in &roster().enemy(*direct).minions {
+                    assert!(spec.coverage.contains(&d.enemy),
+                        "level {level}: a roster member's declared minion joins the horizon");
+                }
+            }
+            let ids: Vec<usize> = spec.coverage.iter().map(|id| id.0).collect();
+            let mut sorted = ids.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(sorted, ids,
+                "level {level}: declaration-ordered and deduplicated (bestiary contract)");
         }
-        // … and is declaration-ordered and deduplicated (bestiary contract).
-        let coverage = fresh(11).coverage.clone();
-        let ids: Vec<usize> = coverage.iter().map(|id| id.0).collect();
-        let mut sorted = ids.clone();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(sorted, ids);
     }
 
     #[test]

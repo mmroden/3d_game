@@ -101,13 +101,11 @@ func test_dead_enemies_are_cleaned_up_without_errors():
 
 
 func test_static_props_are_fused_into_the_room_collider():
-	# Differential oracle: generate_backdrop builds the same seed's room as
-	# generate_level minus populace, so the two merged colliders differ by
-	# exactly the surface-mounted (Collision::Static) props. Passable and
-	# Dynamic placements are never fused in either build, so a full-build
-	# collider with MORE triangles than the backdrop's proves props were
-	# fused; equal counts on every seed means props were dropped (the
-	# observed red: props were collected after the merge had already run).
+	# Differential oracle, post-shell (playtest 2026-07-06): STRUCTURE never
+	# fuses — its physics is the watertight RoomShell + corner hulls — so a
+	# structure-only backdrop builds NO merged collider at all. The full
+	# build's merged collider is therefore exactly the surface-mounted
+	# (Collision::Static) props; seeing it appear proves props still fuse.
 	var grew := 0
 	for level_seed in [4242, 7, 1234]:
 		var bare = LevelManager.new()
@@ -118,11 +116,9 @@ func test_static_props_are_fused_into_the_room_collider():
 		full.generate_level(level_seed, 1)
 		var bare_faces := _merged_collider_face_count(bare)
 		var full_faces := _merged_collider_face_count(full)
-		assert_gt(bare_faces, 0,
-			"seed %d: backdrop must build a merged collider" % level_seed)
-		assert_true(full_faces >= bare_faces,
-			"seed %d: fusing populace statics must never shrink the collider" % level_seed)
-		if full_faces > bare_faces:
+		assert_eq(bare_faces, 0,
+			"seed %d: structure-only builds fuse nothing — the shell owns structure physics" % level_seed)
+		if full_faces > 0:
 			grew += 1
 	assert_gt(grew, 0,
 		"at least one seed must furnish a static prop into the collider, else this test is vacuous")

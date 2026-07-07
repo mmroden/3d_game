@@ -222,7 +222,7 @@ impl DroneAi {
             Archetype::Shooter | Archetype::Tank => self.shooter_tick(has_line_of_sight),
             Archetype::Kiter => self.kiter_tick(distance_to_player, has_line_of_sight),
             Archetype::Swarmer => self.swarmer_tick(),
-            Archetype::Bomber => self.bomber_tick(delta),
+            Archetype::Bomber => self.bomber_tick(has_line_of_sight, delta),
         }
     }
 
@@ -374,7 +374,7 @@ impl DroneAi {
         AiTick { movement, attack }
     }
 
-    fn bomber_tick(&mut self, delta: f32) -> AiTick {
+    fn bomber_tick(&mut self, has_sight: bool, delta: f32) -> AiTick {
         match self.state {
             DroneState::Idle | DroneState::Dead => {
                 AiTick { movement: Movement::Hold, attack: Attack::None }
@@ -385,6 +385,14 @@ impl DroneAi {
                 AiTick { movement: self.chase_movement(1.0), attack: Attack::None }
             }
             DroneState::Attacking => {
+                if !has_sight {
+                    // In range THROUGH A WALL (state advancement is pure
+                    // distance): hold the fuse full and ride the wall-
+                    // feedback chase instead of cooking off against
+                    // geometry (playtest 2026-07-06).
+                    self.fuse_timer = self.config.fuse_seconds;
+                    return AiTick { movement: self.chase_movement(1.0), attack: Attack::None };
+                }
                 self.fuse_timer = (self.fuse_timer - delta).max(0.0);
                 if self.fuse_timer <= 0.0 {
                     self.state = DroneState::Dead;
@@ -794,6 +802,30 @@ mod tests {
         let boom = ai.update(4.0, true, 0.6); // fuse exhausted
         assert_eq!(boom.attack, Attack::Detonate { radius: 6.0 });
         assert!(ai.is_dead());
+    }
+
+    #[test]
+    fn bomber_fuse_needs_line_of_sight() {
+        // Playtest 2026-07-06: detection and state advancement are pure
+        // distance, so a bomber "in range" THROUGH A WALL burned its fuse
+        // against the geometry and cooked off unseen. Blind in range: the
+        // fuse holds full and nothing detonates. Sight restored: it burns
+        // fresh from the top.
+        let mut config = config_with(Archetype::Bomber);
+        config.fuse_seconds = 1.0;
+        config.blast_radius = 6.0;
+        let mut ai = DroneAi::new(config);
+        engage(&mut ai, 4.0);
+        ai.update(4.0, false, 0.6);
+        let blind = ai.update(4.0, false, 0.6); // 1.2s blind — over the fuse
+        assert_eq!(blind.attack, Attack::None, "a blind bomber never cooks off");
+        assert!(!ai.is_dead(), "the blind bomber is still alive");
+        // Sight restored: the fuse burns from full, not from where blindness left it.
+        let mid = ai.update(4.0, true, 0.6);
+        assert_eq!(mid.attack, Attack::None, "0.6s of a fresh 1.0s fuse — not yet");
+        let boom = ai.update(4.0, true, 0.6);
+        assert_eq!(boom.attack, Attack::Detonate { radius: 6.0 },
+            "the sighted fuse detonates on schedule");
     }
 
     #[test]

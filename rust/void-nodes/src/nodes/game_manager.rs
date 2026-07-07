@@ -399,6 +399,13 @@ impl GameManager {
         }
         godot_print!("Boss fight engaged — the arena seals");
         self.set_boss_seal(true);
+        self.rise_staged_boss();
+        // The arena seal restores shields (its restore_shields flag is set,
+        // owner's call 2026-07-06): full shields on entry, so loitering
+        // outside the door for regen buys nothing. Health stays — you fight
+        // with the hull you brought. The miniboss seal leaves this off.
+        self.run_state.restore_shields();
+        self.update_hud();
         self.queue_music_push();
         // Every enemy gets the engage fan-out; `activate_escorts` is a no-op
         // for drones without OnEngage minions, so no type filtering here.
@@ -416,6 +423,15 @@ impl GameManager {
         let Some(parent) = self.base().get_parent() else { return };
         if let Some(mut lm) = parent.try_get_node_as::<Node>(nodes::LEVEL_MANAGER) {
             lm.call(methods::SEAL_BOSS_GATE, &[Variant::from(sealed)]);
+        }
+    }
+
+    /// Fan the boss rise out to the LevelManager — arena entry is the
+    /// staged boss's spawn beat.
+    fn rise_staged_boss(&self) {
+        let Some(parent) = self.base().get_parent() else { return };
+        if let Some(mut lm) = parent.try_get_node_as::<Node>(nodes::LEVEL_MANAGER) {
+            lm.call(methods::RISE_BOSS, &[]);
         }
     }
 
@@ -442,7 +458,9 @@ impl GameManager {
             .and_then(|p| p.try_get_node_as::<LevelManager>(nodes::LEVEL_MANAGER))
             .map(|lm| lm.bind().live_enemies_in_current_room())
             .unwrap_or(false);
-        let bed = audio_catalog::music_bed(self.phase, boss, enemies);
+        // No miniboss FSM yet — the miniboss chunk wires the real input
+        // (docs/design/miniboss_lockdown.md).
+        let bed = audio_catalog::music_bed(self.phase, boss, false, enemies);
         let track = match bed {
             MusicBed::Menu => audio_catalog::menu_track().to_string(),
             MusicBed::Combat => String::new(), // the AudioManager rolls the stinger
@@ -538,6 +556,14 @@ impl GameManager {
                     Receipt::ChargeAdded(charges) => {
                         godot_print!("Surge charge bought ({charges} in the rack)");
                     }
+                    Receipt::ValkyrieBarAdded(bars) => {
+                        godot_print!("Valkyrie bar bought ({bars} in the row)");
+                        self.sync_player_state();
+                    }
+                    Receipt::ValkyrieRefillAdded(level) => {
+                        godot_print!("Valkyrie refill bought (level {level})");
+                        self.sync_player_state();
+                    }
                     Receipt::UnlockGranted(unlock) => {
                         godot_print!("Permanent unlock bought: {}", unlock.display_name());
                         // A permanent purchase must never be lostable —
@@ -566,6 +592,11 @@ impl GameManager {
             return;
         }
         if self.run_state.use_shield_burst() {
+            // The spend is audible (playtest 2026-07-06) — non-positional,
+            // it's the player's own gear.
+            if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+                audio.bind_mut().play_event(SfxEvent::ShieldBurst);
+            }
             self.update_hud();
         }
     }
@@ -1481,8 +1512,13 @@ impl GameManager {
             ]);
             // Arm (or disarm) the Valkyrie from the profile — RESET_LOADOUT
             // above wiped the node's cache, and ownership is green state the
-            // node must never read from disk itself.
+            // node must never read from disk itself. Upgrades go first so
+            // the arming builds the row at the bought width and rate.
             let valkyrie = self.run_state.profile.unlocks.contains(Unlock::Valkyrie);
+            player.call(methods::SET_VALKYRIE_UPGRADES, &[
+                Variant::from(self.run_state.valkyrie_bars_bought as i32),
+                Variant::from(self.run_state.valkyrie_refill_level as i32),
+            ]);
             player.call(methods::SET_VALKYRIE_OWNED, &[Variant::from(valkyrie)]);
         }
     }

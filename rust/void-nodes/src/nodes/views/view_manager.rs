@@ -77,6 +77,7 @@ impl INode3D for ViewManager {
         self.connect_to_game_manager();
         self.connect_to_window_resize();
         godot_print!("ViewManager ready — {}", self.current_mode.label());
+        self.log_display_geometry("startup");
     }
 
     fn process(&mut self, _delta: f64) {
@@ -110,6 +111,28 @@ impl ViewManager {
         if self.current_mode == DisplayMode::SideBySide {
             self.resize_ui_plane();
         }
+        self.log_display_geometry("window resized");
+    }
+
+    /// Log the physical display geometry (playtest 2026-07-06: mirrored
+    /// vs extended xReal monitors run very different resolutions and the
+    /// UI misfits silently — the log names the setup a report came from).
+    fn log_display_geometry(&self, context: &str) {
+        let ds = DisplayServer::singleton();
+        let screen = ds.screen_get_size();
+        let window = ds.window_get_size();
+        let config = self.stereo_config();
+        godot_print!(
+            "Display [{context}]: screen {}x{}, window {}x{} ({:?}), mode {}, per-eye {}x{}",
+            screen.x,
+            screen.y,
+            window.x,
+            window.y,
+            ds.window_get_mode(),
+            self.current_mode.label(),
+            config.viewport_width,
+            config.viewport_height,
+        );
     }
 
     /// Called when GameManager emits options_changed.
@@ -131,6 +154,7 @@ impl ViewManager {
             self.resize_ui_plane();
             self.apply_visibility(sbs);
             self.park_player_camera();
+            self.log_display_geometry("display mode change");
 
             // Publish the now-active 3D viewports so telemetry re-targets
             // measurement onto the eyes (SBS) or the root (mono).

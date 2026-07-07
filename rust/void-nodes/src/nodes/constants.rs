@@ -56,6 +56,7 @@ pub mod methods {
     pub const ON_RENDER_VIEWPORTS_CHANGED: &str = "on_render_viewports_changed";
     pub const ON_BOSS_ARENA_ENTERED: &str = "on_boss_arena_entered";
     pub const SEAL_BOSS_GATE: &str = "seal_boss_gate";
+    pub const RISE_BOSS: &str = "rise_boss";
     pub const SET_SEALED: &str = "set_sealed";
     pub const SET_DORMANT: &str = "set_dormant";
     pub const DISARM: &str = "disarm";
@@ -108,6 +109,7 @@ pub mod methods {
     pub const CONFIGURE_SHIP: &str = "configure_ship";
     pub const SET_CONTROLS_ENABLED: &str = "set_controls_enabled";
     pub const SET_VALKYRIE_OWNED: &str = "set_valkyrie_owned";
+    pub const SET_VALKYRIE_UPGRADES: &str = "set_valkyrie_upgrades";
     pub const SET_RADAR_CONTACTS: &str = "set_radar_contacts";
     pub const REFRESH_SHOP: &str = "refresh_shop";
     pub const SHOW_LOADING: &str = "show_loading";
@@ -152,6 +154,7 @@ pub mod actions {
     pub const ROLL_LEFT: &str = "roll_left";
     pub const ROLL_RIGHT: &str = "roll_right";
     pub const FIRE: &str = "fire";
+    pub const FIRE_SECONDARY: &str = "fire_secondary";
     pub const OPEN_MENU: &str = "open_menu";
     pub const MENU_UP: &str = "menu_up";
     pub const MENU_DOWN: &str = "menu_down";

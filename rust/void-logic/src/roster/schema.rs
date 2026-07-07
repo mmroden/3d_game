@@ -104,6 +104,9 @@ pub struct EnemyRaw {
     pub slow_factor: Option<f32>,
     pub slow_duration: Option<f32>,
     pub slow_interval: Option<f32>,
+    /// While this enemy lives, its room's exits seal red and the boss
+    /// bed plays — death re-opens them (design 2026-07-06). Default off.
+    pub miniboss: Option<bool>,
 }
 
 fn default_true() -> bool {
