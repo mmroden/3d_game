@@ -121,11 +121,20 @@ impl ViewManager {
         let ds = DisplayServer::singleton();
         let screen = ds.screen_get_size();
         let window = ds.window_get_size();
+        // macOS reports PIXELS while the OS Displays widget reports POINTS
+        // (playtest 2026-07-09: "4112x2658" read as impossible — it is the
+        // 2x Retina backing store of 2056x1329 pt, downsampled to the
+        // panel). Print the scale so the log decodes itself.
+        let scale = ds.screen_get_scale();
         let config = self.stereo_config();
         godot_print!(
-            "Display [{context}]: screen {}x{}, window {}x{} ({:?}), mode {}, per-eye {}x{}",
+            "Display [{context}]: screen {}x{} px (scale {:.1} = {:.0}x{:.0} pt), \
+             window {}x{} ({:?}), mode {}, per-eye {}x{}",
             screen.x,
             screen.y,
+            scale,
+            screen.x as f32 / scale,
+            screen.y as f32 / scale,
             window.x,
             window.y,
             ds.window_get_mode(),
@@ -271,13 +280,18 @@ impl ViewManager {
 
     fn stereo_config(&self) -> StereoConfig {
         let ds = DisplayServer::singleton();
-        // In fullscreen, window_get_size() may not reflect the new dims yet
-        // (macOS animates the transition). Use screen_get_size() which is
-        // available immediately.
-        let win = match ds.window_get_mode() {
-            WindowMode::FULLSCREEN | WindowMode::EXCLUSIVE_FULLSCREEN => ds.screen_get_size(),
-            _ => ds.window_get_size(),
-        };
+        // The WINDOW is the truth: on notched Macs a fullscreen window is
+        // SHORTER than the screen (the camera-housing band), so substituting
+        // screen_get_size() whenever fullscreen sized the eyes 78 px too
+        // tall — permanently (playtest 2026-07-09). The old workaround
+        // (macOS animates the fullscreen transition, so the window size can
+        // lag a beat) survives as a fallback for the degenerate report
+        // only; the OS resize event re-runs sizing once the transition
+        // settles, so a transiently stale read self-heals.
+        let mut win = ds.window_get_size();
+        if win.x <= 0 || win.y <= 0 {
+            win = ds.screen_get_size();
+        }
         // In SBS mode the window is 2x wide; per-eye width is half that.
         let w = if self.current_mode == DisplayMode::SideBySide {
             (win.x / 2) as u32

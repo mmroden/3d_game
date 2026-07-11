@@ -39,9 +39,11 @@ pub enum MusicBed {
     Boss,
 }
 
-/// Fight-music loudness over the exploration baseline (owner's call,
-/// playtest 2026-07-05: "combat music should be played louder — maybe 20%").
-pub const FIGHT_MUSIC_GAIN: f32 = 1.2;
+/// Fight-music loudness over the exploration baseline (owner's calls:
+/// 2026-07-05 "louder — maybe 20%", 2026-07-09 "louder at the outset").
+/// Amplitude ×1.4 ≈ +3 dB — the PERCEIVED "20% louder"; the old ×1.2 was
+/// +1.6 dB, right at the edge of noticeable and buried under combat SFX.
+pub const FIGHT_MUSIC_GAIN: f32 = 1.4;
 
 impl MusicBed {
     /// Loudness multiplier layered on the phase volume: fight beds (combat
@@ -51,6 +53,18 @@ impl MusicBed {
         match self {
             Self::Combat | Self::Boss => FIGHT_MUSIC_GAIN,
             Self::Menu | Self::Level => 1.0,
+        }
+    }
+
+    /// How fast this bed fades IN when it takes over. Fight beds arrive
+    /// fast — the combat masters carry their own composed ramp-up, so the
+    /// engine gets out of their way (owner 2026-07-09); everything else
+    /// keeps the leisurely default. Exits stay slow for free: the duration
+    /// keys off the DESTINATION bed.
+    pub fn crossfade_in_secs(self) -> f32 {
+        match self {
+            Self::Combat | Self::Boss => FIGHT_CROSSFADE_SECS,
+            Self::Menu | Self::Level => CROSSFADE_SECS,
         }
     }
 
@@ -283,8 +297,27 @@ impl SfxEvent {
 
 // ── Timing constants ─────────────────────────────────────────────────
 
-/// Duration of music crossfade in seconds.
+/// Duration of music crossfade in seconds (the default — a leisurely bed
+/// swap; fight beds fade IN faster, see [`MusicBed::crossfade_in_secs`]).
 pub const CROSSFADE_SECS: f32 = 2.0;
+/// Fade-in for fight beds (owner 2026-07-09: "the transition to a
+/// fully-fledged combat track should be faster" — the combat masters carry
+/// their own composed ramp-up, so the engine gets out of their way).
+pub const FIGHT_CROSSFADE_SECS: f32 = 0.4;
+
+/// Equal-power fade-in gain at progress `t` (0..=1). Paired with
+/// [`fade_out_gain`] the combined loudness holds steady (sin² + cos² = 1),
+/// and the incoming bed is audible from the first beat — a linear-amplitude
+/// ramp is perceptually back-loaded (playtest 2026-07-09: "takes way too
+/// long to phase in").
+pub fn fade_in_gain(t: f32) -> f32 {
+    (t.clamp(0.0, 1.0) * std::f32::consts::FRAC_PI_2).sin()
+}
+
+/// Equal-power fade-out gain at progress `t` (0..=1).
+pub fn fade_out_gain(t: f32) -> f32 {
+    (t.clamp(0.0, 1.0) * std::f32::consts::FRAC_PI_2).cos()
+}
 /// Volume for gameplay music (linear, 0.0–1.0).
 pub const GAMEPLAY_MUSIC_VOL: f32 = 0.7;
 /// Volume for menu music (linear, 0.0–1.0).
@@ -333,14 +366,52 @@ mod tests {
 
     #[test]
     fn fight_beds_play_louder_than_the_rest() {
-        // Owner's call (playtest 2026-07-05): combat music noticeably louder
-        // than exploration — about 20%. Boss rides the same fight gain so its
-        // combat-stinger continuations hold one loudness.
+        // Owner's calls (2026-07-05 "louder, maybe 20%"; 2026-07-09 "louder
+        // at the outset"). The CONTRACT: fight beds ride above exploration
+        // and never clip the bus at gameplay volume — the exact gain is the
+        // owner's tuning, never pinned here.
         assert_eq!(MusicBed::Combat.gain(), FIGHT_MUSIC_GAIN);
         assert_eq!(MusicBed::Boss.gain(), FIGHT_MUSIC_GAIN);
         assert_eq!(MusicBed::Level.gain(), 1.0, "exploration is the baseline");
         assert_eq!(MusicBed::Menu.gain(), 1.0);
-        assert!((FIGHT_MUSIC_GAIN - 1.2).abs() < f32::EPSILON);
+        assert!(FIGHT_MUSIC_GAIN > 1.0, "a fight is louder than exploring");
+        assert!(GAMEPLAY_MUSIC_VOL * FIGHT_MUSIC_GAIN <= 1.0,
+            "the fight bed must not clip the music bus");
+    }
+
+    #[test]
+    fn fight_beds_fade_in_fast_and_the_rest_stay_leisurely() {
+        // Owner 2026-07-09: the combat masters carry their own composed
+        // ramp-up — the engine's fade must get out of their way on entry.
+        // Exits stay slow: the duration keys off the DESTINATION bed, so
+        // combat → level rides the default.
+        assert!(MusicBed::Combat.crossfade_in_secs() < CROSSFADE_SECS,
+            "combat arrives fast");
+        assert!(MusicBed::Boss.crossfade_in_secs() < CROSSFADE_SECS,
+            "the staged fight's gate-slam beat arrives fast too");
+        assert_eq!(MusicBed::Level.crossfade_in_secs(), CROSSFADE_SECS);
+        assert_eq!(MusicBed::Menu.crossfade_in_secs(), CROSSFADE_SECS);
+    }
+
+    #[test]
+    fn the_crossfade_curve_is_equal_power_and_front_loaded() {
+        // A linear-amplitude ramp is perceptually BACK-loaded (one second
+        // into a 2s fade the track still sits ~8 dB down — playtest
+        // 2026-07-09: "takes way too long to phase in"). Equal-power fades
+        // hold combined loudness steady and bring the incoming bed up
+        // audibly from the first beat.
+        assert_eq!(fade_in_gain(0.0), 0.0);
+        assert!((fade_in_gain(1.0) - 1.0).abs() < 1e-6);
+        assert!((fade_out_gain(0.0) - 1.0).abs() < 1e-6);
+        assert!(fade_out_gain(1.0).abs() < 1e-6);
+        for i in 0..=10 {
+            let t = i as f32 / 10.0;
+            let (fi, fo) = (fade_in_gain(t), fade_out_gain(t));
+            assert!((fi * fi + fo * fo - 1.0).abs() < 1e-4,
+                "equal power at t={t}: in²+out² must hold 1, got {}", fi * fi + fo * fo);
+        }
+        assert!(fade_in_gain(0.25) > 0.25 + 0.1,
+            "front-loaded: audibly ahead of a linear ramp early in the fade");
     }
 
     #[test]

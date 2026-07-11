@@ -1123,6 +1123,10 @@ impl GameManager {
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
             audio.bind_mut().play_event_at(event, hit_position);
         }
+        // Push BEFORE flashing: the tint reads the bar's displayed zone, so
+        // the bar must show the post-hit fraction within this same callback
+        // (the per-frame push would lag a threshold-crossing hit by a frame).
+        self.update_hud();
         self.flash_hud_damage(outcome);
         if !self.run_state.is_alive() {
             self.on_player_death();
@@ -1146,6 +1150,8 @@ impl GameManager {
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
             audio.bind_mut().play_event(event);
         }
+        // Push BEFORE flashing — same ordering contract as on_player_damaged.
+        self.update_hud();
         self.flash_hud_damage(outcome);
         if !self.run_state.is_alive() {
             self.on_player_death();
@@ -1161,8 +1167,11 @@ impl GameManager {
         }
     }
 
-    /// Flash the HUD damage tint at the struck layer's color (playtest
-    /// 2026-07-06): red on a hull breach, amber on a held shield.
+    /// Flash the HUD damage tint — the HULL-severity alarm (owner
+    /// 2026-07-09): silent while the shield absorbs; a breach tints at the
+    /// zone the health bar displays. The caller pushes `update_hud` FIRST,
+    /// so the bar (and therefore the tint) shows the POST-hit fraction —
+    /// "is or would be" — with no second health crossing.
     fn flash_hud_damage(&self, outcome: DamageOutcome) {
         let Some(parent) = self.base().get_parent() else { return };
         if let Some(mut hud) = Self::find_ui_node(&parent, nodes::HUD) {
@@ -2014,6 +2023,16 @@ impl GameManager {
             self.run_state.run_seed,
             self.run_state.current_level,
             &self.run_state.profile.unlocks,
+        );
+        // Every level entry names its run seed — any playtest moment is
+        // reproducible (playtest 2026-07-09: an unlogged random seed made a
+        // spawn-swarm configuration unrecoverable).
+        godot_print!(
+            "Level {} | run seed {} | reproduce: make run SEED={} LEVEL={}",
+            self.run_state.current_level,
+            self.run_state.run_seed.as_i64(),
+            self.run_state.run_seed.as_i64(),
+            self.run_state.current_level,
         );
         // ONE seal FSM per level, whoever anchors it: the staged boss or the
         // spec-placed miniboss (never both — LevelSpec enforces it).

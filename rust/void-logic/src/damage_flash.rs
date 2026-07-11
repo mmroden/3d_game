@@ -1,10 +1,14 @@
-//! Screen damage feedback: a decaying full-screen tint that flashes amber
-//! when the shield absorbs a hit and red when the hull is breached
-//! (playtest 2026-07-06: "briefly flash a yellow or red tinge... a deep
-//! tinge that decays over five seconds or so"). Pure decay + color policy;
-//! the HUD holds one, ticks it each frame, and renders the overlay.
+//! Screen damage feedback: the HULL-SEVERITY alarm (owner 2026-07-09).
+//! The tint fires only when the hull actually DIMINISHES from a hit —
+//! projectile or collision; a held shield raises no alarm — and its color
+//! is the health bar's own post-hit zone: nothing while the bar is (or
+//! would stay) green, yellow when it is-or-goes yellow, red when it
+//! is-or-goes red. Bar and tint derive from ONE scale
+//! ([`HealthZone`](crate::run_state::HealthZone)), so they can never
+//! disagree. Pure decay + zone policy; the HUD holds one, ticks it each
+//! frame, and renders the overlay.
 
-use crate::run_state::DamageOutcome;
+use crate::run_state::HealthZone;
 
 /// Seconds a flash takes to fade from full to nothing (owner: "decays over
 /// five seconds or so").
@@ -13,13 +17,13 @@ pub const FLASH_DECAY_SECONDS: f32 = 5.0;
 pub const FLASH_PEAK_ALPHA: f32 = 0.35;
 
 /// The live damage-tint state: a normalized intensity that decays to zero,
-/// plus which layer the latest strike hit (picks amber vs red).
+/// plus the bar zone of the latest breach (picks yellow vs red).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DamageFlash {
     /// Remaining intensity in 0..=1; `alpha()` scales it by the peak.
     intensity: f32,
-    /// The layer the latest strike hit — true = hull breach (red).
-    hull: bool,
+    /// The bar zone the latest breach left the hull in.
+    zone: HealthZone,
 }
 
 impl Default for DamageFlash {
@@ -30,13 +34,19 @@ impl Default for DamageFlash {
 
 impl DamageFlash {
     pub fn new() -> Self {
-        Self { intensity: 0.0, hull: false }
+        Self { intensity: 0.0, zone: HealthZone::Green }
     }
 
-    /// A hit landed: relight to full at the color of the layer it struck.
-    pub fn strike(&mut self, outcome: DamageOutcome) {
+    /// A hull breach landed, leaving the bar in `zone` (the POST-hit zone —
+    /// "is or would be"). Green raises no alarm; below green every breach
+    /// relights at the bar's color. Held-shield hits never reach here: the
+    /// hull did not diminish, so there is nothing to announce.
+    pub fn strike_hull(&mut self, zone: HealthZone) {
+        if zone == HealthZone::Green {
+            return;
+        }
         self.intensity = 1.0;
-        self.hull = matches!(outcome, DamageOutcome::HullHit);
+        self.zone = zone;
     }
 
     /// Fade the flash toward nothing — linear over `FLASH_DECAY_SECONDS`.
@@ -58,12 +68,12 @@ impl DamageFlash {
         self.intensity > 0.0
     }
 
-    /// The tint RGB: red for a hull breach, amber for a held shield.
+    /// The tint RGB — the health bar's zone color family.
     pub fn color(&self) -> [f32; 3] {
-        if self.hull {
-            [0.9, 0.15, 0.1]
-        } else {
-            [0.95, 0.75, 0.1]
+        match self.zone {
+            HealthZone::Green => [0.0, 0.0, 0.0], // unreachable while visible
+            HealthZone::Yellow => [0.95, 0.85, 0.1],
+            HealthZone::Red => [0.9, 0.15, 0.1],
         }
     }
 }
@@ -80,44 +90,56 @@ mod tests {
     }
 
     #[test]
-    fn a_hull_hit_flashes_red_at_full() {
+    fn a_green_zone_breach_raises_no_alarm() {
+        // The tint mirrors the health bar (owner 2026-07-09): while the bar
+        // is green there is no alarm to raise.
         let mut f = DamageFlash::new();
-        f.strike(DamageOutcome::HullHit);
-        assert!(f.is_visible());
-        assert!((f.alpha() - FLASH_PEAK_ALPHA).abs() < 1e-6, "a fresh strike is at peak");
-        let c = f.color();
-        assert!(c[0] > c[1] && c[0] > c[2], "a hull breach reads red: {c:?}");
+        f.strike_hull(HealthZone::Green);
+        assert!(!f.is_visible(), "green bar, no tint");
     }
 
     #[test]
-    fn a_held_shield_flashes_amber_not_red() {
+    fn a_yellow_zone_breach_tints_yellow() {
         let mut f = DamageFlash::new();
-        f.strike(DamageOutcome::ShieldHeld);
-        assert!(f.is_visible());
+        f.strike_hull(HealthZone::Yellow);
+        assert!((f.alpha() - FLASH_PEAK_ALPHA).abs() < 1e-6, "a breach lights at peak");
         let c = f.color();
-        assert!(c[1] > 0.5, "amber carries a strong green channel: {c:?}");
-        assert!(c[2] < c[0] && c[2] < c[1], "amber, not white or blue: {c:?}");
+        assert!(c[1] > 0.5, "yellow bar, yellow tint (strong green channel): {c:?}");
+        assert!(c[2] < c[1], "yellow, not white: {c:?}");
+    }
+
+    #[test]
+    fn a_red_zone_breach_tints_red() {
+        let mut f = DamageFlash::new();
+        f.strike_hull(HealthZone::Red);
+        assert!((f.alpha() - FLASH_PEAK_ALPHA).abs() < 1e-6, "a breach lights at peak");
+        let c = f.color();
+        assert!(c[0] > c[1] && c[0] > c[2], "red bar, red tint: {c:?}");
+    }
+
+    #[test]
+    fn breaches_relight_every_time_at_the_bars_current_zone() {
+        // Below green every breach matters — each relights, and the color
+        // tracks the bar as it worsens.
+        let mut f = DamageFlash::new();
+        f.strike_hull(HealthZone::Yellow);
+        f.tick(FLASH_DECAY_SECONDS * 0.5);
+        f.strike_hull(HealthZone::Yellow);
+        assert!((f.alpha() - FLASH_PEAK_ALPHA).abs() < 1e-6, "every breach relights");
+        f.strike_hull(HealthZone::Red);
+        let c = f.color();
+        assert!(c[0] > c[1], "the tint worsens with the bar: {c:?}");
     }
 
     #[test]
     fn the_flash_decays_to_nothing_over_five_seconds() {
         let mut f = DamageFlash::new();
-        f.strike(DamageOutcome::HullHit);
+        f.strike_hull(HealthZone::Red);
         f.tick(FLASH_DECAY_SECONDS * 0.5);
         assert!((f.alpha() - FLASH_PEAK_ALPHA * 0.5).abs() < 1e-4,
             "half the decay window leaves half the tint (got {})", f.alpha());
         f.tick(FLASH_DECAY_SECONDS); // well past the end
         assert_eq!(f.alpha(), 0.0, "the flash fades to nothing");
         assert!(!f.is_visible());
-    }
-
-    #[test]
-    fn a_new_hit_relights_the_flash() {
-        let mut f = DamageFlash::new();
-        f.strike(DamageOutcome::HullHit);
-        f.tick(FLASH_DECAY_SECONDS * 0.9); // nearly faded
-        f.strike(DamageOutcome::ShieldHeld); // fresh hit
-        assert!((f.alpha() - FLASH_PEAK_ALPHA).abs() < 1e-6, "the new hit relights to full");
-        assert!(f.color()[1] > 0.5, "and takes the new hit's color (amber)");
     }
 }

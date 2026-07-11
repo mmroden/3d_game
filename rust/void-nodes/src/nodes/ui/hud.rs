@@ -12,7 +12,7 @@ use crate::nodes::live_handle::{LiveOpt, LiveRef, LiveVec};
 use void_logic::radar::{self, BandRect};
 use void_logic::ui_style;
 use void_logic::damage_flash::DamageFlash;
-use void_logic::run_state::DamageOutcome;
+use void_logic::run_state::HealthZone;
 
 /// Health/shield bar dimensions. Shared by `build_hud` (background + fill) and
 /// the `update_*` resizers so the two can't drift out of sync.
@@ -87,6 +87,11 @@ pub struct HUD {
     /// this overlay renders its current color+alpha each frame.
     damage_flash: DamageFlash,
     damage_tint: Option<LiveRef<ColorRect>>,
+    /// The hull fraction the bar currently DISPLAYS (cached from the one
+    /// `update_health` push) — the tint derives its zone from this same
+    /// truth, so bar and tint can never disagree and no second health
+    /// crossing exists. GameManager pushes before it flashes.
+    health_fraction: f32,
     /// The Valkyrie charge row (playtest 2026-07-06): fixed slot pool of
     /// backgrounds + fills, children of `safe_area`; hidden until the
     /// cannon is owned, lighting left-to-right as the charge crosses.
@@ -122,6 +127,9 @@ impl ICanvasLayer for HUD {
             map_panel: None,
             damage_flash: DamageFlash::new(),
             damage_tint: None,
+            // Full until the first push: a pathological pre-push flash
+            // reads green and raises no alarm.
+            health_fraction: 1.0,
             valkyrie_row: None,
             valkyrie_slots: LiveVec::new(),
             valkyrie_fills: LiveVec::new(),
@@ -161,15 +169,16 @@ impl HUD {
     #[func]
     pub fn update_health(&mut self, current: f32, max: f32) {
         let fraction = (current / max).clamp(0.0, 1.0);
+        self.health_fraction = fraction;
 
         self.health_fill.with(|fill| {
             fill.set_size(Vector2::new(BAR_WIDTH * fraction, HEALTH_BAR_HEIGHT));
-            let color = if fraction > 0.5 {
-                Color::from_rgb(0.2, 0.9, 0.2)
-            } else if fraction > 0.25 {
-                Color::from_rgb(0.9, 0.9, 0.2)
-            } else {
-                Color::from_rgb(0.9, 0.2, 0.2)
+            // The bar's color comes from the ONE zone scale the damage tint
+            // also speaks (owner 2026-07-09) — they can never disagree.
+            let color = match HealthZone::of(fraction) {
+                HealthZone::Green => Color::from_rgb(0.2, 0.9, 0.2),
+                HealthZone::Yellow => Color::from_rgb(0.9, 0.9, 0.2),
+                HealthZone::Red => Color::from_rgb(0.9, 0.2, 0.2),
             };
             fill.set_color(color);
         });
@@ -305,13 +314,17 @@ impl HUD {
     }
 
     /// A hit landed — flash the screen tint at the struck layer's color
-    /// (playtest 2026-07-06). GameManager reports the outcome (`hull` true
-    /// = hull breach → red; false = shield held → amber). The decay runs
-    /// in `process`.
+    /// (owner 2026-07-09): the tint is the HULL-severity alarm. A held
+    /// shield raises none (the hull did not diminish); a breach tints at
+    /// the zone the bar DISPLAYS — yellow when the bar is-or-goes yellow,
+    /// red when it is-or-goes red, nothing while it stays green.
+    /// GameManager pushes `update_health` before flashing, so the displayed
+    /// fraction is the POST-hit one. The decay runs in `process`.
     #[func]
     pub fn flash_damage(&mut self, hull: bool) {
-        let outcome = if hull { DamageOutcome::HullHit } else { DamageOutcome::ShieldHeld };
-        self.damage_flash.strike(outcome);
+        if hull {
+            self.damage_flash.strike_hull(HealthZone::of(self.health_fraction));
+        }
     }
 
     /// Fade and render the damage tint. Alpha and color come from the pure
@@ -738,21 +751,28 @@ impl HUD {
         // === Damage tint (hidden until a hit lands; amber shield / red hull) ===
         // A deep full-screen tinge that fades over ~5s (playtest 2026-07-06).
         // Sits under the slow overlay so a swarmer slow reads over a fresh hit.
+        // FULL-SCREEN WASHES PARENT TO THE WINDOW, NOT THE BAND (playtest
+        // 2026-07-09: inside the SBS safe area they render as a center
+        // stripe) — the band exists to pull positioned chrome into each
+        // eye's view; a wash must tint everything the eye sees. Added to the
+        // layer BEFORE the band, so the chrome stays readable over a flash.
         let mut damage_tint = ColorRect::new_alloc();
         damage_tint.set_name("DamageTint");
         damage_tint.set_anchors_preset(LayoutPreset::FULL_RECT);
         damage_tint.set_color(Color::from_rgba(0.0, 0.0, 0.0, 0.0));
         damage_tint.set_mouse_filter(godot::classes::control::MouseFilter::IGNORE);
         damage_tint.set_visible(false);
-        safe_area.add_child(&damage_tint);
+        self.base_mut().add_child(&damage_tint);
         self.damage_tint = Some(LiveRef::new(&damage_tint));
 
         // === Slow debuff indicator (hidden until a swarmer slows the player) ===
         let mut slow_overlay = ColorRect::new_alloc();
+        slow_overlay.set_name("SlowOverlay");
         slow_overlay.set_anchors_preset(LayoutPreset::FULL_RECT);
         slow_overlay.set_color(Color::from_rgba(0.7, 0.1, 0.1, 0.16));
+        slow_overlay.set_mouse_filter(godot::classes::control::MouseFilter::IGNORE);
         slow_overlay.set_visible(false);
-        safe_area.add_child(&slow_overlay);
+        self.base_mut().add_child(&slow_overlay);
         self.slow_overlay = Some(LiveRef::new(&slow_overlay));
 
         let mut slow_label = Label::new_alloc();

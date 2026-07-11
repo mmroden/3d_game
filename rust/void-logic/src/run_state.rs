@@ -12,6 +12,35 @@ use crate::ship_type::ShipType;
 use crate::unlocks::PermanentUnlocks;
 use serde::{Deserialize, Serialize};
 
+/// The health bar turns yellow below this hull fraction.
+pub const HEALTH_YELLOW_BELOW: f32 = 0.5;
+/// The health bar turns red below this hull fraction.
+pub const HEALTH_RED_BELOW: f32 = 0.25;
+
+/// The hull-severity zones the HUD speaks in. The health bar's color AND
+/// the damage tint both derive from THIS one scale (owner 2026-07-09:
+/// "when the hull damage bar goes yellow, that's when we have yellow
+/// tint") — one truth, so they can never disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HealthZone {
+    Green,
+    Yellow,
+    Red,
+}
+
+impl HealthZone {
+    /// The zone a hull fraction (current / max) falls in.
+    pub fn of(fraction: f32) -> Self {
+        if fraction > HEALTH_YELLOW_BELOW {
+            Self::Green
+        } else if fraction > HEALTH_RED_BELOW {
+            Self::Yellow
+        } else {
+            Self::Red
+        }
+    }
+}
+
 /// Which defensive layer absorbed a hit. Drives impact SFX: a held shield
 /// plays the energy zap, a hull hit plays the heavy metal clang.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -772,6 +801,17 @@ mod tests {
         let b = RunState::new(Seed::new(999));
         assert_ne!(a.level_seed(), b.level_seed(),
             "different run seeds must produce different level seeds");
+    }
+
+    #[test]
+    fn health_zones_match_the_bars_thresholds() {
+        // The one scale the bar and the damage tint both speak.
+        assert_eq!(HealthZone::of(1.0), HealthZone::Green);
+        assert_eq!(HealthZone::of(0.51), HealthZone::Green);
+        assert_eq!(HealthZone::of(0.5), HealthZone::Yellow, "at half, the bar goes yellow");
+        assert_eq!(HealthZone::of(0.26), HealthZone::Yellow);
+        assert_eq!(HealthZone::of(0.25), HealthZone::Red, "at a quarter, the bar goes red");
+        assert_eq!(HealthZone::of(0.0), HealthZone::Red);
     }
 
     #[test]
