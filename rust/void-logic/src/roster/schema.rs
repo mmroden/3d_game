@@ -246,6 +246,17 @@ pub struct ModelsFile {
     pub models: BTreeMap<String, String>,
 }
 
+/// rosters/environments.generated.toml: environment key (file stem) →
+/// res:// path. A separate namespace from [`ModelsFile`] on purpose: that
+/// catalog's contract is "every installed ENEMY model", and enemy defs
+/// resolve against it — mixing the two would let an enemy reference the
+/// planet-3 house as its body.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentsFile {
+    pub environments: BTreeMap<String, String>,
+}
+
 /// rosters/kits.generated.toml: each kit's grid, DERIVED by the probe from
 /// its assembly recipe + installed meshes (no dimension is ever authored).
 #[derive(Debug, Serialize, Deserialize)]

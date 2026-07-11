@@ -19,6 +19,10 @@ assets/**/*.blend
 assets/quaternius-megakit/Engine Projects/Unity (URP)/
 assets/quaternius-megakit/Engine Projects/Unreal Engine/
 
+# Archive extraction scratch (install-addons.sh; raw .rar/.zip stay tracked)
+assets/**/unpacked/
+assets/apartment/textures/
+
 
 # Godot addon build output (rebuilt via make assets)
 /godot/addons/

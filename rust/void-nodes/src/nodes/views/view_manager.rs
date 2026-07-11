@@ -26,7 +26,7 @@ use void_logic::stereo::{
 /// so distance doesn't fix the "off-center element, one eye reaching" blur. The
 /// quad scales with distance, so on-screen size is unchanged. The material
 /// disables depth test (`setup_ui_plane`) so this depth isn't occluded by walls.
-const DEFAULT_UI_PLANE_DISTANCE: f32 = 10.0;
+const DEFAULT_UI_PLANE_DISTANCE: f32 = 4.0;
 
 /// First-class view manager: owns the display pipeline (mono or SBS stereo).
 ///

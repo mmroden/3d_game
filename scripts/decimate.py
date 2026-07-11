@@ -1,33 +1,55 @@
 """Headless mesh conversion for `make assets`, run via Blender.
 
-    blender --background --python scripts/decimate.py -- <in> <out.glb> <target_tris> <tex_dir>
+    blender --background --python scripts/decimate.py -- \
+        <in> <out.glb> <target_tris> <tex_dir> [base_color_file]
 
 Imports a source mesh, ensures it carries PBR material(s), collapses geometry to
 roughly <target_tris> triangles, downscales every texture, and writes a
-self-contained .glb with the maps embedded. Two source flavors are handled:
+self-contained .glb with the maps embedded. Accepted inputs: .fbx, .obj,
+.glb/.gltf.
 
-  * FBX (cgtrader evil-mechs): ship their PBR maps as loose Substance exports the
-    FBX doesn't reference, so the importer yields untextured meshes — we rebuild a
-    single Principled-BSDF material from the named maps in <tex_dir>, and bake out
-    the importer's +90° X rotation so the model sits upright.
-  * OBJ (cgtrader jump gate): its .mtl references the textures sitting next to the
-    .obj, so Blender's importer already builds textured materials — we keep them
-    as-is and <tex_dir> is ignored.
+Materials: when the importer already wires textures (an OBJ whose .mtl
+references its maps, a .glb with embedded textures), they are kept as-is.
+When it yields untextured meshes (cgtrader FBX/OBJ drops ship their Substance
+maps loose, unreferenced), one Principled-BSDF material is rebuilt from
+<tex_dir>, whose files are matched to channels by suffix — the packs name
+their maps freely ("initialShadingGroup_Base_color.jpg", "Sphere_drone_01
+_Metallic.jpg", "Normal Map.png", "Metal.png"), so matching is
+case/space/underscore-insensitive. Pass <tex_dir> as "-" when there is
+nothing to rebuild from. [base_color_file] disambiguates packs that ship
+multiple base coats (the apartment boss's "Base Plain"/"Base Rusted").
 
-Either way the shared tail downscales/packs every imported texture, decimates,
-and exports.
+FBX additionally gets the importer's +90° X rotation baked out so the model
+sits upright in Godot.
 """
 import os
+import re
 import sys
 
 import bpy
 
 argv = sys.argv[sys.argv.index("--") + 1:]
 in_path, out_path, target_tris, tex_dir = argv[0], argv[1], int(argv[2]), argv[3]
+base_color_file = argv[4] if len(argv) > 4 else None
 
 # Map size every texture is downscaled to before embedding (square). 1k is
 # plenty for these props and keeps the .glb and VRAM modest.
 TEX_SIZE = 1024
+
+# Channel classification for loose texture maps, evaluated in order against
+# the normalized (lowercase, separators stripped) file stem; first suffix
+# match wins. `None` channels are recognized-but-unused maps we skip silently
+# (packed ORM/AO/masks aren't worth splitting for these props).
+CHANNEL_SUFFIXES = [
+    ("base", ("basecolor", "baseplain", "baserusted", "albedo", "diffuse")),
+    (None, ("normaldirectx",)),
+    ("normal", ("normalopengl", "normalmap", "normal")),
+    ("metal", ("metallic", "metal")),
+    ("rough", ("roughness",)),
+    ("emit", ("emissive", "emission")),
+    (None, ("height", "mixedao", "ao", "ormboth", "orm", "colormasks", "masks", "mask")),
+]
+IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
 
 # Start from an empty scene, then import the source mesh by format.
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -36,54 +58,102 @@ if ext == ".fbx":
     bpy.ops.import_scene.fbx(filepath=in_path)
 elif ext == ".obj":
     bpy.ops.wm.obj_import(filepath=in_path)
+elif ext in (".glb", ".gltf"):
+    bpy.ops.import_scene.gltf(filepath=in_path)
 else:
     raise SystemExit(f"decimate: unsupported input format '{ext}' ({in_path})")
 
 meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
 
+# Purge image datablocks whose backing file is gone (the apartment-boss FBX
+# references a "Texture Final/" folder the provider never shipped). Removing
+# them empties the broken TEX_IMAGE nodes, so the material-rebuild check
+# below sees the model as untextured and rebuilds from the loose maps —
+# and the pack pass can't trip over a nonexistent source path.
+for img in list(bpy.data.images):
+    if img.source == "FILE" and img.packed_file is None \
+            and not os.path.exists(bpy.path.abspath(img.filepath)):
+        print(f"decimate: dropping broken image reference: {img.filepath}")
+        bpy.data.images.remove(img)
+
+
+def classify_channels():
+    """Match <tex_dir>'s files to material channels by normalized suffix.
+    Returns {channel: filename}. Multiple base coats require the explicit
+    [base_color_file] pick; other collisions keep the first (sorted) file."""
+    channels = {}
+    for filename in sorted(os.listdir(tex_dir)):
+        stem, file_ext = os.path.splitext(filename)
+        if file_ext.lower() not in IMAGE_EXTS:
+            continue
+        norm = re.sub(r"[\s_\-]+", "", stem.lower())
+        for channel, suffixes in CHANNEL_SUFFIXES:
+            if not norm.endswith(suffixes):
+                continue
+            if channel is None:
+                break
+            if channel == "base" and base_color_file:
+                if filename == base_color_file:
+                    channels[channel] = filename
+            elif channel not in channels:
+                channels[channel] = filename
+            elif channel == "base":
+                raise SystemExit(
+                    f"decimate: multiple base-color candidates in {tex_dir} "
+                    f"({channels[channel]!r} vs {filename!r}) — pass the "
+                    f"[base_color_file] argument to pick one"
+                )
+            break
+        else:
+            print(f"decimate: unrecognized map skipped: {filename}")
+    if base_color_file and channels.get("base") != base_color_file:
+        raise SystemExit(
+            f"decimate: base color {base_color_file!r} not found in {tex_dir}"
+        )
+    return channels
+
 
 def load_map(filename, non_color=False):
-    """Load a loose texture from <tex_dir> for the FBX material rebuild. Returns
-    the image, or None if the file is absent. Downscaling/packing happens once
-    for every image in the shared pass below."""
-    path = os.path.join(tex_dir, filename)
-    if not os.path.exists(path):
-        return None
-    img = bpy.data.images.load(path)
+    """Load a loose texture from <tex_dir> for the material rebuild.
+    Downscaling/packing happens once for every image in the shared pass
+    below."""
+    img = bpy.data.images.load(os.path.join(tex_dir, filename))
     if non_color:
         img.colorspace_settings.name = "Non-Color"
     return img
 
 
-def build_mech_material():
-    """Rebuild one Principled-BSDF material from the loose Substance maps the FBX
-    doesn't reference, and assign it to every mesh part (the mechs use a single
-    shading group, so one material covers them all)."""
-    mat = bpy.data.materials.new(name="mech")
+def build_material():
+    """Rebuild one Principled-BSDF material from the loose maps the source
+    doesn't reference, and assign it to every mesh part (these packs use a
+    single shading group, so one material covers them all)."""
+    maps = classify_channels()
+    if not maps:
+        print(f"decimate: no usable maps in {tex_dir} — leaving materials untextured")
+        return
+    mat = bpy.data.materials.new(name="rebuilt")
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
     bsdf = nodes.get("Principled BSDF")
 
-    def hook(filename, target_input, non_color=False):
-        img = load_map(filename, non_color=non_color)
-        if img is None:
+    def hook(channel, target_input, non_color=False):
+        if channel not in maps:
             return
         tex = nodes.new("ShaderNodeTexImage")
-        tex.image = img
+        tex.image = load_map(maps[channel], non_color=non_color)
         links.new(tex.outputs["Color"], bsdf.inputs[target_input])
 
-    hook("initialShadingGroup_Base_color.jpg", "Base Color")
-    hook("initialShadingGroup_Metallic.jpg", "Metallic", non_color=True)
-    hook("initialShadingGroup_Roughness.jpg", "Roughness", non_color=True)
-    hook("initialShadingGroup_Emissive.jpg", "Emission Color")
+    hook("base", "Base Color")
+    hook("metal", "Metallic", non_color=True)
+    hook("rough", "Roughness", non_color=True)
+    hook("emit", "Emission Color")
     bsdf.inputs["Emission Strength"].default_value = 1.0
 
     # Normal map needs a Normal Map node between the texture and the BSDF.
-    normal_img = load_map("initialShadingGroup_Normal_OpenGL.jpg", non_color=True)
-    if normal_img is not None:
+    if "normal" in maps:
         tex_node = nodes.new("ShaderNodeTexImage")
-        tex_node.image = normal_img
+        tex_node.image = load_map(maps["normal"], non_color=True)
         nmap = nodes.new("ShaderNodeNormalMap")
         links.new(tex_node.outputs["Color"], nmap.inputs["Color"])
         links.new(nmap.outputs["Normal"], bsdf.inputs["Normal"])
@@ -91,9 +161,21 @@ def build_mech_material():
     for o in meshes:
         o.data.materials.clear()
         o.data.materials.append(mat)
+    print(f"decimate: rebuilt material from {tex_dir}: {sorted(maps.values())}")
 
 
-# FBX needs its importer artefacts corrected; OBJ arrives upright and textured.
+def materials_are_textured():
+    """Whether any imported mesh material already carries a wired image
+    texture (an OBJ with a real .mtl, a .glb with embedded maps)."""
+    return any(
+        node.type == "TEX_IMAGE" and node.image is not None
+        for o in meshes
+        for mat in o.data.materials
+        if mat is not None and mat.use_nodes
+        for node in mat.node_tree.nodes
+    )
+
+
 if ext == ".fbx":
     # The FBX importer leaves a +90° X rotation on every object (its Z-up→Y-up
     # conversion). Left as an object transform it survives the glTF round-trip and
@@ -105,11 +187,14 @@ if ext == ".fbx":
         o.select_set(True)
     bpy.context.view_layer.objects.active = meshes[0] if meshes else None
     bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
-    build_mech_material()
+
+# Importer-wired textures are kept; otherwise rebuild from the loose maps.
+if not materials_are_textured() and tex_dir not in ("", "-") and os.path.isdir(tex_dir):
+    build_material()
 
 # Downscale + pack every imported texture so the glTF exporter embeds the small
-# version, not the multi-thousand-pixel originals. Covers the FBX rebuilt maps
-# and the OBJ importer's auto-loaded MTL textures alike.
+# version, not the multi-thousand-pixel originals. Covers rebuilt maps, the OBJ
+# importer's auto-loaded MTL textures, and glb-embedded images alike.
 for img in bpy.data.images:
     if img.source != "FILE":
         continue
@@ -126,7 +211,7 @@ for o in meshes:
 # target_tris <= 0 means "keep full detail" — for a single static prop (the jump
 # gate) decimation isn't needed, and a uniform COLLAPSE ratio annihilates tiny
 # but load-bearing meshes (e.g. the gate's 2-triangle energy-field plane). Only
-# the many-instances enemy mechs actually need the collapse.
+# the many-instances enemy models actually need the collapse.
 if target_tris > 0 and total > target_tris:
     ratio = target_tris / total
     for o in meshes:
