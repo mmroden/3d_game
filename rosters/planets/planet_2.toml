@@ -10,27 +10,27 @@ rooms = { base = 6, per_level = 2 }
 
 [[level]]
 relative = 1
-enemies = ["sphere_gunner"]
+enemies = ["sphere_gunner", "latcher"]
 
 [[level]]
 relative = 2
-enemies = ["sphere_gunner", "sphere_striker"]
+enemies = ["sphere_gunner", "sphere_striker", "latcher", "miniboss_brute"]
 
 [[level]]
 relative = 3
-enemies = ["sphere_gunner", "sphere_striker", "alien_troop"]
+enemies = ["sphere_gunner", "sphere_striker", "sphere_carrier", "latcher"]
 
 [[level]]
 relative = 4
-enemies = ["sphere_gunner", "sphere_striker", "alien_troop"]
+enemies = ["sphere_gunner", "sphere_striker", "sphere_carrier", "latcher", "alien_troop"]
 
 [[level]]
 relative = 5
-enemies = ["sphere_gunner", "sphere_striker", "alien_troop", "sphere_carrier"]
+enemies = ["sphere_gunner", "sphere_striker", "sphere_carrier", "alien_troop", "miniboss_brute"]
 
 [[level]]
 relative = 6
-enemies = ["sphere_gunner", "sphere_striker", "alien_troop", "sphere_carrier"]
+enemies = ["sphere_gunner", "sphere_striker", "sphere_carrier", "alien_troop"]
 
 [[boss_slot]]
 at = { relative = 3 }

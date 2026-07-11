@@ -151,19 +151,19 @@ impl Turntable {
     }
 
     /// Entry mode: one bestiary catalog subject. `kind` selects pickup vs enemy;
-    /// `enemy_type_id` is the `EnemyType` id when `kind` is an enemy, else ignored.
+    /// `enemy_key` is the enemy's key when `kind` is an enemy, else ignored (the
+    /// Godot boundary crosses the string).
     #[func]
-    pub fn show_entry(&mut self, kind: i32, enemy_type_id: i32) {
+    pub fn show_entry(&mut self, kind: i32, enemy_key: GString) {
         self.beams_enabled = false;
+        let ekey = roster().enemy_key(&enemy_key.to_string());
         let (path, glow): (Option<&str>, [f32; 4]) = match kind {
             // Both caches spin the barrel prop — the same mesh the in-level
             // CurrencyCache scene wears — tinted to their currency.
             KIND_ORGANIC_CACHE => (Some(scenes::BARREL_MODEL), [0.2, 0.9, 0.2, 1.0]),
             KIND_COMPONENT_CACHE => (Some(scenes::BARREL_MODEL), [0.2, 0.5, 1.0, 1.0]),
             KIND_ENEMY => (
-                roster()
-                    .enemy_by_crossing_id(enemy_type_id as u16)
-                    .map(|id| roster().enemy(id).model.as_str()),
+                ekey.map(|k| roster().enemy(k).model.as_str()),
                 // Neutral glow so the unlit enemy reads in the dark room.
                 [1.0, 1.0, 0.95, 1.0],
             ),
@@ -171,9 +171,8 @@ impl Turntable {
         };
         // The caches' barrel prop is radially symmetric — no front to correct.
         let front_yaw = match kind {
-            KIND_ENEMY => roster()
-                .enemy_by_crossing_id(enemy_type_id as u16)
-                .map(|id| roster().enemy(id).yaw_offset_deg.to_radians())
+            KIND_ENEMY => ekey
+                .map(|k| roster().enemy(k).yaw_offset_deg.to_radians())
                 .unwrap_or(0.0),
             _ => 0.0,
         };

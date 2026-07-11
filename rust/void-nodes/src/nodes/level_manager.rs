@@ -89,9 +89,11 @@ pub struct LevelManager {
     /// Hive's bay. One-life-per-level like the caches: freed and rebuilt on
     /// regeneration.
     player_drones: LiveVec<PlayerDrone>,
-    /// The arena seal on a boss level (`None` elsewhere) — pre-built
-    /// unsealed with the level, flipped by GameManager off the fight FSM.
-    boss_gate: Option<LiveRef<BossGate>>,
+    /// The room seal (empty off sealed levels) — every active connector of a
+    /// boss arena OR a miniboss room gets a gate, pre-built unsealed with the
+    /// level, flipped as ONE set by GameManager off the fight FSM. A boss
+    /// arena has one connector; a miniboss room has however many.
+    boss_gates: LiveVec<BossGate>,
     /// The exit portal on a boss level (`None` elsewhere) — pre-built
     /// dormant; activates when the fight's reward is collected.
     boss_portal: Option<LiveRef<Portal>>,
@@ -129,7 +131,7 @@ impl INode3D for LevelManager {
             bolt_pool: None,
             caches: LiveVec::new(),
             player_drones: LiveVec::new(),
-            boss_gate: None,
+            boss_gates: LiveVec::new(),
             boss_portal: None,
             staged_boss: None,
             spec: None,
@@ -233,15 +235,17 @@ impl LevelManager {
         )
     }
 
-    /// Seal or open the arena gate (no-op off boss levels). GameManager
-    /// drives this from physics callbacks, so the flip rides call_deferred
-    /// (the house dormancy pattern — space state never mutates mid-step).
+    /// Seal or open the room's gates as ONE set (no-op off sealed levels).
+    /// GameManager drives this from physics callbacks, so each flip rides
+    /// call_deferred (the house dormancy pattern — space state never mutates
+    /// mid-step). A boss arena flips its one gate; a miniboss room flips all
+    /// of its connectors together.
     #[func]
     pub fn seal_boss_gate(&mut self, sealed: bool) {
-        if let Some(gate) = &self.boss_gate {
-            gate.with(|g| {
-                g.call_deferred(methods::SET_SEALED, &[Variant::from(sealed)]);
-            });
+        for i in 0..self.boss_gates.len() {
+            if let Some(mut gate) = self.boss_gates.get_live(i) {
+                gate.call_deferred(methods::SET_SEALED, &[Variant::from(sealed)]);
+            }
         }
     }
 
@@ -257,6 +261,63 @@ impl LevelManager {
                 b.bind_mut().activate_at(pos);
             });
         }
+    }
+
+    /// Build the seal for one anchored room: a `BossGate` across EVERY active
+    /// connector (a boss arena has one; a miniboss room has however many) plus
+    /// the interior entry sensor — "entering the room" IS the engagement,
+    /// however the player comes in. Both parent under the room container
+    /// (freed and culled with it); the gates push into `boss_gates`, flipped
+    /// as one set. One build path for the boss arena and the miniboss alike.
+    fn build_room_seal(&mut self, graph: &LevelGraph, room_pos: usize) {
+        let story = self.pitch().story;
+        let cell = self.pitch().tile;
+        let Some(mut room_node) = self.room_nodes.get_live(room_pos) else { return };
+        let Some(room_idx) = graph.room_indices().nth(room_pos) else { return };
+        let Some(room) = graph.room(room_idx) else { return };
+        let origin = room.world_position(cell, story);
+        for conn in graph.active_connectors(room_idx) {
+            let center = Vector3::new(
+                origin[0] + (conn.offset[0] as f32 + 0.5) * cell,
+                origin[1] + conn.offset[1] as f32 * story + story * 0.5,
+                origin[2] + (conn.offset[2] as f32 + 0.5) * cell,
+            );
+            let dir = conn.facing.grid_offset();
+            let outward = Vector3::new(dir[0] as f32, dir[1] as f32, dir[2] as f32);
+            // The barrier sits in the doorway plane (half a cell out, where
+            // room wall meets corridor), thin axis along the way through.
+            let mut gate = BossGate::new_alloc();
+            gate.bind_mut().set_span(cell, story);
+            room_node.add_child(&gate);
+            gate.set_global_position(center + outward * (0.5 * cell));
+            if dir[0] != 0 {
+                gate.set_rotation(Vector3::new(0.0, std::f32::consts::FRAC_PI_2, 0.0));
+            }
+            self.boss_gates.push(&gate, ());
+        }
+        // The sensor spans the whole room interior (inset ~1m from the walls).
+        let [ex, ey, ez] = room.template.extents;
+        let interior = Vector3::new(
+            ex as f32 * cell - 2.0,
+            ey as f32 * story - 1.0,
+            ez as f32 * cell - 2.0,
+        );
+        let center = Vector3::new(
+            origin[0] + ex as f32 * cell * 0.5,
+            origin[1] + ey as f32 * story * 0.5,
+            origin[2] + ez as f32 * cell * 0.5,
+        );
+        let mut trigger = BossTrigger::new_alloc();
+        trigger.bind_mut().set_extents(interior);
+        room_node.add_child(&trigger);
+        trigger.set_global_position(center);
+    }
+
+    /// The staged boss node by ROLE, if this level staged a fight — so tests
+    /// and UI can reference "the boss" without knowing which def it fights as.
+    #[func]
+    pub fn staged_boss_node(&self) -> Option<Gd<EnemyDrone>> {
+        self.staged_boss.as_ref().and_then(|r| r.with(|b| b.clone()))
     }
 
     /// Light or darken the boss level's portal (no-op off boss levels).
@@ -397,6 +458,7 @@ impl LevelManager {
 
     fn door_spec(&self, seed: i64) -> LevelSpec {
         LevelSpec::for_level(
+            void_logic::roster::roster(),
             Seed::from_i64(seed),
             self.current_level.max(1) as u32,
             &void_logic::unlocks::PermanentUnlocks::new(),
@@ -451,7 +513,8 @@ impl LevelManager {
         // that used to live inline here now lives in the manifest. Its rooms
         // align one-for-one with `rooms` (both from `spawn_list_full`).
         let level = self.current_level;
-        let manifest = level_assembly::manifest(&graph, &spec, seed);
+        let manifest =
+            level_assembly::manifest(void_logic::roster::roster(), &graph, &spec, seed);
 
         // Drop any room nodes from a previous level before rebuilding.
         self.room_nodes.for_each_live(|_, node, _| node.queue_free());
@@ -472,7 +535,7 @@ impl LevelManager {
         // Boss fixtures (gate + trigger are LM children freed below with a
         // fresh handle set; the portal is freed with its room; the boss is
         // freed with its room like every enemy).
-        self.boss_gate = None;
+        self.boss_gates.clear();
         self.boss_portal = None;
         self.staged_boss = None;
 
@@ -562,19 +625,25 @@ impl LevelManager {
                 // SAME room, its cache pre-built dormant under the level. On
                 // the parent's death it activates them — no death-path or
                 // per-drop instantiate remains.
-                for spawn in &manifest.rooms[room_index].enemies {
-                    // "Is this the boss" is the staging's call, not a type
-                    // check: exactly the enemy the level's slot staged. The
-                    // boss spawns DORMANT like a reserved minion — the arena
-                    // entry is its spawn beat (playtest 2026-07-06: a live
-                    // boss died to corridor sniping before the fight began).
-                    let is_boss =
-                        spec.boss.as_ref().map(|b| b.boss) == Some(spawn.enemy_type);
+                let room_anchor = manifest.rooms[room_index].anchor;
+                for (enemy_index, spawn) in
+                    manifest.rooms[room_index].enemies.iter().enumerate()
+                {
+                    // The room's dormant SEAL ANCHOR — a staged boss OR a
+                    // miniboss, the manifest's call — spawns DORMANT and rises
+                    // on room entry, not at build, so it can't be sniped from a
+                    // corridor before the fight begins (playtest 2026-07-06).
+                    // Every other enemy in the room spawns live.
+                    let is_anchor = room_anchor == Some(enemy_index);
+                    // The staged-boss anchor (vs a miniboss) additionally
+                    // stages its counted drop set below — a miniboss has no
+                    // reward ritual, so its bound cache stays ordinary.
+                    let is_boss = is_anchor && spec.boss.is_some();
                     let Some(mut parent) = Self::spawn_enemy(
-                        &mut loader, &mut room_node, spawn.enemy_type, level, spawn.position, is_boss,
+                        &mut loader, &mut room_node, spawn.enemy_type, level, spawn.position, is_anchor,
                     ) else { continue };
                     enemy_count += 1;
-                    if is_boss {
+                    if is_anchor {
                         self.staged_boss = Some(LiveRef::new(&parent));
                     }
 
@@ -683,61 +752,13 @@ impl LevelManager {
             }
         }
 
-        // Boss fixtures: the arena seal across the one doorway and the entry
-        // sensor just inside it. Both parent under the arena's room container
-        // (freed and culled with the room); both are dormancy-flip-only after
-        // this point (Faucet Principle).
-        if let Some(boss_idx) = graph.boss_room() {
-            let story = self.pitch().story;
-            let cell = self.pitch().tile;
-            let arena_pos = graph.room_indices().position(|i| i == boss_idx);
-            let arena_node = arena_pos.and_then(|i| self.room_nodes.get_live(i));
-            let doorway = graph.room(boss_idx).and_then(|room| {
-                graph.active_connectors(boss_idx).first().map(|conn| {
-                    let origin = room.world_position(cell, story);
-                    let center = Vector3::new(
-                        origin[0] + (conn.offset[0] as f32 + 0.5) * cell,
-                        origin[1] + conn.offset[1] as f32 * story + story * 0.5,
-                        origin[2] + (conn.offset[2] as f32 + 0.5) * cell,
-                    );
-                    (center, conn.facing.grid_offset())
-                })
-            });
-            if let (Some(mut arena_node), Some((center, dir))) = (arena_node, doorway) {
-                let outward = Vector3::new(dir[0] as f32, dir[1] as f32, dir[2] as f32);
-                // The barrier sits in the doorway plane (half a cell out,
-                // where arena wall meets corridor), thin axis along the way
-                // through.
-                let mut gate = BossGate::new_alloc();
-                gate.bind_mut().set_span(cell, story);
-                arena_node.add_child(&gate);
-                gate.set_global_position(center + outward * (0.5 * cell));
-                if dir[0] != 0 {
-                    gate.set_rotation(Vector3::new(0.0, std::f32::consts::FRAC_PI_2, 0.0));
-                }
-                self.boss_gate = Some(LiveRef::new(&gate));
-
-                // The sensor spans the whole arena interior (inset ~1m from
-                // the walls): "entering the room" IS the engagement, however
-                // the player comes in — there is no path that skips it.
-                if let Some(room) = graph.room(boss_idx) {
-                    let origin = room.world_position(cell, story);
-                    let [ex, ey, ez] = room.template.extents;
-                    let interior = Vector3::new(
-                        ex as f32 * cell - 2.0,
-                        ey as f32 * story - 1.0,
-                        ez as f32 * cell - 2.0,
-                    );
-                    let arena_center = Vector3::new(
-                        origin[0] + ex as f32 * cell * 0.5,
-                        origin[1] + ey as f32 * story * 0.5,
-                        origin[2] + ez as f32 * cell * 0.5,
-                    );
-                    let mut trigger = BossTrigger::new_alloc();
-                    trigger.bind_mut().set_extents(interior);
-                    arena_node.add_child(&trigger);
-                    trigger.set_global_position(arena_center);
-                }
+        // Room seals: every room the manifest marks with a dormant anchor — a
+        // boss arena and/or a miniboss room — seals its active connectors on
+        // entry, with an interior entry sensor. ONE build path: a boss arena
+        // has a single doorway, a miniboss room seals however many it has.
+        for room_pos in 0..manifest.rooms.len() {
+            if manifest.rooms[room_pos].anchor.is_some() {
+                self.build_room_seal(&graph, room_pos);
             }
         }
 
@@ -977,23 +998,21 @@ impl LevelManager {
     fn spawn_enemy(
         loader: &mut Gd<ResourceLoader>,
         parent: &mut Gd<Node3D>,
-        enemy_id: void_logic::roster::EnemyId,
+        enemy_key: void_logic::roster::EnemyKey,
         level: i32,
         pos: [f32; 3],
         dormant: bool,
     ) -> Option<Gd<EnemyDrone>> {
-        // Every enemy is the same node + collider scene; the def (via the
-        // crossing id stamped below) drives stats, model, and collider size.
+        // Every enemy is the same node + collider scene; the def (via the key
+        // stamped below) drives stats, model, and collider size.
         let scene_res = loader.load("res://scenes/enemies/enemy.tscn")?;
         let packed: Gd<PackedScene> = scene_res.cast();
         let instance = packed.instantiate()?;
         let mut enemy = instance.try_cast::<EnemyDrone>().ok()?;
-        // Stamp type + level before entering the tree so ready() configures it.
+        // Stamp key + level before entering the tree so ready() configures it.
         {
             let mut g = enemy.bind_mut();
-            g.set_spawn_type(
-                void_logic::roster::roster().enemy(enemy_id).crossing_id as i32,
-            );
+            g.set_spawn_key(GString::from(enemy_key.as_str()));
             g.set_spawn_level(level);
         }
         enemy.set_position(vec3(pos));

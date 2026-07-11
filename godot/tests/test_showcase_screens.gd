@@ -179,10 +179,15 @@ func test_bestiary_subject_starts_facing_the_camera():
 	# Playtest (2026-07-03): bestiary drones faced away from the player. The
 	# turntable spins, but the reveal must START with the subject fronting
 	# the camera — the same yaw idiom the level uses (face the viewer, then
-	# EnemyType::model_yaw_offset corrects the imported front axis).
+	# the def's yaw_offset corrects the imported front axis).
 	var showcase = main.get_node("Turntable")
 	var cam = main.get_node("Player/Camera3D")
-	showcase.show_entry(2, 2)  # kind = enemy, Bomber — a -Z-fronting drone
+	# kind = enemy (2). This test deliberately targets a CAPABILITY, not a def:
+	# a -Z-fronting model (yaw_offset_deg = 0), the case where the front-axis
+	# correction actually has work to do — the Model node's -basis.z only reads
+	# as "front" under that convention. "bomber" is the sole yaw-0 enemy the
+	# shipped grammar declares; if that changes, retarget the yaw-0 def here.
+	showcase.show_entry(2, "bomber")
 	await wait_process_frames(2)
 	var model = showcase.get_node_or_null("Model")
 	assert_not_null(model, "the subject model must spawn")

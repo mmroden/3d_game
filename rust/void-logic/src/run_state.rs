@@ -268,8 +268,8 @@ impl RunState {
 
     /// Record an enemy kill for the tally. Pays nothing: the kill's reward
     /// rides the cache the enemy drops, credited only via [`Self::collect_cache`].
-    pub fn record_kill(&mut self, crossing_id: u16) {
-        self.kills.record_kill(crossing_id);
+    pub fn record_kill(&mut self, key: crate::roster::EnemyKey) {
+        self.kills.record_kill(key);
     }
 
     /// Credit a collected currency cache to the matching account. The only
@@ -287,8 +287,8 @@ impl RunState {
 
     /// Catalogue an enemy on sighting. Returns `true` the first time this type
     /// is seen, so the caller can persist the freshly-grown bestiary.
-    pub fn mark_enemy_seen(&mut self, crossing_id: u16) -> bool {
-        self.profile.seen_enemies.mark(crossing_id)
+    pub fn mark_enemy_seen(&mut self, key: crate::roster::EnemyKey) -> bool {
+        self.profile.seen_enemies.mark(key)
     }
 
     /// Current laser damage per beam.
@@ -330,6 +330,16 @@ impl RunState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The n-th declared enemy, by roster position — these tests need SOME
+    /// distinct enemies, never a particular one. The grammar declares which
+    /// exist; retuning the roster can't touch this.
+    fn nth_enemy(n: usize) -> crate::roster::EnemyKey {
+        crate::roster::roster()
+            .enemy_keys()
+            .nth(n)
+            .expect("the grammar declares enough enemies")
+    }
 
     #[test]
     fn new_run_starts_alive() {
@@ -415,7 +425,7 @@ mod tests {
     fn advance_level_resets_per_level_state_and_keeps_the_run() {
         let mut run = RunState::new(Seed::new(42));
         run.collect_cache(CurrencyKind::Components, 7_000);
-        run.record_kill(0);
+        run.record_kill(nth_enemy(0));
         run.clear_room(2);
         run.visit_room(2);
         run.take_damage(Damage::new(70.0)); // through the shield into the hull
@@ -561,8 +571,8 @@ mod tests {
         // The kill's reward rides the dropped cache — nothing is credited
         // without a pickup.
         let mut run = RunState::new(Seed::new(42));
-        run.record_kill(0);
-        assert_eq!(run.kills.count(0), 1);
+        run.record_kill(nth_enemy(0));
+        assert_eq!(run.kills.count(nth_enemy(0)), 1);
         assert_eq!(run.components.balance, 0,
             "kills pay nothing directly; the reward is in the cache");
     }
@@ -570,9 +580,9 @@ mod tests {
     #[test]
     fn record_multiple_kills() {
         let mut run = RunState::new(Seed::new(42));
-        run.record_kill(0);
-        run.record_kill(0);
-        run.record_kill(4);
+        run.record_kill(nth_enemy(0));
+        run.record_kill(nth_enemy(0));
+        run.record_kill(nth_enemy(1));
         assert_eq!(run.kills.total_kills(), 3);
         assert_eq!(run.components.balance, 0, "no kill is auto-credited");
     }
@@ -647,9 +657,9 @@ mod tests {
     #[test]
     fn marking_an_enemy_seen_reports_first_sighting() {
         let mut run = RunState::new(Seed::new(42));
-        assert!(run.mark_enemy_seen(0), "first sighting is new");
-        assert!(!run.mark_enemy_seen(0), "repeat sighting is not new");
-        assert!(run.profile.seen_enemies.contains(0));
+        assert!(run.mark_enemy_seen(nth_enemy(0)), "first sighting is new");
+        assert!(!run.mark_enemy_seen(nth_enemy(0)), "repeat sighting is not new");
+        assert!(run.profile.seen_enemies.contains(nth_enemy(0)));
     }
 
     #[test]
@@ -665,9 +675,9 @@ mod tests {
     #[test]
     fn bestiary_is_permanent_across_death() {
         let mut run = RunState::new(Seed::new(42));
-        run.mark_enemy_seen(4);
+        run.mark_enemy_seen(nth_enemy(1));
         run.apply_death_penalty();
-        assert!(run.profile.seen_enemies.contains(4),
+        assert!(run.profile.seen_enemies.contains(nth_enemy(1)),
             "the bestiary survives death, like organics");
     }
 
@@ -688,7 +698,7 @@ mod tests {
         let mut run = RunState::new(Seed::new(42));
         run.laser_level = LaserLevel::Violet; // the very top
         run.components.earn(50_000);
-        run.record_kill(0);
+        run.record_kill(nth_enemy(0));
         run.current_level = 5;
 
         run.apply_death_penalty();

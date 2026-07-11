@@ -102,15 +102,15 @@ func test_enemy_fires_inside_the_full_game_stack():
 	assert_eq(gm.get_phase_name(), "Playing", "must reach Playing")
 	await wait_process_frames(2)
 
-	# Park the player right beside a SHOOTER (SentryDrone id 10 — the level-1
-	# roster is sentries only, so the pinned level MUST field one; swarmers
-	# never fire). Node-transform teleport is what the AI reads.
+	# Park the player right beside a FIRING enemy, found by CAPABILITY (its def
+	# fires projectiles — swarmers and bombers don't). Node-transform teleport
+	# is what the AI reads.
 	var shooter: RigidBody3D = null
 	for e in lm.find_children("*", "EnemyDrone", true, false):
-		if e.enemy_type_id == 10:
+		if e.def_fires():
 			shooter = e
 			break
-	assert_not_null(shooter, "level 1 spawns only SentryDrones — one must exist")
+	assert_not_null(shooter, "the opening level must field a firing enemy for this test")
 	if shooter == null:
 		return
 	player.global_position = shooter.global_position + Vector3(0, 0, 5)
@@ -437,8 +437,12 @@ func test_swarmer_proximity_slows_player_instead_of_damaging():
 	if enemy_scene == null:
 		pass_test("skipped — scene not available")
 		return
+	var swarmers := EnemyDrone.enemy_keys_with_ai("swarmer")
+	assert_gt(swarmers.size(), 0, "the grammar must declare a swarmer for the latch-slow test")
+	if swarmers.is_empty():
+		return
 	var enemy = enemy_scene.instantiate()
-	enemy.enemy_type_id = 1 # QuadOrb (swarmer)
+	enemy.enemy_key = swarmers[0]  # a swarmer, found by capability
 	add_child_autofree(enemy)
 	enemy.global_position = Vector3(1.5, 0, 0) # within SWARM_LATCH_RANGE (2.0)
 	await wait_physics_frames(4, "swarmer should bog the player down while latched")
@@ -527,7 +531,7 @@ func test_small_drones_are_hittable_with_aim_forgiveness():
 	var player = _spawn_player(Vector3.ZERO)
 	player.set_controls_enabled(true)
 	var enemy = load("res://scenes/enemies/enemy.tscn").instantiate()
-	enemy.enemy_type_id = 3  # EyeDrone — one of the tiny spheres
+	enemy.enemy_key = EnemyDrone.enemy_keys()[0]  # any declared enemy — hull-hittable is model-agnostic
 	add_child_autofree(enemy)
 	enemy.global_position = Vector3(1.0, 0.5, -20)
 	enemy.freeze = true  # hold the geometry still for a precise ray test
@@ -570,7 +574,7 @@ func test_sphere_gunner_hull_is_hittable():
 	var player = _spawn_player(Vector3.ZERO)
 	player.set_controls_enabled(true)
 	var enemy = load("res://scenes/enemies/enemy.tscn").instantiate()
-	enemy.enemy_type_id = 6  # SphereGunner
+	enemy.enemy_key = EnemyDrone.enemy_keys()[0]  # any declared enemy — hull-hittable is model-agnostic
 	add_child_autofree(enemy)
 	enemy.global_position = Vector3(0, 0.5, -15)
 	enemy.freeze = true

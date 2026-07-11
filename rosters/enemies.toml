@@ -58,7 +58,6 @@ attack_range = "flat"
 
 [[enemy]]
 key = "gun_drone"
-id = 0
 name = "Gun Drone"
 blurb = "A lone picket gun. It hangs back at standoff range and strafes, peppering you with bolts while it keeps the gap open."
 model = "evil_mech_03"
@@ -76,16 +75,16 @@ attack_range = 10.0
 cooldown = 1.0
 
 [[enemy]]
-key = "quad_orb"
-id = 1
-name = "Quad Orb"
+key = "latcher"
+name = "Latcher"
 blurb = "A four-legged swarm unit. It doesn't shoot — it closes and clamps on, dragging your thrust down so its friends get clean shots."
 model = "evil_mech_01"
 size = 1.0
 yaw_offset_deg = 180
 ai = "swarmer"
 reward = 900
-spawns_directly = false # retired from all fleets; id kept (bestiary/saves)
+drain_dps = 3.0 # hull drain while latched — any swarmer may carry this
+spawns_directly = true # retired from all fleets; id kept (bestiary/saves)
 [enemy.stats]
 hp = 3.0
 speed = 12.0
@@ -96,7 +95,6 @@ cooldown = 1.0
 
 [[enemy]]
 key = "bomber"
-id = 2
 name = "Bomber"
 blurb = "A walking charge. It fuses up the moment it's in range and detonates, trading itself for a hole in your shields. Kill it early or get clear."
 model = "Enemy_QuadOrb"
@@ -105,16 +103,15 @@ yaw_offset_deg = 0
 ai = "bomber"
 reward = 1200
 [enemy.stats]
-hp = 4.0
+hp = 1.0
 speed = 9.0
-damage = 16.0
+damage = 30.0
 detection = 25.0
 attack_range = 5.0
 cooldown = 1.0
 
 [[enemy]]
 key = "eye_drone"
-id = 3
 name = "Eye Drone"
 blurb = "An optical sentry. It takes a few shots, then breaks off to round up other machines and herd them onto you — death by overwhelming odds."
 model = "Enemy_EyeDrone"
@@ -132,7 +129,6 @@ cooldown = 1.2
 
 [[enemy]]
 key = "quad_shell"
-id = 4
 name = "Quad Shell"
 blurb = "A shielded tank. Its plating soaks damage before its hull ever feels it; patient fire, or a flank while it's busy, is the only way through."
 model = "Enemy_EyeDrone"
@@ -151,7 +147,6 @@ cooldown = 1.0
 
 [[enemy]]
 key = "spawn_drone"
-id = 5
 name = "Spawn Drone"
 blurb = "A scrap-built picket ejected by a dying carrier. Lighter and quicker than the fleet it defends but flimsy — it buys the swarm a few more seconds of fire."
 model = "Enemy_GunDrone"
@@ -170,17 +165,16 @@ cooldown = 1.2
 
 [[enemy]]
 key = "sphere_gunner"
-id = 6
 name = "Sphere Gunner"
 blurb = "The fleet's standard picket sphere. It advances and fires in steady volleys — nothing fancy, but there are always more of them."
 model = "sphere_ship_01"
 size = 1.0
 yaw_offset_deg = 180
-ai = "shooter"
+ai = "kiter"
 reward = 800
 [enemy.stats]
 hp = 3.0
-speed = 9.0
+speed = 12.0
 damage = 5.0
 detection = 25.0
 attack_range = 10.0
@@ -188,7 +182,6 @@ cooldown = 1.0
 
 [[enemy]]
 key = "sphere_striker"
-id = 7
 name = "Sphere Striker"
 blurb = "A stripped-down sphere built for the gap. It orbits at standoff range and rakes you from the flank, never sitting still for a clean return shot."
 model = "sphere_ship_02"
@@ -197,16 +190,15 @@ yaw_offset_deg = 180
 ai = "kiter"
 reward = 900
 [enemy.stats]
-hp = 3.0
+hp = 5.0
 speed = 12.0
-damage = 4.0
+damage = 6.0
 detection = 25.0
-attack_range = 10.0
-cooldown = 1.0
+attack_range = 15.0
+cooldown = 0.7
 
 [[enemy]]
 key = "sphere_carrier"
-id = 8
 name = "Sphere Carrier"
 blurb = "An armored brood sphere. Its shell soaks fire, and cracking it open releases the pickets it carries — killing it is the start of a fight, not the end."
 model = "sphere_ship_03"
@@ -225,7 +217,6 @@ cooldown = 1.2
 
 [[enemy]]
 key = "alien_troop"
-id = 9
 name = "Alien Troop"
 blurb = "A grown thing among the machines. It closes and clamps on, dragging your thrust down so the spheres get clean shots."
 model = "alien_troop_01"
@@ -233,6 +224,7 @@ size = 1.0
 yaw_offset_deg = 180
 ai = "swarmer"
 reward = 1000
+minions = [{ enemy = "spawn_drone", count = 2, trigger = "on_death" }]
 [enemy.stats]
 hp = 3.0
 speed = 12.0
@@ -243,7 +235,6 @@ cooldown = 1.0
 
 [[enemy]]
 key = "sentry_drone"
-id = 10
 name = "Sentry Drone"
 blurb = "The occupation's standard sentry. It walks its beat, spots you, and shoots — the first machine every scavenger learns to kill."
 model = "Enemy_EyeDrone"
@@ -261,7 +252,6 @@ cooldown = 1.0
 
 [[enemy]]
 key = "miniboss_brute"
-id = 11
 name = "Siege Miniboss Mech"
 blurb = "A siege engine that guards the deep vaults. It holds the range, shrugs off fire, and hits hard enough to crack a hull in moments — and killing it only wakes what it carries."
 model = "evil_mech_03"
@@ -282,7 +272,6 @@ cooldown = 1.4
 
 [[enemy]]
 key = "boss_brute"
-id = 11
 name = "Siege Mech"
 blurb = "A siege engine that guards the deep vaults. It holds the range, shrugs off fire, and hits hard enough to crack a hull in moments — and killing it only wakes what it carries."
 model = "evil_mech_03"
@@ -302,7 +291,6 @@ cooldown = 1.4
 
 [[enemy]]
 key = "boss_latcher"
-id = 12
 name = "Lamprey Mech"
 blurb = "The planet warden. It clamps onto your hull and drinks it dry while its escort circles — break its grip or die by inches. Beyond it lies the next world."
 model = "evil_mech_01"

@@ -36,10 +36,11 @@ const ENEMY_LINEAR_DAMP: f32 = 3.0;
 pub struct EnemyDrone {
     base: Base<RigidBody3D>,
 
-    /// The scene/spawner's ONE input: the def's crossing id. Every stat
-    /// below derives from the grammar in `ready` — never authored per-node.
+    /// The scene/spawner's ONE input: the enemy's key (the Godot boundary
+    /// crosses the string). Every stat below derives from the grammar in
+    /// `ready` — never authored per-node.
     #[export]
-    enemy_type_id: i32,
+    enemy_key: GString,
     speed: f32,
     health: f32,
     detection_range: f32,
@@ -120,7 +121,7 @@ impl IRigidBody3D for EnemyDrone {
         let ai = DroneAi::new(config);
         Self {
             base,
-            enemy_type_id: 1, // quad_orb unless the spawner stamps a type
+            enemy_key: GString::new(), // the spawner stamps the key
             // Placeholders: ready() configures every stat from the def
             // (or panics on an undeclared id).
             speed: 0.0,
@@ -152,25 +153,25 @@ impl IRigidBody3D for EnemyDrone {
     }
 
     fn ready(&mut self) {
-        // Configure from the roster def (the grammar). The crossing id is
-        // the scene/spawner's one input; an id the grammar doesn't declare
-        // is a bad config and dies at the demand door — never a silent
-        // slide onto defaults.
+        // Configure from the roster def (the grammar). The enemy_key is the
+        // scene/spawner's one input; a key the grammar doesn't declare is a
+        // bad config and dies at the demand door — never a silent slide onto
+        // defaults.
         let grammar = roster();
-        let id = grammar.expect_enemy_by_crossing_id(self.enemy_type_id as u16);
-        let def = grammar.enemy(id);
+        let key = self.key();
+        let def = grammar.enemy(key);
         // Everything level-bound arrives through the grammar's leveled
         // doors — six stats and the AI config, each stat riding its own
         // declared curve (stamped by the spawner via `level`).
         let level = self.level.max(1) as u32;
-        let stats = grammar.stats_at(id, level);
+        let stats = grammar.stats_at(key, level);
         self.health = stats.hp;
         self.speed = stats.speed;
         self.damage = stats.damage;
         self.detection_range = stats.detection;
         self.attack_range = stats.attack_range;
         // The def owns behaviour tuning (archetype + resolved switches).
-        self.ai = DroneAi::new(grammar.ai_config_at(id, level));
+        self.ai = DroneAi::new(grammar.ai_config_at(key, level));
         self.behavior = def.behavior;
         // The drain switch on the def (rosters/enemies.toml): today only
         // the Lamprey Mech declares one; any swarmer may.
@@ -309,7 +310,7 @@ impl IRigidBody3D for EnemyDrone {
 #[godot_api]
 impl EnemyDrone {
     #[signal]
-    fn enemy_killed(type_id: i32);
+    fn enemy_killed(key: GString);
 
     /// Variant-boundary wrapper: the one f32→Damage conversion for
     /// GDScript and `Object::call` dispatch. Rust callers use
@@ -325,19 +326,40 @@ impl EnemyDrone {
         self.level = level;
     }
 
-    /// Size of the enemy roster (the grammar's declared defs), exposed so
-    /// GDScript tests iterate the real count instead of restating it across
-    /// the language boundary — a new def is audited the moment it lands.
+    /// The declared enemy keys (the grammar's roster), exposed so GDScript
+    /// tests iterate the real set BY KEY instead of restating it across the
+    /// language boundary — a new def is audited the moment it lands.
     #[func]
-    pub fn enemy_type_count() -> i64 {
-        roster().enemies.len() as i64
+    pub fn enemy_keys() -> PackedStringArray {
+        roster().enemy_keys().map(|k| GString::from(k.as_str())).collect()
     }
 
-    /// Set the enemy type before the node enters the tree, so `ready()` builds
+    /// Declared enemy keys whose archetype matches `ai` — a CAPABILITY query
+    /// so tests build "a swarmer"/"a bomber" by what it DOES, never by naming
+    /// a def (the archetype token is closed grammar vocabulary, not tuning).
+    #[func]
+    pub fn enemy_keys_with_ai(ai: GString) -> PackedStringArray {
+        let want = ai.to_string();
+        let grammar = roster();
+        grammar
+            .enemy_keys()
+            .filter(|k| grammar.enemy(*k).ai.as_str() == want)
+            .map(|k| GString::from(k.as_str()))
+            .collect()
+    }
+
+    /// Whether this drone's def fires projectiles — a capability probe so a
+    /// test can find "a firing enemy" in a live level without naming a def.
+    #[func]
+    pub fn def_fires(&self) -> bool {
+        self.def().behavior.bolt_speed > 0.0
+    }
+
+    /// Set the enemy key before the node enters the tree, so `ready()` builds
     /// the right stats, model, and collider. The scene is generic; spawners
-    /// stamp the type here.
-    pub fn set_spawn_type(&mut self, type_id: i32) {
-        self.enemy_type_id = type_id;
+    /// stamp the key here (the Godot boundary crosses the string).
+    pub fn set_spawn_key(&mut self, key: GString) {
+        self.enemy_key = key;
     }
 
     /// Bind a pre-built dormant minion to this drone (Faucet Principle, tier 1).
@@ -392,21 +414,32 @@ impl EnemyDrone {
         self.bonus_caches.push(cache, (kind, amount));
     }
 
+    /// Resolve this drone's `enemy_key` to the typed identity — the ONE
+    /// boundary resolution + demand door (a spawner stamping a key the
+    /// grammar doesn't declare dies here, loudly).
+    fn key(&self) -> void_logic::roster::EnemyKey {
+        let s = self.enemy_key.to_string();
+        roster().enemy_key(&s).unwrap_or_else(|| {
+            panic!("spawner stamped enemy_key '{s}' — not in rosters/enemies.toml")
+        })
+    }
+
+    /// The grammar def behind this drone.
+    fn def(&self) -> &'static void_logic::roster::EnemyDef {
+        roster().enemy(self.key())
+    }
+
     /// Components in the cache this drone drops on death — the single source
     /// is the grammar's def; exposed to GDScript for HUD and tests.
     #[func]
     pub fn cache_reward(&self) -> i64 {
-        let grammar = roster();
-        let id = grammar.expect_enemy_by_crossing_id(self.enemy_type_id as u16);
-        grammar.enemy(id).reward as i64
+        self.def().reward as i64
     }
 
     /// Half the def's fit size — the hull radius the aim assist credits
     /// this drone with (the sight line must pass within it + the cone).
     pub fn assist_radius(&self) -> f32 {
-        let grammar = roster();
-        let id = grammar.expect_enemy_by_crossing_id(self.enemy_type_id as u16);
-        grammar.enemy(id).size * 0.5
+        self.def().size * 0.5
     }
 
     /// The def's `spawns_directly` — GDScript's grammar door for "is this a
@@ -414,9 +447,7 @@ impl EnemyDrone {
     /// this, never on id ranges.
     #[func]
     pub fn spawns_directly(&self) -> bool {
-        let grammar = roster();
-        let id = grammar.expect_enemy_by_crossing_id(self.enemy_type_id as u16);
-        grammar.enemy(id).spawns_directly
+        self.def().spawns_directly
     }
 
     /// Total minion slots this def declares (Σ cap across every entry) —
@@ -425,19 +456,14 @@ impl EnemyDrone {
     /// the owner's to retune, feedback 2026-07-06).
     #[func]
     pub fn declared_minion_total(&self) -> i64 {
-        let grammar = roster();
-        let id = grammar.expect_enemy_by_crossing_id(self.enemy_type_id as u16);
-        grammar.enemy(id).minions.iter().map(|m| m.cap as i64).sum()
+        self.def().minions.iter().map(|m| m.cap as i64).sum()
     }
 
     /// Minion slots that rise on THIS drone's death (Σ cap over the
     /// OnDeath entries) — what a lethal hit flips live.
     #[func]
     pub fn declared_death_minion_total(&self) -> i64 {
-        let grammar = roster();
-        let id = grammar.expect_enemy_by_crossing_id(self.enemy_type_id as u16);
-        grammar
-            .enemy(id)
+        self.def()
             .minions
             .iter()
             .filter(|m| m.trigger == MinionTrigger::OnDeath)
@@ -663,11 +689,12 @@ impl EnemyDrone {
     }
 
     fn on_death(&mut self) {
-        // Emit signal so GameManager can track the kill
-        let type_id = self.enemy_type_id;
+        // Emit signal so GameManager can track the kill — the key crosses
+        // the Godot boundary as a string.
+        let key = self.enemy_key.clone();
         self.base_mut().emit_signal(
             signals::ENEMY_KILLED,
-            &[Variant::from(type_id)],
+            &[Variant::from(key)],
         );
 
         let pos = self.base().get_global_position();
@@ -694,10 +721,7 @@ impl EnemyDrone {
         // reward — the kill pays nothing except through this pickup. Activation
         // is a placement + flip, never an instantiate — `drop_at` sets the
         // position before it goes live so its bob anchors at the corpse.
-        let grammar = roster();
-        let reward = grammar
-            .enemy(grammar.expect_enemy_by_crossing_id(type_id as u16))
-            .reward;
+        let reward = self.def().reward;
         let cache_kind = self.cache_kind;
         self.cache.with(|cache| cache.bind_mut().drop_at(pos, cache_kind, reward));
 

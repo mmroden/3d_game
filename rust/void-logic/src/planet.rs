@@ -36,21 +36,17 @@ pub struct Pitch {
 impl Pitch {
     /// The pitch DERIVES from the planet's declared kit (rosters/kits.toml,
     /// measured by the make-assets probe once it lands) — nobody authors a
-    /// cell dimension anywhere else.
+    /// cell dimension anywhere else. Shipped-grammar door for
+    /// [`Roster::pitch_for_level`].
     pub fn for_level(level: u32) -> Self {
-        let roster = crate::roster::roster();
-        let def = roster.planet_for_level(level.max(1));
-        let kit = &roster.kits[def.kits[0].0];
-        Self { tile: kit.tile, story: kit.story }
+        crate::roster::roster().pitch_for_level(level)
     }
 }
 
 /// Whether this level is built in the panel paradigm: the planet's declared
 /// kit decides (cubic cells skinned from one panel pool vs layered megakit).
 pub fn panel_world(level: u32) -> bool {
-    let roster = crate::roster::roster();
-    let def = roster.planet_for_level(level.max(1));
-    roster.kits[def.kits[0].0].paradigm == crate::roster::schema::KitParadigm::Panel
+    crate::roster::roster().panel_world(level)
 }
 
 /// The interstitial banner for a level entry: `Some((title, flavor))` when

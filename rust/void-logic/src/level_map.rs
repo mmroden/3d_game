@@ -184,6 +184,7 @@ mod tests {
     /// GENERATION seed still travels separately.
     fn spec_for(level: u32) -> crate::level_spec::LevelSpec {
         crate::level_spec::LevelSpec::for_level(
+            crate::roster::roster(),
             crate::seed::Seed::new(1),
             level,
             &crate::unlocks::PermanentUnlocks::new(),

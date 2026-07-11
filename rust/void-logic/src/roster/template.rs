@@ -50,7 +50,6 @@ attack_range = "flat"
 
 [[enemy]]
 key = "template_enemy"   # stable identity (rosters, saves, linker refs)
-id = 1000                # GDScript/save crossing — append-only, never reuse
 name = "Template Enemy"
 blurb = "Bestiary lore — every enemy is catalogued."
 model = "sphere_ship_01"    # a KEY in models.generated.toml (make assets)
@@ -103,7 +102,6 @@ attack_range = "flat"    # blast, shield) follow their base stat's curve
 
 [[enemy]]
 key = "template_minion"
-id = 1001
 name = "Template Minion"
 blurb = "A lesser machine the template enemy fields."
 model = "sphere_ship_02"
@@ -122,7 +120,6 @@ cooldown = 1.2
 
 [[enemy]]
 key = "template_boss"
-id = 1002
 name = "Template Boss"
 blurb = "A staged fight. Its escorts are declared on the boss slot."
 model = "evil_mech_03"

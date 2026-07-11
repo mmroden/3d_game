@@ -42,12 +42,8 @@ struct Generated {
 fn generate(seed: u64) -> Generated {
     let mut rng = SmallRng::seed_from_u64(seed);
 
-    // ── Enemies: 2..=12, at least one direct spawner, unique random ids ──
+    // ── Enemies: 2..=12, at least one direct spawner ──
     let enemy_count = rng.random_range(2..=12usize);
-    let mut ids: Vec<u16> = (0..enemy_count as u16 * 3).collect();
-    for i in (1..ids.len()).rev() {
-        ids.swap(i, rng.random_range(0..=i));
-    }
     let archetypes = ["shooter", "kiter", "swarmer", "tank", "bomber"];
     let mut spawner_keys = Vec::new();
     let mut other_keys = Vec::new();
@@ -74,11 +70,10 @@ fn generate(seed: u64) -> Generated {
             other_keys.push(key.clone());
         }
         enemies_toml.push_str(&format!(
-            "[[enemy]]\nkey = \"{key}\"\nid = {}\nname = \"Enemy {i}\"\n\
+            "[[enemy]]\nkey = \"{key}\"\nname = \"Enemy {i}\"\n\
              blurb = \"Generated hazard {i}.\"\n\
              model = \"m{i}\"\nsize = {:.1}\n\
              yaw_offset_deg = {}\nai = \"{}\"\nreward = {}\n",
-            ids[i],
             rng.random_range(0.5..4.0f32),
             if rng.random_range(0..2u32) == 0 { 0 } else { 180 },
             archetypes[rng.random_range(0..archetypes.len())],
@@ -298,7 +293,7 @@ fn every_cataloged_violation_is_rejected() {
     for seed in 0..SEEDS {
         let g = generate(seed);
         let mut mutations: Vec<(&str, Generated, &str)> = vec![
-            ("duplicate crossing id", duplicate_id(&g), "duplicate enemy id"),
+            ("duplicate key", duplicate_key(&g), "duplicate enemy key"),
             ("dangling roster ref", dangle_roster_ref(&g), "unknown enemy"),
             ("coverage gap", drop_level_block(&g), "has no"),
             ("declared length overrun", extend_declared_levels(&g), "has no"),
@@ -344,22 +339,14 @@ fn clone_generated(g: &Generated) -> Generated {
     }
 }
 
-fn duplicate_id(g: &Generated) -> Generated {
+fn duplicate_key(g: &Generated) -> Generated {
     let mut m = clone_generated(g);
-    // Rewrite enemy_1's id line to enemy_0's value (ids are unique by
-    // construction, so this always collides).
-    let id0 = extract_id(&g.enemies_toml, "enemy_0");
-    let id1 = extract_id(&g.enemies_toml, "enemy_1");
+    // Rewrite enemy_1's key to enemy_0's — the key is the sole identity now,
+    // so two blocks sharing it is the one collision the linker must catch.
     m.enemies_toml = m
         .enemies_toml
-        .replacen(&format!("id = {id1}"), &format!("id = {id0}"), 1);
+        .replacen("key = \"enemy_1\"", "key = \"enemy_0\"", 1);
     m
-}
-
-fn extract_id(toml: &str, key: &str) -> u16 {
-    let anchor = format!("key = \"{key}\"\nid = ");
-    let at = toml.find(&anchor).expect("generator layout") + anchor.len();
-    toml[at..].split_whitespace().next().unwrap().parse().unwrap()
 }
 
 /// Rewrite the FIRST key of the first roster list — structural, so it can

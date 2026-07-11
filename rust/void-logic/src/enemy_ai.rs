@@ -35,6 +35,21 @@ pub enum Archetype {
     Bomber,
 }
 
+impl Archetype {
+    /// The grammar's archetype token — the same string the schema parses from
+    /// `ai = "..."`. Used by the shell's capability queries so tests can find
+    /// "a swarmer"/"a bomber" by what it DOES, never by a def name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Archetype::Shooter => "shooter",
+            Archetype::Kiter => "kiter",
+            Archetype::Swarmer => "swarmer",
+            Archetype::Tank => "tank",
+            Archetype::Bomber => "bomber",
+        }
+    }
+}
+
 /// How the enemy wants to move this tick. `speed_mul` scales its base speed.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Movement {

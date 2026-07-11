@@ -49,14 +49,17 @@ impl BossFight {
         self.advance(BossFightState::Dormant, BossFightState::Engaged)
     }
 
-    /// The boss died, staging its complete drop set (`loot_count` caches).
-    /// A zero-drop defeat is refused outright — it could never open.
+    /// The anchor died, staging its drop set (`loot_count` caches). A staged
+    /// boss stages its pile (≥ 1) and waits at Defeated for the pickup — the
+    /// kill alone opens nothing. A MINIBOSS stages none (`loot_count == 0`):
+    /// it has no reward ritual, so the seal lifts at once and the room
+    /// re-opens on the kill (owner 2026-07-06). One seal, two reward modes.
     pub fn defeat(&mut self, loot_count: u8) -> bool {
-        if loot_count == 0 {
-            return false;
-        }
         if self.advance(BossFightState::Engaged, BossFightState::Defeated) {
             self.outstanding_loot = loot_count;
+            if loot_count == 0 {
+                self.advance(BossFightState::Defeated, BossFightState::RewardCollected);
+            }
             true
         } else {
             false
@@ -173,13 +176,17 @@ mod tests {
     }
 
     #[test]
-    fn a_dropless_defeat_is_refused() {
-        // Zero staged drops would deadlock the arena (nothing could ever
-        // open it) — the transition itself refuses the nonsense.
+    fn a_dropless_defeat_opens_at_once_no_reward_ritual() {
+        // A miniboss has no reward ritual: the kill IS the end. `defeat(0)`
+        // stages no loot and lifts the seal immediately — the room re-opens
+        // on death. A staged boss always passes its drop count (≥ 1), so it
+        // still waits at Defeated for the pickup, unaffected.
         let mut f = BossFight::new();
         f.engage();
-        assert!(!f.defeat(0), "a boss always drops something");
-        assert_eq!(f.state(), BossFightState::Engaged);
+        assert!(f.defeat(0), "the kill resolves the fight");
+        assert_eq!(f.state(), BossFightState::RewardCollected);
+        assert!(!f.is_sealed(), "no ritual — the seal lifts on the kill");
+        assert!(!f.collect_boss_loot(), "nothing to collect — already open");
     }
 
     #[test]

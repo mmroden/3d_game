@@ -16,17 +16,29 @@ extends GutTest
 
 ## Seeds are PINNED, never scanned: whether a seed produces a property is a
 ## pure model question, verified fast on the Rust side. The shell builds one
-## level per scenario. Types are NEVER named — expectations derive from the
-## grammar doors (declared_minion_total & co.), so the owner's TOML tuning
-## can reshape the roster without touching these tests (feedback 2026-07-06).
-## Mirrors (level_assembly::tests):
+## level per scenario — against the FIXTURE grammar (owner 2026-07-09:
+## mechanism tests never depend on rosters/, which is tuned freely), swapped
+## in through GameManager's grammar-override test door. Types are NEVER
+## named — expectations derive from the grammar doors (declared_minion_total
+## & co.). Mirrors (level_assembly::tests, fixture-driven):
 ##   MINION_PARENT_SEED   <-> pinned_gut_seed_places_a_minion_declaring_parent
 ##   GREEN_CACHE_RUN_SEED <-> pinned_gut_run_seed_places_a_loot_container
 const MINION_PARENT_SEED := 1
-const MINION_PARENT_LEVEL := 4
+const MINION_PARENT_LEVEL := 1  # the fixture's level 1 fields every subject
 const GREEN_CACHE_RUN_SEED := 1
 
 const UiStub := preload("res://tests/helpers/ui_stub.gd")
+
+func before_all():
+	assert_true(GameManager.install_test_grammar(
+		FileAccess.get_file_as_string("res://tests/fixtures/grammar/enemies.toml"),
+		FileAccess.get_file_as_string("res://tests/fixtures/grammar/kits.toml"),
+		FileAccess.get_file_as_string("res://tests/fixtures/grammar/kits.generated.toml"),
+		FileAccess.get_file_as_string("res://tests/fixtures/grammar/planet_1.toml"),
+	), "the fixture grammar installs")
+
+func after_all():
+	GameManager.clear_test_grammar()
 
 
 # --- Helpers ---
@@ -40,26 +52,30 @@ func _minion_parent_level() -> LevelManager:
 	lm.generate_level(MINION_PARENT_SEED, 8)
 	return lm
 
-## Any live parent whose def declares minions — found through the grammar
-## door, never by a named type id.
+## Any live parent whose DEATH rouses a brood — found through the grammar
+## door, never by a named type id. Death-brood specifically: these scenarios
+## kill the parent and count the flips, and the death filter also keeps the
+## miniboss anchor (timed ring only, and dormant besides) out of the pick.
 func _find_minion_parent(lm: Node) -> RigidBody3D:
 	for e in lm.find_children("*", "EnemyDrone", true, false):
-		if e.visible and e.declared_minion_total() > 0:
+		if e.visible and e.declared_death_minion_total() > 0:
 			return e
 	return null
+
+## The dormancy a room owes beyond its visible parents' declared minions:
+## a dormant seal anchor (a miniboss) reserves ITSELF plus its declared
+## ring in its room — the Faucet contract extended (2026-07-09).
+func _anchor_reserved_in(lm: LevelManager, room: Node) -> int:
+	var anchor = lm.staged_boss_node()
+	if anchor != null and room.is_ancestor_of(anchor) and not anchor.visible:
+		return 1 + anchor.declared_minion_total()
+	return 0
 
 ## Reserved (dormant) drones under `room`: invisible and process-disabled.
 func _dormant_drones(room: Node) -> Array:
 	var out := []
 	for e in room.find_children("*", "EnemyDrone", true, false):
 		if not e.visible and e.process_mode == Node.PROCESS_MODE_DISABLED:
-			out.append(e)
-	return out
-
-func _find_enemies_of_type(lm: Node, type_id: int) -> Array:
-	var out := []
-	for e in lm.find_children("*", "EnemyDrone", true, false):
-		if e.enemy_type_id == type_id:
 			out.append(e)
 	return out
 
@@ -76,6 +92,9 @@ func _room_container_of(lm: Node, node: Node) -> Node:
 
 func test_death_minions_pre_exist_dormant_under_parent_room():
 	var lm := _minion_parent_level()
+	# Dormancy flags land on the deferred boundary — flush BEFORE searching,
+	# or a not-yet-dormant seal anchor reads as a visible parent.
+	await wait_process_frames(1)
 	var parent := _find_minion_parent(lm)
 	assert_not_null(parent,
 		"the pinned seed fields a minion-declaring parent (Rust: pinned_gut_seed_places_a_minion_declaring_parent)")
@@ -83,17 +102,17 @@ func test_death_minions_pre_exist_dormant_under_parent_room():
 		return
 	var room := _room_container_of(lm, parent)
 	assert_not_null(room, "the parent must live under a room container")
-	# Dormancy flags land on the deferred boundary — allow one flush post-build.
-	await wait_process_frames(1)
 
 	# The room reserves EXACTLY its live parents' declared minion totals —
 	# pre-built dormant in the SAME container, never escaping to the scene
-	# root the way the old death-path instantiate did.
+	# root the way the old death-path instantiate did — plus, when this is
+	# the miniboss's room, the dormant anchor and its declared ring.
 	var expected := 0
 	for e in room.find_children("*", "EnemyDrone", true, false):
 		if e.visible:
 			expected += e.declared_minion_total()
 	assert_gt(expected, 0, "sanity: this room's parents declare minions")
+	expected += _anchor_reserved_in(lm, room)
 	var minions := _dormant_drones(room)
 	assert_eq(minions.size(), expected,
 		"a room reserves exactly its parents' declared minion totals")
@@ -111,14 +130,15 @@ func test_death_minions_pre_exist_dormant_under_parent_room():
 
 func test_killing_parent_activates_its_minions():
 	var lm := _minion_parent_level()
+	# Dormancy flags land on the deferred boundary — flush BEFORE searching,
+	# or a not-yet-dormant seal anchor reads as a visible parent.
+	await wait_process_frames(1)
 	var parent := _find_minion_parent(lm)
 	assert_not_null(parent,
 		"the pinned seed fields a minion-declaring parent (Rust: pinned_gut_seed_places_a_minion_declaring_parent)")
 	if parent == null:
 		return
 	var room := _room_container_of(lm, parent)
-	# Dormancy flags land on the deferred boundary — allow one flush post-build.
-	await wait_process_frames(1)
 	var before := _dormant_drones(room)
 	var death_brood: int = parent.declared_death_minion_total()
 	assert_gt(death_brood, 0, "sanity: the parent's death rouses a brood")

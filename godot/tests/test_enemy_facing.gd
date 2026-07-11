@@ -22,7 +22,7 @@ func _make_player() -> Node3D:
 func test_model_faces_player_and_tracks_as_it_moves():
 	var player := _make_player()
 	var enemy = load(ENEMY_SCENE).instantiate()
-	enemy.enemy_type_id = 0 # GunDrone — the mech that was facing sideways
+	enemy.enemy_key = EnemyDrone.enemy_keys()[0]  # any declared enemy — the test checks tracking, not a model
 	add_child_autofree(enemy)
 	enemy.global_position = Vector3.ZERO
 

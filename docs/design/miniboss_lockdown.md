@@ -1,7 +1,16 @@
 # Mini-boss Lockdown (design capture — 2026-07-06)
 
-Status: **captured, not scheduled** — new chunk in the 2026-07 playtest
-backlog. Source: Mark, after the boss-flow fixes landed.
+Status: **BUILT** (2026-07-09) — on the unified enemy identity. One seal
+FSM serves the boss arena and the miniboss (`BossFight::defeat(0)` = no
+reward ritual, the kill re-opens); the manifest places the miniboss in ONE
+seed-chosen room (`LevelSpec::miniboss` → `RoomManifest::anchor`, never
+rolled, never the start room, never on a staged-boss level); the shell
+gates EVERY active connector of the anchored room through the one
+`build_room_seal` path and the same `BossTrigger`. No shield restore on
+the miniboss seal (owner 2026-07-09: bosses only, for now); boss bed on
+track 1 (which track a miniboss gets = still open). Tests: fixture grammar
+(`rust/void-logic/tests/fixtures/miniboss/`) + `test_miniboss_seal.gd`
+(pinned run, Rust-anchored). Source: Mark, after the boss-flow fixes.
 
 ## Concept
 

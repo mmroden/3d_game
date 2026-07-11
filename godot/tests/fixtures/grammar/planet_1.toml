@@ -1,0 +1,10 @@
+# TEST FIXTURE — level 1 fields every mechanism subject, guaranteed:
+# a plain regular, an on-death-brood parent, and a miniboss.
+planet = 1
+levels = 1
+kits = ["fx_kit"]
+rooms = { base = 8, per_level = 2 }
+
+[[level]]
+relative = 1
+enemies = ["fx_grunt", "fx_brood_parent", "fx_miniboss"]

@@ -1,0 +1,4 @@
+# TEST FIXTURE — one layered kit over the real installed wall assets.
+[kits.fx_kit]
+paradigm = "layered"
+install_dir = "godot/addons/walls"

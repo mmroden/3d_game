@@ -331,14 +331,16 @@ impl GameManager {
 
     /// Called when an enemy dies (connected to enemy_killed signal).
     #[func]
-    pub fn on_enemy_killed(&mut self, type_id: i32) {
-        // A kill comes off a LIVE drone, so the id must resolve — the
-        // demand door panics on an undeclared one. Retired-id tolerance
+    pub fn on_enemy_killed(&mut self, key: GString) {
+        // A kill comes off a LIVE drone, so the key must resolve — the
+        // demand door panics on an undeclared one. Retired-key tolerance
         // belongs to history readers (kill summary, bestiary), not here.
         let grammar = void_logic::roster::roster();
-        let id = grammar.expect_enemy_by_crossing_id(type_id as u16);
-        let def = grammar.enemy(id);
-        self.run_state.record_kill(def.crossing_id);
+        let ekey = grammar
+            .enemy_key(&key.to_string())
+            .expect("a kill off a live drone carries a declared key");
+        let def = grammar.enemy(ekey);
+        self.run_state.record_kill(ekey);
         godot_print!(
             "Kill: {} | Cache dropped: {} components",
             def.name, def.reward,
@@ -352,7 +354,7 @@ impl GameManager {
             .as_ref()
             .and_then(|s| s.boss.as_ref())
             .map(|b| b.boss);
-        if staged_boss == Some(id) {
+        if staged_boss == Some(ekey) {
             let drops = self
                 .level_spec
                 .as_ref()
@@ -364,6 +366,19 @@ impl GameManager {
                     godot_print!(
                         "Boss down — gather all {drops} drops to open the arena"
                     );
+                }
+            }
+        }
+        // A miniboss has no reward ritual: defeat(0) resolves the fight at
+        // the kill and the room re-opens AT ONCE — a wounded player can flee
+        // the moment the anchor drops (owner 2026-07-06). Same staging's-call
+        // discipline: only the enemy the spec placed advances the seal.
+        let staged_miniboss = self.level_spec.as_ref().and_then(|s| s.miniboss);
+        if staged_miniboss == Some(ekey) {
+            if let Some(fight) = &mut self.boss_fight {
+                if fight.defeat(0) {
+                    godot_print!("Miniboss down — the room re-opens");
+                    self.set_boss_seal(false);
                 }
             }
         }
@@ -402,15 +417,18 @@ impl GameManager {
         if !engaged {
             return;
         }
-        godot_print!("Boss fight engaged — the arena seals");
+        godot_print!("The fight engages — the room seals");
         self.set_boss_seal(true);
         self.rise_staged_boss();
-        // The arena seal restores shields (its restore_shields flag is set,
-        // owner's call 2026-07-06): full shields on entry, so loitering
-        // outside the door for regen buys nothing. Health stays — you fight
-        // with the hull you brought. The miniboss seal leaves this off.
-        self.run_state.restore_shields();
-        self.update_hud();
+        // Only the BOSS arena's seal restores shields (owner's calls
+        // 2026-07-06/09): full shields on entry, so loitering outside the
+        // door for regen buys nothing — a once-per-level mercy the recurring
+        // miniboss never hands out. Health stays either way — you fight with
+        // the hull you brought.
+        if self.level_spec.as_ref().is_some_and(|s| s.boss.is_some()) {
+            self.run_state.restore_shields();
+            self.update_hud();
+        }
         self.queue_music_push();
         // Every enemy gets the engage fan-out; `activate_escorts` is a no-op
         // for drones without OnEngage minions, so no type filtering here.
@@ -463,9 +481,7 @@ impl GameManager {
             .and_then(|p| p.try_get_node_as::<LevelManager>(nodes::LEVEL_MANAGER))
             .map(|lm| lm.bind().live_enemies_in_current_room())
             .unwrap_or(false);
-        // No miniboss FSM yet — the miniboss chunk wires the real input
-        // (docs/design/miniboss_lockdown.md).
-        let bed = audio_catalog::music_bed(self.phase, boss, false, enemies);
+        let bed = audio_catalog::music_bed(self.phase, boss, enemies);
         let track = match bed {
             MusicBed::Menu => audio_catalog::menu_track().to_string(),
             MusicBed::Combat => String::new(), // the AudioManager rolls the stinger
@@ -473,9 +489,15 @@ impl GameManager {
                 Some(spec) => spec.background.clone(),
                 None => return, // pre-spec boot frame: nothing to play yet
             },
-            MusicBed::Boss => match self.level_spec.as_ref().and_then(|s| s.boss.as_ref()) {
-                Some(staging) => staging.track.clone(),
-                None => return,
+            MusicBed::Boss => match self.level_spec.as_ref() {
+                // The staged fight plays its slot's declared track; the
+                // miniboss rides the boss bed on track 1 (which track a
+                // miniboss gets is an open tuning question — design doc).
+                Some(spec) if spec.boss.is_some() => {
+                    spec.boss.as_ref().expect("just checked").track.clone()
+                }
+                Some(spec) if spec.miniboss.is_some() => audio_catalog::boss_track(1),
+                _ => return,
             },
         };
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
@@ -777,17 +799,15 @@ impl GameManager {
         let Some(entry) = entries.get(self.bestiary_index) else { return };
         let Some(parent) = self.base().get_parent() else { return };
 
-        let (kind_id, enemy_id): (i32, i32) = match entry.kind {
-            BestiaryKind::OrganicCache => (0, -1),
-            BestiaryKind::ComponentCache => (1, -1),
-            BestiaryKind::Enemy(t) => {
-                (2, void_logic::roster::roster().enemy(t).crossing_id as i32)
-            }
+        let (kind_id, enemy_key): (i32, GString) = match entry.kind {
+            BestiaryKind::OrganicCache => (0, GString::new()),
+            BestiaryKind::ComponentCache => (1, GString::new()),
+            BestiaryKind::Enemy(t) => (2, GString::from(t.as_str())),
         };
         if let Some(mut turntable) = parent.try_get_node_as::<Node>(nodes::TURNTABLE) {
             turntable.call(
                 methods::SHOW_ENTRY,
-                &[Variant::from(kind_id), Variant::from(enemy_id)],
+                &[Variant::from(kind_id), Variant::from(enemy_key)],
             );
         }
 
@@ -1007,6 +1027,38 @@ impl GameManager {
     #[func]
     fn clear_save_for_tests(&mut self) {
         self.wipe_save();
+    }
+
+    /// TEST DOOR (see `clear_save_for_tests`): swap THE grammar for a
+    /// test-owned fixture (godot/tests/fixtures/grammar/), so shell
+    /// scenarios never depend on the owner's rosters/ tuning. The fixture
+    /// links against the real model catalog. Returns false (and logs the
+    /// violation list) if it does not link.
+    #[func]
+    pub fn install_test_grammar(
+        enemies: GString,
+        kits: GString,
+        kit_grids: GString,
+        planet: GString,
+    ) -> bool {
+        match void_logic::roster::override_grammar_from(
+            &enemies.to_string(),
+            &kits.to_string(),
+            &kit_grids.to_string(),
+            &[&planet.to_string()],
+        ) {
+            Ok(()) => true,
+            Err(e) => {
+                godot_error!("fixture grammar failed to link:\n{e}");
+                false
+            }
+        }
+    }
+
+    /// TEST DOOR: drop the fixture — the shipped grammar resumes.
+    #[func]
+    pub fn clear_test_grammar() {
+        void_logic::roster::clear_grammar_override();
     }
 
     /// Forget the save, memory and disk. New Game rides this (the explicit
@@ -1261,12 +1313,10 @@ impl GameManager {
     pub fn get_kill_summary(&self) -> Dictionary<GString, i32> {
         let mut dict = Dictionary::new();
         let grammar = void_logic::roster::roster();
-        for (crossing_id, count) in self.run_state.kills.summary() {
-            // summary() lists only ids the grammar declares, so the def
-            // resolves; a retired id counts toward totals but is unlisted.
-            if let Some(id) = grammar.enemy_by_crossing_id(crossing_id) {
-                dict.set(grammar.enemy(id).name.as_str(), count as i32);
-            }
+        for (ekey, count) in self.run_state.kills.summary() {
+            // summary() lists only keys the grammar declares, so the def
+            // resolves directly.
+            dict.set(grammar.enemy(ekey).name.as_str(), count as i32);
         }
         dict
     }
@@ -1392,9 +1442,8 @@ impl GameManager {
             .as_ref()
             .map(|s| s.coverage.clone())
             .unwrap_or_default();
-        let grammar = void_logic::roster::roster();
         for enemy in coverage {
-            if self.run_state.mark_enemy_seen(grammar.enemy(enemy).crossing_id) {
+            if self.run_state.mark_enemy_seen(enemy) {
                 grew = true;
             }
         }
@@ -1961,11 +2010,15 @@ impl GameManager {
         // rolled hull) resolves here, against the profile, and this same
         // value drives the build and every later mediator decision.
         let spec = LevelSpec::for_level(
+            void_logic::roster::roster(),
             self.run_state.run_seed,
             self.run_state.current_level,
             &self.run_state.profile.unlocks,
         );
-        self.boss_fight = spec.boss.as_ref().map(|_| BossFight::new());
+        // ONE seal FSM per level, whoever anchors it: the staged boss or the
+        // spec-placed miniboss (never both — LevelSpec enforces it).
+        self.boss_fight =
+            (spec.boss.is_some() || spec.miniboss.is_some()).then(BossFight::new);
         self.level_spec = Some(spec.clone());
         let Some(parent) = self.base().get_parent() else { return };
         if let Some(level_mgr) = parent.try_get_node_as::<LevelManager>(nodes::LEVEL_MANAGER) {

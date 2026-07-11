@@ -72,8 +72,7 @@ impl MusicBed {
 /// ducking does the rest.
 pub fn music_bed(
     phase: crate::game_phase::GamePhase,
-    boss: Option<crate::boss_fight::BossFightState>,
-    miniboss_engaged: bool,
+    fight: Option<crate::boss_fight::BossFightState>,
     enemies_in_room: bool,
 ) -> MusicBed {
     use crate::boss_fight::BossFightState;
@@ -82,15 +81,15 @@ pub fn music_bed(
     if phase == GamePhase::MainMenu {
         return MusicBed::Menu;
     }
+    // The room seal owns the bed while the fight is on — a staged boss and a
+    // miniboss ride the SAME fight FSM (one seal per level), so one input
+    // covers both. Note the asymmetry past the kill: a miniboss resolves AT
+    // the kill (defeat(0) lands on RewardCollected — bed drops immediately);
+    // a staged boss holds Defeated, and the bed, until the loot closes it.
     if matches!(
-        boss,
+        fight,
         Some(BossFightState::Engaged) | Some(BossFightState::Defeated)
     ) {
-        return MusicBed::Boss;
-    }
-    if miniboss_engaged {
-        // The miniboss (design 2026-07-06): boss music while its room is
-        // sealed — outranked only by the staged boss itself.
         return MusicBed::Boss;
     }
     if enemies_in_room {
@@ -345,33 +344,30 @@ mod tests {
     }
 
     #[test]
-    fn the_bed_derivation_ranks_boss_over_miniboss_over_combat_over_level() {
+    fn the_bed_derivation_ranks_the_seal_over_combat_over_level() {
         use crate::boss_fight::BossFightState as B;
         use crate::game_phase::GamePhase as P;
 
-        assert_eq!(music_bed(P::MainMenu, None, false, false), MusicBed::Menu);
-        assert_eq!(music_bed(P::Playing, None, false, false), MusicBed::Level);
-        assert_eq!(music_bed(P::Playing, None, false, true), MusicBed::Combat,
+        assert_eq!(music_bed(P::MainMenu, None, false), MusicBed::Menu);
+        assert_eq!(music_bed(P::Playing, None, false), MusicBed::Level);
+        assert_eq!(music_bed(P::Playing, None, true), MusicBed::Combat,
             "live enemies in the room bring the stinger in");
-        assert_eq!(music_bed(P::Playing, Some(B::Engaged), false, true), MusicBed::Boss,
-            "the arena outranks the stinger");
-        assert_eq!(music_bed(P::Playing, Some(B::Defeated), false, false), MusicBed::Boss,
-            "the fight owns the bed until the loot closes it");
-        assert_eq!(music_bed(P::Playing, Some(B::Dormant), false, false), MusicBed::Level,
+        // One seal FSM serves the staged boss and the miniboss alike — an
+        // engaged fight of EITHER kind owns the bed.
+        assert_eq!(music_bed(P::Playing, Some(B::Engaged), true), MusicBed::Boss,
+            "the sealed room outranks the stinger");
+        assert_eq!(music_bed(P::Playing, Some(B::Defeated), false), MusicBed::Boss,
+            "a staged boss holds the bed until the loot closes it");
+        assert_eq!(music_bed(P::Playing, Some(B::Dormant), false), MusicBed::Level,
             "a dormant fight is no fight");
-        assert_eq!(music_bed(P::Playing, Some(B::RewardCollected), false, false),
-            MusicBed::Level, "the loot closes it — back to the level bed");
-        // The miniboss (design 2026-07-06): boss music while its room is
-        // sealed, outranked only by the staged boss itself.
-        assert_eq!(music_bed(P::Playing, None, true, true), MusicBed::Boss,
-            "an engaged miniboss raises the boss bed");
-        assert_eq!(music_bed(P::Playing, Some(B::Dormant), true, false), MusicBed::Boss,
-            "a dormant staged fight doesn't mute a live miniboss");
+        assert_eq!(music_bed(P::Playing, Some(B::RewardCollected), false),
+            MusicBed::Level,
+            "resolution drops the bed — a miniboss lands here AT the kill");
         // In-run menus keep the level bed (phase volume ducking handles feel).
-        assert_eq!(music_bed(P::Shop, None, false, false), MusicBed::Level);
-        assert_eq!(music_bed(P::Paused, Some(B::Engaged), false, true), MusicBed::Boss,
+        assert_eq!(music_bed(P::Shop, None, false), MusicBed::Level);
+        assert_eq!(music_bed(P::Paused, Some(B::Engaged), true), MusicBed::Boss,
             "pausing mid-fight doesn't end the fight");
-        assert_eq!(music_bed(P::Death, None, false, false), MusicBed::Level);
+        assert_eq!(music_bed(P::Death, None, false), MusicBed::Level);
     }
 
     #[test]

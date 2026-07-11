@@ -35,6 +35,8 @@ pub mod planet;
 pub mod boss;
 pub mod boss_fight;
 pub mod level_spec;
+#[cfg(test)]
+mod test_fixtures;
 pub mod portal;
 pub mod ui_layout;
 pub mod ui_style;

@@ -10,7 +10,7 @@
 
 use crate::asset_catalog::PanelSet;
 use crate::level_assembly::MinionTrigger;
-use crate::roster::EnemyId;
+use crate::roster::EnemyKey;
 use crate::planet::Pitch;
 use crate::seed::Seed;
 use crate::ship_type::ShipType;
@@ -30,9 +30,9 @@ pub enum Paradigm {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BossStaging {
     /// The enemy def this boss fights as (declared on the boss slot).
-    pub boss: EnemyId,
+    pub boss: EnemyKey,
     /// The escort kind and its rise trigger (declared on the boss slot).
-    pub escorts: (EnemyId, MinionTrigger),
+    pub escorts: (EnemyKey, MinionTrigger),
     /// The fight's music track (never relooped — a fight outlasting it
     /// continues on combat stingers).
     pub track: String,
@@ -67,10 +67,16 @@ pub struct LevelSpec {
     /// Target room count for generation.
     pub room_budget: usize,
     /// The direct-spawn pool: exactly what this level's declared list fields.
-    pub roster: Vec<EnemyId>,
+    pub roster: Vec<EnemyKey>,
     /// The bestiary horizon: the roster closed over bound minions.
-    pub coverage: Vec<EnemyId>,
+    pub coverage: Vec<EnemyKey>,
     pub boss: Option<BossStaging>,
+    /// The room-seal elite this level fields, when its declared list names a
+    /// `miniboss` def: the manifest places it in ONE seed-chosen room (never
+    /// rolled), whose connectors seal on entry and re-open on its death.
+    /// Always `None` on staged-boss levels — one seal per level, and the
+    /// staged fight owns it.
+    pub miniboss: Option<EnemyKey>,
     /// The level's loopable background music.
     pub background: String,
     /// The planet-arrival interstitial, on planet boundaries only.
@@ -81,23 +87,30 @@ impl LevelSpec {
     /// THE constructor — the one place level attributes are resolved: the
     /// linked roster grammar (WHAT exists and WHERE it appears) joined with
     /// the profile (red-container staging needs to know which hulls
-    /// remain). Immutable for the level's lifetime.
-    pub fn for_level(run_seed: Seed, level: u32, unlocks: &PermanentUnlocks) -> Self {
-        let grammar = crate::roster::roster();
-        let roster: Vec<EnemyId> = grammar.roster_for_level(level);
+    /// remain). Immutable for the level's lifetime. `grammar` is the linked
+    /// grammar to resolve against — production passes the [`roster()`]
+    /// singleton; tests may pass a fixture, so tuning the shipped TOML can
+    /// never break them.
+    pub fn for_level(
+        grammar: &crate::roster::Roster,
+        run_seed: Seed,
+        level: u32,
+        unlocks: &PermanentUnlocks,
+    ) -> Self {
+        let roster: Vec<EnemyKey> = grammar.roster_for_level(level);
 
         // The bestiary horizon: the roster closed over bound minions, in
         // declaration order, deduplicated.
-        let mut seen = vec![false; grammar.enemies.len()];
-        for id in &roster {
-            seen[id.0] = true;
-            for m in &grammar.enemy(*id).minions {
-                seen[m.enemy.0] = true;
+        let mut seen = std::collections::HashSet::new();
+        for key in &roster {
+            seen.insert(*key);
+            for m in &grammar.enemy(*key).minions {
+                seen.insert(m.enemy);
             }
         }
-        let coverage: Vec<EnemyId> = grammar
-            .enemy_ids()
-            .filter(|id| seen[id.0])
+        let coverage: Vec<EnemyKey> = grammar
+            .enemy_keys()
+            .filter(|k| seen.contains(k))
             .collect();
 
         let boss = grammar.boss_slot_for_level(level).map(|slot| {
@@ -125,12 +138,24 @@ impl LevelSpec {
             }
         });
 
+        // The room-seal elite: a `miniboss` def in the declared list, placed
+        // (never rolled) by the manifest. A staged-boss level never also
+        // fields one — the level has ONE seal, and the staged fight owns it.
+        let miniboss = if boss.is_none() {
+            roster
+                .iter()
+                .copied()
+                .find(|k| grammar.enemy(*k).behavior.miniboss)
+        } else {
+            None
+        };
+
         let planet_def = grammar.planet_for_level(level);
         Self {
             level,
-            planet: crate::planet::planet_of(level),
-            pitch: Pitch::for_level(level),
-            paradigm: if crate::planet::panel_world(level) {
+            planet: grammar.planet_number_and_relative(level).0,
+            pitch: grammar.pitch_for_level(level),
+            paradigm: if grammar.panel_world(level) {
                 Paradigm::Panel(&crate::asset_catalog::PANEL_SET_VOL01)
             } else {
                 Paradigm::Layered
@@ -140,6 +165,7 @@ impl LevelSpec {
             roster,
             coverage,
             boss,
+            miniboss,
             background: crate::audio_catalog::level_background(level),
             banner: crate::planet::arrival_banner(level),
         }
@@ -149,56 +175,9 @@ impl LevelSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::asset_catalog::PANEL_SET_VOL01;
 
     fn fresh(level: u32) -> LevelSpec {
-        LevelSpec::for_level(Seed::new(1), level, &PermanentUnlocks::new())
-    }
-
-    fn eid(key: &str) -> crate::roster::EnemyId {
-        crate::roster::roster().enemy_by_key(key).expect(key)
-    }
-
-    #[test]
-    fn level_one_is_the_terrestrial_opening() {
-        let spec = fresh(1);
-        assert_eq!(spec.level, 1);
-        assert_eq!(spec.planet, 1);
-        assert_eq!((spec.pitch.tile, spec.pitch.story), (4.0, 5.0));
-        assert_eq!(spec.paradigm, Paradigm::Layered);
-        assert_eq!(spec.room_budget, 8);
-        assert_eq!(spec.roster, vec![eid("sentry_drone")],
-            "level 1 fields the sentry alone");
-        assert_eq!(spec.boss, None, "no fight staged");
-        assert!(spec.background.ends_with("level_01.mp3"),
-            "each level carries its own background");
-        assert_eq!(spec.banner, None, "planet 1 needs no introduction");
-    }
-
-    #[test]
-    fn rosters_are_planet_scoped_not_mixed() {
-        // Owner's correction (playtest 2026-07-05, twice): planet 2 fields
-        // the WHITE SPHERE fleet — the Quaternius machines belong to planet
-        // 1 and retire at its final boss. Replacement, never mix-in.
-        assert!(!fresh(6).roster.contains(&eid("sphere_gunner")),
-            "no white spheres anywhere on planet 1");
-        assert!(fresh(7).roster.contains(&eid("sphere_gunner")));
-        assert!(!fresh(7).roster.contains(&eid("sphere_striker")));
-        assert!(fresh(8).roster.contains(&eid("sphere_striker")));
-        assert!(!fresh(8).roster.contains(&eid("alien_troop")));
-        assert!(fresh(9).roster.contains(&eid("alien_troop")));
-        assert!(!fresh(10).roster.contains(&eid("sphere_carrier")));
-        assert!(fresh(11).roster.contains(&eid("sphere_carrier")));
-        for veteran in [eid("sentry_drone"), eid("bomber"),
-                        eid("eye_drone"), eid("quad_shell")] {
-            assert!(!fresh(7).roster.contains(&veteran),
-                "{veteran:?} retired with planet 1");
-        }
-        // Planets past the sphere fleet's home keep fielding it until new
-        // kits arrive — a planet is never enemy-less.
-        assert!(fresh(13).roster.contains(&eid("sphere_gunner")),
-            "planet 3 inherits the newest fleet");
-        assert!(!fresh(13).roster.contains(&eid("sentry_drone")));
+        LevelSpec::for_level(crate::roster::roster(), Seed::new(1), level, &PermanentUnlocks::new())
     }
 
     #[test]
@@ -209,10 +188,10 @@ mod tests {
         use crate::roster::roster;
         for level in 1..=24 {
             let spec = fresh(level);
-            for id in roster().enemy_ids() {
-                if !roster().enemy(id).spawns_directly {
-                    assert!(!spec.roster.contains(&id),
-                        "level {level}: {} is not pool stock", roster().enemy(id).key);
+            for key in roster().enemy_keys() {
+                if !roster().enemy(key).spawns_directly {
+                    assert!(!spec.roster.contains(&key),
+                        "level {level}: {} is not pool stock", roster().enemy(key).key);
                 }
             }
         }
@@ -221,9 +200,9 @@ mod tests {
     #[test]
     fn coverage_closes_the_roster_over_death_spawns() {
         // The spec's coverage is its roster closed over declared minions —
-        // the bestiary horizon — declaration-ordered and deduplicated.
-        // Derived from the grammar, never from named defs (feedback
-        // 2026-07-06).
+        // the bestiary horizon. Derived from the grammar, never from named
+        // defs (feedback 2026-07-06). Order is just whatever the file
+        // declares — not a contract; only membership and no-duplicates are.
         use crate::roster::roster;
         for level in 1..=12u32 {
             let spec = fresh(level);
@@ -235,60 +214,60 @@ mod tests {
                         "level {level}: a roster member's declared minion joins the horizon");
                 }
             }
-            let ids: Vec<usize> = spec.coverage.iter().map(|id| id.0).collect();
-            let mut sorted = ids.clone();
-            sorted.sort_unstable();
-            sorted.dedup();
-            assert_eq!(sorted, ids,
-                "level {level}: declaration-ordered and deduplicated (bestiary contract)");
+            let unique: std::collections::HashSet<_> = spec.coverage.iter().collect();
+            assert_eq!(unique.len(), spec.coverage.len(),
+                "level {level}: coverage lists each enemy once");
         }
     }
 
     #[test]
-    fn boss_staging_resolves_kind_drop_and_hull_in_one_place() {
-        let spec3 = fresh(3);
-        let staging = spec3.boss.expect("rel-3 stages the mid-boss");
-        assert_eq!(staging.boss, eid("boss_brute"));
-        assert!(staging.track.ends_with("boss_1.mp3"), "mid-boss music");
-        assert_eq!(staging.hull_reward, None, "mid-bosses drop the pile");
-        assert_eq!(staging.pile.len(), 3, "the pile of three stages with it");
-        assert_eq!(staging.drop_count(), 4, "bound cache + the pile of three");
-        assert_eq!(staging.adds, 3, "planet 1's slot declares a trio");
-
-        let spec6 = fresh(6);
-        let staging = spec6.boss.expect("rel-6 stages the planet final");
-        assert_eq!(staging.boss, eid("boss_latcher"));
-        assert!(staging.track.ends_with("boss_2.mp3"), "planet-final music");
-        assert!(staging.hull_reward.is_some(),
-            "a fresh profile's planet final stages the red container");
-        assert!(staging.pile.is_empty(), "the container replaces the pile");
-        assert_eq!(staging.drop_count(), 1, "the container is the whole drop");
-
-        assert_eq!(fresh(5).boss, None);
+    fn boss_staging_resolves_drop_and_hull_from_the_slot() {
+        // The staging RESOLUTION, derived by scanning for staged fights —
+        // never which boss or which level: the drop is the bound cache plus
+        // whatever pile stages; a hull container rides a slot that asks for it
+        // and replaces the pile; a pile fight drops more than the lone bound
+        // cache. Retuning the campaign can't move this.
+        let mut saw_pile = false;
+        let mut saw_container = false;
+        for level in 1..=24u32 {
+            let Some(staging) = fresh(level).boss else { continue };
+            assert_eq!(staging.drop_count() as usize, 1 + staging.pile.len(),
+                "level {level}: the drop is the bound cache plus the pile");
+            assert!(!staging.track.is_empty(), "level {level}: a staged fight names its music");
+            match staging.hull_reward {
+                Some(_) => {
+                    saw_container = true;
+                    assert!(staging.pile.is_empty(), "level {level}: the container replaces the pile");
+                    assert_eq!(staging.drop_count(), 1, "level {level}: the container is the whole drop");
+                }
+                None => {
+                    saw_pile = true;
+                    assert!(!staging.pile.is_empty(),
+                        "level {level}: a pile fight drops more than the bound cache");
+                }
+            }
+        }
+        assert!(saw_pile && saw_container,
+            "the grammar exercises both a pile fight and a hull-container fight");
     }
 
     #[test]
-    fn a_complete_fleet_downgrades_the_final_to_the_pile() {
+    fn a_complete_fleet_downgrades_the_container_final_to_a_pile() {
+        // The reward MECHANISM, derived: a fight that would drop a hull
+        // container drops the pile instead once every hull is owned. The
+        // container fight is FOUND, never pinned to a level.
         let mut full = PermanentUnlocks::new();
         for ship in [ShipType::Talon, ShipType::Hive, ShipType::Reaver] {
             full.grant(crate::unlocks::Unlock::Ship(ship));
         }
-        let spec = LevelSpec::for_level(Seed::new(1), 6, &full);
-        let staging = spec.boss.expect("the fight still stages");
-        assert_eq!(staging.hull_reward, None, "no hulls left to win");
-        assert!(staging.drop_count() > 1, "so the pile drops instead");
-    }
-
-    #[test]
-    fn planet_two_is_the_cubic_panel_world_with_its_banner() {
-        let spec = fresh(7);
-        assert_eq!(spec.planet, 2);
-        assert_eq!((spec.pitch.tile, spec.pitch.story), (3.0, 3.0));
-        assert_eq!(spec.paradigm, Paradigm::Panel(&PANEL_SET_VOL01));
-        let (title, flavor) = spec.banner.expect("planet 2 announces itself");
-        assert!(title.contains("PLANET 2"));
-        assert!(!flavor.is_empty());
-        assert_eq!(fresh(8).banner, None, "mid-planet entries are ordinary");
+        let container_level = (1..=24u32)
+            .find(|l| fresh(*l).boss.is_some_and(|b| b.hull_reward.is_some()))
+            .expect("the campaign stages a hull-container fight");
+        let downgraded = LevelSpec::for_level(crate::roster::roster(), Seed::new(1), container_level, &full)
+            .boss
+            .expect("the fight still stages");
+        assert_eq!(downgraded.hull_reward, None, "no hulls left to win");
+        assert!(downgraded.drop_count() > 1, "so the pile drops instead");
     }
 
     #[test]

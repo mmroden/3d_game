@@ -100,8 +100,12 @@ func test_a_chasing_bomber_never_leaks_through_the_corner_seam():
 	player.global_position = center + corner_dir * 14.0
 	player.freeze = true
 
+	var bomber_keys := EnemyDrone.enemy_keys_with_ai("bomber")
+	assert_gt(bomber_keys.size(), 0, "the grammar must declare a bomber for the wall test")
+	if bomber_keys.is_empty():
+		return
 	var bomber = load("res://scenes/enemies/enemy.tscn").instantiate()
-	bomber.enemy_type_id = 2  # the Bomber
+	bomber.enemy_key = bomber_keys[0]  # a bomber, found by capability
 	add_child_autofree(bomber)
 	bomber.global_position = center
 	await wait_physics_frames(2, "let the bomber build its hull and find the lure")
@@ -239,10 +243,14 @@ func test_a_pile_of_chasing_bombers_never_shoves_one_through_the_corner():
 	player.global_position = center + corner_dir * 14.0
 	player.freeze = true
 
+	var bomber_keys := EnemyDrone.enemy_keys_with_ai("bomber")
+	assert_gt(bomber_keys.size(), 0, "the grammar must declare a bomber for the pile test")
+	if bomber_keys.is_empty():
+		return
 	var bombers := []
 	for i in range(4):
 		var b = load("res://scenes/enemies/enemy.tscn").instantiate()
-		b.enemy_type_id = 2
+		b.enemy_key = bomber_keys[0]  # a bomber, found by capability
 		add_child_autofree(b)
 		# Staggered along the diagonal so the pile forms a shoving column.
 		b.global_position = center - corner_dir * (i * 1.2)

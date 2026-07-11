@@ -1,6 +1,8 @@
 //! Level assembly: builds meshes, lights, enemies, and collision boxes from a LevelGraph.
 
-use crate::roster::{roster, EnemyId};
+use crate::roster::EnemyKey;
+#[cfg(test)]
+use crate::roster::roster;
 use crate::level_graph::LevelGraph;
 use crate::planet::Pitch;
 use crate::seed::Seed;
@@ -284,7 +286,7 @@ impl EmitterTimer {
 /// room and activates each on its trigger.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MinionSpawn {
-    pub enemy_type: EnemyId,
+    pub enemy_type: EnemyKey,
     pub trigger: MinionTrigger,
 }
 
@@ -292,7 +294,7 @@ pub struct MinionSpawn {
 /// minions its death or engagement will rouse (the def's `minions` list).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnemySpawn {
-    pub enemy_type: EnemyId,
+    pub enemy_type: EnemyKey,
     pub position: [f32; 3],
     pub minions: Vec<MinionSpawn>,
 }
@@ -304,6 +306,11 @@ pub struct EnemySpawn {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct RoomManifest {
     pub enemies: Vec<EnemySpawn>,
+    /// Index into `enemies` of this room's dormant SEAL ANCHOR — a staged boss
+    /// or a miniboss. Its room seals every active connector on entry and
+    /// re-opens on the anchor's death; the anchor spawns dormant and rises on
+    /// entry. `None` for an ordinary room. One field, boss and miniboss alike.
+    pub anchor: Option<usize>,
 }
 
 /// A seed-deterministic enumeration of everything a level can *contain* — the
@@ -331,21 +338,23 @@ impl LevelManifest {
     /// order. This is what the bestiary marks as seen, so a death-only type (the
     /// SpawnDrone) enters the catalog the moment a level can produce it, which
     /// `enemies_for_level` (direct-only) could never surface.
-    pub fn enemy_coverage(&self) -> Vec<EnemyId> {
-        let mut seen = vec![false; roster().enemies.len()];
+    pub fn enemy_coverage(&self, grammar: &crate::roster::Roster) -> Vec<EnemyKey> {
+        let mut seen = std::collections::HashSet::new();
         for room in &self.rooms {
             for enemy in &room.enemies {
-                seen[enemy.enemy_type.0] = true;
+                seen.insert(enemy.enemy_type);
                 for minion in &enemy.minions {
-                    seen[minion.enemy_type.0] = true;
+                    seen.insert(minion.enemy_type);
                 }
             }
         }
-        roster().enemy_ids().filter(|id| seen[id.0]).collect()
+        // Declaration order, deduplicated — the bestiary horizon.
+        grammar.enemy_keys().filter(|k| seen.contains(k)).collect()
     }
 }
 
 pub fn manifest(
+    grammar: &crate::roster::Roster,
     graph: &LevelGraph,
     spec: &crate::level_spec::LevelSpec,
     seed: Seed,
@@ -355,7 +364,6 @@ pub fn manifest(
     use rand::SeedableRng;
 
     let rooms_assembly = spawn_list_full(graph, spec, seed);
-    let available = &spec.roster;
     let mut enemy_rng = SmallRng::seed_from_u64(seed.value());
 
     // A staged boss claims its arena outright: the schedule names the kind,
@@ -364,6 +372,35 @@ pub fn manifest(
         .room_indices()
         .position(|idx| Some(idx) == graph.boss_room())
         .zip(spec.boss.as_ref());
+    let arena_pos = boss_arena.map(|(pos, _)| pos);
+
+    // The miniboss is placed like a boss — the MODEL picks its room, it is
+    // NOT rolled into the world at random (owner 2026-07-09). The spec
+    // derived WHETHER this level fields one ([`LevelSpec::miniboss`], the one
+    // derivation); here it is pulled OUT of the ordinary roll and dropped,
+    // dormant, into exactly ONE seed-chosen room as that room's seal anchor,
+    // alongside the room's normal populace.
+    let miniboss = spec.miniboss;
+    let roll_pool: Vec<EnemyKey> = {
+        let pool: Vec<EnemyKey> = spec
+            .roster
+            .iter()
+            .copied()
+            .filter(|k| !grammar.enemy(*k).behavior.miniboss)
+            .collect();
+        // A level with nothing BUT a miniboss is degenerate; fall back so the
+        // roll always has something to draw.
+        if pool.is_empty() { spec.roster.clone() } else { pool }
+    };
+    // The miniboss's room: never the start room (index 0 — the player begins
+    // there, so it would seal on spawn), never the boss arena, and non-empty
+    // (its anchor needs a spawn point).
+    let miniboss_room = miniboss.and_then(|_| {
+        let eligible: Vec<usize> = (0..rooms_assembly.len())
+            .filter(|&p| p != 0 && Some(p) != arena_pos && !rooms_assembly[p].enemies.is_empty())
+            .collect();
+        eligible.choose(&mut enemy_rng).copied()
+    });
 
     let rooms = rooms_assembly
         .iter()
@@ -381,7 +418,7 @@ pub fn manifest(
                     let minions: Vec<MinionSpawn> = (0..adds)
                         .map(|_| MinionSpawn { enemy_type: minion_type, trigger })
                         .chain(
-                            roster()
+                            grammar
                                 .enemy(boss_type)
                                 .minions
                                 .iter()
@@ -403,21 +440,30 @@ pub fn manifest(
                             minions: minions.clone(),
                         })
                         .collect();
-                    return RoomManifest { enemies };
+                    return RoomManifest { enemies, anchor: Some(0) };
                 }
             }
+            // The miniboss (if this is its chosen room) anchors index 0,
+            // dormant; every other spawn point rolls an ordinary enemy from
+            // the pool (the miniboss is never in that pool).
+            let is_miniboss_room = Some(room_pos) == miniboss_room;
             let enemies = room
                 .enemies
                 .iter()
-                .map(|pos| {
-                    let enemy_type = *available
-                        .choose(&mut enemy_rng)
-                        .expect("available_enemies is non-empty for any valid level");
+                .enumerate()
+                .map(|(i, pos)| {
+                    let enemy_type = if is_miniboss_room && i == 0 {
+                        miniboss.expect("a miniboss room implies a declared miniboss")
+                    } else {
+                        *roll_pool
+                            .choose(&mut enemy_rng)
+                            .expect("the roll pool is non-empty for any valid level")
+                    };
                     // Every declared minion entry reserves its RING (cap
                     // slots; one-shot entries have cap == count) with its
                     // declared trigger — the grammar's list is the Faucet
                     // reservation, timed emitters included.
-                    let minions = roster()
+                    let minions = grammar
                         .enemy(enemy_type)
                         .minions
                         .iter()
@@ -431,7 +477,7 @@ pub fn manifest(
                     EnemySpawn { enemy_type, position: *pos, minions }
                 })
                 .collect();
-            RoomManifest { enemies }
+            RoomManifest { enemies, anchor: is_miniboss_room.then_some(0) }
         })
         .collect();
 
@@ -506,6 +552,7 @@ mod tests {
     /// GENERATION seed still travels separately.
     fn spec_for(level: u32) -> crate::level_spec::LevelSpec {
         crate::level_spec::LevelSpec::for_level(
+            roster(),
             crate::seed::Seed::new(1),
             level,
             &crate::unlocks::PermanentUnlocks::new(),
@@ -524,9 +571,6 @@ mod tests {
 
     use super::*;
 
-    fn eid(key: &str) -> EnemyId {
-        roster().enemy_by_key(key).expect(key)
-    }
     use crate::generator::{generate, GeneratorConfig};
     use crate::level_graph::{EdgeKind, RENDER_ROOM_DEPTH};
     use crate::room_template::ConnectorFacing;
@@ -969,8 +1013,8 @@ mod tests {
     fn manifest_is_seed_deterministic() {
         for seed in 0..20u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let a = manifest(&graph, &spec_for(5), Seed::new(seed));
-            let b = manifest(&graph, &spec_for(5), Seed::new(seed));
+            let a = manifest(roster(), &graph, &spec_for(5), Seed::new(seed));
+            let b = manifest(roster(), &graph, &spec_for(5), Seed::new(seed));
             assert_eq!(a, b, "seed {seed}: manifest not deterministic");
         }
     }
@@ -983,7 +1027,7 @@ mod tests {
         for seed in 0..20u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
             let assembly = spawn_list_full(&graph, &spec_for(1), Seed::new(seed));
-            let m = manifest(&graph, &spec_for(5), Seed::new(seed));
+            let m = manifest(roster(), &graph, &spec_for(5), Seed::new(seed));
             assert_eq!(m.rooms.len(), assembly.len(), "seed {seed}: room count differs");
             for (room, room_asm) in m.rooms.iter().zip(&assembly) {
                 let positions: Vec<_> = room.enemies.iter().map(|e| e.position).collect();
@@ -1003,7 +1047,7 @@ mod tests {
         for level in 1..=6u32 {
             for seed in 0..10u64 {
                 let Ok(graph) = generate(&test_config(seed)) else { continue };
-                let m = manifest(&graph, &spec_for(level), Seed::new(seed));
+                let m = manifest(roster(), &graph, &spec_for(level), Seed::new(seed));
                 for room in &m.rooms {
                     for enemy in &room.enemies {
                         let declared = &roster().enemy(enemy.enemy_type).minions;
@@ -1057,100 +1101,153 @@ mod tests {
             .expect("boss room is in the graph")
     }
 
+    /// A level the campaign stages a boss on — found, never pinned, so
+    /// retuning which levels carry bosses can't move these contracts.
+    fn first_boss_level() -> u32 {
+        (1..=24u32)
+            .find(|l| spec_for(*l).boss.is_some())
+            .expect("the campaign stages a boss in the first 24 levels")
+    }
+
     #[test]
-    fn the_mid_boss_manifest_stages_the_brute_alone_in_the_arena() {
-        let graph = pinned_boss_graph(3);
-        let m = manifest(&graph, &spec_for(3), Seed::new(1));
+    fn a_staged_boss_stands_alone_in_the_arena_with_its_declared_escorts() {
+        let level = first_boss_level();
+        let spec = spec_for(level);
+        let staging = spec.boss.as_ref().expect("first_boss_level stages a fight");
+        let graph = pinned_boss_graph(level);
+        let m = manifest(roster(), &graph, &spec, Seed::new(1));
         let arena = &m.rooms[arena_position(&graph)];
         assert_eq!(arena.enemies.len(), 1, "the arena holds the boss, nothing else");
         let boss = &arena.enemies[0];
-        assert_eq!(boss.enemy_type, eid("boss_brute"), "rel-3 stages the Brute");
-        // The slot's escorts AND the def's own emitter ring both reserve
-        // (Faucet: cap slots pre-built) — the Brute declares a cap-3 ring.
-        let escorts = boss.minions.iter().filter(|mn| {
-            mn.enemy_type == eid("spawn_drone") && mn.trigger == MinionTrigger::OnDeath
-        }).count();
-        let ring = boss.minions.iter().filter(|mn| {
-            mn.enemy_type == eid("spawn_drone")
-                && matches!(mn.trigger, MinionTrigger::Every(_))
-        }).count();
-        assert_eq!(escorts, 3, "planet 1's slot declares a trio");
-        assert_eq!(ring, 3, "the def's cap-3 emitter ring reserves with it");
-        assert_eq!(boss.minions.len(), 6, "escorts + ring, nothing else");
-    }
-
-    #[test]
-    fn the_planet_final_manifest_stages_the_latcher_with_engage_escorts() {
-        let graph = pinned_boss_graph(6);
-        let m = manifest(&graph, &spec_for(6), Seed::new(1));
-        let boss = &m.rooms[arena_position(&graph)].enemies[0];
-        assert_eq!(boss.enemy_type, eid("boss_latcher"), "rel-6 stages the Latcher");
-        let engage = boss.minions.iter().filter(|mn| {
-            mn.enemy_type == eid("spawn_drone") && mn.trigger == MinionTrigger::OnEngage
-        }).count();
-        let ring = boss.minions.iter().filter(|mn| {
-            matches!(mn.trigger, MinionTrigger::Every(_))
-        }).count();
-        assert_eq!(engage, 3, "the escort is up from first contact, not on death");
-        assert_eq!(ring, 6, "the Latcher's cap-6 emitter ring reserves with it");
-        assert_eq!(boss.minions.len(), 9, "escorts + ring, nothing else");
-    }
-
-    #[test]
-    fn escort_counts_come_from_the_slot_declaration() {
-        let graph = pinned_boss_graph(9); // planet 2's mid-boss
-        let m = manifest(&graph, &spec_for(9), Seed::new(1));
-        let boss = &m.rooms[arena_position(&graph)].enemies[0];
-        assert_eq!(boss.enemy_type, eid("boss_brute"));
+        assert_eq!(boss.enemy_type, staging.boss, "the arena stages the spec's declared boss");
+        // The slot's escorts reserve on the boss (Faucet: cap slots pre-built);
+        // their count is the slot's declared call, never a formula.
         let escorts = boss.minions.iter()
-            .filter(|mn| mn.trigger == MinionTrigger::OnDeath)
+            .filter(|mn| matches!(mn.trigger, MinionTrigger::OnDeath | MinionTrigger::OnEngage))
             .count();
-        assert_eq!(escorts, 4, "planet 2's slots declare four");
+        assert_eq!(escorts, staging.adds as usize,
+            "the reserved escorts are exactly the slot's declared count");
+        assert!(escorts > 0, "a staged fight reserves escorts");
     }
 
     #[test]
-    fn regular_rooms_stay_boss_free_on_boss_levels() {
-        let graph = pinned_boss_graph(3);
-        let m = manifest(&graph, &spec_for(3), Seed::new(1));
+    fn bosses_live_in_the_arena_only() {
+        let level = first_boss_level();
+        let spec = spec_for(level);
+        let staging = spec.boss.as_ref().expect("first_boss_level stages a fight");
+        let graph = pinned_boss_graph(level);
+        let m = manifest(roster(), &graph, &spec, Seed::new(1));
         let arena_pos = arena_position(&graph);
         for (pos, room) in m.rooms.iter().enumerate() {
             if pos == arena_pos {
                 continue;
             }
             for enemy in &room.enemies {
-                assert!(
-                    enemy.enemy_type != eid("boss_brute")
-                        && enemy.enemy_type != eid("boss_latcher"),
-                    "room {pos}: bosses live in the arena only"
-                );
+                assert_ne!(enemy.enemy_type, staging.boss,
+                    "room {pos}: the boss lives in the arena only");
             }
         }
     }
 
     #[test]
-    fn no_arena_means_no_boss_even_on_a_boss_level() {
-        // The shell only attaches the arena on boss levels; if it didn't (or
-        // the attach failed), the manifest must not invent a boss.
-        let config = config_for(1, crate::generator::rooms_for_level(3), 3);
+    fn no_arena_marker_means_no_boss() {
+        // The shell only attaches the arena on boss levels; without the marker
+        // (or if the attach failed), the manifest must not invent the boss.
+        let level = first_boss_level();
+        let spec = spec_for(level);
+        let staging = spec.boss.as_ref().expect("first_boss_level stages a fight");
+        let config = config_for(1, crate::generator::rooms_for_level(level), level);
         let graph = generate(&config).expect("generates");
-        let m = manifest(&graph, &spec_for(3), Seed::new(1));
+        let m = manifest(roster(), &graph, &spec, Seed::new(1));
         for room in &m.rooms {
             for enemy in &room.enemies {
-                assert!(
-                    enemy.enemy_type != eid("boss_brute")
-                        && enemy.enemy_type != eid("boss_latcher"),
-                    "no arena marker — no boss"
-                );
+                assert_ne!(enemy.enemy_type, staging.boss, "no arena marker — no boss");
             }
         }
     }
 
     #[test]
-    fn the_boss_enters_bestiary_coverage_on_its_level() {
-        let graph = pinned_boss_graph(3);
-        let m = manifest(&graph, &spec_for(3), Seed::new(1));
-        assert!(m.enemy_coverage().contains(&eid("boss_brute")),
-            "the bestiary logs the Siege Mech the level it can appear");
+    fn a_staged_boss_enters_bestiary_coverage() {
+        let level = first_boss_level();
+        let spec = spec_for(level);
+        let staging = spec.boss.as_ref().expect("first_boss_level stages a fight");
+        let graph = pinned_boss_graph(level);
+        let m = manifest(roster(), &graph, &spec, Seed::new(1));
+        assert!(m.enemy_coverage(roster()).contains(&staging.boss),
+            "the bestiary logs the boss the level it can appear");
+    }
+
+    #[test]
+    fn a_miniboss_level_seals_exactly_one_room_around_the_miniboss() {
+        // Fixture-driven: the test grammar GUARANTEES level 1 fields a
+        // miniboss beside a regular — rosters/ is the owner's tuning data
+        // and never a test dependency (owner 2026-07-09). Across seeds: the
+        // miniboss lands in exactly ONE room as its dormant anchor, never
+        // the start room (it would seal on spawn), and NOWHERE else (placed,
+        // never rolled).
+        let grammar = crate::test_fixtures::fixture_grammar();
+        let spec = crate::level_spec::LevelSpec::for_level(
+            &grammar,
+            Seed::new(1),
+            1,
+            &crate::unlocks::PermanentUnlocks::new(),
+        );
+        let mb = spec.miniboss.expect("the fixture's level 1 declares a miniboss");
+        let mut proved = 0;
+        for seed in 0..10u64 {
+            let config = GeneratorConfig::for_spec(&spec, Seed::new(seed));
+            let Ok(graph) = generate(&config) else { continue };
+            let m = manifest(&grammar, &graph, &spec, Seed::new(seed));
+            let anchored: Vec<usize> = m
+                .rooms
+                .iter()
+                .enumerate()
+                .filter(|(_, room)| room.anchor.is_some())
+                .map(|(pos, _)| pos)
+                .collect();
+            assert_eq!(anchored.len(), 1, "seed {seed}: exactly one sealed room");
+            let room = &m.rooms[anchored[0]];
+            let a = room.anchor.expect("the sealed room carries its anchor");
+            assert_eq!(room.enemies[a].enemy_type, mb,
+                "seed {seed}: the anchor IS the miniboss");
+            assert_ne!(anchored[0], 0,
+                "seed {seed}: never the start room — it would seal on spawn");
+            let mb_count = m
+                .rooms
+                .iter()
+                .flat_map(|r| r.enemies.iter())
+                .filter(|e| e.enemy_type == mb)
+                .count();
+            assert_eq!(mb_count, 1, "seed {seed}: placed once, never also rolled");
+            proved += 1;
+        }
+        assert!(proved > 0, "at least one seed must generate");
+    }
+
+    #[test]
+    fn pinned_gut_run_anchors_a_miniboss_room() {
+        // GUT mirror: test_miniboss_seal.gd installs the FIXTURE grammar and
+        // runs fixed_seed = 1, start_level = 1 — this pins that that exact
+        // build (for_spec + the run seed's for_level derivation) anchors a
+        // miniboss room. Fixture-owned: the owner's tuning can never move it.
+        let grammar = crate::test_fixtures::fixture_grammar();
+        let run_seed = Seed::from_i64(1);
+        let spec = crate::level_spec::LevelSpec::for_level(
+            &grammar,
+            run_seed,
+            1,
+            &crate::unlocks::PermanentUnlocks::new(),
+        );
+        assert!(spec.miniboss.is_some(), "the fixture's level 1 declares a miniboss");
+        let level_seed = run_seed.for_level(1);
+        let graph = generate(&GeneratorConfig::for_spec(&spec, level_seed))
+            .expect("the pinned run's level generates");
+        let m = manifest(&grammar, &graph, &spec, level_seed);
+        assert_eq!(
+            m.rooms.iter().filter(|r| r.anchor.is_some()).count(),
+            1,
+            "the pinned run anchors exactly one miniboss room"
+        );
     }
 
     /// Cache bound = one per direct enemy = total enemy count. The minions
@@ -1174,29 +1271,55 @@ mod tests {
     /// GUT constants together.
     #[test]
     fn pinned_gut_seed_places_a_minion_declaring_parent() {
+        // GUT mirror: test_faucet_pools.gd MINION_PARENT_SEED/LEVEL, run on
+        // the FIXTURE grammar (owner 2026-07-09: mechanism scenarios never
+        // depend on rosters/ tuning). The scenario KILLS this parent and
+        // counts the brood flips, so the pin is a NON-ANCHOR parent with an
+        // ON-DEATH brood — the miniboss anchor's timed ring must never be
+        // what satisfies it. Budget 8 mirrors the GUT call's target_rooms.
+        let grammar = crate::test_fixtures::fixture_grammar();
         let seed = Seed::from_i64(1);
-        let graph = generate(&crate::generator::GeneratorConfig::for_spec(&spec_for(1), seed))
+        let mut spec = crate::level_spec::LevelSpec::for_level(
+            &grammar,
+            seed,
+            1,
+            &crate::unlocks::PermanentUnlocks::new(),
+        );
+        spec.room_budget = 8;
+        let graph = generate(&crate::generator::GeneratorConfig::for_spec(&spec, seed))
             .expect("the pinned seed must generate");
-        let m = manifest(&graph, &spec_for(4), seed);
+        let m = manifest(&grammar, &graph, &spec, seed);
         assert!(
-            m.rooms.iter().any(|r| r.enemies.iter().any(|e| !e.minions.is_empty())),
-            "seed 1 must field a minion-declaring parent at level 4 — the GUT suite builds this exact level"
+            m.rooms.iter().any(|r| {
+                r.enemies.iter().enumerate().any(|(i, e)| {
+                    r.anchor != Some(i)
+                        && e.minions.iter().any(|mn| mn.trigger == MinionTrigger::OnDeath)
+                })
+            }),
+            "fixture seed 1 must field a non-anchor on-death-brood parent — the GUT suite kills this exact parent"
         );
     }
 
-    /// Mirror: godot/tests/test_faucet_pools.gd `GREEN_CACHE_RUN_SEED`.
-    /// A run with fixed_seed 1 places at least one loot container (a green
-    /// cache) on level 1 via GameManager's run-seed → level-seed derivation.
+    /// Mirror: godot/tests/test_faucet_pools.gd `GREEN_CACHE_RUN_SEED`, run
+    /// on the FIXTURE grammar. A run with fixed_seed 1 places at least one
+    /// loot container (a green cache) on level 1 via GameManager's
+    /// run-seed → level-seed derivation.
     #[test]
     fn pinned_gut_run_seed_places_a_loot_container() {
-
+        let grammar = crate::test_fixtures::fixture_grammar();
         let level_seed = Seed::from_i64(1).for_level(1);
-        let graph = generate(&crate::generator::GeneratorConfig::for_spec(&spec_for(1), level_seed))
+        let spec = crate::level_spec::LevelSpec::for_level(
+            &grammar,
+            Seed::from_i64(1),
+            1,
+            &crate::unlocks::PermanentUnlocks::new(),
+        );
+        let graph = generate(&crate::generator::GeneratorConfig::for_spec(&spec, level_seed))
             .expect("the pinned seed must generate");
-        let rooms = spawn_list_full(&graph, &spec_for(1), level_seed);
+        let rooms = spawn_list_full(&graph, &spec, level_seed);
         assert!(
             rooms.iter().any(|r| !r.containers.is_empty()),
-            "run seed 1 must place a green cache on level 1 — the GUT suite drives this run"
+            "fixture run seed 1 must place a green cache on level 1 — the GUT suite drives this run"
         );
     }
 
@@ -1204,7 +1327,7 @@ mod tests {
     fn manifest_cache_bound_is_one_per_enemy() {
         for seed in 0..20u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let m = manifest(&graph, &spec_for(5), Seed::new(seed));
+            let m = manifest(roster(), &graph, &spec_for(5), Seed::new(seed));
             let direct: usize = m.rooms.iter().map(|r| r.enemies.len()).sum();
             assert_eq!(m.enemy_count(), direct);
         }
@@ -1221,8 +1344,8 @@ mod tests {
         for level in 1..=6u32 {
             for seed in 0..10u64 {
                 let Ok(graph) = generate(&test_config(seed)) else { continue };
-                let m = manifest(&graph, &spec_for(level), Seed::new(seed));
-                let coverage = m.enemy_coverage();
+                let m = manifest(roster(), &graph, &spec_for(level), Seed::new(seed));
+                let coverage = m.enemy_coverage(roster());
                 let mut sorted = coverage.clone();
                 sorted.dedup();
                 assert_eq!(sorted, coverage, "coverage must be deduplicated");
@@ -1259,7 +1382,7 @@ mod tests {
             for seed in 0..10u64 {
                 let Ok(graph) = generate(&test_config(seed)) else { continue };
                 let spec = spec_for(level);
-                let coverage = manifest(&graph, &spec, Seed::new(seed)).enemy_coverage();
+                let coverage = manifest(roster(), &graph, &spec, Seed::new(seed)).enemy_coverage(roster());
                 for id in &coverage {
                     let direct = spec.roster.contains(id);
                     let via_parent = coverage.iter().any(|p| roster()

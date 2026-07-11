@@ -71,8 +71,6 @@ pub struct ScalingRaw {
 #[serde(deny_unknown_fields)]
 pub struct EnemyRaw {
     pub key: String,
-    /// The GDScript/save crossing — append-only, never renumbered.
-    pub id: u16,
     pub name: String,
     /// Bestiary lore — every enemy is catalogued.
     pub blurb: String,

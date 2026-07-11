@@ -149,6 +149,16 @@ impl SaveGame {
 mod tests {
     use super::*;
     use crate::currency::CurrencyKind;
+
+    /// The n-th declared enemy, by roster position — these tests need SOME
+    /// distinct enemies, never a particular one. The grammar declares which
+    /// exist; retuning the roster can't touch this.
+    fn nth_enemy(n: usize) -> crate::roster::EnemyKey {
+        crate::roster::roster()
+            .enemy_keys()
+            .nth(n)
+            .expect("the grammar declares enough enemies")
+    }
     
     fn seasoned_run() -> RunState {
         let mut run = RunState::new(Seed::new(42));
@@ -158,7 +168,7 @@ mod tests {
         run.current_level = 4;
         run.lives = 3;
         run.lives_purchased = 2;
-        run.mark_enemy_seen(2);
+        run.mark_enemy_seen(nth_enemy(0));
         run
     }
 
@@ -167,7 +177,7 @@ mod tests {
         let save = SaveGame::from_run_state(&seasoned_run());
         assert!(save.has_run(), "a full snapshot is continuable");
         assert_eq!(save.profile.organics.balance, 120);
-        assert!(save.profile.seen_enemies.contains(2));
+        assert!(save.profile.seen_enemies.contains(nth_enemy(0)));
         let run = save.run.as_ref().expect("snapshot present");
         assert_eq!(run.laser_level, LaserLevel::Green);
         assert_eq!(run.components.balance, 5_000);
@@ -204,7 +214,7 @@ mod tests {
         save.clear_run();
         assert!(!save.has_run(), "run-over drops the snapshot");
         assert_eq!(save.profile.organics.balance, 120, "organics survive run-over");
-        assert!(save.profile.seen_enemies.contains(2),
+        assert!(save.profile.seen_enemies.contains(nth_enemy(0)),
             "the bestiary survives run-over");
     }
 
@@ -237,7 +247,7 @@ mod tests {
         assert_eq!(fresh.run_seed, Seed::new(42), "the seed comes back — same layouts");
         assert_eq!(fresh.lives, 3);
         assert_eq!(fresh.lives_purchased, 2);
-        assert!(fresh.profile.seen_enemies.contains(2));
+        assert!(fresh.profile.seen_enemies.contains(nth_enemy(0)));
     }
 
     #[test]
@@ -247,7 +257,7 @@ mod tests {
         let mut fresh = RunState::new(Seed::new(99));
         save.apply_to(&mut fresh);
         assert_eq!(fresh.profile.organics.balance, 120, "profile organics apply");
-        assert!(fresh.profile.seen_enemies.contains(2), "profile bestiary applies");
+        assert!(fresh.profile.seen_enemies.contains(nth_enemy(0)), "profile bestiary applies");
         assert_eq!(fresh.components.balance, 0, "no run to restore");
         assert_eq!(fresh.current_level, 1, "a fresh run starts at level 1");
         assert_eq!(fresh.run_seed, Seed::new(99), "the fresh run keeps its own seed");
@@ -257,7 +267,7 @@ mod tests {
     fn apply_resets_ephemeral_state() {
         let save = SaveGame::from_run_state(&seasoned_run());
         let mut fresh = RunState::new(Seed::new(99));
-        fresh.record_kill(0);
+        fresh.record_kill(nth_enemy(0));
         fresh.clear_room(3);
         save.apply_to(&mut fresh);
         assert_eq!(fresh.kills.total_kills(), 0, "kill tally is per-level");
