@@ -32,7 +32,7 @@ BLENDER := /Applications/Blender.app/Contents/MacOS/Blender
 # One-time / occasional setup: installs the toolchains and tools. NOT a
 # prerequisite of build/run/check — those just use what's already installed
 # (see require-rust). Re-run after a machine setup or to update the toolchain.
-deps: deps-rust deps-godot deps-gut
+deps: deps-rust deps-godot deps-gut deps-python deps-lfs
 	@if [ -x "$(BLENDER)" ]; then \
 		echo "Blender already installed ($$($(BLENDER) --version 2>/dev/null | head -1))."; \
 	else \
@@ -40,6 +40,43 @@ deps: deps-rust deps-godot deps-gut
 		brew install --cask blender; \
 	fi
 	@echo "All dependencies ready."
+
+# Git LFS carries the provider files GitHub's 100 MB limit rejects (the
+# apartment .max/.fbx/textures.zip and the more_walls Vol01 kit — see
+# .gitattributes). Without it a clone gets pointer stubs and make assets
+# fails loudly (install-addons.sh guards for that).
+deps-lfs:
+	@if ! command -v git-lfs >/dev/null 2>&1; then \
+		echo "==> Installing git-lfs (large provider assets)..."; \
+		brew install git-lfs; \
+	fi
+	@git lfs install --local >/dev/null
+	@echo "git-lfs ready ($$(git lfs version | cut -d' ' -f1))."
+
+# Project python venv (tools/pyenv): the asset pipeline's non-Blender python
+# deps, pinned. Used by scripts/extract-max-materials.py (.max material
+# recovery). Built on the macOS system python — the brew one has a broken
+# ensurepip (libexpat mismatch, 2026-07-12).
+PYENV := tools/pyenv
+deps-python: deps-max-importer
+	@if [ ! -x "$(PYENV)/bin/python3" ]; then \
+		echo "==> Creating asset-pipeline python venv ($(PYENV))..."; \
+		/usr/bin/python3 -m venv $(PYENV); \
+	fi
+	@$(PYENV)/bin/pip install --quiet "olefile==0.47"
+	@echo "Python venv ready ($$($(PYENV)/bin/python3 --version))."
+
+# The io_scene_max Blender extension (GPL): parses .max scenes incl. Corona
+# materials. Installed through Blender's OWN extension system (the
+# extensions.blender.org repo) — the sanctioned pathway, wheels and all.
+# scripts/extract-max-materials.py runs it headless to recover the
+# material->texture wiring the provider's FBX export destroyed.
+deps-max-importer:
+	@if ! $(BLENDER) --command extension list 2>/dev/null | grep -q "io_scene_max.*\[installed\]"; then \
+		echo "==> Installing io_scene_max via Blender extensions..."; \
+		$(BLENDER) --online-mode --command extension install --sync --enable io_scene_max; \
+	fi
+	@echo "io_scene_max extension ready."
 
 # Bootstrap + update the Rust toolchain (network). Explicit only — kept out of
 # the build/run hot path so a flaky download can't break every command. The
