@@ -409,19 +409,38 @@ fi
 
 APARTMENT_SRC="$ASSETS_DIR/apartment"
 APARTMENT_FBX="$(find "$APARTMENT_SRC" -maxdepth 1 -iname "*apartment*.fbx" 2>/dev/null | head -1)"
+APARTMENT_MAX="$(find "$APARTMENT_SRC" -maxdepth 1 -iname "*apartment*.max" 2>/dev/null | head -1)"
 APARTMENT_TEX_ZIP="$(find "$APARTMENT_SRC" -maxdepth 1 -iname "*textures*.zip" 2>/dev/null | head -1)"
 APARTMENT_TEX_CAP=2048
+APARTMENT_MAT_TABLE="$APARTMENT_SRC/max_materials.json"
 
 if [ -n "$APARTMENT_FBX" ] && [ -n "$APARTMENT_TEX_ZIP" ]; then
+    # LFS pointer stub instead of the real file = the clone skipped LFS.
+    if head -c 12 "$APARTMENT_FBX" | grep -q "^version http"; then
+        echo "  ERROR: $APARTMENT_FBX is a git-lfs pointer stub."
+        echo "  Run 'make deps' (installs git-lfs) then 'git lfs pull'."
+        exit 1
+    fi
     ENVIRONMENTS_DIR="$GODOT_DIR/addons/environments"
     mkdir -p "$ENVIRONMENTS_DIR"
     if [ ! -x "$BLENDER" ]; then
         echo "  WARNING: Blender not found at $BLENDER — run 'make deps'. Skipping apartment."
     else
+        # The .max scene is the authoring truth for materials (the FBX
+        # export destroyed most Corona bindings). Extract its material
+        # table once per .max change; apartment.py merges it over the
+        # FBX-derived recovery.
+        if [ -n "$APARTMENT_MAX" ] && { [ ! -f "$APARTMENT_MAT_TABLE" ] || [ "$APARTMENT_MAX" -nt "$APARTMENT_MAT_TABLE" ]; }; then
+            echo "  Extracting material table from .max source..."
+            "$BLENDER" --background --python-exit-code 1 \
+                --python "$(dirname "$0")/extract-max-materials.py" -- \
+                "$APARTMENT_MAX" "$APARTMENT_MAT_TABLE" 2>&1 \
+                | grep -i "extract-max:" || echo "  (extract-max: no summary — check Blender output)"
+        fi
         echo "  Converting apartment environment (full detail, ${APARTMENT_TEX_CAP}px textures)..."
         "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/apartment.py" -- \
             "$APARTMENT_FBX" "$ENVIRONMENTS_DIR/apartment.glb" \
-            "$APARTMENT_TEX_ZIP" "$APARTMENT_TEX_CAP" 2>&1 \
+            "$APARTMENT_TEX_ZIP" "$APARTMENT_TEX_CAP" "$APARTMENT_MAT_TABLE" 2>&1 \
             | grep -i "apartment:" || echo "  (apartment: no summary — check Blender output)"
         if [ ! -f "$ENVIRONMENTS_DIR/apartment.glb" ]; then
             echo "  ERROR: apartment conversion produced no glb"
@@ -441,6 +460,11 @@ fi
 # face — there are no floors or ceilings in 6DOF (see the B11 plan).
 WALLS_SRC="$ASSETS_DIR/more_walls"
 VOL01=$(find "$WALLS_SRC" -maxdepth 1 -name "*Vol*01*.glb" 2>/dev/null | head -1)
+if [ -n "$VOL01" ] && head -c 12 "$VOL01" | grep -q "^version http"; then
+    echo "  ERROR: $VOL01 is a git-lfs pointer stub."
+    echo "  Run 'make deps' (installs git-lfs) then 'git lfs pull'."
+    exit 1
+fi
 if [ -n "$VOL01" ]; then
     echo "  Splitting planet-2 wall panels (target 800 tris each)..."
     mkdir -p "$GODOT_DIR/addons/walls"
