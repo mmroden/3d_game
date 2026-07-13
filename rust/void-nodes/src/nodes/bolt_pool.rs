@@ -2,9 +2,9 @@ use godot::prelude::*;
 use godot::classes::{Node3D, INode3D};
 
 use super::constants::groups;
-use super::enemy_bolt::{BoltPayload, EnemyBolt};
+use super::enemy_bolt::{BoltPayload, BoltProfile, EnemyBolt};
 use super::live_handle::LiveVec;
-use void_logic::armament::Faction;
+use void_logic::armament::{homing, Faction};
 
 /// Ring capacity: the number of bolts that can be *concurrently* in flight, not
 /// the total a level fires. Dormant slots cost only memory (a hidden,
@@ -68,13 +68,13 @@ impl BoltPool {
     /// every enemy fire site calls.
     #[func]
     pub fn fire(&mut self, position: Vector3, velocity: Vector3, damage: f32) {
-        self.arm_next(position, velocity, damage, Faction::Enemy, None, BoltPayload::None);
+        self.arm_next(position, velocity, damage, BoltProfile::ballistic(Faction::Enemy));
     }
 
     /// Fire a player ballistic bolt (subdrones, cluster fragments).
     #[func]
     pub fn fire_player(&mut self, position: Vector3, velocity: Vector3, damage: f32) {
-        self.arm_next(position, velocity, damage, Faction::Player, None, BoltPayload::None);
+        self.arm_next(position, velocity, damage, BoltProfile::ballistic(Faction::Player));
     }
 
     /// Fire a player homing bolt locked onto the node with this instance id
@@ -82,14 +82,33 @@ impl BoltPool {
     #[func]
     pub fn fire_homing(&mut self, position: Vector3, velocity: Vector3, damage: f32, target_instance_id: i64) {
         let target = InstanceId::try_from_i64(target_instance_id);
-        self.arm_next(position, velocity, damage, Faction::Player, target, BoltPayload::None);
+        self.arm_next(position, velocity, damage, BoltProfile {
+            homing_target: target,
+            turn_rad: homing::TURN_RATE,
+            ..BoltProfile::ballistic(Faction::Player)
+        });
+    }
+
+    /// Fire an enemy homing bolt at the def's declared steer rate (rad/s) —
+    /// the `bolt_turn_deg` switch's fire path. An invalid id flies ballistic.
+    #[func]
+    pub fn fire_enemy_homing(&mut self, position: Vector3, velocity: Vector3, damage: f32, target_instance_id: i64, turn_rad: f32) {
+        let target = InstanceId::try_from_i64(target_instance_id);
+        self.arm_next(position, velocity, damage, BoltProfile {
+            homing_target: target,
+            turn_rad,
+            ..BoltProfile::ballistic(Faction::Enemy)
+        });
     }
 
     /// Fire a player cluster shell: it bursts into fragments (through this
     /// same pool) when it spends itself.
     #[func]
     pub fn fire_cluster(&mut self, position: Vector3, velocity: Vector3, damage: f32) {
-        self.arm_next(position, velocity, damage, Faction::Player, None, BoltPayload::ClusterBurst);
+        self.arm_next(position, velocity, damage, BoltProfile {
+            payload: BoltPayload::ClusterBurst,
+            ..BoltProfile::ballistic(Faction::Player)
+        });
     }
 
     /// Arm the slot at the ring cursor, then advance the cursor.
@@ -101,9 +120,7 @@ impl BoltPool {
         position: Vector3,
         velocity: Vector3,
         damage: f32,
-        faction: Faction,
-        homing_target: Option<InstanceId>,
-        payload: BoltPayload,
+        profile: BoltProfile,
     ) {
         if self.slots.is_empty() {
             return; // ring not built (no capacity) — nothing to fire
@@ -111,7 +128,7 @@ impl BoltPool {
         let slot_index = self.cursor % self.slots.len();
         self.cursor = self.cursor.wrapping_add(1);
         if let Some(mut slot) = self.slots.get_live(slot_index) {
-            slot.bind_mut().arm(position, velocity, damage, faction, homing_target, payload);
+            slot.bind_mut().arm(position, velocity, damage, profile);
         }
     }
 

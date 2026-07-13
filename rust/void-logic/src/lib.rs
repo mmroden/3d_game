@@ -4,6 +4,7 @@
 pub mod abstract_graph;
 pub mod armament;
 pub mod cell;
+pub mod fixed_layout;
 pub mod generator;
 pub mod room_theme;
 pub mod roster;
@@ -30,6 +31,7 @@ pub mod damage_flash;
 pub mod debuff;
 pub mod kill_tracker;
 pub mod kinetics;
+pub mod tractor;
 pub mod game_phase;
 pub mod planet;
 pub mod boss;

@@ -1,0 +1,29 @@
+# TEST FIXTURE — a two-level fixed planet: every level stages the fixture
+# boss (fixed levels always stage their fight; the open house has no room
+# seal for a miniboss).
+
+planet = 1
+levels = 2
+kits = ["fx_house_kit"]
+
+[[level]]
+relative = 1
+enemies = ["fx_grunt"]
+
+[[level]]
+relative = 2
+enemies = ["fx_grunt", "fx_brood_parent"]
+
+[[boss_slot]]
+at = { relative = 1 }
+boss = "fx_boss"
+escorts = { enemy = "fx_spawnling", trigger = "on_engage", count = 2 }
+track = 1
+reward = "consolation_pile"
+
+[[boss_slot]]
+at = { relative = 2 }
+boss = "fx_boss"
+escorts = { enemy = "fx_spawnling", trigger = "on_death", count = 3 }
+track = 2
+reward = "consolation_pile"

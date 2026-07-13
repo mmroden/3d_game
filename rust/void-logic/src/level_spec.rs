@@ -17,11 +17,15 @@ use crate::ship_type::ShipType;
 use crate::unlocks::PermanentUnlocks;
 
 /// How a level's rooms are skinned: the megakit's layered wall stacks
-/// (planet 1, themed per room) or a panel pool over cubic cells (planet 2+).
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// (planet 1, themed per room), a panel pool over cubic cells (planet 2+),
+/// or a FIXED pre-modeled environment installed whole (planet 3's
+/// apartment) — the spec carries the environment's authored zones, per its
+/// own doctrine ("no consumer re-derives an attribute").
+#[derive(Debug, Clone, PartialEq)]
 pub enum Paradigm {
     Layered,
     Panel(&'static PanelSet),
+    Fixed(crate::roster::EnvironmentDef),
 }
 
 /// This level's staged fight, resolved against the profile at construction:
@@ -155,7 +159,9 @@ impl LevelSpec {
             level,
             planet: grammar.planet_number_and_relative(level).0,
             pitch: grammar.pitch_for_level(level),
-            paradigm: if grammar.panel_world(level) {
+            paradigm: if let Some(env) = grammar.environment_for_level(level) {
+                Paradigm::Fixed(env.clone())
+            } else if grammar.panel_world(level) {
                 Paradigm::Panel(&crate::asset_catalog::PANEL_SET_VOL01)
             } else {
                 Paradigm::Layered
@@ -275,5 +281,48 @@ mod tests {
         let a = fresh(6);
         let b = fresh(6);
         assert_eq!(a, b, "same inputs, same level — bit for bit");
+    }
+
+    #[test]
+    fn fixed_levels_resolve_the_fixed_paradigm() {
+        // Every level of a fixed planet resolves Paradigm::Fixed carrying
+        // the SAME environment; pitch is the declared scale; the room
+        // budget is the authored zone count. Derived by walking the fixture
+        // planet's declared length — never level-number-pinned.
+        let grammar = crate::test_fixtures::fixed_fixture_grammar();
+        let levels = grammar.planet_for_level(1).levels;
+        assert!(levels > 1, "the fixture exercises more than one level");
+        for level in 1..=levels {
+            let spec =
+                LevelSpec::for_level(&grammar, Seed::new(1), level, &PermanentUnlocks::new());
+            let Paradigm::Fixed(env) = &spec.paradigm else {
+                panic!("level {level}: a fixed planet resolves the fixed paradigm");
+            };
+            assert_eq!(env.key, "fx_house", "one environment across the planet");
+            assert_eq!(
+                spec.room_budget,
+                env.zones.len(),
+                "level {level}: the room budget is the authored zone count"
+            );
+            let kit_scale = grammar.pitch_for_level(level);
+            assert_eq!(
+                (spec.pitch.tile, spec.pitch.story),
+                (kit_scale.tile, kit_scale.story),
+                "level {level}: pitch is the kit's declared scale"
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_levels_always_stage_a_boss_and_never_a_miniboss() {
+        // The staged fight owns the level's seal — linker-guaranteed on
+        // fixed planets, resolved here.
+        let grammar = crate::test_fixtures::fixed_fixture_grammar();
+        for level in 1..=grammar.planet_for_level(1).levels {
+            let spec =
+                LevelSpec::for_level(&grammar, Seed::new(1), level, &PermanentUnlocks::new());
+            assert!(spec.boss.is_some(), "level {level}: the fight is staged");
+            assert_eq!(spec.miniboss, None, "level {level}: no second seal");
+        }
     }
 }

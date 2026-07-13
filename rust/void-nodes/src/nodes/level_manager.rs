@@ -8,6 +8,7 @@ use super::constants::{groups, methods, nodes, scenes, signals};
 use super::godot_util;
 use super::live_handle::{LiveRef, LiveVec, LiveOpt};
 use super::bolt_pool::BoltPool;
+use super::cloud_pool::CloudPool;
 use super::boss_gate::{BossGate, BossTrigger};
 use super::enemy_drone::EnemyDrone;
 use super::currency_cache::CurrencyCache;
@@ -21,7 +22,7 @@ use super::views::ViewManager;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
-use void_logic::generator::{generate, GeneratorConfig};
+use void_logic::generator;
 use void_logic::level_spec::LevelSpec;
 use void_logic::level_assembly::{self, RoomBounds};
 use void_logic::level_graph::{LevelGraph, RENDER_ROOM_DEPTH};
@@ -29,7 +30,6 @@ use void_logic::room_furnisher::LightState;
 use void_logic::room_assembler::{Collision, MeshPlacement};
 use void_logic::portal as portal_sys;
 use void_logic::seed::Seed;
-use void_logic::spatial_layout;
 
 fn vec3(a: [f32; 3]) -> Vector3 {
     Vector3::new(a[0], a[1], a[2])
@@ -75,6 +75,11 @@ pub struct LevelManager {
     /// a sibling of the room containers so bolts escape per-room culling, and it
     /// outlives the room nodes `build_level` frees. Re-dormanted on each rebuild.
     bolt_pool: Option<LiveRef<BoltPool>>,
+    /// The level's dust-cloud ring buffer (Faucet Principle tier 2). Built once
+    /// and reused across regenerations, exactly like `bolt_pool` — a sibling of
+    /// the room containers so clouds escape per-room culling. Re-dormanted on
+    /// each rebuild.
+    cloud_pool: Option<LiveRef<CloudPool>>,
     /// The level's blue-cache pool (Faucet Principle tier 1): one dormant
     /// currency cache per enemy, pre-built during the load and parented here
     /// under the LevelManager (not under a room container) so a dropped cache
@@ -111,6 +116,12 @@ pub struct LevelManager {
     blinking_lights: LiveVec<OmniLight3D, f32>,
     /// Accumulated time driving the blink phase.
     blink_time: f32,
+    /// The world environment's ambient settings as they were BEFORE a fixed
+    /// level overrode them (source, color, energy) — captured on the first
+    /// override, restored on the next non-overriding build. The space
+    /// levels' dark ambient is authored in main.tscn; the house's daylight
+    /// ambient is authored on its environment file. One truth each.
+    saved_ambient: Option<(i32, Color, f32)>,
 }
 
 /// Dim fixtures emit a fraction of their rated energy — a weak glow.
@@ -129,6 +140,7 @@ impl INode3D for LevelManager {
             current_room: None,
             player: None,
             bolt_pool: None,
+            cloud_pool: None,
             caches: LiveVec::new(),
             player_drones: LiveVec::new(),
             boss_gates: LiveVec::new(),
@@ -137,6 +149,7 @@ impl INode3D for LevelManager {
             spec: None,
             blinking_lights: LiveVec::new(),
             blink_time: 0.0,
+            saved_ambient: None,
         }
     }
 
@@ -263,6 +276,48 @@ impl LevelManager {
         }
     }
 
+    /// Apply (or restore) the world-environment ambient for this build's
+    /// paradigm. A fixed environment authors daylight ambient — the
+    /// stand-in for the bounce its window light would produce under GI;
+    /// every other build restores what main.tscn authored (the space
+    /// levels' darkness is a look, not a default). No-op without a
+    /// WorldEnvironment sibling (bare test stacks).
+    fn apply_ambient_override(&mut self, spec: &LevelSpec) {
+        use godot::classes::environment::AmbientSource;
+        use godot::classes::WorldEnvironment;
+        let Some(parent) = self.base().get_parent() else { return };
+        let Some(we) = parent.try_get_node_as::<WorldEnvironment>("WorldEnvironment") else {
+            return;
+        };
+        let Some(mut env) = we.get_environment() else { return };
+        let ambient = if let void_logic::level_spec::Paradigm::Fixed(e) = &spec.paradigm {
+            e.ambient
+        } else {
+            None
+        };
+        match ambient {
+            Some(a) => {
+                if self.saved_ambient.is_none() {
+                    self.saved_ambient = Some((
+                        env.get_ambient_source().ord(),
+                        env.get_ambient_light_color(),
+                        env.get_ambient_light_energy(),
+                    ));
+                }
+                env.set_ambient_source(AmbientSource::COLOR);
+                env.set_ambient_light_color(Color::from_rgb(a.color[0], a.color[1], a.color[2]));
+                env.set_ambient_light_energy(a.energy);
+            }
+            None => {
+                if let Some((source, color, energy)) = self.saved_ambient.take() {
+                    env.set_ambient_source(AmbientSource::from_ord(source));
+                    env.set_ambient_light_color(color);
+                    env.set_ambient_light_energy(energy);
+                }
+            }
+        }
+    }
+
     /// Build the seal for one anchored room: a `BossGate` across EVERY active
     /// connector (a boss arena has one; a miniboss room has however many) plus
     /// the interior entry sensor — "entering the room" IS the engagement,
@@ -276,7 +331,18 @@ impl LevelManager {
         let Some(room_idx) = graph.room_indices().nth(room_pos) else { return };
         let Some(room) = graph.room(room_idx) else { return };
         let origin = room.world_position(cell, story);
-        for conn in graph.active_connectors(room_idx) {
+        // Fixed levels build the entry sensor but no gates (v1): zone
+        // connectors are coarse graph doorways, not the house's actual
+        // openings — a barrier there would float in a wall and seal
+        // nothing real. The open house's staged fight engages on entry
+        // and holds the portal dark until resolved; that is the seal.
+        let fixed = matches!(
+            self.spec.as_ref().map(|s| &s.paradigm),
+            Some(void_logic::level_spec::Paradigm::Fixed(_))
+        );
+        let connectors =
+            if fixed { Vec::new() } else { graph.active_connectors(room_idx) };
+        for conn in connectors {
             let center = Vector3::new(
                 origin[0] + (conn.offset[0] as f32 + 0.5) * cell,
                 origin[1] + conn.offset[1] as f32 * story + story * 0.5,
@@ -478,27 +544,20 @@ impl LevelManager {
         let seed = Seed::from_i64(seed);
         self.current_level = spec.level as i32;
         self.spec = Some(spec.clone());
-        let config = GeneratorConfig::for_spec(&spec, seed);
 
-        let mut graph = match generate(&config) {
+        // THE generation door (void-logic): sweeps + arena post-process for
+        // generated paradigms, the authored zone lookup for fixed ones. A
+        // staged fight whose arena failed to attach comes back with no
+        // boss_room — the shell's business is only how loudly to complain.
+        let graph = match generator::generate_for_spec(&spec, seed, structure_only) {
             Ok(g) => g,
             Err(e) => {
                 godot_error!("Level generation failed: {e:?}");
                 return;
             }
         };
-
-        // Boss levels grow their arena as a post-process: a long approach
-        // corridor off the farthest room ending in the sealed-off arena. The
-        // arena becomes the new farthest room, so the portal and exit-room
-        // accents follow with zero changes. The backdrop build stays bossless.
-        if !structure_only && spec.boss.is_some() {
-            let entry = graph.room_indices().next();
-            let attached = entry
-                .and_then(|e| spatial_layout::attach_boss_room(&mut graph, e, spec.pitch));
-            if attached.is_none() {
-                godot_warn!("Boss arena failed to attach; level runs bossless");
-            }
+        if !structure_only && spec.boss.is_some() && graph.boss_room().is_none() {
+            godot_warn!("Boss arena failed to attach; level runs bossless");
         }
 
         // Assemble each room's content, grouped into the three build steps the
@@ -543,6 +602,9 @@ impl LevelManager {
         // so any bolt from the previous level is cleared. It is a sibling of the
         // room containers, so per-room culling never touches it.
         self.ensure_bolt_pool();
+        // The dust-cloud ring rides the same lifecycle as the bolt ring: built
+        // once, re-dormanted on rebuild, a sibling of the rooms.
+        self.ensure_cloud_pool();
 
         // Pre-build the player's subdrone squad, dormant, as siblings of the
         // rooms (they escort the player across rooms, so per-room culling must
@@ -725,6 +787,94 @@ impl LevelManager {
         // for the structure-only backdrop (no exit gate behind the loadout).
         // On a boss level it is pre-built DORMANT (Faucet: built with the
         // level, flipped live when the fight's reward is collected).
+        // The ambient override: fixed environments author the bounce
+        // stand-in; every other build restores the scene's own ambient.
+        self.apply_ambient_override(&spec);
+
+        // Authored daylight (fixed environments), parented under room 0 so
+        // it frees with the level. ALL of an interior's light comes from
+        // outside (owner 2026-07-12): a shadowed sun for the hard stripes,
+        // and each authored window panel as a wide shadowless spot shining
+        // inward — the real-time stand-in for the sheers-as-area-lights
+        // look (the lightmap bake later makes them true emissive panels).
+        if let void_logic::level_spec::Paradigm::Fixed(env) = &spec.paradigm {
+            if let Some(mut room0) = self.room_nodes.get_live(0) {
+                let scale = spec.pitch.tile;
+                if let Some(sun) = env.sun {
+                    let az = sun.azimuth_deg.to_radians();
+                    let el = sun.elevation_deg.to_radians();
+                    // Bearing 0 = model north (-Z), 90 = east (+X); the sun
+                    // SITS at that bearing and shines back into the scene.
+                    let toward_sun = Vector3::new(
+                        az.sin() * el.cos(),
+                        el.sin(),
+                        -az.cos() * el.cos(),
+                    );
+                    let mut sun_light = godot::classes::DirectionalLight3D::new_alloc();
+                    sun_light.set_param(godot::classes::light_3d::Param::ENERGY, sun.energy);
+                    sun_light.set_color(Color::from_rgb(1.0, 0.96, 0.88));
+                    sun_light.set_shadow(true);
+                    room0.add_child(&sun_light);
+                    sun_light.set_global_position(toward_sun * 50.0);
+                    sun_light.look_at(Vector3::ZERO);
+                }
+                for window in &env.windows {
+                    let mut spot = godot::classes::SpotLight3D::new_alloc();
+                    spot.set_param(godot::classes::light_3d::Param::ENERGY, window.energy);
+                    spot.set_param(
+                        godot::classes::light_3d::Param::RANGE,
+                        window.range * scale,
+                    );
+                    // Wide cone: a panel's wash, not a flashlight beam. The
+                    // spot sits half a panel-height OUTSIDE the opening so
+                    // the cone covers the whole window by the time it
+                    // enters — daylight, already diffused by the sheers.
+                    spot.set_param(godot::classes::light_3d::Param::SPOT_ANGLE, 70.0);
+                    // Flat falloff: a daylight panel washes its whole
+                    // throw, it doesn't pool at the glass (attenuation 0
+                    // holds near-constant brightness through the range —
+                    // the documented area-wash setting).
+                    spot.set_param(godot::classes::light_3d::Param::ATTENUATION, 0.2);
+                    spot.set_color(Color::from_rgb(0.98, 0.99, 1.0));
+                    let inward = vec3(window.inward);
+                    let center = vec3(window.center) * scale;
+                    let back_off = window.size[1] * 0.5 * scale;
+                    room0.add_child(&spot);
+                    spot.set_global_position(center - inward * back_off);
+                    spot.look_at(center + inward * (window.range * scale));
+
+                    // The panel itself GLOWS: an emissive quad on the
+                    // opening's plane — the visible light source the spot
+                    // stands in for (and, later, the LightmapGI emitter).
+                    let mut quad_mesh = godot::classes::QuadMesh::new_gd();
+                    quad_mesh.set_size(Vector2::new(
+                        window.size[0] * scale,
+                        window.size[1] * scale,
+                    ));
+                    let mut mat = godot::classes::StandardMaterial3D::new_gd();
+                    mat.set_feature(
+                        godot::classes::base_material_3d::Feature::EMISSION,
+                        true,
+                    );
+                    mat.set_emission(Color::from_rgb(1.0, 0.98, 0.94));
+                    mat.set_emission_energy_multiplier(4.0);
+                    mat.set_albedo(Color::from_rgb(1.0, 1.0, 1.0));
+                    mat.set_shading_mode(
+                        godot::classes::base_material_3d::ShadingMode::UNSHADED,
+                    );
+                    quad_mesh.set_material(&mat);
+                    let mut panel = godot::classes::MeshInstance3D::new_alloc();
+                    panel.set_mesh(&quad_mesh);
+                    panel.set_name(&format!("WindowPanel{}", room0.get_child_count()));
+                    room0.add_child(&panel);
+                    // QuadMesh faces its local +Z: sit ON the plane, face
+                    // the inward direction (visible from inside the room).
+                    panel.set_global_position(center);
+                    panel.look_at(center + inward);
+                }
+            }
+        }
+
         let boss_arena = if structure_only { None } else { graph.boss_room() };
         if !structure_only {
             if let Some(portal_pos) = portal_sys::portal_position(&graph, self.pitch()) {
@@ -833,6 +983,31 @@ impl LevelManager {
             let pool = BoltPool::new_alloc();
             self.base_mut().add_child(&pool);
             self.bolt_pool = Some(LiveRef::new(&pool));
+        }
+    }
+
+    /// Build the dust-cloud pool on first use and re-dormant it on every
+    /// rebuild. Mirrors [`ensure_bolt_pool`](Self::ensure_bolt_pool) exactly:
+    /// the pool is a direct child of this LevelManager (a sibling of the room
+    /// containers), so clouds escape per-room culling and the pool outlives the
+    /// room nodes cleared on rebuild. A pool queue_freed this frame counts as
+    /// gone, so a fresh level always has a usable ring.
+    fn ensure_cloud_pool(&mut self) {
+        let usable = self
+            .cloud_pool
+            .with(|p| {
+                if p.is_queued_for_deletion() {
+                    None
+                } else {
+                    p.bind_mut().reset();
+                    Some(()) // already built and now re-dormanted
+                }
+            })
+            .flatten();
+        if usable.is_none() {
+            let pool = CloudPool::new_alloc();
+            self.base_mut().add_child(&pool);
+            self.cloud_pool = Some(LiveRef::new(&pool));
         }
     }
 
@@ -958,6 +1133,16 @@ impl LevelManager {
         let Some(current_node) = self.level_graph.room_indices().nth(current) else {
             return;
         };
+        // Fixed levels keep every container visible: the whole house is ONE
+        // scene under room 0, so hiding containers would blank the level,
+        // not cull it (v1 relies on Godot's per-object frustum culling; the
+        // zone graph above still drives room_changed and the recon map).
+        if matches!(
+            self.spec.as_ref().map(|s| &s.paradigm),
+            Some(void_logic::level_spec::Paradigm::Fixed(_))
+        ) {
+            return;
+        }
         let visible: std::collections::HashSet<usize> = self
             .level_graph
             .visible_from(current_node, RENDER_ROOM_DEPTH)
@@ -1097,6 +1282,12 @@ impl LevelManager {
         // The asset pack bakes its own collision via `_convcolonly` node
         // suffixes; strip it so our build owns collision as the single source.
         Self::strip_baked_colliders(&node);
+        // The placement's declared scale (the fixed environment rides its
+        // kit's scale here) — set before any collider is derived, so physics
+        // and render agree.
+        if (entry.scale - 1.0).abs() > 1e-6 {
+            node.set_scale(Vector3::ONE * entry.scale);
+        }
 
         match entry.collision {
             Collision::Dynamic => {

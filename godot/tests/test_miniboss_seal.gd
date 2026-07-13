@@ -24,6 +24,7 @@ func before_all():
 		FileAccess.get_file_as_string("res://tests/fixtures/grammar/kits.toml"),
 		FileAccess.get_file_as_string("res://tests/fixtures/grammar/kits.generated.toml"),
 		FileAccess.get_file_as_string("res://tests/fixtures/grammar/planet_1.toml"),
+		"",  # no fixture environment — grid world
 	), "the fixture grammar installs")
 
 func after_all():

@@ -1,4 +1,4 @@
-.PHONY: deps deps-rust deps-godot deps-gut require-rust check test-rust test-godot demo edit clean run build build-release assets assets-materials
+.PHONY: deps deps-rust deps-godot deps-gut require-rust check test-rust test-godot test-assets demo edit clean run build build-release assets assets-materials
 
 # Project-local tool paths
 TOOLS_DIR := $(CURDIR)/tools
@@ -63,7 +63,7 @@ deps-python: deps-max-importer
 		echo "==> Creating asset-pipeline python venv ($(PYENV))..."; \
 		/usr/bin/python3 -m venv $(PYENV); \
 	fi
-	@$(PYENV)/bin/pip install --quiet "olefile==0.47"
+	@$(PYENV)/bin/pip install --quiet "olefile==0.47" "pytest==8.4.1"
 	@echo "Python venv ready ($$($(PYENV)/bin/python3 --version))."
 
 # The io_scene_max Blender extension (GPL): parses .max scenes incl. Corona
@@ -176,6 +176,14 @@ assets-materials:
 	@echo "==> Enabling anisotropic texture filtering on VisualShader materials..."
 	@python3 -c "import re,sys;p=sys.argv[1];t=open(p).read();t=re.sub(r'(\[sub_resource type=\"VisualShaderNodeTexture2DParameter\"[^\]]*\]\nparameter_name = [^\n]+)',r'\1\ntexture_filter = 6',t);open(p,'w').write(t)" \
 		$(GODOT_DIR)/addons/quaternius/materials/M_Trim_Base.tres
+
+# Asset-pipeline conservation audit: pytest over the generated extracts
+# (fbx_materials.json / max_materials.json), the material plan, and the
+# built .glb. Answers "why does this surface have no texture/reflection"
+# BEFORE a playtest does. Extracts are produced by `make assets`.
+test-assets: deps-python
+	@echo "==> Running asset-pipeline audit (pytest)..."
+	@$(PYENV)/bin/python3 -m pytest scripts/tests -q
 
 # Filtered Rust tests with output: make test-rust FILTER=test_name
 test-rust:

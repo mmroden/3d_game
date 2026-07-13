@@ -87,6 +87,10 @@ pub fn spawn_list_full(
     use crate::room_furnisher;
     use crate::room_theme;
 
+    if let crate::level_spec::Paradigm::Fixed(env) = &spec.paradigm {
+        return fixed_spawn_list(graph, env, spec.pitch);
+    }
+
     let pitch = spec.pitch;
     let mut rooms = Vec::new();
 
@@ -213,7 +217,7 @@ pub fn spawn_list_full(
     let exit_red: std::collections::HashSet<usize> = graph
         .room_indices()
         .next()
-        .and_then(|start| graph.farthest_room_from(start))
+        .and_then(|start| graph.exit_room(start))
         .map(|exit| {
             graph
                 .visible_from(exit, RENDER_ROOM_DEPTH)
@@ -235,6 +239,152 @@ pub fn spawn_list_full(
         }
     }
 
+    rooms
+}
+
+/// The fixed-paradigm assembly: the house is ONE scene placement (room 0)
+/// at the kit's declared scale — the art is already furnished and lit-able,
+/// so no skinning, no props, no cell grid. Each zone contributes its
+/// authored spawns, its box as bounds, and one warm ceiling light (v1).
+/// Room 0 also carries the containment envelope: six slabs just outside the
+/// zone-box union, because the archviz shell is leaky (recon 2026-07-11)
+/// and the ship must stay inside the level however porous the art is.
+/// Grammar-derived throughout — no RNG, no mesh probing.
+fn fixed_spawn_list(
+    graph: &LevelGraph,
+    env: &crate::roster::EnvironmentDef,
+    pitch: Pitch,
+) -> Vec<RoomAssembly> {
+    use crate::room_assembler::{Collision, ShellSlab};
+    use crate::room_furnisher::{LightAccent, LightSource, LightState};
+
+    let scale = |k: usize| if k == 1 { pitch.story } else { pitch.tile };
+
+    // The containment envelope hugs the authored footprint: one slab just
+    // outside every unit zone-cell face not shared with another zone cell.
+    // Window-tight (the archviz perimeter has ship-sized openings — leak
+    // survey 2026-07-11): a player exiting through one bonks at the plane
+    // of the opening instead of wandering a void between house and box.
+    let mut cells = std::collections::HashSet::new();
+    for zone in &env.zones {
+        for x in 0..zone.extents[0] as i32 {
+            for y in 0..zone.extents[1] as i32 {
+                for z in 0..zone.extents[2] as i32 {
+                    cells.insert([zone.min[0] + x, zone.min[1] + y, zone.min[2] + z]);
+                }
+            }
+        }
+    }
+    let thickness = pitch.tile;
+    let mut containment: Vec<ShellSlab> = Vec::new();
+    let mut sorted: Vec<[i32; 3]> = cells.iter().copied().collect();
+    sorted.sort_unstable(); // deterministic emission order
+    for cell in &sorted {
+        for (axis, dir) in [
+            (0, [1, 0, 0]),
+            (0, [-1, 0, 0]),
+            (1, [0, 1, 0]),
+            (1, [0, -1, 0]),
+            (2, [0, 0, 1]),
+            (2, [0, 0, -1]),
+        ] {
+            if cells.contains(&[cell[0] + dir[0], cell[1] + dir[1], cell[2] + dir[2]]) {
+                continue;
+            }
+            // The face plane in world units, slab extending outward from it.
+            let mut center = [
+                (cell[0] as f32 + 0.5) * scale(0),
+                (cell[1] as f32 + 0.5) * scale(1),
+                (cell[2] as f32 + 0.5) * scale(2),
+            ];
+            let mut size = [scale(0), scale(1), scale(2)];
+            let outward = dir[axis] as f32;
+            center[axis] = (cell[axis] as f32 + 0.5 + 0.5 * outward) * scale(axis)
+                + outward * thickness / 2.0;
+            size[axis] = thickness;
+            containment.push(ShellSlab { center, size });
+        }
+    }
+
+    let mut rooms = Vec::new();
+    for (room_idx, idx) in graph.room_indices().enumerate() {
+        let Some(room) = graph.room(idx) else { continue };
+        let origin = room.world_position(pitch.tile, pitch.story);
+        let extents = room.template.extents;
+        let bounds = RoomBounds {
+            min: origin,
+            max: [
+                origin[0] + extents[0] as f32 * pitch.tile,
+                origin[1] + extents[1] as f32 * pitch.story,
+                origin[2] + extents[2] as f32 * pitch.tile,
+            ],
+        };
+
+        // The whole house rides room 0: model origin IS world origin (zone
+        // boxes are authored in the same model space the mesh occupies).
+        let structure = if room_idx == 0 {
+            vec![MeshPlacement {
+                scene: env.model,
+                position: [0.0, 0.0, 0.0],
+                rotation_x: 0.0,
+                rotation_y: 0.0,
+                scale: pitch.tile,
+                collision: Collision::Static,
+            }]
+        } else {
+            Vec::new()
+        };
+
+        // Enemies from the authored spawns (start zone stays clear — the
+        // linker already refuses authored spawns there).
+        let mut enemies = Vec::new();
+        if room_idx > 0 {
+            for sp in &room.template.enemy_spawns {
+                enemies.push([
+                    origin[0] + sp.position[0],
+                    origin[1] + sp.position[1],
+                    origin[2] + sp.position[2],
+                ]);
+            }
+        }
+        let containers: Vec<[f32; 3]> = room
+            .template
+            .loot_spawns
+            .iter()
+            .map(|sp| {
+                [
+                    origin[0] + sp.position[0],
+                    origin[1] + sp.position[1],
+                    origin[2] + sp.position[2],
+                ]
+            })
+            .collect();
+
+        // One warm ceiling light per zone (v1): the house's own fixtures
+        // are unlit art; this is the level's functional lighting.
+        let state = LightState::On;
+        let light = LightSource {
+            position: [
+                (bounds.min[0] + bounds.max[0]) / 2.0,
+                bounds.max[1] - pitch.story * 0.15,
+                (bounds.min[2] + bounds.max[2]) / 2.0,
+            ],
+            range: (bounds.max[0] - bounds.min[0]).max(bounds.max[2] - bounds.min[2]),
+            energy: 1.2,
+            state,
+            color: LightAccent::Neutral.color(state.liveness()),
+        };
+
+        rooms.push(RoomAssembly {
+            structure,
+            lights: vec![light],
+            props: Vec::new(),
+            containers,
+            enemies,
+            bounds,
+            shell: if room_idx == 0 { containment.clone() } else { Vec::new() },
+        });
+    }
     rooms
 }
 
@@ -1396,5 +1546,195 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── Fixed-paradigm assembly: the authored house, one scene, zone
+    //    bounds, containment — all against the canonical fixed fixture. ──
+
+    fn fixed_fixture() -> (crate::roster::Roster, crate::level_spec::LevelSpec) {
+        let grammar = crate::test_fixtures::fixed_fixture_grammar();
+        let spec = crate::level_spec::LevelSpec::for_level(
+            &grammar,
+            Seed::new(1),
+            1,
+            &crate::unlocks::PermanentUnlocks::new(),
+        );
+        (grammar, spec)
+    }
+
+    fn fixed_env(spec: &crate::level_spec::LevelSpec) -> &crate::roster::EnvironmentDef {
+        let crate::level_spec::Paradigm::Fixed(env) = &spec.paradigm else {
+            panic!("the fixture spec is fixed-paradigm");
+        };
+        env
+    }
+
+    #[test]
+    fn fixed_assembly_places_the_scene_once_at_kit_scale() {
+        let (_, spec) = fixed_fixture();
+        let env = fixed_env(&spec).clone();
+        let graph = crate::generator::generate_for_spec(&spec, Seed::new(1), false).unwrap();
+        let rooms = spawn_list_full(&graph, &spec, Seed::new(1));
+        let placements: Vec<&MeshPlacement> =
+            rooms.iter().flat_map(|r| &r.structure).collect();
+        assert_eq!(placements.len(), 1, "ONE scene placement for the whole house");
+        let house = placements[0];
+        assert_eq!(house.scene, env.model, "the environment's installed scene");
+        assert_eq!(house.position, [0.0, 0.0, 0.0], "model origin IS world origin");
+        assert_eq!(house.scale, spec.pitch.tile, "the kit's declared scale");
+        assert_eq!(
+            house.collision,
+            crate::room_assembler::Collision::Static,
+            "the house is the physics"
+        );
+        assert!(!rooms[0].structure.is_empty(), "the scene rides room 0");
+        assert!(
+            rooms.iter().all(|r| r.props.is_empty()),
+            "the house is already furnished — no synthesized props"
+        );
+    }
+
+    #[test]
+    fn fixed_assembly_bounds_are_the_zone_boxes_scaled() {
+        let (_, spec) = fixed_fixture();
+        let env = fixed_env(&spec).clone();
+        let graph = crate::generator::generate_for_spec(&spec, Seed::new(1), false).unwrap();
+        let rooms = spawn_list_full(&graph, &spec, Seed::new(1));
+        assert_eq!(rooms.len(), env.zones.len());
+        for (idx, room) in graph.room_indices().zip(&rooms) {
+            let placed = graph.room(idx).expect("room");
+            let zone = env
+                .zones
+                .iter()
+                .find(|z| z.min == placed.grid_pos)
+                .expect("each room is a zone");
+            for k in 0..3 {
+                let pitch = if k == 1 { spec.pitch.story } else { spec.pitch.tile };
+                assert_eq!(room.bounds.min[k], zone.min[k] as f32 * pitch);
+                assert_eq!(
+                    room.bounds.max[k],
+                    (zone.min[k] + zone.extents[k] as i32) as f32 * pitch
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_assembly_keeps_the_start_clear_and_spawns_in_bounds() {
+        let (_, spec) = fixed_fixture();
+        let graph = crate::generator::generate_for_spec(&spec, Seed::new(1), false).unwrap();
+        let rooms = spawn_list_full(&graph, &spec, Seed::new(1));
+        assert!(rooms[0].enemies.is_empty(), "the start zone stays clear");
+        for (i, room) in rooms.iter().enumerate() {
+            for e in &room.enemies {
+                assert!(
+                    room.bounds.contains(*e),
+                    "room {i}: enemy spawn {e:?} outside bounds {:?}",
+                    room.bounds
+                );
+            }
+            assert_eq!(
+                room.lights.len(),
+                1,
+                "room {i}: one authored ceiling light per zone (v1)"
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_assembly_walls_the_house_in_a_containment_shell() {
+        // The archviz shell is leaky (recon 2026-07-11): six slabs just
+        // outside the zone-box union keep the ship inside the level however
+        // porous the art is. Grammar-derived — no mesh probing.
+        let (_, spec) = fixed_fixture();
+        let env = fixed_env(&spec).clone();
+        let graph = crate::generator::generate_for_spec(&spec, Seed::new(1), false).unwrap();
+        let rooms = spawn_list_full(&graph, &spec, Seed::new(1));
+        let slabs: Vec<_> = rooms.iter().flat_map(|r| &r.shell).collect();
+        // Independent derivation of the boundary contract: one slab per
+        // unit zone-cell face not shared with another zone cell — the
+        // envelope hugs the authored footprint, window-tight.
+        let mut cells = std::collections::HashSet::new();
+        for z in &env.zones {
+            for x in 0..z.extents[0] as i32 {
+                for y in 0..z.extents[1] as i32 {
+                    for c in 0..z.extents[2] as i32 {
+                        cells.insert([z.min[0] + x, z.min[1] + y, z.min[2] + c]);
+                    }
+                }
+            }
+        }
+        let expected: usize = cells
+            .iter()
+            .map(|c| {
+                [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
+                    .iter()
+                    .filter(|d| {
+                        !cells.contains(&[c[0] + d[0], c[1] + d[1], c[2] + d[2]])
+                    })
+                    .count()
+            })
+            .sum();
+        assert_eq!(
+            slabs.len(),
+            expected,
+            "one slab per unshared zone-cell face (the tight wrap)"
+        );
+        // Every slab lies fully outside every zone's scaled box.
+        let disjoint = |slab: &crate::room_assembler::ShellSlab,
+                        zlo: [f32; 3],
+                        zhi: [f32; 3]| {
+            (0..3).any(|k| {
+                slab.center[k] + slab.size[k] / 2.0 <= zlo[k]
+                    || slab.center[k] - slab.size[k] / 2.0 >= zhi[k]
+            })
+        };
+        for slab in &slabs {
+            for zone in &env.zones {
+                let zlo = [
+                    zone.min[0] as f32 * spec.pitch.tile,
+                    zone.min[1] as f32 * spec.pitch.story,
+                    zone.min[2] as f32 * spec.pitch.tile,
+                ];
+                let zhi = [
+                    (zone.min[0] + zone.extents[0] as i32) as f32 * spec.pitch.tile,
+                    (zone.min[1] + zone.extents[1] as i32) as f32 * spec.pitch.story,
+                    (zone.min[2] + zone.extents[2] as i32) as f32 * spec.pitch.tile,
+                ];
+                assert!(
+                    disjoint(slab, zlo, zhi),
+                    "containment slab {slab:?} intrudes into zone '{}'",
+                    zone.key
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_manifest_anchors_the_boss_and_covers_every_position() {
+        let (grammar, spec) = fixed_fixture();
+        let graph = crate::generator::generate_for_spec(&spec, Seed::new(1), false).unwrap();
+        let rooms = spawn_list_full(&graph, &spec, Seed::new(1));
+        let m = manifest(&grammar, &graph, &spec, Seed::new(1));
+        // Every assembly enemy position gets a type (the standing manifest
+        // contract, exercised on the fixed path).
+        for (ri, room) in rooms.iter().enumerate() {
+            assert_eq!(
+                m.rooms[ri].enemies.len(),
+                room.enemies.len(),
+                "room {ri}: the manifest covers each position exactly once"
+            );
+        }
+        // The staged boss anchors the arena's single authored spawn.
+        let staging = spec.boss.as_ref().expect("fixed levels stage a boss");
+        let boss_room = graph.boss_room().expect("the arena is marked");
+        let arena_pos = graph
+            .room_indices()
+            .position(|i| i == boss_room)
+            .expect("arena in room order");
+        assert!(
+            m.rooms[arena_pos].enemies.iter().any(|e| e.enemy_type == staging.boss),
+            "the arena manifests the staged boss"
+        );
     }
 }

@@ -1,0 +1,7 @@
+# TEST FIXTURE — a fixed-paradigm kit over the real installed apartment.
+
+[kits.fx_house_kit]
+paradigm = "fixed"
+install_dir = "godot/addons/environments"
+scale = 5.0
+environment = "fx_house"

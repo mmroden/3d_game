@@ -13,3 +13,12 @@ install_dir = "godot/addons/quaternius/modularscifimegakit"
 [kits.sf_panels_vol1]
 paradigm = "panel"
 install_dir = "godot/addons/walls"
+
+[kits.apartment]
+paradigm = "fixed"
+install_dir = "godot/addons/environments"
+# Fixed kits are the one authored-grid exception: no recipe exists to
+# derive from, so the declared scale IS the pitch (world units per model
+# meter), and the kit joins its authored zone map by environment key.
+scale = 5.0
+environment = "apartment"

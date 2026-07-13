@@ -84,6 +84,11 @@ pub struct ShipController {
     power_mode: PowerMode,
     /// Movement slow applied by swarmer contact.
     slow: SlowDebuff,
+    /// Tractor-field acceleration (m/s²) accumulated this physics frame by
+    /// engaged enemies' `pull_accel` ticks — applied as a Jolt force in
+    /// `integrate_forces`, then cleared. A dead or disengaged enemy stops
+    /// pulling by simply not calling.
+    tractor_accel: Vector3,
     /// Cached player camera, jittered for the grab shake.
     camera: Option<LiveRef<Camera3D>>,
     shake_timer: f32,
@@ -139,6 +144,7 @@ impl IRigidBody3D for ShipController {
             laser_level: LaserLevel::Red,
             power_mode: PowerMode::default(),
             slow: SlowDebuff::new(),
+            tractor_accel: Vector3::ZERO,
             camera: None,
             shake_timer: 0.0,
             shake_phase: 0.0,
@@ -195,6 +201,21 @@ impl IRigidBody3D for ShipController {
         // the camera on the menu/showcase/bestiary screens.
         if self.controls_enabled {
             self.fly(&mut state);
+        }
+
+        // External tractor fields (enemy `pull_accel` switches): the frame's
+        // accumulated acceleration lands as one force — the engine's door,
+        // never a velocity write — and the accumulator resets for the next
+        // frame's ticks. The pilot fights it with thrust.
+        if self.tractor_accel != Vector3::ZERO {
+            let inv_mass = state.get_inverse_mass();
+            if inv_mass > 0.0 {
+                state
+                    .apply_central_force_ex()
+                    .force(self.tractor_accel / inv_mass)
+                    .done();
+            }
+            self.tractor_accel = Vector3::ZERO;
         }
 
         // Collision clang on impact *onset* (resting against a wall is silent),
@@ -279,6 +300,14 @@ impl ShipController {
             self.base_mut()
                 .emit_signal(signals::PLAYER_SLOWED, &[Variant::from(true)]);
         }
+    }
+
+    /// Accumulate a tractor-field acceleration (m/s²) for this physics frame
+    /// (an engaged enemy's `pull_accel` tick — docs/design/enemy_verbs.md).
+    /// Multiple fields sum; `integrate_forces` applies and clears the total.
+    #[func]
+    pub fn apply_tractor(&mut self, accel: Vector3) {
+        self.tractor_accel += accel;
     }
 
     /// Enable/disable pilot input. GameManager turns it on only for gameplay so

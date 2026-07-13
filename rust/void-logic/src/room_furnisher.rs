@@ -82,6 +82,7 @@ pub fn furnish(
                                 position: [cell_center_x + offset_x, y, cell_center_z + offset_z],
                                 rotation_x: 0.0,
                                 rotation_y: rot,
+                                scale: 1.0,
                                 collision: Collision::for_prop(prop.scene),
                             });
                         }
@@ -97,6 +98,7 @@ pub fn furnish(
                             position: [cell_center_x, y, cell_center_z],
                             rotation_x: 0.0,
                             rotation_y: 0.0,
+                            scale: 1.0,
                             collision: Collision::for_prop(prop.scene),
                         });
                     }
@@ -112,6 +114,7 @@ pub fn furnish(
                             position: [cell_center_x, y, cell_center_z],
                             rotation_x: 0.0,
                             rotation_y: 0.0,
+                            scale: 1.0,
                             collision: Collision::for_prop(prop.scene),
                         });
                     }
@@ -497,6 +500,7 @@ fn place_fixture(
         position: mesh_pos,
         rotation_x: 0.0,
         rotation_y: 0.0,
+        scale: 1.0,
         collision: Collision::Passable,
     };
     let state = LightState::from_roll(ambiance.random_range(0.0..1.0));

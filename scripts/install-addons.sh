@@ -428,7 +428,7 @@ if [ -n "$APARTMENT_FBX" ] && [ -n "$APARTMENT_TEX_ZIP" ]; then
     else
         # The .max scene is the authoring truth for materials (the FBX
         # export destroyed most Corona bindings). Extract its material
-        # table once per .max change; apartment.py merges it over the
+        # table once per .max change; the material plan merges it over the
         # FBX-derived recovery.
         if [ -n "$APARTMENT_MAX" ] && { [ ! -f "$APARTMENT_MAT_TABLE" ] || [ "$APARTMENT_MAX" -nt "$APARTMENT_MAT_TABLE" ]; }; then
             echo "  Extracting material table from .max source..."
@@ -437,10 +437,23 @@ if [ -n "$APARTMENT_FBX" ] && [ -n "$APARTMENT_TEX_ZIP" ]; then
                 "$APARTMENT_MAX" "$APARTMENT_MAT_TABLE" 2>&1 \
                 | grep -i "extract-max:" || echo "  (extract-max: no summary — check Blender output)"
         fi
+        # The FBX material oracle: classes, all texture-channel links,
+        # container (RaySwitch/Layered) edges, transparency/emission props.
+        # The ONE place the FBX connection tables get parsed; material_plan.py
+        # turns it into per-material plans, `make test-assets` audits it.
+        APARTMENT_FBX_TABLE="$APARTMENT_SRC/fbx_materials.json"
+        if [ ! -f "$APARTMENT_FBX_TABLE" ] || [ "$APARTMENT_FBX" -nt "$APARTMENT_FBX_TABLE" ]; then
+            echo "  Extracting material oracle from FBX connection tables..."
+            "$BLENDER" --background --python-exit-code 1 \
+                --python "$(dirname "$0")/extract-fbx-materials.py" -- \
+                "$APARTMENT_FBX" "$APARTMENT_FBX_TABLE" 2>&1 \
+                | grep -i "extract-fbx-materials:" || echo "  (extract-fbx-materials: no summary — check Blender output)"
+        fi
         echo "  Converting apartment environment (full detail, ${APARTMENT_TEX_CAP}px textures)..."
         "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/apartment.py" -- \
             "$APARTMENT_FBX" "$ENVIRONMENTS_DIR/apartment.glb" \
-            "$APARTMENT_TEX_ZIP" "$APARTMENT_TEX_CAP" "$APARTMENT_MAT_TABLE" 2>&1 \
+            "$APARTMENT_TEX_ZIP" "$APARTMENT_TEX_CAP" "$APARTMENT_MAT_TABLE" \
+            "rosters/windows/apartment.toml" "$APARTMENT_FBX_TABLE" 2>&1 \
             | grep -i "apartment:" || echo "  (apartment: no summary — check Blender output)"
         if [ ! -f "$ENVIRONMENTS_DIR/apartment.glb" ]; then
             echo "  ERROR: apartment conversion produced no glb"

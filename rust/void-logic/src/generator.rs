@@ -204,6 +204,33 @@ pub fn generate(config: &GeneratorConfig) -> Result<LevelGraph, GenerateError> {
     Ok(level)
 }
 
+/// THE generation door: every level's graph comes from here, whatever its
+/// paradigm. Generated paradigms run the sweep pipeline and grow their boss
+/// arena as a post-process; the fixed paradigm looks its graph up from the
+/// authored zones (no RNG on that path — pure data). `structure_only` is
+/// the menu-backdrop contract: geometry, nobody home, no arena.
+///
+/// A generated level whose arena fails to attach still returns Ok with
+/// `boss_room` unset — the shell decides how loudly to complain.
+pub fn generate_for_spec(
+    spec: &crate::level_spec::LevelSpec,
+    seed: Seed,
+    structure_only: bool,
+) -> Result<LevelGraph, GenerateError> {
+    if let crate::level_spec::Paradigm::Fixed(env) = &spec.paradigm {
+        return Ok(crate::fixed_layout::build_graph(env, spec.pitch, structure_only));
+    }
+    let config = GeneratorConfig::for_spec(spec, seed);
+    let mut graph = generate(&config)?;
+    if !structure_only && spec.boss.is_some() {
+        let entry = graph.room_indices().next();
+        if let Some(entry) = entry {
+            crate::spatial_layout::attach_boss_room(&mut graph, entry, spec.pitch);
+        }
+    }
+    Ok(graph)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

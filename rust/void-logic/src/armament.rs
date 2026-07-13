@@ -121,6 +121,24 @@ pub mod homing {
     }
 }
 
+/// Tracer geometry: fast bolts visually stretch into streaks along their
+/// travel. A pure consequence of speed — one truth, never a per-enemy
+/// switch (docs/design/enemy_verbs.md).
+pub mod tracer {
+    /// Seconds of travel a tracer streak spans (engine feel constant).
+    pub const TRAIL_SECONDS: f32 = 0.03;
+
+    /// Stretch multiplier along the travel axis for a bolt mesh of
+    /// `diameter` moving at `speed`, clamped to 1 — slow bolts stay round,
+    /// and the clamp is where the round/oblong threshold emerges.
+    pub fn stretch(speed: f32, diameter: f32) -> f32 {
+        if diameter <= f32::EPSILON {
+            return 1.0;
+        }
+        (speed * TRAIL_SECONDS / diameter).max(1.0)
+    }
+}
+
 /// Fragmentation math for the cluster cannon.
 pub mod cluster {
     /// How many fragments a shell bursts into.
@@ -318,6 +336,32 @@ mod tests {
 
     fn len(v: [f32; 3]) -> f32 {
         (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+    }
+
+    // --- Tracer stretch (design 2026-07-11: a consequence of speed) ---
+
+    #[test]
+    fn a_slow_bolt_stays_round() {
+        // The default 13 m/s ballistic bolt spans less than its own diameter
+        // in TRAIL_SECONDS — the clamp keeps it a round blob.
+        assert_eq!(tracer::stretch(13.0, 0.7), 1.0);
+        assert_eq!(tracer::stretch(0.0, 0.7), 1.0, "a parked bolt never inverts");
+    }
+
+    #[test]
+    fn a_fast_bolt_stretches_proportionally_to_speed() {
+        let slow = tracer::stretch(30.0, 0.7);
+        let fast = tracer::stretch(60.0, 0.7);
+        assert!(slow > 1.0, "past the clamp the streak appears: {slow}");
+        assert!(
+            (fast - 2.0 * slow).abs() < 1e-4,
+            "the streak spans TRAIL_SECONDS of travel, linear in speed: {slow} → {fast}"
+        );
+    }
+
+    #[test]
+    fn a_degenerate_diameter_is_safe() {
+        assert_eq!(tracer::stretch(60.0, 0.0), 1.0, "no NaN/inf from a zero mesh");
     }
 
     // --- The Valkyrie charge row (playtest 2026-07-06 redesign) ---

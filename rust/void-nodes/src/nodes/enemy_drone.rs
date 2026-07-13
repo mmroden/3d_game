@@ -10,13 +10,14 @@ use super::constants::{groups, methods, signals};
 use super::godot_util;
 use super::live_handle::{LiveOpt, LiveRef, LiveVec};
 use super::currency_cache::CurrencyCache;
-use void_logic::enemy_ai::{strafe_velocity, Archetype, Attack, DroneAi, DroneConfig, Movement};
+use void_logic::enemy_ai::{strafe_velocity, Archetype, Attack, DroneAi, DroneConfig, DroneState, Movement};
 use void_logic::audio_catalog::SfxEvent;
 use void_logic::currency::CurrencyKind;
 use void_logic::debuff::DrainDebuff;
 use void_logic::roster::{roster, Behavior};
 use void_logic::level_assembly::MinionTrigger;
 use void_logic::newtypes::{Health, Damage};
+use void_logic::armament::cluster;
 use void_logic::ram_damage::{ram_damage, PLAYER_RAM_FRACTION};
 
 /// Clearance so a newborn bolt spawns clear of the firer's own hull.
@@ -25,6 +26,9 @@ const MUZZLE_CLEARANCE: f32 = 0.6;
 /// it so terminal cruise speed equals the AI's desired speed
 /// (`v* = force / (mass · damp)`).
 const ENEMY_LINEAR_DAMP: f32 = 3.0;
+/// Seconds between alarm klaxon sweeps (`alert_radius` switch) — engine
+/// feel, not per-enemy balance.
+const ALERT_INTERVAL: f32 = 0.5;
 
 
 /// A hostile drone that chases and attacks the player. Motion and
@@ -67,6 +71,16 @@ pub struct EnemyDrone {
     last_desired_speed: f32,
     /// Countdown between swarmer slow re-tags while latched onto the player.
     swarm_reapply_timer: f32,
+    /// Countdown between alarm klaxon sweeps (`alert_radius` switch).
+    alert_timer: f32,
+    /// Shots this life has fired — seeds the shotgun fan so every blast
+    /// patterns uniquely but reproducibly (the cluster shell's idiom), and
+    /// round-robins the def's muzzles so bursts walk the barrels.
+    shots_fired: u64,
+    /// The def's barrel tips in the aim frame (x right, y up, z toward the
+    /// player, yaw-only — the frame face_player holds the model in), copied
+    /// once in `ready`. Empty = fire from the hull centre plus clearance.
+    muzzles: Vec<Vector3>,
     health_bar_bg: Option<LiveRef<MeshInstance3D>>,
     health_bar_fill: Option<LiveRef<MeshInstance3D>>,
     /// Chase force decided in `physics_process` (where the LOS ray query is
@@ -137,6 +151,9 @@ impl IRigidBody3D for EnemyDrone {
             model_yaw_offset: 0.0,
             last_desired_speed: 0.0,
             swarm_reapply_timer: 0.0,
+            alert_timer: 0.0,
+            shots_fired: 0,
+            muzzles: Vec::new(),
             health_bar_bg: None,
             health_bar_fill: None,
             chase_force: Vector3::ZERO,
@@ -171,8 +188,13 @@ impl IRigidBody3D for EnemyDrone {
         self.detection_range = stats.detection;
         self.attack_range = stats.attack_range;
         // The def owns behaviour tuning (archetype + resolved switches).
-        self.ai = DroneAi::new(grammar.ai_config_at(key, level));
+        let mut config = grammar.ai_config_at(key, level);
+        // Determinism seed for the dodge (jink) rolls: per-instance identity
+        // is the shell's to stamp — the grammar only knows the type.
+        config.seed = self.base().instance_id().to_i64() as u64;
+        self.ai = DroneAi::new(config);
         self.behavior = def.behavior;
+        self.muzzles = def.muzzles.iter().map(|m| Vector3::new(m[0], m[1], m[2])).collect();
         // The drain switch on the def (rosters/enemies.toml): today only
         // the Lamprey Mech declares one; any swarmer may.
         let drain_dps = def.behavior.drain_dps;
@@ -287,6 +309,11 @@ impl IRigidBody3D for EnemyDrone {
         // The Latcher's drain early-returns for every other type — no
         // archetype coupling to keep in sync.
         self.tick_drain(delta as f32, my_pos, player_pos);
+        // The tractor field (pull_accel switch) — inert-by-default like the
+        // drain, on any archetype.
+        self.tick_tractor(my_pos, player_pos);
+        // The alarm klaxon (alert_radius switch) — likewise inert by default.
+        self.tick_alarm(delta as f32, my_pos);
         // Swarmers bog the player down while latched — re-tag periodically so the
         // slow compounds toward a crawl (see SWARM_* constants and SlowDebuff).
         if self.ai.config.archetype == Archetype::Swarmer {
@@ -514,6 +541,13 @@ impl EnemyDrone {
     }
 
     pub fn apply_damage(&mut self, damage: Damage) {
+        // The guardian link (guard_radius switch) intercepts at the one
+        // damage door: a nearby guardian's shield drinks first, this
+        // machine keeps only the overflow (docs/design/enemy_verbs.md).
+        let damage = self.redirect_to_guardian(damage);
+        if damage.as_f32() <= 0.0 {
+            return; // fully drunk — the guardian flashed, not the ally
+        }
         let died = self.ai.take_damage(damage);
         self.update_health_bar_fill();
 
@@ -522,6 +556,48 @@ impl EnemyDrone {
         } else {
             self.spawn_hit_flash();
         }
+    }
+
+    /// Find a living guardian whose `guard_radius` covers this machine and
+    /// pour the damage through its shield; return what's left. First
+    /// guardian found takes the hit — one link, not a committee. Guardians
+    /// take their own hits directly (no daisy chains), and dormant ring
+    /// slots neither guard nor get guarded.
+    fn redirect_to_guardian(&mut self, damage: Damage) -> Damage {
+        if self.behavior.guard_radius > 0.0 || !self.active {
+            return damage;
+        }
+        let my_pos = self.base().get_global_position();
+        let my_id = self.base().instance_id();
+        let tree = self.base().get_tree();
+        for node in tree.get_nodes_in_group(groups::ENEMIES).iter_shared() {
+            let Ok(mut guardian) = node.try_cast::<EnemyDrone>() else { continue };
+            if guardian.instance_id() == my_id {
+                continue;
+            }
+            let pos = guardian.get_global_position();
+            let mut g = guardian.bind_mut();
+            if !g.active
+                || g.ai.is_dead()
+                || g.behavior.guard_radius <= 0.0
+                || pos.distance_to(my_pos) > g.behavior.guard_radius
+            {
+                continue;
+            }
+            return g.absorb_guard(damage);
+        }
+        damage
+    }
+
+    /// Drink a guarded ally's hit into this guardian's shield; the ally
+    /// keeps the returned overflow. Absorbing wakes the guardian (it felt
+    /// that) and shows the hit on ITS bar — the link must read on screen.
+    fn absorb_guard(&mut self, damage: Damage) -> Damage {
+        let overflow = self.ai.absorb_into_shield(damage);
+        self.ai.force_engage();
+        self.update_health_bar_fill();
+        self.spawn_hit_flash();
+        overflow
     }
 
     /// Ram damage: a physical collision with the player deals contact damage
@@ -573,6 +649,15 @@ impl EnemyDrone {
                 }
             });
         }
+        // A bomber with a `cloud_seconds` linger leaves an occluding dust cloud
+        // at the blast — vision denial, no hull or collision. The cloud rides
+        // the preallocated ring (found by group, like the bolt pool); a def with
+        // no linger (`cloud_seconds == 0`) detonates instantly as before.
+        if self.behavior.cloud_seconds > 0.0 {
+            if let Some(mut pool) = godot_util::find_cloud_pool(self.base().get_tree()) {
+                pool.bind_mut().spawn(my_pos, radius, self.behavior.cloud_seconds);
+            }
+        }
         self.on_death();
     }
 
@@ -621,8 +706,14 @@ impl EnemyDrone {
                     self.ai.config.standoff_range,
                     self.speed,
                 );
-                // The AI owns the orbit handedness; a blocked orbit flips it.
-                self.strafe_dir(direction) * v.tangent * self.ai.orbit_sign()
+                // The AI owns the orbit handedness (a blocked orbit flips it)
+                // and the dodge modulation (jink_seconds): the tangent pulse
+                // rides the orbit axis, the bob rides the third axis — a
+                // smooth orbit reads (1, 0) and nothing changes.
+                let perp = self.strafe_dir(direction);
+                let (jink_tangent, jink_vertical) = self.ai.jink();
+                perp * v.tangent * self.ai.orbit_sign() * jink_tangent
+                    + direction.cross(perp) * v.tangent * jink_vertical
                     + direction * v.radial
             }
         };
@@ -660,18 +751,72 @@ impl EnemyDrone {
         }
     }
 
+    /// This shot's spawn point and aim. With declared muzzles, the next
+    /// barrel tip (round-robin — bursts walk the barrels) placed in the aim
+    /// frame face_player holds the model in: x right, y up, z the
+    /// horizontal bearing to the player. The bolt still aims at the player
+    /// FROM the barrel (visual origin from the muzzle, aim from the brain).
+    /// No muzzles = the hull centre plus clearance, as ever.
+    fn muzzle_and_dir(&self, my_pos: Vector3, player_pos: Vector3) -> (Vector3, Vector3) {
+        let to_player = (player_pos - my_pos).normalized();
+        if self.muzzles.is_empty() {
+            return (my_pos + to_player * MUZZLE_CLEARANCE, to_player);
+        }
+        let mut fwd = player_pos - my_pos;
+        fwd.y = 0.0;
+        // Directly above/below the model keeps its last yaw; the true
+        // bearing is the best frame we have there.
+        let fwd = if fwd.length() < 0.01 { to_player } else { fwd.normalized() };
+        let right = fwd.cross(Vector3::UP).normalized();
+        let m = self.muzzles[(self.shots_fired % self.muzzles.len() as u64) as usize];
+        let muzzle = my_pos + right * m.x + Vector3::UP * m.y + fwd * m.z;
+        let dir = (player_pos - muzzle).normalized();
+        (muzzle, dir)
+    }
+
     fn fire_bolt(&mut self, my_pos: Vector3, player_pos: Vector3) {
         let Some(root) = godot_util::scene_root(self.base().get_tree()) else { return };
         let to_player = player_pos - my_pos;
         if to_player.length() < 0.01 {
             return; // colocated with the target — no firing direction
         }
-        let dir = to_player.normalized();
-        let muzzle = my_pos + dir * MUZZLE_CLEARANCE;
+        let (muzzle, dir) = self.muzzle_and_dir(my_pos, player_pos);
+        self.shots_fired = self.shots_fired.wrapping_add(1);
         // Fire through the preallocated ring — never instantiate a bolt per shot.
         // The pool is built once during the load and lives under LevelManager.
+        // The def's weapon switches pick the shape: a pellet fan, a homing
+        // bolt, or the classic single ballistic (docs/design/enemy_verbs.md).
+        // The fan and the steer rate are mutually exclusive — the linker
+        // rejects a def declaring both.
         if let Some(mut pool) = godot_util::find_bolt_pool(self.base().get_tree()) {
-            pool.bind_mut().fire(muzzle, dir * self.behavior.bolt_speed, self.damage);
+            let mut pool = pool.bind_mut();
+            let b = self.behavior;
+            if b.pellet_count > 1 {
+                let seed = (self.base().instance_id().to_i64() as u64)
+                    .wrapping_add(self.shots_fired);
+                // spread_deg is the TOTAL cone; the fan math takes a half-angle.
+                let dirs = cluster::fragment_directions(
+                    [dir.x, dir.y, dir.z],
+                    b.pellet_count as usize,
+                    (b.spread_deg * 0.5).to_radians(),
+                    seed,
+                );
+                for d in dirs {
+                    pool.fire(muzzle, Vector3::new(d[0], d[1], d[2]) * b.bolt_speed, self.damage);
+                }
+            } else if b.bolt_turn_deg > 0.0 {
+                if let Some(target) = self.player.with(|p| p.instance_id().to_i64()) {
+                    pool.fire_enemy_homing(
+                        muzzle,
+                        dir * b.bolt_speed,
+                        self.damage,
+                        target,
+                        b.bolt_turn_deg.to_radians(),
+                    );
+                }
+            } else {
+                pool.fire(muzzle, dir * b.bolt_speed, self.damage);
+            }
         }
         Self::spawn_muzzle_flash(&root, muzzle);
     }
@@ -950,6 +1095,69 @@ impl EnemyDrone {
                 );
             }
         });
+    }
+
+    /// The tractor/repulsor field (`pull_accel` switch): while this enemy is
+    /// engaged and the player is inside `attack_range`, push the falloff
+    /// acceleration into the ship's per-frame accumulator — positive drags
+    /// the player in, negative shoves away (docs/design/enemy_verbs.md).
+    /// Idle machines don't reach for anyone; death stops the calls, which
+    /// IS the off-switch (the ship's accumulator clears every frame).
+    fn tick_tractor(&mut self, my_pos: Vector3, player_pos: Vector3) {
+        if self.behavior.pull_accel == 0.0 || self.ai.state == DroneState::Idle {
+            return;
+        }
+        let to_enemy = my_pos - player_pos;
+        let distance = to_enemy.length();
+        if distance <= f32::EPSILON {
+            return; // colocated — no direction to pull along
+        }
+        let magnitude =
+            void_logic::tractor::accel_at(self.behavior.pull_accel, distance, self.attack_range);
+        if magnitude == 0.0 {
+            return;
+        }
+        let accel = to_enemy / distance * magnitude;
+        self.player.with(|p| {
+            if p.has_method(methods::APPLY_TRACTOR) {
+                p.call(methods::APPLY_TRACTOR, &[Variant::from(accel)]);
+            }
+        });
+    }
+
+    /// The alarm klaxon (`alert_radius` switch): while this enemy is engaged,
+    /// every live machine within the radius of IT force-engages the player,
+    /// detection bypassed (docs/design/enemy_verbs.md). Swept on a throttle,
+    /// not per frame — the klaxon is a siren, not a physics field. Dormant
+    /// ring slots ignore it (the receiver checks its own liveness).
+    fn tick_alarm(&mut self, delta: f32, my_pos: Vector3) {
+        if self.behavior.alert_radius <= 0.0 || self.ai.state == DroneState::Idle {
+            return;
+        }
+        self.alert_timer -= delta;
+        if self.alert_timer > 0.0 {
+            return;
+        }
+        self.alert_timer = ALERT_INTERVAL;
+        let my_id = self.base().instance_id();
+        let tree = self.base().get_tree();
+        for node in tree.get_nodes_in_group(groups::ENEMIES).iter_shared() {
+            let Ok(mut drone) = node.try_cast::<EnemyDrone>() else { continue };
+            if drone.instance_id() == my_id
+                || drone.get_global_position().distance_to(my_pos) > self.behavior.alert_radius
+            {
+                continue;
+            }
+            drone.bind_mut().hear_alarm();
+        }
+    }
+
+    /// A klaxon reached this machine: engage unless dormant — the ring
+    /// wakes machines, the klaxon only aims them.
+    fn hear_alarm(&mut self) {
+        if self.active {
+            self.ai.force_engage();
+        }
     }
 
     /// The BossLatcher's hull siphon: while latched (same range as the slow),

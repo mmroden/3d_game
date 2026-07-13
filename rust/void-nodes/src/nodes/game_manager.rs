@@ -249,6 +249,15 @@ impl GameManager {
     #[func]
     fn enter_initial_phase(&mut self) {
         self.show_phase(self.phase);
+        // Dev knob: a boot with a level under inspection (`make run
+        // LEVEL=N` / the start_level export) walks itself into the mission
+        // — new game, default loadout, briefing. The menu walk is for
+        // players, not for looking at level N.
+        if self.start_level > 0 {
+            self.start_new_game();
+            self.advance_from_ship_select();
+            self.advance_from_bestiary();
+        }
     }
 
     /// Called from UI: start a fresh new game.
@@ -1032,20 +1041,26 @@ impl GameManager {
     /// TEST DOOR (see `clear_save_for_tests`): swap THE grammar for a
     /// test-owned fixture (godot/tests/fixtures/grammar/), so shell
     /// scenarios never depend on the owner's rosters/ tuning. The fixture
-    /// links against the real model catalog. Returns false (and logs the
-    /// violation list) if it does not link.
+    /// links against the real model catalog. `environment` carries a fixture
+    /// zone map for fixed-paradigm scenarios — pass "" for grid worlds.
+    /// Returns false (and logs the violation list) if it does not link.
     #[func]
     pub fn install_test_grammar(
         enemies: GString,
         kits: GString,
         kit_grids: GString,
         planet: GString,
+        environment: GString,
     ) -> bool {
+        let environment = environment.to_string();
+        let environments: Vec<&str> =
+            if environment.is_empty() { Vec::new() } else { vec![environment.as_str()] };
         match void_logic::roster::override_grammar_from(
             &enemies.to_string(),
             &kits.to_string(),
             &kit_grids.to_string(),
             &[&planet.to_string()],
+            &environments,
         ) {
             Ok(()) => true,
             Err(e) => {

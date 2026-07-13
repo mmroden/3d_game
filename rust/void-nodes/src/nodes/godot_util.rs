@@ -13,6 +13,7 @@ use godot::classes::{
 
 use super::audio_manager::AudioManager;
 use super::bolt_pool::BoltPool;
+use super::cloud_pool::CloudPool;
 use super::constants::{groups, meta_keys, nodes};
 use super::live_handle::{LiveOpt, LiveRef, LiveVec};
 
@@ -54,6 +55,16 @@ pub fn find_bolt_pool(tree: impl Into<Option<Gd<godot::classes::SceneTree>>>) ->
     let tree = tree.into()?;
     tree.get_first_node_in_group(groups::BOLT_POOL)
         .and_then(|n| n.try_cast::<BoltPool>().ok())
+}
+
+/// Find the level's dust-cloud pool (Faucet Principle tier-2 ring). One pool
+/// exists per running level; it joins the `cloud_pool` group on ready, so any
+/// detonation site — bombers deep under room containers — reaches it without a
+/// node path.
+pub fn find_cloud_pool(tree: impl Into<Option<Gd<godot::classes::SceneTree>>>) -> Option<Gd<CloudPool>> {
+    let tree = tree.into()?;
+    tree.get_first_node_in_group(groups::CLOUD_POOL)
+        .and_then(|n| n.try_cast::<CloudPool>().ok())
 }
 
 /// Compute an orientation basis pointing along `forward`.

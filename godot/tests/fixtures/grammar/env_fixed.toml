@@ -1,0 +1,52 @@
+# TEST FIXTURE — a small authored house over the REAL installed apartment
+# scene: porch (start) → hall → {closet, den (boss, farthest)}. Exercises a
+# non-linear zone graph, spawns, loot, and the arena anchor. See
+# enemies.toml's header for the fixture doctrine.
+
+[environment]
+key = "fx_house"
+model = "apartment"
+
+[sun]
+azimuth_deg = 135.0
+elevation_deg = 40.0
+energy = 1.5
+
+[ambient]
+energy = 0.8
+color = [1.0, 0.95, 0.9]
+
+[[window]] # the den's east glazing — GUT counts exactly one panel spot
+center = [6.0, 1.0, 1.0]
+size = [1.5, 1.2]
+facing = "neg_x"
+energy = 3.0
+
+[[zone]]
+key = "porch"
+box = { min = [0, 0, 0], extents = [2, 2, 2] }
+start = true
+links = ["hall"]
+
+[[zone]]
+key = "hall"
+box = { min = [2, 0, 0], extents = [2, 2, 2] }
+# closet linked BEFORE den on purpose: the two tie at two hops from the
+# porch, and this edge order makes a naive last-BFS-visit tie-break pick
+# the closet — the trap the exit-room tests pin (the arena owns the exit;
+# level 13's portal-in-the-bath was this exact bug).
+links = ["closet", "den"]
+enemy_spawns = [[3.0, 1.0, 1.0]]
+loot_spawns = [[2.5, 0.5, 1.5]]
+
+[[zone]]
+key = "closet"
+box = { min = [2, 0, 2], extents = [2, 2, 1] }
+enemy_spawns = [[3.0, 1.0, 2.5]]
+
+[[zone]]
+key = "den"
+box = { min = [4, 0, 0], extents = [2, 2, 2] }
+boss = true
+enemy_spawns = [[5.0, 1.0, 1.0]]
+loot_spawns = [[4.5, 0.5, 0.5]]

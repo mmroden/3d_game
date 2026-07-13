@@ -131,6 +131,7 @@ pub mod methods {
     pub const ON_PLAYER_COLLIDED: &str = "on_player_collided";
     pub const ON_PLAYER_SLOWED: &str = "on_player_slowed";
     pub const APPLY_SLOW: &str = "apply_slow";
+    pub const APPLY_TRACTOR: &str = "apply_tractor";
     pub const UPDATE_SLOW: &str = "update_slow";
     pub const FLASH_DAMAGE: &str = "flash_damage";
     pub const ON_POWER_MODE_CHANGED: &str = "on_power_mode_changed";
@@ -197,6 +198,7 @@ pub mod groups {
     pub const PLAYER: &str = "player";
     pub const ENEMIES: &str = "enemies";
     pub const BOLT_POOL: &str = "bolt_pool";
+    pub const CLOUD_POOL: &str = "cloud_pool";
     pub const PLAYER_DRONES: &str = "player_drones";
 }
 
@@ -365,6 +367,7 @@ mod tests {
             methods::ON_PLAYER_DAMAGED,
             methods::ON_PLAYER_SLOWED,
             methods::APPLY_SLOW,
+            methods::APPLY_TRACTOR,
             methods::UPDATE_SLOW,
             methods::UPDATE_SHIELD,
             methods::ON_POWER_MODE_CHANGED,

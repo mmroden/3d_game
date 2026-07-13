@@ -89,3 +89,21 @@ damage = 8.0
 detection = 30.0
 attack_range = 12.0
 cooldown = 1.0
+
+[[enemy]]
+key = "fx_boss"
+name = "Fixture Boss"
+blurb = "A test-grammar staged fight."
+model = "apartment_boss"
+size = 4.0
+yaw_offset_deg = 180
+ai = "kiter"
+reward = 5000
+spawns_directly = false # staged by boss slots, never rolled into rooms
+[enemy.stats]
+hp = 60.0
+speed = 8.0
+damage = 10.0
+detection = 45.0
+attack_range = 14.0
+cooldown = 1.2

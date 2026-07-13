@@ -287,6 +287,9 @@ pub fn kit_grids() -> String {
     let kits: BTreeMap<String, GeneratedKitRaw> = kits_file
         .kits
         .iter()
+        // Fixed kits have no recipe to derive a grid from — their pitch is
+        // the declared scale (the one authored-grid exception, see kits.toml).
+        .filter(|(_, kit)| kit.paradigm != super::schema::KitParadigm::Fixed)
         .map(|(key, kit)| (key.clone(), derive_kit_grid(&repo, key, &kit.install_dir)))
         .collect();
     let body = toml::to_string(&GeneratedKitsFile { kits }).expect("serialize kit grids");

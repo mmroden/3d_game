@@ -7,6 +7,8 @@ mod telemetry;
 mod enemy_drone;
 mod enemy_bolt;
 mod bolt_pool;
+mod dust_cloud;
+mod cloud_pool;
 mod currency_cache;
 mod player_drone;
 pub(crate) mod level_manager;

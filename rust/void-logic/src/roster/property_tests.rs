@@ -234,6 +234,7 @@ fn load_generated(g: &Generated) -> Result<super::Roster, String> {
         &g.kit_grids_toml,
         &g.models_toml,
         &planets,
+        super::EnvSources::generated_only(),
     )
 }
 

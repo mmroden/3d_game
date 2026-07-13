@@ -19,7 +19,8 @@ pub mod template;
 pub mod vocabulary;
 
 use schema::{
-    BossRewardPolicy, CurveAnchor, CurveKind, EnemiesFile, KitParadigm, KitsFile, PlanetFile,
+    BossRewardPolicy, CurveAnchor, CurveKind, EnemiesFile, EnvironmentFile, KitParadigm, KitsFile,
+    PlanetFile,
     ScalingRaw,
 };
 
@@ -30,8 +31,11 @@ const ENEMIES_TOML: &str = include_str!("../../../../rosters/enemies.toml");
 const KITS_TOML: &str = include_str!("../../../../rosters/kits.toml");
 pub(crate) const MODELS_TOML: &str = include_str!("../../../../rosters/models.generated.toml");
 const KITS_GENERATED_TOML: &str = include_str!("../../../../rosters/kits.generated.toml");
-// PLANET_TOMLS: every rosters/planets/*.toml, embedded by build.rs — a new
-// planet file wires itself in by existing.
+pub(crate) const ENVIRONMENTS_GENERATED_TOML: &str =
+    include_str!("../../../../rosters/environments.generated.toml");
+// PLANET_TOMLS / ENVIRONMENT_TOMLS: every rosters/planets/*.toml and
+// rosters/environments/*.toml, embedded by build.rs — a new file wires
+// itself in by existing.
 include!(concat!(env!("OUT_DIR"), "/planet_tomls.rs"));
 
 // ── Typed ids: arena indices, no reference strings past the linker ──────
@@ -80,9 +84,10 @@ impl<'de> serde::Deserialize<'de> for EnemyKey {
     }
 }
 
-/// Intern a key string to a `'static` — the handful of enemy keys are
-/// permanent, so a leak is the correct lifetime. One canonical pointer per
-/// distinct key, shared across every `Roster` (singleton and fixtures).
+/// Intern a key/path string to a `'static` — the handful of enemy keys and
+/// environment scene paths are permanent, so a leak is the correct
+/// lifetime. One canonical pointer per distinct string, shared across every
+/// `Roster` (singleton and fixtures).
 fn intern_key(s: &str) -> &'static str {
     use std::sync::{Mutex, OnceLock};
     static POOL: OnceLock<Mutex<std::collections::HashSet<&'static str>>> = OnceLock::new();
@@ -116,11 +121,39 @@ pub struct Behavior {
     pub standoff: f32,
     pub fuse_seconds: f32,
     pub blast_radius: f32,
+    /// Detonation cloud (seconds): the blast leaves an occluding dust
+    /// cloud at blast radius for this long. 0 = instant blast only —
+    /// the cloud attacks VISION, not hull.
+    pub cloud_seconds: f32,
     pub shield: f32,
     pub disengage: f32,
     pub drain_dps: f32,
     /// Projectile speed (m/s) for firing archetypes.
     pub bolt_speed: f32,
+    /// Bolts per trigger pull (1 = single shot); the cooldown gates BURSTS.
+    pub burst_count: u8,
+    /// In-burst gap (s) between a burst's bolts.
+    pub burst_seconds: f32,
+    /// Pellets fanned per bolt (1 = no fan; a shotgun declares more).
+    pub pellet_count: u8,
+    /// Total fan cone (degrees) the pellets spread across.
+    pub spread_deg: f32,
+    /// Max steering rate (deg/s) for homing bolts; 0 = ballistic.
+    pub bolt_turn_deg: f32,
+    /// Tractor/repulsor field (SIGNED, m/s²): positive drags the player
+    /// toward this enemy, negative shoves away; linear falloff to zero at
+    /// attack_range (void_logic::tractor). 0 = no field.
+    pub pull_accel: f32,
+    /// Alarm aura (metres): while this enemy is engaged, machines within
+    /// the radius of IT force-engage the player. 0 = no klaxon.
+    pub alert_radius: f32,
+    /// Guardian link (metres): damage to machines within the radius drinks
+    /// into this enemy's shield first; overflow stays with the victim.
+    /// 0 = guards nothing.
+    pub guard_radius: f32,
+    /// Erratic dodge (seconds): mean time between strafe re-rolls while
+    /// engaged. 0 = the smooth orbit.
+    pub jink_seconds: f32,
     /// Within this range (m) a latcher counts as attached: the slow re-tags
     /// and the drain ticks. 0 = never latches.
     pub latch_range: f32,
@@ -143,10 +176,20 @@ impl Default for Behavior {
             standoff: 0.0,
             fuse_seconds: 0.0,
             blast_radius: 0.0,
+            cloud_seconds: 0.0,
             shield: 0.0,
             disengage: 0.0,
             drain_dps: 0.0,
             bolt_speed: 0.0,
+            burst_count: 1,
+            burst_seconds: 0.0,
+            pellet_count: 1,
+            spread_deg: 0.0,
+            bolt_turn_deg: 0.0,
+            pull_accel: 0.0,
+            alert_radius: 0.0,
+            guard_radius: 0.0,
+            jink_seconds: 0.0,
             latch_range: 0.0,
             slow_factor: 1.0,
             slow_duration: 0.0,
@@ -184,6 +227,11 @@ pub struct EnemyDef {
     pub model: String,
     pub size: f32,
     pub yaw_offset_deg: f32,
+    /// Barrel tips in the model's aim frame (x right, y up, z toward the
+    /// player; horizontal, matching the yaw-only billboard), metres at the
+    /// def's size. The fire site round-robins them shot by shot; empty =
+    /// fire from the hull centre plus clearance (the legacy convention).
+    pub muzzles: Vec<[f32; 3]>,
     pub ai: Archetype,
     pub reward: u32,
     pub spawns_directly: bool,
@@ -231,6 +279,12 @@ impl Roster {
             disengage_range: def.behavior.disengage * detection_mul,
             health: crate::newtypes::Health::new(stats.hp),
             attack_cooldown: stats.cooldown,
+            burst_count: def.behavior.burst_count,
+            burst_seconds: def.behavior.burst_seconds,
+            jink_seconds: def.behavior.jink_seconds,
+            // Determinism seed: the SHELL stamps its instance id after
+            // construction — the grammar has no per-instance identity.
+            seed: 0,
             standoff_range: def.behavior.standoff * attack_mul,
             fuse_seconds: def.behavior.fuse_seconds,
             blast_radius: def.behavior.blast_radius * attack_mul,
@@ -279,6 +333,86 @@ pub struct KitDef {
     pub story: f32,
     /// Repo-relative directory `make assets` populates for this kit.
     pub install_dir: String,
+    /// FIXED kits: the environment this kit builds (index into
+    /// [`Roster::environments`]). The kit's tile/story ARE its declared
+    /// scale — a fixed scene's pitch is the design knob, not a probe
+    /// measurement.
+    pub environment: Option<usize>,
+}
+
+/// A coarse authored volume over a fixed environment's geometry — the
+/// LevelGraph node, spawn group, and culling unit of a fixed level.
+/// Coordinates are model-space: integer meter boxes, float spawn points;
+/// the kit's scale is the only bridge to world units.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ZoneDef {
+    pub key: String,
+    /// Box min corner, meters (min-inclusive).
+    pub min: [i32; 3],
+    /// Box extents, meters (min + extents exclusive).
+    pub extents: [u32; 3],
+    /// Adjacent zones (indices into the environment's zone list),
+    /// undirected and deduplicated.
+    pub links: Vec<usize>,
+    pub enemy_spawns: Vec<[f32; 3]>,
+    pub loot_spawns: Vec<[f32; 3]>,
+    pub start: bool,
+    pub boss: bool,
+}
+
+/// Authored sunlight for a fixed environment (validated degrees/energy).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SunDef {
+    /// Compass bearing, degrees: 0 = model north (-z), 90 = east (+x).
+    pub azimuth_deg: f32,
+    /// Degrees above the horizon.
+    pub elevation_deg: f32,
+    pub energy: f32,
+}
+
+/// One authored window panel, linked: the opening as a light source.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WindowDef {
+    /// Panel center on the opening's plane, model meters.
+    pub center: [f32; 3],
+    /// Panel width and height, model meters.
+    pub size: [f32; 2],
+    /// Unit inward direction the light shines along.
+    pub inward: [f32; 3],
+    pub energy: f32,
+    /// Throw distance into the room, model meters.
+    pub range: f32,
+}
+
+/// The bounce stand-in: the ambient term approximating the window light's
+/// missing GI (validated energy; linear RGB color).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AmbientDef {
+    pub energy: f32,
+    pub color: [f32; 3],
+}
+
+/// A linked fixed environment: the installed scene plus its authored zones.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnvironmentDef {
+    pub key: String,
+    /// Sunlight through the window openings, when the file authors one.
+    pub sun: Option<SunDef>,
+    /// The window openings as panel light sources (daylight comes from
+    /// outside; these are the diffusers).
+    pub windows: Vec<WindowDef>,
+    /// The world-environment ambient override while this level runs.
+    pub ambient: Option<AmbientDef>,
+    /// The installed scene's res:// path (resolved from
+    /// environments.generated.toml — consumers never see keys). Interned:
+    /// `MeshPlacement` carries `'static` scene paths.
+    pub model: &'static str,
+    pub zones: Vec<ZoneDef>,
+    /// Index of the `start = true` zone (linker-enforced: exactly one).
+    pub start_zone: usize,
+    /// Index of the `boss = true` zone (linker-enforced: exactly one,
+    /// farthest-by-graph from the start).
+    pub boss_zone: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -327,6 +461,8 @@ pub struct Roster {
     pub kits: Vec<KitDef>,
     /// Sorted by planet number, contiguous from 1.
     pub planets: Vec<PlanetDef>,
+    /// Fixed-level environments, in embedding order; fixed kits index in.
+    pub environments: Vec<EnvironmentDef>,
 }
 
 impl Roster {
@@ -448,6 +584,14 @@ impl Roster {
         let (def, relative, _) = self.locate(level);
         def.boss_slots.iter().find(|s| s.at_relative == relative)
     }
+
+    /// The fixed environment a level builds, when its planet's declared kit
+    /// is fixed-paradigm (planet 3's apartment). `None` = generated level.
+    pub fn environment_for_level(&self, level: u32) -> Option<&EnvironmentDef> {
+        let def = self.planet_for_level(level.max(1));
+        let kit = &self.kits[def.kits[0].0];
+        kit.environment.map(|i| &self.environments[i])
+    }
 }
 
 // ── Load + link ──────────────────────────────────────────────────────────
@@ -456,7 +600,45 @@ impl Roster {
 /// unresolved references, duplicate keys/ids, planet gaps, slot collisions —
 /// is collected; the Err carries them all.
 pub fn load() -> Result<Roster, String> {
-    load_from(ENEMIES_TOML, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS)
+    load_from(
+        ENEMIES_TOML,
+        KITS_TOML,
+        KITS_GENERATED_TOML,
+        MODELS_TOML,
+        PLANET_TOMLS,
+        EnvSources::shipped(),
+    )
+}
+
+/// The environment grammar's source bundle: authored zone maps, the
+/// generated environment catalog, and the generated window sets. One
+/// argument because they link as one unit — the fixed paradigm's inputs.
+pub(crate) struct EnvSources<'a> {
+    pub authored: &'a [&'a str],
+    pub generated: &'a str,
+    pub windows: &'a [&'a str],
+}
+
+impl EnvSources<'static> {
+    /// The shipped bundle (the embedded rosters/ files).
+    pub(crate) fn shipped() -> Self {
+        Self {
+            authored: ENVIRONMENT_TOMLS,
+            generated: ENVIRONMENTS_GENERATED_TOML,
+            windows: WINDOW_TOMLS,
+        }
+    }
+
+    /// No authored environments (grid-paradigm grammars); the generated
+    /// catalog still loads — fixed kits validate against it.
+    #[cfg(test)]
+    pub(crate) fn generated_only() -> Self {
+        Self {
+            authored: &[],
+            generated: ENVIRONMENTS_GENERATED_TOML,
+            windows: &[],
+        }
+    }
 }
 
 /// TEST SEAM (planned with the identity unification, Phase 5): the GUT
@@ -486,8 +668,20 @@ pub fn override_grammar_from(
     kits: &str,
     kit_grids: &str,
     planets: &[&str],
+    environments: &[&str],
 ) -> Result<(), String> {
-    let g = load_from(enemies, kits, kit_grids, MODELS_TOML, planets)?;
+    let g = load_from(
+        enemies,
+        kits,
+        kit_grids,
+        MODELS_TOML,
+        planets,
+        EnvSources {
+            authored: environments,
+            generated: ENVIRONMENTS_GENERATED_TOML,
+            windows: WINDOW_TOMLS,
+        },
+    )?;
     *OVERRIDE.write().expect("grammar override lock") = Some(Box::leak(Box::new(g)));
     Ok(())
 }
@@ -503,7 +697,9 @@ pub(crate) fn load_from(
     kit_grids: &str,
     models: &str,
     planets: &[&str],
+    env: EnvSources,
 ) -> Result<Roster, String> {
+    let EnvSources { authored: environments, generated: environments_generated, windows } = env;
     let mut errors: Vec<String> = Vec::new();
 
     let enemies_file: Option<EnemiesFile> = match toml::from_str(enemies) {
@@ -545,14 +741,74 @@ pub(crate) fn load_from(
             }
         })
         .collect();
+    let environment_files: Vec<EnvironmentFile> = environments
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| match toml::from_str(s) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                errors.push(format!("environments file #{}: {e}", i + 1));
+                None
+            }
+        })
+        .collect();
+    let environments_generated_file: Option<schema::EnvironmentsFile> =
+        match toml::from_str(environments_generated) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                errors.push(format!("environments.generated.toml: {e}"));
+                None
+            }
+        };
+    let windows_files: Vec<schema::WindowsFile> = windows
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| match toml::from_str(s) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                errors.push(format!("windows file #{}: {e}", i + 1));
+                None
+            }
+        })
+        .collect();
 
-    let (Some(enemies_file), Some(kits_file), Some(kit_grids_file), Some(models_file)) =
-        (enemies_file, kits_file, kit_grids_file, models_file)
+    let (
+        Some(enemies_file),
+        Some(kits_file),
+        Some(kit_grids_file),
+        Some(models_file),
+        Some(environments_generated_file),
+    ) = (
+        enemies_file,
+        kits_file,
+        kit_grids_file,
+        models_file,
+        environments_generated_file,
+    )
     else {
         return Err(errors.join("\n"));
     };
 
-    link(enemies_file, kits_file, kit_grids_file, models_file, planet_files, errors)
+    link(
+        enemies_file,
+        kits_file,
+        kit_grids_file,
+        models_file,
+        planet_files,
+        ParsedEnvFiles {
+            authored: environment_files,
+            generated: environments_generated_file,
+            windows: windows_files,
+        },
+        errors,
+    )
+}
+
+/// The parsed counterpart of [`EnvSources`]: one linker argument.
+struct ParsedEnvFiles {
+    authored: Vec<EnvironmentFile>,
+    generated: schema::EnvironmentsFile,
+    windows: Vec<schema::WindowsFile>,
 }
 
 fn link(
@@ -561,8 +817,14 @@ fn link(
     kit_grids_file: schema::GeneratedKitsFile,
     models_file: schema::ModelsFile,
     planet_files: Vec<PlanetFile>,
+    env: ParsedEnvFiles,
     mut errors: Vec<String>,
 ) -> Result<Roster, String> {
+    let ParsedEnvFiles {
+        authored: environment_files,
+        generated: environments_generated_file,
+        windows: windows_files,
+    } = env;
     // Curves (BTreeMap: TOML itself rejects a re-declared [curves.X] table).
     let curves: Vec<(String, CurveDef)> = enemies_file
         .curves
@@ -696,10 +958,17 @@ fn link(
                 ("standoff_frac", e.standoff_frac),
                 ("fuse_seconds", e.fuse_seconds),
                 ("blast_frac", e.blast_frac),
+                ("cloud_seconds", e.cloud_seconds),
                 ("shield_frac", e.shield_frac),
                 ("disengage_frac", e.disengage_frac),
                 ("drain_dps", e.drain_dps),
                 ("bolt_speed", e.bolt_speed),
+                ("burst_seconds", e.burst_seconds),
+                ("spread_deg", e.spread_deg),
+                ("bolt_turn_deg", e.bolt_turn_deg),
+                ("alert_radius", e.alert_radius),
+                ("guard_radius", e.guard_radius),
+                ("jink_seconds", e.jink_seconds),
                 ("latch_range", e.latch_range),
                 ("slow_factor", e.slow_factor),
                 ("slow_duration", e.slow_duration),
@@ -710,6 +979,45 @@ fn link(
                         errors.push(format!("{at}: {field} must be finite and ≥ 0, got {v}"));
                     }
                 }
+            }
+            // Counts say how MANY bolts, never whether the enemy fires —
+            // that is the archetype's call. Zero is a config bug.
+            for (field, value) in [
+                ("burst_count", e.burst_count),
+                ("pellet_count", e.pellet_count),
+            ] {
+                if value == Some(0) {
+                    errors.push(format!("{at}: {field} must be ≥ 1"));
+                }
+            }
+            // Muzzles are aim-frame offsets, so components are signed; a
+            // tip reaching past the def's size is a unit/frame mistake.
+            if let Some(ms) = &e.muzzles {
+                for (i, m) in ms.iter().enumerate() {
+                    let reach = (m[0] * m[0] + m[1] * m[1] + m[2] * m[2]).sqrt();
+                    if !reach.is_finite() {
+                        errors.push(format!("{at}: muzzle {i} must be finite"));
+                    } else if reach > e.size {
+                        errors.push(format!(
+                            "{at}: muzzle {i} reaches {reach:.2} m — beyond the \
+                             def's size ({} m); offsets are metres in the aim frame",
+                            e.size
+                        ));
+                    }
+                }
+            }
+            // pull_accel is SIGNED — a repulsor is legal config — so it
+            // skips the ≥ 0 loop; only non-finite dies.
+            if let Some(v) = e.pull_accel {
+                if !v.is_finite() {
+                    errors.push(format!("{at}: pull_accel must be finite, got {v}"));
+                }
+            }
+            if e.pellet_count.unwrap_or(1) > 1 && e.bolt_turn_deg.unwrap_or(0.0) > 0.0 {
+                errors.push(format!(
+                    "{at}: pellets fly ballistic — declare pellet_count or \
+                     bolt_turn_deg, not both"
+                ));
             }
             let behavior = {
                 use crate::enemy_ai::Archetype::*;
@@ -724,11 +1032,21 @@ fn link(
                         .unwrap_or(if e.ai == Bomber { 1.0 } else { 0.0 }),
                     blast_radius: e.blast_frac.unwrap_or(if e.ai == Bomber { 1.5 } else { 0.0 })
                         * e.stats.attack_range,
+                    cloud_seconds: e.cloud_seconds.unwrap_or(0.0),
                     shield: e.shield_frac.unwrap_or(if e.ai == Tank { 0.5 } else { 0.0 })
                         * e.stats.hp,
                     disengage: e.disengage_frac.unwrap_or(1.2) * e.stats.detection,
                     drain_dps: e.drain_dps.unwrap_or(0.0),
                     bolt_speed: e.bolt_speed.unwrap_or(13.0),
+                    burst_count: e.burst_count.unwrap_or(1),
+                    burst_seconds: e.burst_seconds.unwrap_or(0.1),
+                    pellet_count: e.pellet_count.unwrap_or(1),
+                    spread_deg: e.spread_deg.unwrap_or(0.0),
+                    bolt_turn_deg: e.bolt_turn_deg.unwrap_or(0.0),
+                    pull_accel: e.pull_accel.unwrap_or(0.0),
+                    alert_radius: e.alert_radius.unwrap_or(0.0),
+                    guard_radius: e.guard_radius.unwrap_or(0.0),
+                    jink_seconds: e.jink_seconds.unwrap_or(0.0),
                     // The latch set: live on swarmers, inert elsewhere.
                     latch_range: e
                         .latch_range
@@ -763,6 +1081,7 @@ fn link(
                 },
                 size: e.size,
                 yaw_offset_deg: e.yaw_offset_deg,
+                muzzles: e.muzzles.clone().unwrap_or_default(),
                 ai: e.ai,
                 reward: e.reward,
                 spawns_directly: e.spawns_directly,
@@ -880,12 +1199,325 @@ fn link(
         }
     }
 
+    // Environments: authored zone maps joined to the installed-scene
+    // catalog. Zone links resolve to indices (undirected at use).
+    let environments: Vec<EnvironmentDef> = environment_files
+        .iter()
+        .map(|f| {
+            let at = format!("environment '{}'", f.environment.key);
+            let zones: Vec<ZoneDef> = f
+                .zones
+                .iter()
+                .map(|z| ZoneDef {
+                    key: z.key.clone(),
+                    min: z.bounds.min,
+                    extents: z.bounds.extents,
+                    links: z
+                        .links
+                        .iter()
+                        .filter_map(|k| f.zones.iter().position(|o| o.key == *k))
+                        .collect(),
+                    enemy_spawns: z.enemy_spawns.clone(),
+                    loot_spawns: z.loot_spawns.clone(),
+                    start: z.start,
+                    boss: z.boss,
+                })
+                .collect();
+            let sun = f.sun.as_ref().map(|s| {
+                if !(s.elevation_deg > 0.0 && s.elevation_deg <= 90.0) {
+                    errors.push(format!(
+                        "{at}: sun elevation_deg must be in (0, 90], got {}",
+                        s.elevation_deg
+                    ));
+                }
+                if !(s.energy.is_finite() && s.energy > 0.0) {
+                    errors.push(format!(
+                        "{at}: sun energy must be finite and > 0, got {}",
+                        s.energy
+                    ));
+                }
+                SunDef {
+                    azimuth_deg: s.azimuth_deg,
+                    elevation_deg: s.elevation_deg,
+                    energy: s.energy,
+                }
+            });
+            let mut windows: Vec<WindowDef> = f
+                .windows
+                .iter()
+                .enumerate()
+                .map(|(wi, w)| {
+                    for (field, v) in [
+                        ("energy", w.energy),
+                        ("range", w.range),
+                        ("width", w.size[0]),
+                        ("height", w.size[1]),
+                    ] {
+                        if !(v.is_finite() && v > 0.0) {
+                            errors.push(format!(
+                                "{at}: window #{}: {field} must be finite and > 0, got {v}",
+                                wi + 1
+                            ));
+                        }
+                    }
+                    WindowDef {
+                        center: w.center,
+                        size: w.size,
+                        inward: w.facing.direction(),
+                        energy: w.energy,
+                        range: w.range,
+                    }
+                })
+                .collect();
+            // Join the GENERATED panes (rosters/windows/, derived from the
+            // scene's glass): geometry from the model, energy from the
+            // environment's authored per-m² knob — bigger panes pour more.
+            for wf in windows_files.iter().filter(|wf| wf.environment == f.environment.key) {
+                for w in &wf.windows {
+                    let area = w.size[0] * w.size[1];
+                    windows.push(WindowDef {
+                        center: w.center,
+                        size: w.size,
+                        inward: w.facing.direction(),
+                        energy: area * f.environment.window_energy_per_m2,
+                        range: schema::default_window_range(),
+                    });
+                }
+            }
+            let ambient = f.ambient.as_ref().map(|a| {
+                if !(a.energy.is_finite() && a.energy > 0.0) {
+                    errors.push(format!(
+                        "{at}: ambient energy must be finite and > 0, got {}",
+                        a.energy
+                    ));
+                }
+                AmbientDef { energy: a.energy, color: a.color }
+            });
+            EnvironmentDef {
+                key: f.environment.key.clone(),
+                sun,
+                windows,
+                ambient,
+                model: match environments_generated_file.environments.get(&f.environment.model) {
+                    Some(path) => intern_key(path),
+                    None => {
+                        errors.push(format!(
+                            "{at}: unknown model '{}' — not in \
+                             rosters/environments.generated.toml (run `make assets`)",
+                            f.environment.model
+                        ));
+                        ""
+                    }
+                },
+                start_zone: zones.iter().position(|z| z.start).unwrap_or(0),
+                boss_zone: zones.iter().position(|z| z.boss).unwrap_or(0),
+                zones,
+            }
+        })
+        .collect();
+
+    // Environment validation: identity, volumes, spawns, and the zone
+    // graph — the SAME petgraph shape the runtime builds, validated at
+    // link time so a bad authoring is a load failure, never a broken run.
+    for (i, e) in environments.iter().enumerate() {
+        if environments[..i].iter().any(|p| p.key == e.key) {
+            errors.push(format!("duplicate environment key '{}'", e.key));
+        }
+    }
+    for (f, env) in environment_files.iter().zip(&environments) {
+        let at = format!("environment '{}'", env.key);
+        for (i, z) in env.zones.iter().enumerate() {
+            if env.zones[..i].iter().any(|p| p.key == z.key) {
+                errors.push(format!("{at}: duplicate zone key '{}'", z.key));
+            }
+        }
+        // Dangling links check the RAW side — resolution dropped them.
+        for z in &f.zones {
+            for k in &z.links {
+                if !f.zones.iter().any(|o| o.key == *k) {
+                    errors.push(format!(
+                        "{at}: zone '{}' links to unknown zone '{k}'",
+                        z.key
+                    ));
+                }
+            }
+        }
+        let starts = env.zones.iter().filter(|z| z.start).count();
+        if starts != 1 {
+            errors.push(format!(
+                "{at}: exactly one zone must declare start = true (found {starts})"
+            ));
+        }
+        let bosses = env.zones.iter().filter(|z| z.boss).count();
+        if bosses != 1 {
+            errors.push(format!(
+                "{at}: exactly one zone must declare boss = true (found {bosses})"
+            ));
+        }
+        for z in &env.zones {
+            let zat = format!("{at}: zone '{}'", z.key);
+            if z.extents.contains(&0) {
+                errors.push(format!("{zat}: box extents must all be at least 1"));
+            }
+            let inside = |p: &[f32; 3]| {
+                (0..3).all(|i| {
+                    p[i] >= z.min[i] as f32
+                        && p[i] <= (z.min[i] + z.extents[i] as i32) as f32
+                })
+            };
+            for p in z.enemy_spawns.iter().chain(&z.loot_spawns) {
+                if !inside(p) {
+                    errors.push(format!("{zat}: spawn {p:?} lies outside the zone box"));
+                }
+            }
+            if z.start && !z.enemy_spawns.is_empty() {
+                errors.push(format!(
+                    "{zat}: the start zone declares enemy spawns — the start \
+                     room stays clear (room-0 rule)"
+                ));
+            }
+            if z.boss && z.enemy_spawns.len() != 1 {
+                errors.push(format!(
+                    "{zat}: the boss zone must author exactly one enemy spawn \
+                     (the arena anchor the staged fight rises from), found {}",
+                    z.enemy_spawns.len()
+                ));
+            }
+        }
+        // Integer AABBs, min-inclusive max-exclusive: shared faces touch,
+        // shared volume is an authoring error.
+        for (i, a) in env.zones.iter().enumerate() {
+            for b in &env.zones[i + 1..] {
+                let overlaps = (0..3).all(|k| {
+                    a.min[k] < b.min[k] + b.extents[k] as i32
+                        && b.min[k] < a.min[k] + a.extents[k] as i32
+                });
+                if overlaps {
+                    errors.push(format!(
+                        "{at}: zone boxes '{}' and '{}' overlap",
+                        a.key, b.key
+                    ));
+                }
+            }
+        }
+        // Linked zones must share a face (touching on one axis, positive
+        // overlap on the other two): fixed_layout synthesizes the doorway
+        // connector on that face, and a link without one has nowhere to go.
+        for z in &env.zones {
+            for &l in &z.links {
+                let o = &env.zones[l];
+                let touch_axis = (0..3).find(|&k| {
+                    z.min[k] + z.extents[k] as i32 == o.min[k]
+                        || o.min[k] + o.extents[k] as i32 == z.min[k]
+                });
+                let shares_face = touch_axis.is_some_and(|k| {
+                    (0..3).filter(|&j| j != k).all(|j| {
+                        z.min[j] < o.min[j] + o.extents[j] as i32
+                            && o.min[j] < z.min[j] + z.extents[j] as i32
+                    })
+                });
+                if !shares_face {
+                    errors.push(format!(
+                        "{at}: linked zones '{}' and '{}' share no face — a \
+                         doorway connector has nowhere to go",
+                        z.key, o.key
+                    ));
+                }
+            }
+        }
+        // The zone graph: every zone reachable, and the boss zone farthest
+        // from the start — portal placement and the arena ride the graph.
+        if starts == 1 && bosses == 1 {
+            let mut g: petgraph::graph::UnGraph<(), ()> = petgraph::graph::UnGraph::default();
+            let nodes: Vec<_> = env.zones.iter().map(|_| g.add_node(())).collect();
+            for (zi, z) in env.zones.iter().enumerate() {
+                for &l in &z.links {
+                    g.update_edge(nodes[zi], nodes[l], ());
+                }
+            }
+            let dist = petgraph::algo::dijkstra(&g, nodes[env.start_zone], None, |_| 1u32);
+            for (zi, z) in env.zones.iter().enumerate() {
+                if !dist.contains_key(&nodes[zi]) {
+                    errors.push(format!(
+                        "{at}: zone '{}' is unreachable from the start zone",
+                        z.key
+                    ));
+                }
+            }
+            if let Some(max) = dist.values().max().copied() {
+                if dist.get(&nodes[env.boss_zone]) != Some(&max) {
+                    errors.push(format!(
+                        "{at}: the boss zone '{}' must be farthest from the \
+                         start (portal and arena placement ride the graph)",
+                        env.zones[env.boss_zone].key
+                    ));
+                }
+            }
+        }
+    }
+
     // Kits (BTreeMap: TOML rejects re-declared kit tables). The grid joins
-    // in from the probe's derived measurements — never authored.
+    // in from the probe's derived measurements — never authored. FIXED kits
+    // are the one deliberate exception: a fixed scene has no recipe to
+    // derive a grid from, so its declared scale IS its tile/story, and it
+    // joins an authored environment instead.
     let kits: Vec<KitDef> = kits_file
         .kits
         .iter()
         .map(|(key, raw)| {
+            if raw.paradigm == KitParadigm::Fixed {
+                let scale = match raw.scale {
+                    Some(s) if s.is_finite() && s > 0.0 => s,
+                    Some(s) => {
+                        errors.push(format!(
+                            "kit '{key}': scale must be finite and > 0, got {s}"
+                        ));
+                        1.0
+                    }
+                    None => {
+                        errors.push(format!(
+                            "kit '{key}': a fixed kit must declare scale \
+                             (world units per model meter)"
+                        ));
+                        1.0
+                    }
+                };
+                let environment = match raw.environment.as_deref() {
+                    Some(k) => {
+                        let found = environments.iter().position(|e| e.key == k);
+                        if found.is_none() {
+                            errors.push(format!("kit '{key}': unknown environment '{k}'"));
+                        }
+                        found
+                    }
+                    None => {
+                        errors.push(format!(
+                            "kit '{key}': a fixed kit must declare its environment \
+                             (the authored zone map it builds)"
+                        ));
+                        None
+                    }
+                };
+                return KitDef {
+                    key: key.clone(),
+                    paradigm: raw.paradigm,
+                    tile: scale,
+                    story: scale,
+                    install_dir: raw.install_dir.clone(),
+                    environment,
+                };
+            }
+            for (field, present) in [
+                ("scale", raw.scale.is_some()),
+                ("environment", raw.environment.is_some()),
+            ] {
+                if present {
+                    errors.push(format!(
+                        "kit '{key}': {field} is a fixed-kit knob — a generated \
+                         kit derives its grid from the probe"
+                    ));
+                }
+            }
             let grid = match kit_grids_file.kits.get(key) {
                 Some(g) => g.clone(),
                 None => {
@@ -902,6 +1534,7 @@ fn link(
                 tile: grid.tile,
                 story: grid.story,
                 install_dir: raw.install_dir.clone(),
+                environment: None,
             }
         })
         .collect();
@@ -1049,12 +1682,57 @@ fn link(
             });
         }
 
+        // Room growth: a GENERATED planet declares it; a FIXED planet's
+        // room count is its environment's authored zone count — the file
+        // must not also state one (one truth).
+        let first_kit = f.kits.first().and_then(|k| kits.iter().find(|kd| kd.key == *k));
+        if first_kit.is_some_and(|kd| kd.paradigm == KitParadigm::Fixed) {
+            if f.kits.len() > 1 {
+                errors.push(format!(
+                    "{at}: a fixed planet declares exactly one kit — its \
+                     environment is the whole level"
+                ));
+            }
+            // v1 fixed levels have no connector seal, so the miniboss
+            // fallback can't gate — every fixed level stages its fight
+            // explicitly.
+            for relative in 1..=f.levels {
+                if !f.boss_slots.iter().any(|s| s.at.relative == relative) {
+                    errors.push(format!(
+                        "{at}: relative {relative} has no boss slot — every \
+                         level of a fixed planet stages its boss (an open \
+                         house has no room seal for a miniboss)"
+                    ));
+                }
+            }
+        }
+        let first_kit_zone_count = first_kit
+            .filter(|kd| kd.paradigm == KitParadigm::Fixed)
+            .and_then(|kd| kd.environment)
+            .map(|ei| environments[ei].zones.len() as u32);
+        let (rooms_base, rooms_per_level) = match (&f.rooms, first_kit_zone_count) {
+            (Some(r), None) => (r.base, r.per_level),
+            (None, Some(zones)) => (zones, 0),
+            (Some(_), Some(_)) => {
+                errors.push(format!(
+                    "{at}: declares rooms, but its fixed kit's environment \
+                     authors the room count — remove the rooms field"
+                ));
+                (0, 0)
+            }
+            (None, None) => {
+                errors.push(format!(
+                    "{at}: a generated planet must declare rooms = {{ base, per_level }}"
+                ));
+                (0, 0)
+            }
+        };
         planets.push(PlanetDef {
             planet: f.planet,
             levels: f.levels,
             kits: f.kits.iter().map(|k| kit_by_key(k, &mut errors, &at)).collect(),
-            rooms_base: f.rooms.base,
-            rooms_per_level: f.rooms.per_level,
+            rooms_base,
+            rooms_per_level,
             rosters,
             boss_slots,
         });
@@ -1074,7 +1752,7 @@ fn link(
     }
 
     if errors.is_empty() {
-        Ok(Roster { enemies, swarms, curves, kits, planets })
+        Ok(Roster { enemies, swarms, curves, kits, planets, environments })
     } else {
         Err(errors.join("\n"))
     }
@@ -1113,12 +1791,347 @@ mod tests {
     }
 
     fn load_template(enemies: &str, kits: &str, grid: &str, planet: &str) -> Result<Roster, String> {
-        load_from(enemies, kits, grid, MODELS_TOML, &[planet])
+        load_from(enemies, kits, grid, MODELS_TOML, &[planet], EnvSources::generated_only())
     }
 
     fn template_roster() -> Roster {
         let (enemies, kits, grid, planet) = template_parts();
         load_template(&enemies, &kits, &grid, &planet).expect("the template links")
+    }
+
+    // ── Fixed-paradigm fixtures: a small house environment over the real
+    //    installed catalog. Violation tests doctor ONE aspect each, so the
+    //    RULE is what's tested, never the shipped apartment's authoring. ──
+
+    /// A valid three-zone environment: porch (start) → hall → den (boss,
+    /// farthest). Baseline for every doctoring test.
+    const FX_ENV: &str = r#"
+[environment]
+key = "fx_house_env"
+model = "apartment"
+
+[[zone]]
+key = "porch"
+box = { min = [0, 0, 0], extents = [2, 2, 2] }
+start = true
+links = ["hall"]
+
+[[zone]]
+key = "hall"
+box = { min = [2, 0, 0], extents = [2, 2, 2] }
+links = ["den"]
+enemy_spawns = [[3.0, 1.0, 1.0]]
+
+[[zone]]
+key = "den"
+box = { min = [4, 0, 0], extents = [2, 2, 2] }
+boss = true
+enemy_spawns = [[5.0, 1.0, 1.0]]
+"#;
+
+    const FX_FIXED_KIT: &str = "[kits.fx_house]\nparadigm = \"fixed\"\n\
+        install_dir = \"godot/addons/environments\"\nscale = 5.0\n\
+        environment = \"fx_house_env\"\n";
+
+    /// A one-level fixed planet riding the template's enemy defs. No
+    /// `rooms` — a fixed planet's room count is the environment's — and a
+    /// staged boss at its only level (fixed levels always stage the fight).
+    const FX_FIXED_PLANET: &str = "planet = 1\nlevels = 1\nkits = [\"fx_house\"]\n\
+        [[level]]\nrelative = 1\nenemies = [\"template_enemy\"]\n\
+        [[boss_slot]]\nat = { relative = 1 }\nboss = \"template_boss\"\n\
+        escorts = { enemy = \"template_minion\", trigger = \"on_engage\", count = 2 }\n\
+        track = 1\nreward = \"consolation_pile\"\n";
+
+    /// Load the fixed fixture with a doctored environment/kit/planet.
+    fn load_fixed(env: &str, kits: &str, planet: &str) -> Result<Roster, String> {
+        let (enemies, _, _, _) = template_parts();
+        load_from(
+            &enemies,
+            kits,
+            "[kits]\n",
+            MODELS_TOML,
+            &[planet],
+            EnvSources { authored: &[env], generated: ENVIRONMENTS_GENERATED_TOML, windows: &[] },
+        )
+    }
+
+    #[test]
+    fn a_valid_fixed_fixture_links() {
+        let roster =
+            load_fixed(FX_ENV, FX_FIXED_KIT, FX_FIXED_PLANET).expect("the fixed fixture links");
+        let env = roster.environment_for_level(1).expect("level 1 is fixed");
+        assert_eq!(env.key, "fx_house_env");
+        assert_eq!(env.zones.len(), 3);
+        assert_eq!(env.zones[env.start_zone].key, "porch");
+        assert_eq!(env.zones[env.boss_zone].key, "den");
+        let pitch = roster.pitch_for_level(1);
+        assert_eq!((pitch.tile, pitch.story), (5.0, 5.0), "pitch IS the declared scale");
+        let planet = roster.planet_for_level(1);
+        assert_eq!(
+            (planet.rooms_base, planet.rooms_per_level),
+            (3, 0),
+            "a fixed planet's room count is the authored zone count"
+        );
+    }
+
+    #[test]
+    fn an_authored_sun_links_and_a_bad_one_is_a_link_error() {
+        let roster = load_fixed(FX_ENV, FX_FIXED_KIT, FX_FIXED_PLANET)
+            .expect("the fixed fixture links");
+        let env = roster.environment_for_level(1).expect("level 1 is fixed");
+        assert_eq!(env.sun, None, "the inline fixture authors no sun");
+        let with_sun = FX_ENV.replace(
+            "model = \"apartment\"",
+            "model = \"apartment\"\n[sun]\nazimuth_deg = 135.0\nelevation_deg = 40.0\nenergy = 1.5",
+        );
+        let roster = load_fixed(&with_sun, FX_FIXED_KIT, FX_FIXED_PLANET)
+            .expect("a sunlit fixture links");
+        let sun = roster
+            .environment_for_level(1)
+            .and_then(|e| e.sun)
+            .expect("the authored sun links");
+        assert_eq!(
+            (sun.azimuth_deg, sun.elevation_deg, sun.energy),
+            (135.0, 40.0, 1.5)
+        );
+        let doctored = with_sun.replace("elevation_deg = 40.0", "elevation_deg = 120.0");
+        let err = load_fixed(&doctored, FX_FIXED_KIT, FX_FIXED_PLANET).unwrap_err();
+        assert!(err.contains("elevation"), "names the horizon rule: {err}");
+    }
+
+    #[test]
+    fn an_authored_ambient_links_and_a_dead_one_is_a_link_error() {
+        let with_ambient = FX_ENV.replace(
+            "model = \"apartment\"",
+            "model = \"apartment\"\n[ambient]\nenergy = 0.8\ncolor = [1.0, 0.95, 0.9]",
+        );
+        let roster = load_fixed(&with_ambient, FX_FIXED_KIT, FX_FIXED_PLANET)
+            .expect("an ambient fixture links");
+        let ambient = roster
+            .environment_for_level(1)
+            .and_then(|e| e.ambient)
+            .expect("the authored ambient links");
+        assert_eq!((ambient.energy, ambient.color), (0.8, [1.0, 0.95, 0.9]));
+        let doctored = with_ambient.replace("energy = 0.8", "energy = 0.0");
+        let err = load_fixed(&doctored, FX_FIXED_KIT, FX_FIXED_PLANET).unwrap_err();
+        assert!(err.contains("ambient"), "names the dead-fill rule: {err}");
+    }
+
+    #[test]
+    fn a_window_with_a_bad_dimension_is_a_link_error() {
+        let with_window = FX_ENV.replace(
+            "model = \"apartment\"",
+            "model = \"apartment\"\n[[window]]\ncenter = [6.0, 1.0, 1.0]\n\
+             size = [1.5, 1.2]\nfacing = \"neg_x\"\nenergy = 3.0",
+        );
+        let roster = load_fixed(&with_window, FX_FIXED_KIT, FX_FIXED_PLANET)
+            .expect("a windowed fixture links");
+        let env = roster.environment_for_level(1).expect("level 1 is fixed");
+        assert_eq!(env.windows.len(), 1);
+        assert_eq!(env.windows[0].inward, [-1.0, 0.0, 0.0], "neg_x shines west");
+        let doctored = with_window.replace("energy = 3.0", "energy = 0.0");
+        let err = load_fixed(&doctored, FX_FIXED_KIT, FX_FIXED_PLANET).unwrap_err();
+        assert!(err.contains("energy"), "names the dead-panel rule: {err}");
+    }
+
+    #[test]
+    fn a_second_start_zone_is_a_link_error() {
+        let doctored = FX_ENV.replace("key = \"hall\"", "key = \"hall\"\nstart = true");
+        let err = load_fixed(&doctored, FX_FIXED_KIT, FX_FIXED_PLANET).unwrap_err();
+        assert!(err.contains("start"), "names the start-zone rule: {err}");
+    }
+
+    #[test]
+    fn a_missing_boss_zone_is_a_link_error() {
+        let doctored = FX_ENV.replace("boss = true\n", "");
+        let err = load_fixed(&doctored, FX_FIXED_KIT, FX_FIXED_PLANET).unwrap_err();
+        assert!(err.contains("boss"), "names the boss-zone rule: {err}");
+    }
+
+    #[test]
+    fn a_dangling_zone_link_is_a_link_error() {
+        let doctored = FX_ENV.replace("links = [\"den\"]", "links = [\"nowhere\"]");
+        let err = load_fixed(&doctored, FX_FIXED_KIT, FX_FIXED_PLANET).unwrap_err();
+        assert!(err.contains("nowhere"), "names the dangling key: {err}");
+    }
+
+    #[test]
+    fn a_disconnected_zone_is_a_link_error() {
+        let doctored = FX_ENV.replace("links = [\"den\"]\n", "");
+        let err = load_fixed(&doctored, FX_FIXED_KIT, FX_FIXED_PLANET).unwrap_err();
+        assert!(
+            err.contains("unreachable") || err.contains("connected"),
+            "names the connectivity rule: {err}"
+        );
+    }
+
+    #[test]
+    fn a_spawn_outside_its_zone_box_is_a_link_error() {
+        let doctored = FX_ENV.replace("[[3.0, 1.0, 1.0]]", "[[30.0, 1.0, 1.0]]");
+        let err = load_fixed(&doctored, FX_FIXED_KIT, FX_FIXED_PLANET).unwrap_err();
+        assert!(err.contains("outside"), "names the in-box rule: {err}");
+    }
+
+    #[test]
+    fn a_link_between_zones_that_share_no_face_is_a_link_error() {
+        // fixed_layout synthesizes a doorway connector on the shared face
+        // of every linked pair — a link with no shared face has nowhere to
+        // put one. Doctor the den out of touching range of the hall.
+        let doctored = FX_ENV.replace("min = [4, 0, 0]", "min = [5, 0, 0]");
+        let err = load_fixed(&doctored, FX_FIXED_KIT, FX_FIXED_PLANET).unwrap_err();
+        assert!(
+            err.contains("share") || err.contains("adjacent"),
+            "names the shared-face rule: {err}"
+        );
+    }
+
+    #[test]
+    fn a_boss_zone_that_is_not_farthest_is_a_link_error() {
+        let doctored = FX_ENV
+            .replace("boss = true\n", "")
+            .replace("key = \"hall\"", "key = \"hall\"\nboss = true");
+        let err = load_fixed(&doctored, FX_FIXED_KIT, FX_FIXED_PLANET).unwrap_err();
+        assert!(err.contains("farthest"), "names the farthest rule: {err}");
+    }
+
+    #[test]
+    fn a_boss_zone_without_exactly_one_spawn_is_a_link_error() {
+        let doctored =
+            FX_ENV.replace("[[5.0, 1.0, 1.0]]", "[[5.0, 1.0, 1.0], [4.5, 1.0, 1.0]]");
+        let err = load_fixed(&doctored, FX_FIXED_KIT, FX_FIXED_PLANET).unwrap_err();
+        assert!(err.contains("exactly one"), "names the arena-anchor rule: {err}");
+    }
+
+    #[test]
+    fn a_start_zone_with_enemy_spawns_is_a_link_error() {
+        let doctored = FX_ENV.replace(
+            "start = true",
+            "start = true\nenemy_spawns = [[1.0, 1.0, 1.0]]",
+        );
+        let err = load_fixed(&doctored, FX_FIXED_KIT, FX_FIXED_PLANET).unwrap_err();
+        assert!(
+            err.contains("start") && err.contains("enemy"),
+            "names the clear-start rule: {err}"
+        );
+    }
+
+    #[test]
+    fn overlapping_zone_boxes_are_a_link_error() {
+        let doctored = FX_ENV.replace("min = [2, 0, 0]", "min = [1, 0, 0]");
+        let err = load_fixed(&doctored, FX_FIXED_KIT, FX_FIXED_PLANET).unwrap_err();
+        assert!(err.contains("overlap"), "names the overlap rule: {err}");
+    }
+
+    #[test]
+    fn a_fixed_kit_without_scale_is_a_link_error() {
+        let doctored = FX_FIXED_KIT.replace("scale = 5.0\n", "");
+        let err = load_fixed(FX_ENV, &doctored, FX_FIXED_PLANET).unwrap_err();
+        assert!(err.contains("scale"), "names the missing knob: {err}");
+    }
+
+    #[test]
+    fn a_fixed_kit_without_an_environment_is_a_link_error() {
+        let doctored = FX_FIXED_KIT.replace("environment = \"fx_house_env\"\n", "");
+        let err = load_fixed(FX_ENV, &doctored, FX_FIXED_PLANET).unwrap_err();
+        assert!(err.contains("environment"), "names the missing join: {err}");
+    }
+
+    #[test]
+    fn a_fixed_kit_with_an_unknown_environment_is_a_link_error() {
+        let doctored = FX_FIXED_KIT.replace("fx_house_env", "no_such_env");
+        let err = load_fixed(FX_ENV, &doctored, FX_FIXED_PLANET).unwrap_err();
+        assert!(err.contains("no_such_env"), "names the dangling key: {err}");
+    }
+
+    #[test]
+    fn an_environment_with_an_uninstalled_model_is_a_link_error() {
+        let doctored = FX_ENV.replace("model = \"apartment\"", "model = \"no_such_scene\"");
+        let err = load_fixed(&doctored, FX_FIXED_KIT, FX_FIXED_PLANET).unwrap_err();
+        assert!(err.contains("no_such_scene"), "names the missing install: {err}");
+    }
+
+    #[test]
+    fn a_generated_kit_declaring_fixed_knobs_is_a_link_error() {
+        let (enemies, kits, grid, planet) = template_parts();
+        let doctored = kits.replace("install_dir", "scale = 5.0\ninstall_dir");
+        assert_ne!(kits, doctored, "the template declares a generated kit");
+        let err = load_from(
+            &enemies,
+            &doctored,
+            &grid,
+            MODELS_TOML,
+            &[&planet],
+            EnvSources::generated_only(),
+        )
+        .unwrap_err();
+        assert!(err.contains("scale"), "names the misplaced knob: {err}");
+    }
+
+    #[test]
+    fn a_fixed_planet_declaring_rooms_is_a_link_error() {
+        let doctored = FX_FIXED_PLANET.replace(
+            "[[level]]",
+            "rooms = { base = 4, per_level = 1 }\n[[level]]",
+        );
+        let err = load_fixed(FX_ENV, FX_FIXED_KIT, &doctored).unwrap_err();
+        assert!(err.contains("rooms"), "names the one-truth rule: {err}");
+    }
+
+    #[test]
+    fn a_generated_planet_without_rooms_is_a_link_error() {
+        let (enemies, kits, grid, planet) = template_parts();
+        let doctored: String = planet
+            .lines()
+            .filter(|l| !l.starts_with("rooms"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_ne!(planet, doctored, "the template declares rooms");
+        let err = load_from(
+            &enemies,
+            &kits,
+            &grid,
+            MODELS_TOML,
+            &[&doctored],
+            EnvSources::generated_only(),
+        )
+        .unwrap_err();
+        assert!(err.contains("rooms"), "names the missing growth: {err}");
+    }
+
+    #[test]
+    fn a_fixed_planet_level_without_a_boss_slot_is_a_link_error() {
+        // v1 fixed levels have no connector seal, so the miniboss fallback
+        // can't gate — every fixed level must stage its fight explicitly.
+        let (planet, slot) = FX_FIXED_PLANET
+            .split_once("[[boss_slot]]")
+            .expect("the fixture stages a boss");
+        assert!(!slot.is_empty());
+        let err = load_fixed(FX_ENV, FX_FIXED_KIT, planet).unwrap_err();
+        assert!(
+            err.contains("boss slot"),
+            "names the staged-fight rule: {err}"
+        );
+    }
+
+    #[test]
+    fn a_fixed_planet_with_more_than_one_kit_is_a_link_error() {
+        let (enemies, kits, grid, _) = template_parts();
+        let two_kits = format!("{FX_FIXED_KIT}{kits}");
+        let doctored = FX_FIXED_PLANET
+            .replace("kits = [\"fx_house\"]", "kits = [\"fx_house\", \"template_kit\"]");
+        let err = load_from(
+            &enemies,
+            &two_kits,
+            &grid,
+            MODELS_TOML,
+            &[&doctored],
+            EnvSources { authored: &[FX_ENV], generated: ENVIRONMENTS_GENERATED_TOML, windows: &[] },
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("one kit") || err.contains("exactly one"),
+            "names the single-kit rule: {err}"
+        );
     }
 
     #[test]
@@ -1195,7 +2208,7 @@ mod tests {
             .find(|l| l.trim_start().starts_with("model = "))
             .expect("the shipped grammar declares models");
         let doctored = ENEMIES_TOML.replacen(model_line, "model = \"no_such_model\"", 1);
-        let err = load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS).unwrap_err();
+        let err = load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS, EnvSources::shipped()).unwrap_err();
         assert!(
             err.contains("unknown model 'no_such_model'"),
             "the linker must name the missing catalog key: {err}"
@@ -1316,7 +2329,7 @@ mod tests {
         let grid = "[kits.k]\ntile = 3.0\nstory = 3.0\n";
         let planet = "planet = 1\nlevels = 1\nkits = [\"k\"]\nrooms = { base = 6, per_level = 2 }\n\n\
             [[level]]\nrelative = 1\nenemies = [\"fx_swarmer\", \"fx_shooter\"]\n";
-        let roster = load_from(enemies, kits, grid, models, &[planet]).unwrap();
+        let roster = load_from(enemies, kits, grid, models, &[planet], EnvSources::generated_only()).unwrap();
         let sw = roster.enemy(roster.enemy_key("fx_swarmer").unwrap());
         let sh = roster.enemy(roster.enemy_key("fx_shooter").unwrap());
         assert!(sw.behavior.latch_range > 0.0, "a swarmer latches by default");
@@ -1356,7 +2369,7 @@ mod tests {
         let grid = "[kits.template_kit]\ntile = 3.0\nstory = 3.0\n";
 
         // Off by default: the template declares no miniboss.
-        let roster = load_from(enemies, kits, grid, MODELS_TOML, &[planet]).unwrap();
+        let roster = load_from(enemies, kits, grid, MODELS_TOML, &[planet], EnvSources::generated_only()).unwrap();
         for key in roster.enemy_keys() {
             assert!(
                 !roster.enemy(key).behavior.miniboss,
@@ -1367,7 +2380,7 @@ mod tests {
 
         // Declared, it reads back: flip the switch on the first enemy block.
         let doctored = enemies.replacen("ai = ", "miniboss = true\nai = ", 1);
-        let roster = load_from(&doctored, kits, grid, MODELS_TOML, &[planet]).unwrap();
+        let roster = load_from(&doctored, kits, grid, MODELS_TOML, &[planet], EnvSources::generated_only()).unwrap();
         assert!(
             roster.enemy_keys().any(|key| roster.enemy(key).behavior.miniboss),
             "the declared switch reads back"
@@ -1380,6 +2393,231 @@ mod tests {
         let enemies = enemies.replace("slow_factor = 1.0", "slow_factor = -0.5");
         let err = load_template(&enemies, &kits, &grid, &planet).unwrap_err();
         assert!(err.contains("slow_factor must be finite"), "{err}");
+    }
+
+    #[test]
+    fn muzzles_default_to_centre_fire_and_read_back_in_order() {
+        // No muzzles = the legacy centre-spawn convention. Declared barrel
+        // tips read back in declaration order — the fire site round-robins
+        // them, so order IS the firing pattern.
+        let (enemies, kits, grid, planet) = template_parts();
+        let roster = load_template(&enemies, &kits, &grid, &planet).unwrap();
+        for key in roster.enemy_keys() {
+            assert!(
+                roster.enemy(key).muzzles.is_empty(),
+                "the template declares no barrels: {}",
+                roster.enemy(key).key
+            );
+        }
+
+        let doctored = enemies.replace(
+            "muzzles = []",
+            "muzzles = [[0.0, 0.3, 0.8], [0.2, -0.1, 0.6]]",
+        );
+        let roster = load_template(&doctored, &kits, &grid, &planet).unwrap();
+        let e = roster.enemy(roster.enemy_keys().next().unwrap());
+        assert_eq!(
+            e.muzzles,
+            vec![[0.0, 0.3, 0.8], [0.2, -0.1, 0.6]],
+            "declared barrels read back in order"
+        );
+    }
+
+    #[test]
+    fn a_degenerate_muzzle_is_a_link_error() {
+        let (enemies, kits, grid, planet) = template_parts();
+        // A barrel tip farther out than the def's size is a unit mistake
+        // (centimetres, wrong frame) — named loudly. template_enemy: size 1.0.
+        let far = enemies.replacen("muzzles = []", "muzzles = [[0.0, 0.0, 5.0]]", 1);
+        let err = load_template(&far, &kits, &grid, &planet).unwrap_err();
+        assert!(err.contains("beyond the def's size"), "{err}");
+
+        let broken = enemies.replacen("muzzles = []", "muzzles = [[nan, 0.0, 0.5]]", 1);
+        let err = load_template(&broken, &kits, &grid, &planet).unwrap_err();
+        assert!(err.contains("must be finite"), "{err}");
+    }
+
+    #[test]
+    fn the_tractor_switch_is_signed_and_defaults_inert() {
+        // pull_accel is the one SIGNED switch: positive drags the player
+        // toward the enemy, negative shoves away — a repulsor is legal
+        // config, so the ≥ 0 rule must not apply. Non-finite still dies.
+        let (enemies, kits, grid, planet) = template_parts();
+
+        // Off by default: the template's declared 0.0 resolves to inert.
+        let roster = load_template(&enemies, &kits, &grid, &planet).unwrap();
+        for key in roster.enemy_keys() {
+            assert_eq!(
+                roster.enemy(key).behavior.pull_accel, 0.0,
+                "no field without a declaration: {}",
+                roster.enemy(key).key
+            );
+        }
+
+        // Declared positive (tractor) and negative (repulsor) both link.
+        let pulls = enemies.replace("pull_accel = 0.0", "pull_accel = 6.0");
+        let roster = load_template(&pulls, &kits, &grid, &planet).unwrap();
+        let e = roster.enemy(roster.enemy_keys().next().unwrap());
+        assert_eq!(e.behavior.pull_accel, 6.0, "the declared pull wins");
+
+        let pushes = enemies.replace("pull_accel = 0.0", "pull_accel = -6.0");
+        let roster = load_template(&pushes, &kits, &grid, &planet).unwrap();
+        let e = roster.enemy(roster.enemy_keys().next().unwrap());
+        assert_eq!(e.behavior.pull_accel, -6.0, "a repulsor is legal config");
+
+        // Non-finite is still a config bug.
+        let broken = enemies.replace("pull_accel = 0.0", "pull_accel = nan");
+        let err = load_template(&broken, &kits, &grid, &planet).unwrap_err();
+        assert!(err.contains("pull_accel must be finite"), "{err}");
+    }
+
+    #[test]
+    fn the_alarm_switch_defaults_inert_and_reads_back() {
+        let (enemies, kits, grid, planet) = template_parts();
+        let roster = load_template(&enemies, &kits, &grid, &planet).unwrap();
+        for key in roster.enemy_keys() {
+            assert_eq!(
+                roster.enemy(key).behavior.alert_radius, 0.0,
+                "no klaxon without a declaration: {}",
+                roster.enemy(key).key
+            );
+        }
+        let doctored = enemies.replace("alert_radius = 0.0", "alert_radius = 20.0");
+        let roster = load_template(&doctored, &kits, &grid, &planet).unwrap();
+        let e = roster.enemy(roster.enemy_keys().next().unwrap());
+        assert_eq!(e.behavior.alert_radius, 20.0, "the declared radius wins");
+    }
+
+    #[test]
+    fn the_jink_switch_defaults_inert_and_reads_back() {
+        let (enemies, kits, grid, planet) = template_parts();
+        let roster = load_template(&enemies, &kits, &grid, &planet).unwrap();
+        for key in roster.enemy_keys() {
+            assert_eq!(
+                roster.enemy(key).behavior.jink_seconds, 0.0,
+                "the orbit stays smooth without a declaration: {}",
+                roster.enemy(key).key
+            );
+        }
+        let doctored = enemies.replace("jink_seconds = 0.0", "jink_seconds = 0.4");
+        let roster = load_template(&doctored, &kits, &grid, &planet).unwrap();
+        let e = roster.enemy(roster.enemy_keys().next().unwrap());
+        assert_eq!(e.behavior.jink_seconds, 0.4, "the declared cadence wins");
+    }
+
+    #[test]
+    fn the_cloud_switch_defaults_inert_and_reads_back() {
+        let (enemies, kits, grid, planet) = template_parts();
+        let roster = load_template(&enemies, &kits, &grid, &planet).unwrap();
+        for key in roster.enemy_keys() {
+            assert_eq!(
+                roster.enemy(key).behavior.cloud_seconds, 0.0,
+                "no cloud without a declaration: {}",
+                roster.enemy(key).key
+            );
+        }
+        let doctored = enemies.replace("cloud_seconds = 0.0", "cloud_seconds = 6.0");
+        let roster = load_template(&doctored, &kits, &grid, &planet).unwrap();
+        let e = roster.enemy(roster.enemy_keys().next().unwrap());
+        assert_eq!(e.behavior.cloud_seconds, 6.0, "the declared linger wins");
+    }
+
+    #[test]
+    fn the_guardian_switch_defaults_inert_and_reads_back() {
+        let (enemies, kits, grid, planet) = template_parts();
+        let roster = load_template(&enemies, &kits, &grid, &planet).unwrap();
+        for key in roster.enemy_keys() {
+            assert_eq!(
+                roster.enemy(key).behavior.guard_radius, 0.0,
+                "guards nothing without a declaration: {}",
+                roster.enemy(key).key
+            );
+        }
+        let doctored = enemies.replace("guard_radius = 0.0", "guard_radius = 12.0");
+        let roster = load_template(&doctored, &kits, &grid, &planet).unwrap();
+        let e = roster.enemy(roster.enemy_keys().next().unwrap());
+        assert_eq!(e.behavior.guard_radius, 12.0, "the declared radius wins");
+    }
+
+    #[test]
+    fn weapon_switches_default_to_a_single_ballistic_shot() {
+        // Omitting the weapon switches keeps today's exact firing shape —
+        // one bolt per cooldown, no fan, no steering. Mechanism on a
+        // switch-free fixture, so shipped tuning can't move it.
+        let enemies = "[curves.flat]\nkind = \"flat\"\n\n\
+            [scaling_defaults]\nspeed = \"flat\"\ncooldown = \"flat\"\nhp = \"flat\"\n\
+            damage = \"flat\"\ndetection = \"flat\"\nattack_range = \"flat\"\n\n\
+            [[enemy]]\nkey = \"fx_shooter\"\nname = \"H\"\nblurb = \"b\"\nmodel = \"m0\"\n\
+            size = 1.0\nyaw_offset_deg = 0\nai = \"shooter\"\nreward = 100\nspawns_directly = true\n\
+            [enemy.stats]\nhp = 5.0\nspeed = 9.0\ndamage = 3.0\ndetection = 25.0\nattack_range = 10.0\ncooldown = 1.0\n";
+        let models = "[models]\nm0 = \"res://x/m0.glb\"\n";
+        let kits = "[kits.k]\nparadigm = \"panel\"\ninstall_dir = \"godot/addons/walls\"\n";
+        let grid = "[kits.k]\ntile = 3.0\nstory = 3.0\n";
+        let planet = "planet = 1\nlevels = 1\nkits = [\"k\"]\nrooms = { base = 6, per_level = 2 }\n\n\
+            [[level]]\nrelative = 1\nenemies = [\"fx_shooter\"]\n";
+        let roster = load_from(enemies, kits, grid, models, &[planet], EnvSources::generated_only()).unwrap();
+        let b = roster.enemy(roster.enemy_key("fx_shooter").unwrap()).behavior;
+        assert_eq!(b.burst_count, 1, "one bolt per trigger pull by default");
+        assert!(b.burst_seconds > 0.0, "the in-burst gap is a real interval");
+        assert_eq!(b.pellet_count, 1, "no fan by default");
+        assert_eq!(b.spread_deg, 0.0, "no spread by default");
+        assert_eq!(b.bolt_turn_deg, 0.0, "ballistic by default");
+    }
+
+    #[test]
+    fn a_declared_weapon_switch_beats_its_default() {
+        let (enemies, kits, grid, planet) = template_parts();
+        // Fan and steer rate are mutually exclusive, so prove them on two
+        // separate doctorings of the template.
+        let fanned = enemies
+            .replace("burst_count = 1", "burst_count = 4")
+            .replace("burst_seconds = 0.1", "burst_seconds = 0.05")
+            .replace("pellet_count = 1", "pellet_count = 6")
+            .replace("spread_deg = 0.0", "spread_deg = 18.0");
+        let roster = load_template(&fanned, &kits, &grid, &planet).unwrap();
+        let b = roster.enemy(roster.enemy_keys().next().unwrap()).behavior;
+        assert_eq!(b.burst_count, 4, "the declared burst wins");
+        assert_eq!(b.burst_seconds, 0.05, "the declared gap wins");
+        assert_eq!(b.pellet_count, 6, "the declared fan wins");
+        assert_eq!(b.spread_deg, 18.0, "the declared cone wins");
+
+        let homing = enemies.replace("bolt_turn_deg = 0.0", "bolt_turn_deg = 120.0");
+        let roster = load_template(&homing, &kits, &grid, &planet).unwrap();
+        let b = roster.enemy(roster.enemy_keys().next().unwrap()).behavior;
+        assert_eq!(b.bolt_turn_deg, 120.0, "the declared steer rate wins");
+    }
+
+    #[test]
+    fn a_zero_weapon_count_is_a_link_error() {
+        // Counts are how MANY bolts exist, not whether the enemy fires —
+        // that is the archetype's call. Zero is a config bug, named loudly.
+        let (enemies, kits, grid, planet) = template_parts();
+        let doctored = enemies.replace("burst_count = 1", "burst_count = 0");
+        let err = load_template(&doctored, &kits, &grid, &planet).unwrap_err();
+        assert!(err.contains("burst_count must be ≥ 1"), "{err}");
+        let doctored = enemies.replace("pellet_count = 1", "pellet_count = 0");
+        let err = load_template(&doctored, &kits, &grid, &planet).unwrap_err();
+        assert!(err.contains("pellet_count must be ≥ 1"), "{err}");
+    }
+
+    #[test]
+    fn a_fanned_homing_bolt_is_a_link_error() {
+        // Pellets fly ballistic — a def declares a fan OR a steer rate,
+        // never both. The linker names the conflict, not the fire site.
+        let (enemies, kits, grid, planet) = template_parts();
+        let enemies = enemies
+            .replace("pellet_count = 1", "pellet_count = 6")
+            .replace("bolt_turn_deg = 0.0", "bolt_turn_deg = 90.0");
+        let err = load_template(&enemies, &kits, &grid, &planet).unwrap_err();
+        assert!(err.contains("pellets fly ballistic"), "{err}");
+    }
+
+    #[test]
+    fn a_negative_weapon_switch_is_a_link_error() {
+        let (enemies, kits, grid, planet) = template_parts();
+        let enemies = enemies.replace("bolt_turn_deg = 0.0", "bolt_turn_deg = -90.0");
+        let err = load_template(&enemies, &kits, &grid, &planet).unwrap_err();
+        assert!(err.contains("bolt_turn_deg must be finite"), "{err}");
     }
 
     #[test]
