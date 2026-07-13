@@ -165,6 +165,13 @@ def _plan_for(rec, tbl, inventory):
         base = {"color": props["DiffuseColor"], "source": "fbx:DiffuseColor"}
     if base is None:
         base = {"color": [0.5, 0.5, 0.5], "source": "default"}
+    # mapamountDiffuse < 1: the texture TINTS the authored color (a
+    # cabinet authored 60% wood over near-black renders far too loud at
+    # 100%). A fact about the material, whichever source named the file.
+    if "texture" in base:
+        amount = props.get("mapamountDiffuse", 1.0)
+        if amount < 0.999 and "colorDiffuse" in props:
+            base["blend"] = {"color": props["colorDiffuse"], "amount": amount}
     plan["base_color"] = base
 
     # ---- relief: a real normal map from the .max table wins; otherwise
@@ -216,6 +223,17 @@ def _plan_for(rec, tbl, inventory):
     if rough is None and is_glass and "refractGlossiness" in props:
         rough = {"value": 1.0 - props["refractGlossiness"],
                  "source": "corona:refractGlossiness"}
+    # Corona blends the glossiness map toward the scalar base at the
+    # slot's mapamount (0.15-0.2 on the walls); at 1.0 the scratch maps
+    # render as mottled roughness chaos. Applies to any INVERTED (i.e.
+    # glossiness-sourced) map, whichever table named the file.
+    if rough is not None and rough.get("invert"):
+        amount = props.get("mapamountReflectGlossiness", 1.0)
+        if amount < 0.999:
+            rough["blend"] = {
+                "base": 1.0 - props.get("refractGlossiness", 1.0),
+                "amount": amount,
+            }
     plan["roughness"] = rough
 
     # ---- alpha: a declared cutout map (curtain lace) wins; scalar alpha

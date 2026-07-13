@@ -46,10 +46,12 @@ PROP_SCALARS = {
     "levelRefract", "levelOpacity", "refractGlossiness",
     "opacityLevel", "refractionAmount",
     "thin", "useThinMode", "multiplier",
-    # Authored bump strength (the slot's mapamount); without it the
-    # converted normal maps guess, and every wall shouts (owner
-    # 2026-07-12: "textures pretty exaggerated").
+    # Authored map amounts (per-slot blend fractions): Corona blends each
+    # map over the material's base value at this fraction. Ignoring them
+    # exaggerates — a wall authored as 95% flat plaster + 5% grunge map
+    # renders as pure grunge (owner 2026-07-12).
     "mapamountBump", "baseBumpMapAmount",
+    "mapamountDiffuse", "mapamountReflectGlossiness",
 }
 
 # Material class, betrayed by its property prefixes.

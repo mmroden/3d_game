@@ -76,21 +76,29 @@ print(
     f"{sum(1 for n in assigned if plans[n]['resolved_from'])} container-resolved)"
 )
 
-# ---- import the scene ----
-bpy.ops.wm.read_factory_settings(use_empty=True)
-print("apartment: importing FBX (several minutes)...", flush=True)
-bpy.ops.import_scene.fbx(filepath=in_path)
+# ---- import the scene (cached: the 5-minute FBX parse happens once per
+# FBX change; iterations on the material plan load the virgin post-import
+# scene in seconds — derived, gitignored, timestamp-gated) ----
+blend_cache = os.path.join(os.path.dirname(in_path), "scene_cache.blend")
+if os.path.isfile(blend_cache) \
+        and os.path.getmtime(blend_cache) > os.path.getmtime(in_path):
+    print("apartment: loading cached scene...", flush=True)
+    bpy.ops.wm.open_mainfile(filepath=blend_cache)
+else:
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    print("apartment: importing FBX (several minutes)...", flush=True)
+    bpy.ops.import_scene.fbx(filepath=in_path)
+    # The path-less texture nodes still materialize as broken image
+    # datablocks (named after the FBX texture element, no backing file) —
+    # purge them so the pack pass below can't trip over them. The wired
+    # images loaded from the extracted zip survive: their files exist.
+    for img in list(bpy.data.images):
+        if img.source == "FILE" and img.packed_file is None \
+                and not os.path.exists(bpy.path.abspath(img.filepath)):
+            bpy.data.images.remove(img)
+    bpy.ops.wm.save_as_mainfile(filepath=blend_cache)
 meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
-print(f"apartment: imported {len(meshes)} meshes", flush=True)
-
-# The path-less texture nodes still materialize as broken image datablocks
-# (named after the FBX texture element, no backing file) — purge them so the
-# pack pass below can't trip over them. The wired images loaded from the
-# extracted zip survive: their files exist.
-for img in list(bpy.data.images):
-    if img.source == "FILE" and img.packed_file is None \
-            and not os.path.exists(bpy.path.abspath(img.filepath)):
-        bpy.data.images.remove(img)
+print(f"apartment: scene ready, {len(meshes)} meshes", flush=True)
 
 # Conservation diagnostic for the audit's glb test: assigned FBX materials
 # Blender's importer failed to materialize (their surfaces are LOST, not
@@ -144,12 +152,34 @@ def _pixel_op(img, new_name, fn):
     return out
 
 
-def inverted(img):
-    """Corona glossiness -> roughness: 1 - x."""
+def inverted(img, blend=None):
+    """Corona glossiness -> roughness: 1 - x, optionally blended toward
+    the scalar base at the AUTHORED map amount (Corona's mapamount)."""
+    base = (blend or {}).get("base", 0.0)
+    amount = (blend or {}).get("amount", 1.0)
+
     def fn(px):
         px[:, :, :3] = 1.0 - px[:, :, :3]
+        if amount < 0.999:
+            px[:, :, :3] = base * (1.0 - amount) + px[:, :, :3] * amount
         return px
-    return _pixel_op(img, img.name + ".rough", fn)
+    return _pixel_op(img, f"{img.name}.rough[{base:.2f},{amount:.2f}]", fn)
+
+
+def tinted(img, blend):
+    """A diffuse map at partial mapamount: the texture TINTS the authored
+    color. Blended in the stored (sRGB-encoded) space against the
+    gamma-encoded color — visually faithful for look purposes."""
+    amount = blend["amount"]
+    c = [pow(max(v, 0.0), 1.0 / 2.2) for v in blend["color"]]
+
+    def fn(px):
+        import numpy as np
+        base = np.array(c, dtype=np.float32)
+        px[:, :, :3] = base * (1.0 - amount) + px[:, :, :3] * amount
+        return px
+    return _pixel_op(
+        img, f"{img.name}.tint[{c[0]:.2f},{c[1]:.2f},{c[2]:.2f},{amount:.2f}]", fn)
 
 
 def height_to_normal(img):
@@ -203,6 +233,8 @@ for mat in bpy.data.materials:
     if "texture" in base:
         img = load_tex(base["texture"])
         if img is not None:
+            if base.get("blend"):
+                img = tinted(img, base["blend"])
             node = image_node(mat, img)
             mat.node_tree.links.new(node.outputs["Color"],
                                     bsdf.inputs["Base Color"])
@@ -233,7 +265,7 @@ for mat in bpy.data.materials:
             img = load_tex(rough["texture"], non_color=True)
             if img is not None:
                 if rough.get("invert"):
-                    img = inverted(img)
+                    img = inverted(img, rough.get("blend"))
                 node = image_node(mat, img)
                 mat.node_tree.links.new(node.outputs["Color"],
                                         bsdf.inputs["Roughness"])

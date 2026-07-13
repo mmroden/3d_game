@@ -200,6 +200,53 @@ def test_gloss_maps_become_inverted_roughness(fbx, plans, inventory):
     assert not bad, f"gloss maps dropped or not inverted: {bad}"
 
 
+def test_gloss_roughness_blends_at_the_authored_amount(fbx, plans, inventory):
+    """Corona blends the glossiness map toward the scalar base at
+    mapamountReflectGlossiness (0.15-0.2 on the walls); applied at 1.0
+    the scratch maps render as mottled roughness chaos."""
+    bad = []
+    for name in assigned(fbx):
+        rec = fbx["materials"][camera_facing(fbx, name)]
+        f = channel_file(rec, GLOSS_CHANNELS, inventory)
+        rough = plans[name].get("roughness")
+        if not f or rough is None or rough.get("texture") != f:
+            continue
+        props = rec["props"]
+        amount = props.get("mapamountReflectGlossiness", 1.0)
+        if amount >= 0.999:
+            continue
+        blend = rough.get("blend")
+        expected_base = 1.0 - props.get("refractGlossiness", 1.0)
+        if (blend is None
+                or abs(blend.get("amount", -1) - amount) > 1e-3
+                or abs(blend.get("base", -1) - expected_base) > 1e-3):
+            bad.append((name, amount, blend))
+    assert not bad, f"gloss maps not blended at authored amounts: {bad}"
+
+
+def test_partial_diffuse_maps_blend_toward_the_authored_color(
+        fbx, plans, inventory):
+    """mapamountDiffuse < 1 means the texture is a TINT over the authored
+    color (a cabinet authored 60% wood over near-black); at 100% it
+    renders as pure texture."""
+    bad = []
+    for name in assigned(fbx):
+        rec = fbx["materials"][camera_facing(fbx, name)]
+        f = channel_file(rec, DIFFUSE_CHANNELS, inventory)
+        base = plans[name]["base_color"]
+        if not f or base.get("texture") != f:
+            continue
+        amount = rec["props"].get("mapamountDiffuse", 1.0)
+        if amount >= 0.999 or "colorDiffuse" not in rec["props"]:
+            continue
+        blend = base.get("blend")
+        if (blend is None
+                or abs(blend.get("amount", -1) - amount) > 1e-3
+                or blend.get("color") != rec["props"]["colorDiffuse"]):
+            bad.append((name, amount, blend))
+    assert not bad, f"partial diffuse maps not blended: {bad}"
+
+
 def test_physical_roughness_maps_wire_directly(fbx, plans, inventory):
     bad = []
     for name in assigned(fbx):
