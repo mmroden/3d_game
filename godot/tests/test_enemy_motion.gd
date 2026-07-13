@@ -51,11 +51,11 @@ func _teleport(pos: Vector3) -> void:
 	_player.reset_physics_interpolation()
 
 func _one_live_enemy_per_type() -> Array:
-	var by_type := {}
+	var by_key := {}
 	for e in _lm.find_children("*", "EnemyDrone", true, false):
-		if e.visible and e.spawns_directly() and not by_type.has(e.enemy_type_id):
-			by_type[e.enemy_type_id] = e  # the line roster, by the def's own fact
-	return by_type.values()
+		if e.visible and e.spawns_directly() and not by_key.has(e.enemy_key):
+			by_key[e.enemy_key] = e  # the line roster, by the def's own fact
+	return by_key.values()
 
 func _assert_enemies_close_on_player(level: int) -> void:
 	_build_stack(level)
@@ -86,8 +86,8 @@ func _assert_enemies_close_on_player(level: int) -> void:
 			if moved > 1.0:
 				break
 		assert_gt(moved, 1.0,
-			"an enemy with the player 15 m away must chase, peak move %0.2f m (type %d, level %d)"
-				% [moved, enemy.enemy_type_id, level])
+			"an enemy with the player 15 m away must chase, peak move %0.2f m (%s, level %d)"
+				% [moved, enemy.enemy_key, level])
 
 func test_planet_1_enemies_close_on_the_player():
 	await _assert_enemies_close_on_player(1)

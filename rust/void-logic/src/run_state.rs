@@ -12,6 +12,35 @@ use crate::ship_type::ShipType;
 use crate::unlocks::PermanentUnlocks;
 use serde::{Deserialize, Serialize};
 
+/// The health bar turns yellow below this hull fraction.
+pub const HEALTH_YELLOW_BELOW: f32 = 0.5;
+/// The health bar turns red below this hull fraction.
+pub const HEALTH_RED_BELOW: f32 = 0.25;
+
+/// The hull-severity zones the HUD speaks in. The health bar's color AND
+/// the damage tint both derive from THIS one scale (owner 2026-07-09:
+/// "when the hull damage bar goes yellow, that's when we have yellow
+/// tint") — one truth, so they can never disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HealthZone {
+    Green,
+    Yellow,
+    Red,
+}
+
+impl HealthZone {
+    /// The zone a hull fraction (current / max) falls in.
+    pub fn of(fraction: f32) -> Self {
+        if fraction > HEALTH_YELLOW_BELOW {
+            Self::Green
+        } else if fraction > HEALTH_RED_BELOW {
+            Self::Yellow
+        } else {
+            Self::Red
+        }
+    }
+}
+
 /// Which defensive layer absorbed a hit. Drives impact SFX: a held shield
 /// plays the energy zap, a hull hit plays the heavy metal clang.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +107,11 @@ pub struct RunState {
     /// the rack restocks to its starting three wherever the item would be
     /// handed over fresh — grant, run-over, profile-only load).
     pub shield_charges: u32,
+    /// Valkyrie charge-row upgrades bought this run (blue, playtest
+    /// 2026-07-06): extra bars and refill levels. The shop's ratchet keys
+    /// AND the node's ChargeState config — see `armament::valkyrie`.
+    pub valkyrie_bars_bought: u32,
+    pub valkyrie_refill_level: u32,
 }
 
 impl RunState {
@@ -130,6 +164,8 @@ impl RunState {
             lives: 1,
             lives_purchased: 0,
             shield_charges: 0,
+            valkyrie_bars_bought: 0,
+            valkyrie_refill_level: 0,
         }
     }
 
@@ -144,7 +180,19 @@ impl RunState {
         let boosted = (self.shield.current.as_f32() + SHIELD_BURST_AMOUNT)
             .min(self.shield.max_capacity.as_f32());
         self.shield.current = Shield::new(boosted);
+        // The emergency recharge also wakes regen — a surge that then sits
+        // dead for the post-hit delay reads as broken (playtest 2026-07-06).
+        self.shield.wake_regen();
         true
+    }
+
+    /// Full shields on the spot — the mechanism a room seal invokes when
+    /// its `restore_shields` flag is set (owner's call 2026-07-06):
+    /// without it, loitering outside the door until the shield regenerated
+    /// was strictly optimal play. Health stays as it stands — you fight
+    /// with the hull you brought.
+    pub fn restore_shields(&mut self) {
+        self.shield.current = self.shield.max_capacity;
     }
 
     /// Whether death costs a life instead of the run.
@@ -249,8 +297,8 @@ impl RunState {
 
     /// Record an enemy kill for the tally. Pays nothing: the kill's reward
     /// rides the cache the enemy drops, credited only via [`Self::collect_cache`].
-    pub fn record_kill(&mut self, crossing_id: u16) {
-        self.kills.record_kill(crossing_id);
+    pub fn record_kill(&mut self, key: crate::roster::EnemyKey) {
+        self.kills.record_kill(key);
     }
 
     /// Credit a collected currency cache to the matching account. The only
@@ -268,8 +316,8 @@ impl RunState {
 
     /// Catalogue an enemy on sighting. Returns `true` the first time this type
     /// is seen, so the caller can persist the freshly-grown bestiary.
-    pub fn mark_enemy_seen(&mut self, crossing_id: u16) -> bool {
-        self.profile.seen_enemies.mark(crossing_id)
+    pub fn mark_enemy_seen(&mut self, key: crate::roster::EnemyKey) -> bool {
+        self.profile.seen_enemies.mark(key)
     }
 
     /// Current laser damage per beam.
@@ -287,6 +335,8 @@ impl RunState {
         self.laser_level = LaserLevel::Red;
         self.components = ComponentAccount::new();
         self.loadout.upgrades.clear();
+        self.valkyrie_bars_bought = 0;
+        self.valkyrie_refill_level = 0;
         self.lives = 1;
         self.lives_purchased = 0;
         // The Surge item is green-permanent and arrives stocked on a fresh
@@ -309,6 +359,16 @@ impl RunState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The n-th declared enemy, by roster position — these tests need SOME
+    /// distinct enemies, never a particular one. The grammar declares which
+    /// exist; retuning the roster can't touch this.
+    fn nth_enemy(n: usize) -> crate::roster::EnemyKey {
+        crate::roster::roster()
+            .enemy_keys()
+            .nth(n)
+            .expect("the grammar declares enough enemies")
+    }
 
     #[test]
     fn new_run_starts_alive() {
@@ -394,7 +454,7 @@ mod tests {
     fn advance_level_resets_per_level_state_and_keeps_the_run() {
         let mut run = RunState::new(Seed::new(42));
         run.collect_cache(CurrencyKind::Components, 7_000);
-        run.record_kill(0);
+        run.record_kill(nth_enemy(0));
         run.clear_room(2);
         run.visit_room(2);
         run.take_damage(Damage::new(70.0)); // through the shield into the hull
@@ -429,6 +489,38 @@ mod tests {
         assert!(run.use_shield_burst());
         assert!(run.shield.current <= run.shield.max_capacity);
         assert_eq!(run.shield_charges, 1);
+    }
+
+    #[test]
+    fn the_surge_wakes_the_shield_regen() {
+        // An emergency recharge that then sits dead for the post-hit delay
+        // reads as broken (playtest 2026-07-06): spending a charge starts
+        // regen on the next tick. A roomier shield makes the regen visible
+        // past the burst's clamp — same production tuning fields shield_for
+        // sets, just wider.
+        let mut run = RunState::new(Seed::new(42));
+        run.shield = ShieldState::new(Shield::new(200.0), 1.5, 5.0);
+        run.shield_charges = 1;
+        run.take_damage(Damage::new(150.0)); // at 50, the 5s delay armed
+        assert!(run.use_shield_burst(), "the stocked rack fires");
+        let after_burst = run.shield.current.as_f32(); // 100, under the cap
+
+        run.shield.tick(1.0);
+        assert!(
+            run.shield.current.as_f32() > after_burst,
+            "the surge wakes regen immediately — no post-hit dead time (got {} from {after_burst})",
+            run.shield.current.as_f32()
+        );
+    }
+
+    #[test]
+    fn restore_shields_tops_up_on_the_spot() {
+        let mut run = RunState::new(Seed::new(42));
+        run.take_damage(Damage::new(30.0));
+        assert!(run.shield.current < run.shield.max_capacity, "fixture sanity");
+        run.restore_shields();
+        assert_eq!(run.shield.current, run.shield.max_capacity,
+            "the seal's mercy: full shields, on the spot");
     }
 
     #[test]
@@ -508,8 +600,8 @@ mod tests {
         // The kill's reward rides the dropped cache — nothing is credited
         // without a pickup.
         let mut run = RunState::new(Seed::new(42));
-        run.record_kill(0);
-        assert_eq!(run.kills.count(0), 1);
+        run.record_kill(nth_enemy(0));
+        assert_eq!(run.kills.count(nth_enemy(0)), 1);
         assert_eq!(run.components.balance, 0,
             "kills pay nothing directly; the reward is in the cache");
     }
@@ -517,9 +609,9 @@ mod tests {
     #[test]
     fn record_multiple_kills() {
         let mut run = RunState::new(Seed::new(42));
-        run.record_kill(0);
-        run.record_kill(0);
-        run.record_kill(4);
+        run.record_kill(nth_enemy(0));
+        run.record_kill(nth_enemy(0));
+        run.record_kill(nth_enemy(1));
         assert_eq!(run.kills.total_kills(), 3);
         assert_eq!(run.components.balance, 0, "no kill is auto-credited");
     }
@@ -594,9 +686,9 @@ mod tests {
     #[test]
     fn marking_an_enemy_seen_reports_first_sighting() {
         let mut run = RunState::new(Seed::new(42));
-        assert!(run.mark_enemy_seen(0), "first sighting is new");
-        assert!(!run.mark_enemy_seen(0), "repeat sighting is not new");
-        assert!(run.profile.seen_enemies.contains(0));
+        assert!(run.mark_enemy_seen(nth_enemy(0)), "first sighting is new");
+        assert!(!run.mark_enemy_seen(nth_enemy(0)), "repeat sighting is not new");
+        assert!(run.profile.seen_enemies.contains(nth_enemy(0)));
     }
 
     #[test]
@@ -612,9 +704,9 @@ mod tests {
     #[test]
     fn bestiary_is_permanent_across_death() {
         let mut run = RunState::new(Seed::new(42));
-        run.mark_enemy_seen(4);
+        run.mark_enemy_seen(nth_enemy(1));
         run.apply_death_penalty();
-        assert!(run.profile.seen_enemies.contains(4),
+        assert!(run.profile.seen_enemies.contains(nth_enemy(1)),
             "the bestiary survives death, like organics");
     }
 
@@ -635,7 +727,7 @@ mod tests {
         let mut run = RunState::new(Seed::new(42));
         run.laser_level = LaserLevel::Violet; // the very top
         run.components.earn(50_000);
-        run.record_kill(0);
+        run.record_kill(nth_enemy(0));
         run.current_level = 5;
 
         run.apply_death_penalty();
@@ -709,6 +801,17 @@ mod tests {
         let b = RunState::new(Seed::new(999));
         assert_ne!(a.level_seed(), b.level_seed(),
             "different run seeds must produce different level seeds");
+    }
+
+    #[test]
+    fn health_zones_match_the_bars_thresholds() {
+        // The one scale the bar and the damage tint both speak.
+        assert_eq!(HealthZone::of(1.0), HealthZone::Green);
+        assert_eq!(HealthZone::of(0.51), HealthZone::Green);
+        assert_eq!(HealthZone::of(0.5), HealthZone::Yellow, "at half, the bar goes yellow");
+        assert_eq!(HealthZone::of(0.26), HealthZone::Yellow);
+        assert_eq!(HealthZone::of(0.25), HealthZone::Red, "at a quarter, the bar goes red");
+        assert_eq!(HealthZone::of(0.0), HealthZone::Red);
     }
 
     #[test]

@@ -1,0 +1,4 @@
+# TEST FIXTURE — the grid the probe would derive (megakit-class pitch).
+[kits.fx_kit]
+tile = 4.0
+story = 5.0

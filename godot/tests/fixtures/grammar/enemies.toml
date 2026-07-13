@@ -1,0 +1,109 @@
+# TEST FIXTURE — owned by the test suite, never by game tuning (owner
+# 2026-07-09: tests must never depend on rosters/, which is tuned freely).
+# Level 1 of the fixture planet GUARANTEES, at any seed: a plain regular,
+# an on-death-brood parent, and a miniboss — every mechanism scenario the
+# suites pin. Models are REAL catalog keys so the shell can build them.
+
+[curves.flat]
+kind = "flat"
+
+[scaling_defaults]
+speed = "flat"
+cooldown = "flat"
+hp = "flat"
+damage = "flat"
+detection = "flat"
+attack_range = "flat"
+
+[[enemy]]
+key = "fx_grunt"
+name = "Fixture Grunt"
+blurb = "A test-grammar regular."
+model = "sphere_ship_01"
+size = 1.0
+yaw_offset_deg = 180
+ai = "shooter"
+reward = 100
+spawns_directly = true
+[enemy.stats]
+hp = 5.0
+speed = 9.0
+damage = 3.0
+detection = 25.0
+attack_range = 10.0
+cooldown = 1.0
+
+[[enemy]]
+key = "fx_brood_parent"
+name = "Fixture Brood Parent"
+blurb = "A test-grammar parent whose death rouses its brood."
+model = "sphere_ship_02"
+size = 1.0
+yaw_offset_deg = 180
+ai = "shooter"
+reward = 200
+spawns_directly = true
+minions = [{ enemy = "fx_spawnling", count = 2, trigger = "on_death" }]
+[enemy.stats]
+hp = 5.0
+speed = 9.0
+damage = 3.0
+detection = 25.0
+attack_range = 10.0
+cooldown = 1.0
+
+[[enemy]]
+key = "fx_spawnling"
+name = "Fixture Spawnling"
+blurb = "A test-grammar minion."
+model = "sphere_ship_02"
+size = 0.5
+yaw_offset_deg = 180
+ai = "kiter"
+reward = 50
+spawns_directly = false
+[enemy.stats]
+hp = 2.0
+speed = 11.0
+damage = 2.0
+detection = 25.0
+attack_range = 8.0
+cooldown = 1.2
+
+[[enemy]]
+key = "fx_miniboss"
+name = "Fixture Miniboss"
+blurb = "A test-grammar room sealer."
+model = "evil_mech_03"
+size = 2.5
+yaw_offset_deg = 180
+ai = "kiter"
+reward = 2000
+spawns_directly = true
+miniboss = true
+minions = [{ enemy = "fx_spawnling", count = 1, trigger = { every_seconds = 5.0 }, cap = 3 }]
+[enemy.stats]
+hp = 40.0
+speed = 10.0
+damage = 8.0
+detection = 30.0
+attack_range = 12.0
+cooldown = 1.0
+
+[[enemy]]
+key = "fx_boss"
+name = "Fixture Boss"
+blurb = "A test-grammar staged fight."
+model = "apartment_boss"
+size = 4.0
+yaw_offset_deg = 180
+ai = "kiter"
+reward = 5000
+spawns_directly = false # staged by boss slots, never rolled into rooms
+[enemy.stats]
+hp = 60.0
+speed = 8.0
+damage = 10.0
+detection = 45.0
+attack_range = 14.0
+cooldown = 1.2

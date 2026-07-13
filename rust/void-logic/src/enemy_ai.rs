@@ -35,6 +35,21 @@ pub enum Archetype {
     Bomber,
 }
 
+impl Archetype {
+    /// The grammar's archetype token — the same string the schema parses from
+    /// `ai = "..."`. Used by the shell's capability queries so tests can find
+    /// "a swarmer"/"a bomber" by what it DOES, never by a def name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Archetype::Shooter => "shooter",
+            Archetype::Kiter => "kiter",
+            Archetype::Swarmer => "swarmer",
+            Archetype::Tank => "tank",
+            Archetype::Bomber => "bomber",
+        }
+    }
+}
+
 /// How the enemy wants to move this tick. `speed_mul` scales its base speed.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Movement {
@@ -103,6 +118,15 @@ pub struct DroneConfig {
     pub disengage_range: f32,
     pub health: Health,
     pub attack_cooldown: f32,
+    /// Bolts per trigger pull (1 = single shot); the cooldown gates BURSTS.
+    pub burst_count: u8,
+    /// In-burst gap (s) between a burst's bolts.
+    pub burst_seconds: f32,
+    /// Mean seconds between dodge re-rolls while engaged (0 = smooth orbit).
+    pub jink_seconds: f32,
+    /// Per-drone determinism seed (the node stamps its instance id) — the
+    /// same seed replays the same dodge, which is what tests lean on.
+    pub seed: u64,
     /// Kiter: preferred minimum distance; closer than this it retreats.
     pub standoff_range: f32,
     /// Bomber: seconds the fuse burns once in detonation range.
@@ -122,6 +146,10 @@ impl Default for DroneConfig {
             disengage_range: 30.0, // detection_range * 1.2
             health: Health::new(3.0),
             attack_cooldown: 1.0,
+            burst_count: 1,
+            burst_seconds: 0.1,
+            jink_seconds: 0.0,
+            seed: 0,
             standoff_range: 0.0,
             fuse_seconds: 0.0,
             blast_radius: 0.0,
@@ -167,6 +195,19 @@ pub struct DroneAi {
     retreat_ticks: u32,
     /// Sidestep ticks remaining after a blocked straight chase.
     evade_ticks: u32,
+    /// Bolts remaining in the open burst (0 = no burst in flight).
+    burst_left: u8,
+    /// Seconds until the open burst's next bolt.
+    burst_timer: f32,
+    /// Seconds until the next dodge re-roll (jink_seconds cadence).
+    jink_timer: f32,
+    /// Dodge re-rolls so far — mixed with the seed per roll, so the RNG is
+    /// never stored (the cluster shell's seed-per-event idiom).
+    jink_rolls: u32,
+    /// Current dodge modulation: tangent multiplier (sign carries the
+    /// direction coin) and vertical bob. (1, 0) = the smooth orbit.
+    jink_tangent: f32,
+    jink_vertical: f32,
 }
 
 impl DroneAi {
@@ -186,6 +227,12 @@ impl DroneAi {
             ticks_since_flip: u32::MAX,
             retreat_ticks: 0,
             evade_ticks: 0,
+            burst_left: 0,
+            burst_timer: 0.0,
+            jink_timer: 0.0,
+            jink_rolls: 0,
+            jink_tangent: 1.0,
+            jink_vertical: 0.0,
         }
     }
 
@@ -207,6 +254,39 @@ impl DroneAi {
         self.orbit_sign
     }
 
+    /// The current dodge modulation (`jink_seconds` switch): a tangent
+    /// multiplier (its sign is the direction coin) and a vertical bob the
+    /// node applies to its strafe axes. (1, 0) = the smooth orbit.
+    pub fn jink(&self) -> (f32, f32) {
+        (self.jink_tangent, self.jink_vertical)
+    }
+
+    /// Advance the dodge clock: an engaged jinker re-rolls its modulation
+    /// on a varied cadence — deterministic per seed, so the same fight
+    /// replays the same dodge. Inert with the switch at 0.
+    fn tick_jink(&mut self, delta: f32) {
+        if self.config.jink_seconds <= 0.0
+            || matches!(self.state, DroneState::Idle | DroneState::Dead)
+        {
+            return;
+        }
+        self.jink_timer -= delta;
+        if self.jink_timer > 0.0 {
+            return;
+        }
+        use rand::rngs::SmallRng;
+        use rand::{RngExt, SeedableRng};
+        self.jink_rolls = self.jink_rolls.wrapping_add(1);
+        let mut rng =
+            SmallRng::seed_from_u64(self.config.seed.wrapping_add(self.jink_rolls as u64));
+        // A direction coin on the tangent pulse, a vertical bob, and a
+        // varied cadence so the dodge never metronomes into predictability.
+        let sign = if rng.random_range(0.0..1.0) < 0.5 { -1.0 } else { 1.0 };
+        self.jink_tangent = sign * rng.random_range(0.6..1.3);
+        self.jink_vertical = rng.random_range(-0.8..0.8);
+        self.jink_timer = self.config.jink_seconds * rng.random_range(0.7..1.3);
+    }
+
     /// Update state from the player's distance and visibility, returning the
     /// movement + attack intent for this tick.
     pub fn update(&mut self, distance_to_player: f32, has_line_of_sight: bool, delta: f32) -> AiTick {
@@ -215,15 +295,20 @@ impl DroneAi {
         }
 
         self.attack_timer = (self.attack_timer - delta).max(0.0);
+        self.tick_jink(delta);
 
         self.advance_state(distance_to_player);
 
-        match self.config.archetype {
+        let mut tick = match self.config.archetype {
             Archetype::Shooter | Archetype::Tank => self.shooter_tick(has_line_of_sight),
             Archetype::Kiter => self.kiter_tick(distance_to_player, has_line_of_sight),
             Archetype::Swarmer => self.swarmer_tick(),
-            Archetype::Bomber => self.bomber_tick(delta),
+            Archetype::Bomber => self.bomber_tick(has_line_of_sight, delta),
+        };
+        if self.continue_burst(has_line_of_sight, delta) == Attack::Fire {
+            tick.attack = Attack::Fire;
         }
+        tick
     }
 
     /// Shared Idle/Chasing/Attacking/Dead transitions with hysteresis.
@@ -256,10 +341,34 @@ impl DroneAi {
     fn try_fire(&mut self, has_line_of_sight: bool) -> Attack {
         if self.state == DroneState::Attacking && self.attack_timer <= 0.0 && has_line_of_sight {
             self.attack_timer = self.config.attack_cooldown;
+            // The opener also opens the burst: the remaining bolts ride
+            // burst_seconds while the cooldown gates the NEXT burst.
+            self.burst_left = self.config.burst_count.saturating_sub(1);
+            self.burst_timer = self.config.burst_seconds;
             Attack::Fire
         } else {
             Attack::None
         }
+    }
+
+    /// Advance an open burst. Bolts after the opener ride `burst_seconds`;
+    /// breaking sight or leaving Attacking forfeits the remainder — an
+    /// aborted burst never resumes, the next one waits on the cooldown.
+    fn continue_burst(&mut self, has_line_of_sight: bool, delta: f32) -> Attack {
+        if self.burst_left == 0 {
+            return Attack::None;
+        }
+        if self.state != DroneState::Attacking || !has_line_of_sight {
+            self.burst_left = 0;
+            return Attack::None;
+        }
+        self.burst_timer -= delta;
+        if self.burst_timer > 0.0 {
+            return Attack::None;
+        }
+        self.burst_left -= 1;
+        self.burst_timer = self.config.burst_seconds;
+        Attack::Fire
     }
 
     /// One straight-chase tick under the wall-feedback loop (playtest
@@ -374,7 +483,7 @@ impl DroneAi {
         AiTick { movement, attack }
     }
 
-    fn bomber_tick(&mut self, delta: f32) -> AiTick {
+    fn bomber_tick(&mut self, has_sight: bool, delta: f32) -> AiTick {
         match self.state {
             DroneState::Idle | DroneState::Dead => {
                 AiTick { movement: Movement::Hold, attack: Attack::None }
@@ -385,6 +494,14 @@ impl DroneAi {
                 AiTick { movement: self.chase_movement(1.0), attack: Attack::None }
             }
             DroneState::Attacking => {
+                if !has_sight {
+                    // In range THROUGH A WALL (state advancement is pure
+                    // distance): hold the fuse full and ride the wall-
+                    // feedback chase instead of cooking off against
+                    // geometry (playtest 2026-07-06).
+                    self.fuse_timer = self.config.fuse_seconds;
+                    return AiTick { movement: self.chase_movement(1.0), attack: Attack::None };
+                }
                 self.fuse_timer = (self.fuse_timer - delta).max(0.0);
                 if self.fuse_timer <= 0.0 {
                     self.state = DroneState::Dead;
@@ -425,6 +542,35 @@ impl DroneAi {
 
     pub fn is_dead(&self) -> bool {
         self.state == DroneState::Dead
+    }
+
+    /// The guardian verb's door (`guard_radius` — docs/design/enemy_verbs.md):
+    /// drink a guarded ally's damage into this guardian's SHIELD only,
+    /// returning the overflow the ally keeps. The guardian's hull is never
+    /// touched through this door — a broken shield guards nothing, and a
+    /// dead or shieldless guardian passes the hit straight through.
+    pub fn absorb_into_shield(&mut self, amount: Damage) -> Damage {
+        if self.state == DroneState::Dead {
+            return amount;
+        }
+        match self.shield {
+            Some(shield) => {
+                let (remaining, overflow) = shield.absorb(amount);
+                self.shield = Some(remaining);
+                overflow
+            }
+            None => amount,
+        }
+    }
+
+    /// The alarm verb's door (`alert_radius` — docs/design/enemy_verbs.md):
+    /// jump an Idle machine straight to Chasing, detection bypassed — the
+    /// klaxon IS the detection. Dead stays dead; an already-engaged machine
+    /// is untouched (no fight is ever reset by a second alarm).
+    pub fn force_engage(&mut self) {
+        if self.state == DroneState::Idle {
+            self.state = DroneState::Chasing;
+        }
     }
 }
 
@@ -497,6 +643,177 @@ mod tests {
         ai.update(4.0, true, 0.5); // still cooling
         let tick = ai.update(4.0, true, 0.6); // cooldown expired
         assert_eq!(tick.attack, Attack::Fire);
+    }
+
+    // --- Jink (the erratic kiter — docs/design/enemy_verbs.md) ---
+
+    fn jink_ai(seed: u64) -> DroneAi {
+        DroneAi::new(DroneConfig { jink_seconds: 0.5, seed, ..DroneConfig::default() })
+    }
+
+    #[test]
+    fn without_the_switch_the_orbit_stays_smooth() {
+        let mut ai = default_ai();
+        ai.update(20.0, true, 0.016);
+        for _ in 0..100 {
+            ai.update(4.0, true, 0.016);
+            assert_eq!(ai.jink(), (1.0, 0.0), "no dodge without the declaration");
+        }
+    }
+
+    #[test]
+    fn a_jinker_rerolls_its_dodge_on_cadence_and_stays_bounded() {
+        let mut ai = jink_ai(7);
+        ai.update(20.0, true, 0.016);
+        ai.update(4.0, true, 0.016); // → Attacking
+        let mut headings = vec![ai.jink()];
+        for _ in 0..190 {
+            // ~3 seconds at a 60 Hz tick
+            ai.update(4.0, true, 0.016);
+            let (t, v) = ai.jink();
+            assert!((0.6..=1.3).contains(&t.abs()), "tangent pulse bounded: {t}");
+            assert!((-0.8..=0.8).contains(&v), "vertical bob bounded: {v}");
+            if headings.last() != Some(&(t, v)) {
+                headings.push((t, v));
+            }
+        }
+        assert!(headings.len() >= 3, "the dodge re-rolls on cadence: {}", headings.len());
+        assert!(headings.len() <= 12, "but never every tick: {}", headings.len());
+    }
+
+    #[test]
+    fn the_same_seed_replays_the_same_dodge() {
+        let run = |seed: u64| -> Vec<(f32, f32)> {
+            let mut ai = jink_ai(seed);
+            ai.update(20.0, true, 0.016);
+            (0..200)
+                .map(|_| {
+                    ai.update(4.0, true, 0.016);
+                    ai.jink()
+                })
+                .collect()
+        };
+        assert_eq!(run(7), run(7), "determinism — replays and tests lean on it");
+        assert_ne!(run(7), run(8), "different machines dodge differently");
+    }
+
+    // --- Guardian link (absorb_into_shield — docs/design/enemy_verbs.md) ---
+
+    #[test]
+    fn a_guardian_shield_drinks_allied_damage_and_returns_overflow() {
+        let mut g = DroneAi::new(DroneConfig {
+            archetype: Archetype::Tank,
+            shield: Some(Shield::new(10.0)),
+            ..DroneConfig::default()
+        });
+        assert_eq!(
+            g.absorb_into_shield(Damage::new(4.0)).as_f32(),
+            0.0,
+            "the shield drinks the whole hit"
+        );
+        let overflow = g.absorb_into_shield(Damage::new(9.0));
+        assert!(
+            (overflow.as_f32() - 3.0).abs() < 1e-5,
+            "past the pool the ally keeps the rest: {}",
+            overflow.as_f32()
+        );
+        assert_eq!(
+            g.absorb_into_shield(Damage::new(5.0)).as_f32(),
+            5.0,
+            "a broken shield guards nothing"
+        );
+        assert!(
+            g.health.is_alive() && g.health.as_f32() == DroneConfig::default().health.as_f32(),
+            "the guardian's hull is never touched through this door"
+        );
+    }
+
+    #[test]
+    fn a_dead_or_shieldless_guardian_absorbs_nothing() {
+        let mut bare = default_ai();
+        assert_eq!(bare.absorb_into_shield(Damage::new(4.0)).as_f32(), 4.0);
+
+        let mut dead = DroneAi::new(DroneConfig {
+            shield: Some(Shield::new(10.0)),
+            ..DroneConfig::default()
+        });
+        dead.take_damage(Damage::new(1000.0));
+        assert!(dead.is_dead());
+        assert_eq!(dead.absorb_into_shield(Damage::new(4.0)).as_f32(), 4.0);
+    }
+
+    // --- Alarm (force_engage — docs/design/enemy_verbs.md) ---
+
+    #[test]
+    fn force_engage_wakes_idle_spares_fights_and_respects_death() {
+        // The klaxon wakes a sentry that has seen nothing.
+        let mut idle = default_ai();
+        assert_eq!(idle.state, DroneState::Idle);
+        idle.force_engage();
+        assert_eq!(idle.state, DroneState::Chasing, "an alerted sentry hunts unseen");
+
+        // A machine already fighting is not reset by a second alarm.
+        let mut fighting = default_ai();
+        engage(&mut fighting, 4.0);
+        fighting.force_engage();
+        assert_eq!(fighting.state, DroneState::Attacking, "a fighter keeps fighting");
+
+        // The dead don't answer klaxons.
+        let mut dead = default_ai();
+        dead.take_damage(Damage::new(1000.0));
+        assert!(dead.is_dead());
+        dead.force_engage();
+        assert!(dead.is_dead(), "dead stays dead");
+    }
+
+    // --- Burst fire (design 2026-07-11: the cooldown gates BURSTS, the
+    // in-burst gap spaces the bolts; docs/design/enemy_verbs.md) ---
+
+    fn burst_ai(count: u8, gap: f32) -> DroneAi {
+        DroneAi::new(DroneConfig {
+            burst_count: count,
+            burst_seconds: gap,
+            ..DroneConfig::default()
+        })
+    }
+
+    #[test]
+    fn a_burst_fires_its_count_spaced_by_burst_seconds() {
+        let mut ai = burst_ai(3, 0.1);
+        ai.update(20.0, true, 0.016); // → Chasing
+        let first = ai.update(4.0, true, 0.016); // → Attacking: burst opens
+        assert_eq!(first.attack, Attack::Fire, "the burst opens on the fire window");
+        // The two remaining bolts ride burst_seconds (ticked at 0.05s,
+        // 8 ticks = 0.4s window), not the 1.0s cooldown.
+        let fires = (0..8)
+            .filter(|_| ai.update(4.0, true, 0.05).attack == Attack::Fire)
+            .count();
+        assert_eq!(fires, 2, "the burst completes its declared count and stops");
+        // Between bursts: silence (10 ticks = 0.5s more, still inside cooldown).
+        let quiet = (0..10).all(|_| ai.update(4.0, true, 0.05).attack == Attack::None);
+        assert!(quiet, "the gap between bursts belongs to the cooldown");
+        // Past the cooldown, the next burst opens.
+        let next = ai.update(4.0, true, 0.2);
+        assert_eq!(next.attack, Attack::Fire, "the cooldown opens the next burst");
+    }
+
+    #[test]
+    fn losing_sight_aborts_the_burst_remainder() {
+        let mut ai = burst_ai(3, 0.1);
+        ai.update(20.0, true, 0.016);
+        assert_eq!(ai.update(4.0, true, 0.016).attack, Attack::Fire);
+        // Sight breaks mid-burst: the remaining bolts are forfeit, not banked.
+        for _ in 0..4 {
+            assert_eq!(ai.update(4.0, false, 0.05).attack, Attack::None);
+        }
+        // Sight returns inside the same window: still silent — the aborted
+        // burst does not resume; the next one arrives on the cooldown.
+        let fires = (0..10)
+            .filter(|_| ai.update(4.0, true, 0.05).attack == Attack::Fire)
+            .count();
+        assert_eq!(fires, 0, "an aborted burst does not resume");
+        let next = ai.update(4.0, true, 0.5);
+        assert_eq!(next.attack, Attack::Fire, "the next burst arrives on cooldown");
     }
 
     #[test]
@@ -794,6 +1111,30 @@ mod tests {
         let boom = ai.update(4.0, true, 0.6); // fuse exhausted
         assert_eq!(boom.attack, Attack::Detonate { radius: 6.0 });
         assert!(ai.is_dead());
+    }
+
+    #[test]
+    fn bomber_fuse_needs_line_of_sight() {
+        // Playtest 2026-07-06: detection and state advancement are pure
+        // distance, so a bomber "in range" THROUGH A WALL burned its fuse
+        // against the geometry and cooked off unseen. Blind in range: the
+        // fuse holds full and nothing detonates. Sight restored: it burns
+        // fresh from the top.
+        let mut config = config_with(Archetype::Bomber);
+        config.fuse_seconds = 1.0;
+        config.blast_radius = 6.0;
+        let mut ai = DroneAi::new(config);
+        engage(&mut ai, 4.0);
+        ai.update(4.0, false, 0.6);
+        let blind = ai.update(4.0, false, 0.6); // 1.2s blind — over the fuse
+        assert_eq!(blind.attack, Attack::None, "a blind bomber never cooks off");
+        assert!(!ai.is_dead(), "the blind bomber is still alive");
+        // Sight restored: the fuse burns from full, not from where blindness left it.
+        let mid = ai.update(4.0, true, 0.6);
+        assert_eq!(mid.attack, Attack::None, "0.6s of a fresh 1.0s fuse — not yet");
+        let boom = ai.update(4.0, true, 0.6);
+        assert_eq!(boom.attack, Attack::Detonate { radius: 6.0 },
+            "the sighted fuse detonates on schedule");
     }
 
     #[test]

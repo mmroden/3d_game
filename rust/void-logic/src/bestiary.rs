@@ -5,13 +5,15 @@
 //! been REMOVED from the roster simply stops appearing (old saves tolerate
 //! retired enemies; nothing crashes).
 
-use crate::roster::{roster, EnemyId};
+use crate::roster::{roster, EnemyKey};
 
-/// The set of enemy crossing ids the player has encountered. Permanent
-/// across runs: marked the first time one spawns, catalogued forever.
+/// The set of enemy keys the player has encountered. Permanent across runs:
+/// marked the first time one spawns, catalogued forever. A key whose def has
+/// been removed from the grammar simply stops appearing (old saves tolerate
+/// retired enemies; nothing crashes).
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SeenEnemies {
-    seen: std::collections::HashSet<u16>,
+    seen: std::collections::HashSet<EnemyKey>,
 }
 
 impl SeenEnemies {
@@ -19,14 +21,14 @@ impl SeenEnemies {
         Self::default()
     }
 
-    /// Mark a crossing id as encountered. Returns `true` on first sighting
-    /// (so the caller can flag "new entry" / trigger a save).
-    pub fn mark(&mut self, crossing_id: u16) -> bool {
-        self.seen.insert(crossing_id)
+    /// Mark an enemy as encountered. Returns `true` on first sighting (so the
+    /// caller can flag "new entry" / trigger a save).
+    pub fn mark(&mut self, key: EnemyKey) -> bool {
+        self.seen.insert(key)
     }
 
-    pub fn contains(&self, crossing_id: u16) -> bool {
-        self.seen.contains(&crossing_id)
+    pub fn contains(&self, key: EnemyKey) -> bool {
+        self.seen.contains(&key)
     }
 
     pub fn count(&self) -> usize {
@@ -34,11 +36,12 @@ impl SeenEnemies {
     }
 
     /// Seen enemies in roster declaration order, independent of encounter
-    /// order. Ids without a def (removed from the grammar) are skipped.
-    pub fn in_roster_order(&self) -> Vec<EnemyId> {
-        let r = roster();
-        r.enemy_ids()
-            .filter(|id| self.seen.contains(&r.enemy(*id).crossing_id))
+    /// order. Keys without a def (removed from the grammar, or an old save's
+    /// retired enemy) are skipped — `enemy_keys` only yields declared ones.
+    pub fn in_roster_order(&self) -> Vec<EnemyKey> {
+        roster()
+            .enemy_keys()
+            .filter(|k| self.seen.contains(k))
             .collect()
     }
 }
@@ -51,7 +54,7 @@ pub enum BestiaryKind {
     /// Blue cache: upgrades for the current run only (components).
     ComponentCache,
     /// A catalogued enemy.
-    Enemy(EnemyId),
+    Enemy(EnemyKey),
 }
 
 /// A fully-resolved catalog entry: what to display, its title, and its lore.
@@ -128,45 +131,43 @@ pub fn briefing_hint(total: usize) -> &'static str {
 mod tests {
     use super::*;
 
-    fn cid(key: &str) -> u16 {
-        let r = roster();
-        r.enemy(r.enemy_by_key(key).expect(key)).crossing_id
+    /// The n-th declared enemy, by roster position — these tests need SOME
+    /// distinct enemies, never a particular one. The grammar declares which
+    /// exist; retuning the roster can't touch this.
+    fn nth_enemy(n: usize) -> EnemyKey {
+        roster().enemy_keys().nth(n).expect("the grammar declares enough enemies")
     }
 
     #[test]
     fn newly_seen_enemy_reports_first_sighting() {
         let mut seen = SeenEnemies::new();
-        assert!(seen.mark(cid("gun_drone")), "first sighting is new");
-        assert!(!seen.mark(cid("gun_drone")), "second sighting is not new");
-        assert!(seen.contains(cid("gun_drone")));
+        let e = nth_enemy(0);
+        assert!(seen.mark(e), "first sighting is new");
+        assert!(!seen.mark(e), "second sighting is not new");
+        assert!(seen.contains(e));
         assert_eq!(seen.count(), 1);
     }
 
     #[test]
-    fn seen_enemies_iterate_in_roster_order_not_encounter_order() {
-        let mut seen = SeenEnemies::new();
-        // Encountered out of declaration order.
-        seen.mark(cid("quad_shell"));
-        seen.mark(cid("gun_drone"));
-        seen.mark(cid("bomber"));
-        let keys: Vec<&str> = seen
-            .in_roster_order()
-            .iter()
-            .map(|id| roster().enemy(*id).key.as_str())
-            .collect();
-        assert_eq!(keys, vec!["gun_drone", "bomber", "quad_shell"]);
-    }
-
-    #[test]
-    fn a_removed_enemys_save_flag_is_tolerated() {
-        // Open-set identity (owner 2026-07-05): an old save may reference an
-        // enemy the grammar no longer declares — it silently stops appearing.
-        let mut seen = SeenEnemies::new();
-        seen.mark(9999);
-        seen.mark(cid("bomber"));
-        let listed = seen.in_roster_order();
-        assert_eq!(listed.len(), 1, "the ghost id is skipped, nothing crashes");
-        assert_eq!(entries(&seen).len(), 3, "pickups + the one real enemy");
+    fn a_retired_enemy_in_an_old_save_is_tolerated() {
+        // Open-set identity (owner 2026-07-05): a save may name an enemy the
+        // grammar no longer declares. Such a key enters ONLY through the serde
+        // boundary — the typed API can't build an EnemyKey for an undeclared
+        // enemy — and it silently stops appearing; nothing crashes.
+        let real = roster().enemy_keys().next().expect("the grammar declares enemies");
+        let json = format!(r#"{{"seen":["{}","no_such_enemy"]}}"#, real.as_str());
+        let seen: SeenEnemies = serde_json::from_str(&json).expect("an old save deserializes");
+        assert_eq!(
+            seen.in_roster_order(),
+            vec![real],
+            "the retired ghost is skipped; the still-declared enemy survives"
+        );
+        // The catalog renders past the ghost without panicking.
+        let titles: Vec<&str> = entries(&seen).iter().map(|e| e.title).collect();
+        assert!(
+            titles.contains(&roster().enemy(real).name.as_str()),
+            "the still-declared enemy is catalogued"
+        );
     }
 
     #[test]
@@ -178,16 +179,25 @@ mod tests {
     }
 
     #[test]
-    fn pickups_always_lead_then_seen_enemies_in_order() {
+    fn the_two_pickups_always_lead_then_the_seen_enemies_follow() {
+        // The contract is "pickups first, then whatever's been seen" — not a
+        // pinned sequence (order just reflects the file).
         let mut seen = SeenEnemies::new();
-        seen.mark(cid("quad_shell"));
-        seen.mark(cid("gun_drone"));
+        let a = nth_enemy(0);
+        let b = nth_enemy(1);
+        seen.mark(a);
+        seen.mark(b);
         let entries = entries(&seen);
-        assert_eq!(entries.len(), 4);
+        assert_eq!(entries.len(), 4, "the two pickups + the two seen enemies");
         assert_eq!(entries[0].kind, BestiaryKind::OrganicCache);
         assert_eq!(entries[1].kind, BestiaryKind::ComponentCache);
-        assert_eq!(entries[2].title, "Gun Drone");
-        assert_eq!(entries[3].title, "Quad Shell");
+        let seen_titles: std::collections::HashSet<&str> =
+            entries[2..].iter().map(|e| e.title).collect();
+        assert!(
+            seen_titles.contains(roster().enemy(a).name.as_str())
+                && seen_titles.contains(roster().enemy(b).name.as_str()),
+            "both seen enemies are catalogued under their declared names"
+        );
     }
 
     #[test]
@@ -220,8 +230,8 @@ mod tests {
     #[test]
     fn every_entry_has_a_title_and_a_blurb() {
         let mut seen = SeenEnemies::new();
-        for id in roster().enemy_ids() {
-            seen.mark(roster().enemy(id).crossing_id);
+        for key in roster().enemy_keys() {
+            seen.mark(key);
         }
         for entry in entries(&seen) {
             assert!(!entry.title.is_empty(), "{:?} title empty", entry.kind);

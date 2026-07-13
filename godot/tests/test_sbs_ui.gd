@@ -120,6 +120,33 @@ func test_mono_view_recovers_the_window_after_a_resize():
 	assert_eq(left.size, win,
 		"mono's single eye must re-cover the window after a resize")
 
+# --- full-screen washes cover the WINDOW, not the safe-area band ---
+
+func test_fullscreen_washes_cover_the_window_in_sbs():
+	# The damage tint and the slow wash must tint EVERYTHING each eye sees.
+	# Parented inside the SBS safe-area band they render as a center stripe
+	# (playtest 2026-07-09) — washes belong to the window; only positioned
+	# chrome belongs in the band.
+	_main.get_node("GameManager").on_sbs_toggled()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var hud = _main.get_node("HUD")
+	for wash_name in ["DamageTint", "SlowOverlay"]:
+		var wash: Control = hud.find_child(wash_name, true, false)
+		assert_not_null(wash, "%s must exist under the HUD" % wash_name)
+		if wash == null:
+			continue
+		# Reference = the wash's own canvas rect (the rect FULL_RECT resolves
+		# against) — window_get_size() is 0 headless. The SBS band starts
+		# inside the canvas and spans less than it, so these two pins prove
+		# the wash escaped the band.
+		var full := wash.get_viewport_rect().size
+		var rect := wash.get_global_rect()
+		assert_almost_eq(rect.position.x, 0.0, 1.0,
+			"%s must start at the canvas's left edge in SBS" % wash_name)
+		assert_almost_eq(rect.size.x, full.x, 1.0,
+			"%s must span the full canvas width in SBS" % wash_name)
+
 # --- helpers ---
 
 func _find_panel_container(node: Node) -> PanelContainer:

@@ -14,34 +14,69 @@ extends GutTest
 ##     LevelManager child count is constant across a drop);
 ##   - build-time wiring works with process running — no per-frame scan rewires.
 
-const EYE_DRONE_ID := 3   # EnemyType::ALL index of the EyeDrone
-const SPAWN_DRONE_ID := 5 # ... and of the SpawnDrone it coughs up on death
-
 ## Seeds are PINNED, never scanned: whether a seed produces a property is a
 ## pure model question, verified fast on the Rust side. The shell builds one
-## level per scenario. Mirrors (level_assembly::tests):
-##   EYE_DRONE_SEED       <-> pinned_gut_seed_places_an_eye_drone
+## level per scenario — against the FIXTURE grammar (owner 2026-07-09:
+## mechanism tests never depend on rosters/, which is tuned freely), swapped
+## in through GameManager's grammar-override test door. Types are NEVER
+## named — expectations derive from the grammar doors (declared_minion_total
+## & co.). Mirrors (level_assembly::tests, fixture-driven):
+##   MINION_PARENT_SEED   <-> pinned_gut_seed_places_a_minion_declaring_parent
 ##   GREEN_CACHE_RUN_SEED <-> pinned_gut_run_seed_places_a_loot_container
-const EYE_DRONE_SEED := 1
+const MINION_PARENT_SEED := 1
+const MINION_PARENT_LEVEL := 1  # the fixture's level 1 fields every subject
 const GREEN_CACHE_RUN_SEED := 1
 
 const UiStub := preload("res://tests/helpers/ui_stub.gd")
 
+func before_all():
+	assert_true(GameManager.install_test_grammar(
+		FileAccess.get_file_as_string("res://tests/fixtures/grammar/enemies.toml"),
+		FileAccess.get_file_as_string("res://tests/fixtures/grammar/kits.toml"),
+		FileAccess.get_file_as_string("res://tests/fixtures/grammar/kits.generated.toml"),
+		FileAccess.get_file_as_string("res://tests/fixtures/grammar/planet_1.toml"),
+		"",  # no fixture environment — grid world
+	), "the fixture grammar installs")
+
+func after_all():
+	GameManager.clear_test_grammar()
+
 
 # --- Helpers ---
 
-## Build the one pinned level that contains an EyeDrone (see EYE_DRONE_SEED).
-func _eye_drone_level() -> LevelManager:
+## Build the one pinned level that fields a minion-declaring parent (see
+## MINION_PARENT_SEED / MINION_PARENT_LEVEL).
+func _minion_parent_level() -> LevelManager:
 	var lm := LevelManager.new()
-	lm.current_level = 3
+	lm.current_level = MINION_PARENT_LEVEL
 	add_child_autofree(lm)
-	lm.generate_level(EYE_DRONE_SEED, 8)
+	lm.generate_level(MINION_PARENT_SEED, 8)
 	return lm
 
-func _find_enemies_of_type(lm: Node, type_id: int) -> Array:
-	var out := []
+## Any live parent whose DEATH rouses a brood — found through the grammar
+## door, never by a named type id. Death-brood specifically: these scenarios
+## kill the parent and count the flips, and the death filter also keeps the
+## miniboss anchor (timed ring only, and dormant besides) out of the pick.
+func _find_minion_parent(lm: Node) -> RigidBody3D:
 	for e in lm.find_children("*", "EnemyDrone", true, false):
-		if e.enemy_type_id == type_id:
+		if e.visible and e.declared_death_minion_total() > 0:
+			return e
+	return null
+
+## The dormancy a room owes beyond its visible parents' declared minions:
+## a dormant seal anchor (a miniboss) reserves ITSELF plus its declared
+## ring in its room — the Faucet contract extended (2026-07-09).
+func _anchor_reserved_in(lm: LevelManager, room: Node) -> int:
+	var anchor = lm.staged_boss_node()
+	if anchor != null and room.is_ancestor_of(anchor) and not anchor.visible:
+		return 1 + anchor.declared_minion_total()
+	return 0
+
+## Reserved (dormant) drones under `room`: invisible and process-disabled.
+func _dormant_drones(room: Node) -> Array:
+	var out := []
+	for e in room.find_children("*", "EnemyDrone", true, false):
+		if not e.visible and e.process_mode == Node.PROCESS_MODE_DISABLED:
 			out.append(e)
 	return out
 
@@ -57,25 +92,32 @@ func _room_container_of(lm: Node, node: Node) -> Node:
 # --- Death minions are pre-built dormant under the parent's room ---
 
 func test_death_minions_pre_exist_dormant_under_parent_room():
-	var lm := _eye_drone_level()
-	var eyes := _find_enemies_of_type(lm, EYE_DRONE_ID)
-	assert_gt(eyes.size(), 0,
-		"the pinned seed places an EyeDrone (Rust: pinned_gut_seed_places_an_eye_drone)")
-	var eye: RigidBody3D = eyes.front()
-	var eye_room := _room_container_of(lm, eye)
-	assert_not_null(eye_room, "the EyeDrone must live under a room container")
-	# Dormancy flags land on the deferred boundary — allow one flush post-build.
+	var lm := _minion_parent_level()
+	# Dormancy flags land on the deferred boundary — flush BEFORE searching,
+	# or a not-yet-dormant seal anchor reads as a visible parent.
 	await wait_process_frames(1)
+	var parent := _find_minion_parent(lm)
+	assert_not_null(parent,
+		"the pinned seed fields a minion-declaring parent (Rust: pinned_gut_seed_places_a_minion_declaring_parent)")
+	if parent == null:
+		return
+	var room := _room_container_of(lm, parent)
+	assert_not_null(room, "the parent must live under a room container")
 
-	# Its SpawnDrone minion is pre-built in the SAME room, dormant — it does not
-	# escape to the scene root the way the old death-path instantiate did.
-	var minions := _find_enemies_of_type(eye_room, SPAWN_DRONE_ID)
-	assert_eq(minions.size(), 1,
-		"an EyeDrone reserves exactly one dormant SpawnDrone minion under its room")
+	# The room reserves EXACTLY its live parents' declared minion totals —
+	# pre-built dormant in the SAME container, never escaping to the scene
+	# root the way the old death-path instantiate did — plus, when this is
+	# the miniboss's room, the dormant anchor and its declared ring.
+	var expected := 0
+	for e in room.find_children("*", "EnemyDrone", true, false):
+		if e.visible:
+			expected += e.declared_minion_total()
+	assert_gt(expected, 0, "sanity: this room's parents declare minions")
+	expected += _anchor_reserved_in(lm, room)
+	var minions := _dormant_drones(room)
+	assert_eq(minions.size(), expected,
+		"a room reserves exactly its parents' declared minion totals")
 	var minion: RigidBody3D = minions.front()
-	assert_false(minion.visible, "a dormant minion is invisible")
-	assert_eq(minion.process_mode, Node.PROCESS_MODE_DISABLED,
-		"a dormant minion does not process (its AI is gated)")
 	assert_eq(minion.collision_layer, 0, "a dormant minion does not collide (layer zeroed)")
 	assert_eq(minion.collision_mask, 0, "a dormant minion does not sense (mask zeroed)")
 
@@ -88,27 +130,39 @@ func test_death_minions_pre_exist_dormant_under_parent_room():
 
 
 func test_killing_parent_activates_its_minions():
-	var lm := _eye_drone_level()
-	var eyes := _find_enemies_of_type(lm, EYE_DRONE_ID)
-	assert_gt(eyes.size(), 0,
-		"the pinned seed places an EyeDrone (Rust: pinned_gut_seed_places_an_eye_drone)")
-	var eye: RigidBody3D = eyes.front()
-	var eye_room := _room_container_of(lm, eye)
-	var minion: RigidBody3D = _find_enemies_of_type(eye_room, SPAWN_DRONE_ID).front()
-	# Dormancy flags land on the deferred boundary — allow one flush post-build.
+	var lm := _minion_parent_level()
+	# Dormancy flags land on the deferred boundary — flush BEFORE searching,
+	# or a not-yet-dormant seal anchor reads as a visible parent.
 	await wait_process_frames(1)
-	assert_false(minion.visible, "sanity: minion starts dormant")
+	var parent := _find_minion_parent(lm)
+	assert_not_null(parent,
+		"the pinned seed fields a minion-declaring parent (Rust: pinned_gut_seed_places_a_minion_declaring_parent)")
+	if parent == null:
+		return
+	var room := _room_container_of(lm, parent)
+	var before := _dormant_drones(room)
+	var death_brood: int = parent.declared_death_minion_total()
+	assert_gt(death_brood, 0, "sanity: the parent's death rouses a brood")
 
-	eye.take_damage(1000.0) # EyeDrone has 5 HP — lethal
+	parent.take_damage(100000.0) # lethal at any tuning
 	await wait_physics_frames(3, "let the parent's death activate its minions")
 
-	assert_true(is_instance_valid(minion), "the minion survives its parent's death")
-	assert_true(minion.visible, "the parent's death makes its minion visible")
-	assert_eq(minion.process_mode, Node.PROCESS_MODE_INHERIT,
+	var after := _dormant_drones(room)
+	assert_eq(after.size(), before.size() - death_brood,
+		"the parent's death flips exactly its declared death-brood live")
+	var flipped: RigidBody3D = null
+	for e in before:
+		if is_instance_valid(e) and e.visible:
+			flipped = e
+			break
+	assert_not_null(flipped, "an activated minion is visible")
+	if flipped == null:
+		return
+	assert_eq(flipped.process_mode, Node.PROCESS_MODE_INHERIT,
 		"an activated minion processes (its AI runs)")
-	assert_ne(minion.collision_layer, 0, "an activated minion collides again")
+	assert_ne(flipped.collision_layer, 0, "an activated minion collides again")
 	# It stays under the same room container — activation is a flip, not a reparent.
-	assert_eq(_room_container_of(lm, minion), eye_room,
+	assert_eq(_room_container_of(lm, flipped), room,
 		"an activated minion stays under its parent's room container")
 
 

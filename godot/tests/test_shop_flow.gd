@@ -334,9 +334,26 @@ func test_save_and_exit_banks_the_run_at_the_next_level():
 	assert_eq(gm.get_components(), components_after_buy, "purchases and salvage survived")
 
 
+func _sfx_player_count(audio: AudioManager) -> int:
+	var n := 0
+	for c in audio.get_children():
+		if c is AudioStreamPlayer:
+			n += 1
+	return n
+
+
 func test_the_shield_surge_stocks_charges_and_spends_on_the_trigger():
 	# The Shield Surge: green item arrives with three charges, refills are
 	# 5k blue, and the item trigger spends one for instant shields.
+	# find_audio_manager resolves /root/Main/AudioManager — mirror the real
+	# scene shape so the spend has somewhere to voice.
+	var main := Node.new()
+	main.name = "Main"
+	get_tree().root.add_child(main)
+	autofree(main)
+	var audio := AudioManager.new()
+	audio.name = "AudioManager"
+	main.add_child(audio)
 	var gm := _playing_game()
 	await wait_process_frames(3)
 	gm.on_cache_collected(KIND_ORGANICS, 2_000, false)
@@ -358,5 +375,8 @@ func test_the_shield_surge_stocks_charges_and_spends_on_the_trigger():
 			break
 		gm.advance_from_bestiary()
 	await wait_process_frames(3)
+	var sfx_before := _sfx_player_count(audio)
 	gm.on_shield_burst_requested()
 	assert_eq(gm.get_shield_charges(), 3, "the trigger spends a charge")
+	assert_gt(_sfx_player_count(audio), sfx_before,
+		"spending a surge charge is audible (playtest 2026-07-06)")

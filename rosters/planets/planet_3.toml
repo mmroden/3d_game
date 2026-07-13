@@ -1,0 +1,42 @@
+# Planet 3 — the house: a fixed pre-modeled apartment at 5x scale (chapter
+# 3's gigantic distorted childhood home). Same staged boss all three
+# levels; the drone mix escalates. Fixed planets declare no rooms (the
+# environment's zones are the room count) and stage a boss at EVERY level
+# (an open house has no room seal for a miniboss).
+
+planet = 3
+levels = 3
+kits = ["apartment"]
+
+[[level]]
+relative = 1
+enemies = ["house_seeker", "house_stalker"]
+
+[[level]]
+relative = 2
+enemies = ["house_seeker", "house_stalker", "house_warden"]
+
+[[level]]
+relative = 3
+enemies = ["house_seeker", "house_stalker", "house_warden"]
+
+[[boss_slot]]
+at = { relative = 1 }
+boss = "boss_keeper"
+escorts = { enemy = "umsfd_picket", trigger = "on_engage", count = 2 }
+track = 3
+reward = "consolation_pile"
+
+[[boss_slot]]
+at = { relative = 2 }
+boss = "boss_keeper"
+escorts = { enemy = "umsfd_picket", trigger = "on_engage", count = 4 }
+track = 4
+reward = "consolation_pile"
+
+[[boss_slot]]
+at = { relative = 3 }
+boss = "boss_keeper"
+escorts = { enemy = "umsfd_picket", trigger = "on_death", count = 6 }
+track = 5
+reward = "hull_container"

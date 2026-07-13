@@ -1,0 +1,32 @@
+# Reference-comparison shots: one entry per vendor still in this
+# directory. `pose` is the --shot= knob (world x,y,z, yaw_deg, pitch_deg);
+# capture with:
+#   Godot --path godot --write-movie out/frame.png --fixed-fps 10 \
+#       --resolution 1144x828 -- \
+#       --level=13 --seed=1 --sbs=0 --populace=0 \
+#       --shot=<pose1;pose2;...> --shot-dir=<out>
+#
+# acceptance_stage gates the comparison suite: every stage's contracts
+# always RUN and REPORT at full strictness; stages above the accepted one
+# are expected-fail (visible, never silent). Flipping a stage on is a
+# deliberate edit here, never a threshold change.
+#   1 = materials (albedo hue/chroma, region variance, textured-vs-flat)
+#   2 = direct light (sun/shadow ratios, blowout bounds, fixture glow)
+#   3 = global illumination (absolute luminance parity — post-bake)
+acceptance_stage = 2
+
+[[shot]]
+reference = "kitchen.png"
+pose = "0,7.5,17.5,90,0"
+
+[[shot]]
+reference = "kitchen_and_living_area.png"
+pose = "0,8,11,0,0"
+
+[[shot]]
+reference = "look_back_at_entrance.png"
+pose = "12,7.5,-4,180,0"
+
+[[shot]]
+reference = "living_area.png"
+pose = "2.5,7.5,2.5,-90,0"

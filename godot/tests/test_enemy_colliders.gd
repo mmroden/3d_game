@@ -10,16 +10,16 @@ const ENEMY_SCENE = "res://scenes/enemies/enemy.tscn"
 
 func test_every_enemy_type_gets_convex_colliders():
 	var checked := 0
-	# The roster size comes from Rust (EnemyType::ALL.len()), not a restated
-	# constant — a seventh enemy type is audited the moment it exists.
-	for type_id in range(EnemyDrone.enemy_type_count()):
+	# The roster keys come from Rust (the grammar's declared defs), not a
+	# restated constant — a new enemy is audited the moment it exists.
+	for key in EnemyDrone.enemy_keys():
 		var enemy = load(ENEMY_SCENE).instantiate()
-		enemy.enemy_type_id = type_id
+		enemy.enemy_key = key
 		add_child_autofree(enemy)
 		var hulls := _convex_hull_count(enemy)
 		checked += 1
 		assert_gt(hulls, 0,
-			"enemy type %d: built no convex collision shapes; its model would have no collider" % type_id)
+			"enemy %s: built no convex collision shapes; its model would have no collider" % key)
 	assert_gt(checked, 0, "audit must check enemy types")
 
 
@@ -30,16 +30,16 @@ func test_every_enemy_type_gets_convex_colliders():
 ## shots through the silhouette sail clean through (playtest 2026-07-05:
 ## "I'll be shocked if I hit anything").
 func test_every_colliders_covers_its_visual_silhouette():
-	for type_id in range(EnemyDrone.enemy_type_count()):
+	for key in EnemyDrone.enemy_keys():
 		var enemy = load(ENEMY_SCENE).instantiate()
-		enemy.enemy_type_id = type_id
+		enemy.enemy_key = key
 		add_child_autofree(enemy)
 		await wait_physics_frames(2)
 		var fraction := _silhouette_hit_fraction(enemy)
-		gut.p("silhouette coverage type %d: %.0f%%" % [type_id, fraction * 100.0])
+		gut.p("silhouette coverage %s: %.0f%%" % [key, fraction * 100.0])
 		assert_gt(fraction, 0.9,
-			"type %d: the collider must cover the visual silhouette, %.0f%% of center-box rays hit"
-				% [type_id, fraction * 100.0])
+			"%s: the collider must cover the visual silhouette, %.0f%% of center-box rays hit"
+				% [key, fraction * 100.0])
 		enemy.queue_free()
 		await wait_physics_frames(1)
 

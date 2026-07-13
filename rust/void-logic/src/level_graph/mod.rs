@@ -222,6 +222,15 @@ impl LevelGraph {
         farthest
     }
 
+    /// The room that owns the level's EXIT: the boss arena when one is
+    /// marked (the way onward lies past the fight), else the farthest room
+    /// from `start`. Consumers placing the portal or painting exit accents
+    /// use this — never a bare `farthest_room_from`, whose hop-count ties
+    /// break arbitrarily (level 13's portal-in-the-bathroom, 2026-07-12).
+    pub fn exit_room(&self, start: NodeIndex) -> Option<NodeIndex> {
+        self.boss_room.or_else(|| self.farthest_room_from(start))
+    }
+
     /// Room nodes visible from `start` for rendering: the node itself plus
     /// every node reachable without entering more than `budget` opaque
     /// rooms. Corridors are transparent (free to pass — they have exactly

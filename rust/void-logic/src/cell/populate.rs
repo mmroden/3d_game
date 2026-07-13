@@ -71,6 +71,7 @@ impl CellGrid {
                                     ],
                                     rotation_x: 0.0,
                                     rotation_y: 0.0,
+                                    scale: 1.0,
                                     collision,
                                 }
                             }).collect();
@@ -81,6 +82,7 @@ impl CellGrid {
                                 position: cell.world_center,
                                 rotation_x: 0.0,
                                 rotation_y: orient.random_range(0.0..TAU),
+                                scale: 1.0,
                                 collision,
                             }]);
                         }
@@ -110,6 +112,7 @@ impl CellGrid {
                             ],
                             rotation_x: 0.0,
                             rotation_y: rot,
+                            scale: 1.0,
                             collision: Collision::for_prop(prop.scene),
                         }]);
                     }
@@ -132,6 +135,7 @@ impl CellGrid {
                             position: cell.world_center,
                             rotation_x: 0.0,
                             rotation_y: orient.random_range(0.0..TAU),
+                            scale: 1.0,
                             collision,
                         }]);
                     }

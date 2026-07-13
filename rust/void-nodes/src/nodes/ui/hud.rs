@@ -6,10 +6,13 @@ use godot::classes::{
 };
 
 use super::map_panel::MapPanel;
+use crate::nodes::ship_controller::ShipController;
 use crate::nodes::constants::{groups, theme, signals, methods, nodes};
 use crate::nodes::live_handle::{LiveOpt, LiveRef, LiveVec};
 use void_logic::radar::{self, BandRect};
 use void_logic::ui_style;
+use void_logic::damage_flash::DamageFlash;
+use void_logic::run_state::HealthZone;
 
 /// Health/shield bar dimensions. Shared by `build_hud` (background + fill) and
 /// the `update_*` resizers so the two can't drift out of sync.
@@ -32,6 +35,13 @@ const SBS_SAFE_AREA_MARGIN: f32 = 0.33;
 /// this just go unmarked — the first contacts in group order win, which is
 /// stable frame to frame (the group holds the level's fixed roster).
 const MAX_RADAR_ARROWS: usize = 16;
+
+/// Valkyrie charge-row slot pool (Faucet-style like the arrows): bars past
+/// this render no slot — the row is display, the ChargeState is the truth.
+const MAX_VALKYRIE_SLOTS: usize = 8;
+const VALK_SLOT_W: f32 = 34.0;
+const VALK_SLOT_H: f32 = 10.0;
+const VALK_SLOT_GAP: f32 = 4.0;
 
 /// In-game HUD: health bar, credits, laser level, level number.
 #[derive(GodotClass)]
@@ -72,6 +82,22 @@ pub struct HUD {
     radar_contacts: std::collections::HashSet<i64>,
     /// The recon-map corner widget (FogMap unlock), child of `safe_area`.
     map_panel: Option<LiveRef<MapPanel>>,
+    /// Decaying screen damage tint (playtest 2026-07-06): amber on a held
+    /// shield, red on a hull breach. The pure decay lives in void-logic;
+    /// this overlay renders its current color+alpha each frame.
+    damage_flash: DamageFlash,
+    damage_tint: Option<LiveRef<ColorRect>>,
+    /// The hull fraction the bar currently DISPLAYS (cached from the one
+    /// `update_health` push) — the tint derives its zone from this same
+    /// truth, so bar and tint can never disagree and no second health
+    /// crossing exists. GameManager pushes before it flashes.
+    health_fraction: f32,
+    /// The Valkyrie charge row (playtest 2026-07-06): fixed slot pool of
+    /// backgrounds + fills, children of `safe_area`; hidden until the
+    /// cannon is owned, lighting left-to-right as the charge crosses.
+    valkyrie_row: Option<LiveRef<Control>>,
+    valkyrie_slots: LiveVec<ColorRect>,
+    valkyrie_fills: LiveVec<ColorRect>,
 }
 
 #[godot_api]
@@ -99,6 +125,14 @@ impl ICanvasLayer for HUD {
             radar_arrows: LiveVec::new(),
             radar_contacts: std::collections::HashSet::new(),
             map_panel: None,
+            damage_flash: DamageFlash::new(),
+            damage_tint: None,
+            // Full until the first push: a pathological pre-push flash
+            // reads green and raises no alarm.
+            health_fraction: 1.0,
+            valkyrie_row: None,
+            valkyrie_slots: LiveVec::new(),
+            valkyrie_fills: LiveVec::new(),
         }
     }
 
@@ -113,8 +147,10 @@ impl ICanvasLayer for HUD {
         self.base_mut().set_visible(false);
     }
 
-    fn process(&mut self, _delta: f64) {
+    fn process(&mut self, delta: f64) {
         self.update_radar();
+        self.update_valkyrie_row();
+        self.update_damage_tint(delta as f32);
         // The map renders only while its unlock flag is pushed.
         let show_map = self.base().is_visible() && self.map_unlocked;
         self.map_panel.with(|panel| panel.set_visible(show_map));
@@ -133,15 +169,16 @@ impl HUD {
     #[func]
     pub fn update_health(&mut self, current: f32, max: f32) {
         let fraction = (current / max).clamp(0.0, 1.0);
+        self.health_fraction = fraction;
 
         self.health_fill.with(|fill| {
             fill.set_size(Vector2::new(BAR_WIDTH * fraction, HEALTH_BAR_HEIGHT));
-            let color = if fraction > 0.5 {
-                Color::from_rgb(0.2, 0.9, 0.2)
-            } else if fraction > 0.25 {
-                Color::from_rgb(0.9, 0.9, 0.2)
-            } else {
-                Color::from_rgb(0.9, 0.2, 0.2)
+            // The bar's color comes from the ONE zone scale the damage tint
+            // also speaks (owner 2026-07-09) — they can never disagree.
+            let color = match HealthZone::of(fraction) {
+                HealthZone::Green => Color::from_rgb(0.2, 0.9, 0.2),
+                HealthZone::Yellow => Color::from_rgb(0.9, 0.9, 0.2),
+                HealthZone::Red => Color::from_rgb(0.9, 0.2, 0.2),
             };
             fill.set_color(color);
         });
@@ -273,6 +310,70 @@ impl HUD {
     ) {
         self.map_panel.with(|panel| {
             panel.bind_mut().update_map(rects.clone(), flags.clone(), projection.clone());
+        });
+    }
+
+    /// A hit landed — flash the screen tint at the struck layer's color
+    /// (owner 2026-07-09): the tint is the HULL-severity alarm. A held
+    /// shield raises none (the hull did not diminish); a breach tints at
+    /// the zone the bar DISPLAYS — yellow when the bar is-or-goes yellow,
+    /// red when it is-or-goes red, nothing while it stays green.
+    /// GameManager pushes `update_health` before flashing, so the displayed
+    /// fraction is the POST-hit one. The decay runs in `process`.
+    #[func]
+    pub fn flash_damage(&mut self, hull: bool) {
+        if hull {
+            self.damage_flash.strike_hull(HealthZone::of(self.health_fraction));
+        }
+    }
+
+    /// Fade and render the damage tint. Alpha and color come from the pure
+    /// `DamageFlash`; the overlay hides once it has faded to nothing.
+    fn update_damage_tint(&mut self, delta: f32) {
+        self.damage_flash.tick(delta);
+        let visible = self.damage_flash.is_visible();
+        let [r, g, b] = self.damage_flash.color();
+        let a = self.damage_flash.alpha();
+        self.damage_tint.with(|tint| {
+            tint.set_visible(visible);
+            tint.set_color(Color::from_rgba(r, g, b, a));
+        });
+    }
+
+    /// Per-frame Valkyrie charge readout, pulled from the ship (the node
+    /// owns the live charge; RunState owns the upgrades). The row hides
+    /// with the HUD and while the cannon is unowned.
+    fn update_valkyrie_row(&mut self) {
+        let visible_base = self.base().is_visible();
+        let player = self
+            .base()
+            .get_parent()
+            .and_then(|p| p.try_get_node_as::<ShipController>(nodes::PLAYER));
+        let (bars, charge) = match &player {
+            Some(p) => {
+                let p = p.bind();
+                (
+                    (p.valkyrie_bars().max(0) as usize).min(MAX_VALKYRIE_SLOTS),
+                    p.valkyrie_charge(),
+                )
+            }
+            None => (0, 0.0),
+        };
+        let show = visible_base && bars > 0;
+        self.valkyrie_row.with(|row| {
+            row.set_visible(show);
+            // Re-center the visible span of the row under the reticle.
+            let total_w =
+                bars as f32 * VALK_SLOT_W + bars.saturating_sub(1) as f32 * VALK_SLOT_GAP;
+            row.set_offset(godot::builtin::Side::LEFT, -total_w * 0.5);
+        });
+        self.valkyrie_slots.for_each_live(|i, slot, _| {
+            slot.set_visible(i < bars);
+        });
+        self.valkyrie_fills.for_each_live(|i, fill, _| {
+            fill.set_visible(i < bars);
+            let frac = (charge - i as f32).clamp(0.0, 1.0);
+            fill.set_size(Vector2::new(VALK_SLOT_W * frac, VALK_SLOT_H));
         });
     }
 
@@ -585,22 +686,37 @@ impl HUD {
 
         safe_area.add_child(&top_right);
 
-        // === Bottom center: Controls reminder ===
-        let mut bottom_center = Control::new_alloc();
-        bottom_center.set_anchors_preset(LayoutPreset::CENTER_BOTTOM);
-        bottom_center.set_offset(godot::builtin::Side::TOP, -40.0);
-        bottom_center.set_offset(godot::builtin::Side::LEFT, -300.0);
-        bottom_center.set_offset(godot::builtin::Side::RIGHT, 300.0);
-
-        let mut controls = Label::new_alloc();
-        controls.set_text("WASD: Move | Arrows: Look | Space: Fire | R/F: Up/Down");
-        Self::style_hud_text(&mut controls, ui_style::FONT_HUD_FINE);
-        controls.add_theme_color_override(theme::FONT_COLOR, Color::from_rgba(
-            ui_style::TEXT_UNSELECTED[0], ui_style::TEXT_UNSELECTED[1], ui_style::TEXT_UNSELECTED[2], 0.7,
-        ));
-        bottom_center.add_child(&controls);
-
-        safe_area.add_child(&bottom_center);
+        // === Bottom center: the Valkyrie charge row (playtest 2026-07-06) ===
+        // Fixed slot pool (Faucet-style like the radar arrows): only
+        // visibility and fill widths change per frame. Hidden until the
+        // cannon is owned; slots light left-to-right as the one charge
+        // crosses the row.
+        let mut valk_row = Control::new_alloc();
+        valk_row.set_name("ValkyrieChargeRow");
+        valk_row.set_anchors_preset(LayoutPreset::CENTER_BOTTOM);
+        valk_row.set_offset(godot::builtin::Side::TOP, -40.0);
+        valk_row.set_visible(false);
+        for i in 0..MAX_VALKYRIE_SLOTS {
+            let x = i as f32 * (VALK_SLOT_W + VALK_SLOT_GAP);
+            let mut bg = ColorRect::new_alloc();
+            bg.set_name(&format!("ValkyrieSlot{i}"));
+            bg.set_color(Color::from_rgba(0.10, 0.12, 0.16, 0.85));
+            bg.set_size(Vector2::new(VALK_SLOT_W, VALK_SLOT_H));
+            bg.set_position(Vector2::new(x, 0.0));
+            bg.set_visible(false);
+            valk_row.add_child(&bg);
+            self.valkyrie_slots.push(&bg, ());
+            let mut fill = ColorRect::new_alloc();
+            fill.set_name(&format!("ValkyrieFill{i}"));
+            fill.set_color(Color::from_rgb(1.0, 0.72, 0.25));
+            fill.set_size(Vector2::new(0.0, VALK_SLOT_H));
+            fill.set_position(Vector2::new(x, 0.0));
+            fill.set_visible(false);
+            valk_row.add_child(&fill);
+            self.valkyrie_fills.push(&fill, ());
+        }
+        safe_area.add_child(&valk_row);
+        self.valkyrie_row = Some(LiveRef::new(&valk_row));
 
         // === Center targeting reticle (dot + crosshair) ===
         // Bold and fully opaque: thin, semi-transparent geometry survives the 1:1
@@ -632,12 +748,31 @@ impl HUD {
         }
         safe_area.add_child(&reticle);
 
+        // === Damage tint (hidden until a hit lands; amber shield / red hull) ===
+        // A deep full-screen tinge that fades over ~5s (playtest 2026-07-06).
+        // Sits under the slow overlay so a swarmer slow reads over a fresh hit.
+        // FULL-SCREEN WASHES PARENT TO THE WINDOW, NOT THE BAND (playtest
+        // 2026-07-09: inside the SBS safe area they render as a center
+        // stripe) — the band exists to pull positioned chrome into each
+        // eye's view; a wash must tint everything the eye sees. Added to the
+        // layer BEFORE the band, so the chrome stays readable over a flash.
+        let mut damage_tint = ColorRect::new_alloc();
+        damage_tint.set_name("DamageTint");
+        damage_tint.set_anchors_preset(LayoutPreset::FULL_RECT);
+        damage_tint.set_color(Color::from_rgba(0.0, 0.0, 0.0, 0.0));
+        damage_tint.set_mouse_filter(godot::classes::control::MouseFilter::IGNORE);
+        damage_tint.set_visible(false);
+        self.base_mut().add_child(&damage_tint);
+        self.damage_tint = Some(LiveRef::new(&damage_tint));
+
         // === Slow debuff indicator (hidden until a swarmer slows the player) ===
         let mut slow_overlay = ColorRect::new_alloc();
+        slow_overlay.set_name("SlowOverlay");
         slow_overlay.set_anchors_preset(LayoutPreset::FULL_RECT);
         slow_overlay.set_color(Color::from_rgba(0.7, 0.1, 0.1, 0.16));
+        slow_overlay.set_mouse_filter(godot::classes::control::MouseFilter::IGNORE);
         slow_overlay.set_visible(false);
-        safe_area.add_child(&slow_overlay);
+        self.base_mut().add_child(&slow_overlay);
         self.slow_overlay = Some(LiveRef::new(&slow_overlay));
 
         let mut slow_label = Label::new_alloc();

@@ -1,0 +1,8 @@
+# Git LFS: provider files over GitHub's 100 MB hard limit. Everything else
+# in assets/ stays plain git (the existing convention — individual files
+# under the limit). A fresh clone needs git-lfs (make deps installs it);
+# install-addons.sh detects pointer stubs and says so.
+assets/apartment/*.max filter=lfs diff=lfs merge=lfs -text
+assets/apartment/*.fbx filter=lfs diff=lfs merge=lfs -text
+assets/apartment/*.zip filter=lfs diff=lfs merge=lfs -text
+assets/more_walls/*.glb filter=lfs diff=lfs merge=lfs -text

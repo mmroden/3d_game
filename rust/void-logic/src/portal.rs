@@ -10,7 +10,7 @@ use crate::planet::Pitch;
 /// and a center portal would arm straight into the collecting player.
 pub fn portal_position(graph: &LevelGraph, pitch: Pitch) -> Option<[f32; 3]> {
     let first_idx = graph.room_indices().next()?;
-    let farthest_idx = graph.farthest_room_from(first_idx)?;
+    let farthest_idx = graph.exit_room(first_idx)?;
     let room = graph.room(farthest_idx)?;
     let origin = room.world_position(pitch.tile, pitch.story);
     let ex = room.template.extents[0] as f32;
@@ -36,6 +36,7 @@ mod tests {
     /// GENERATION seed still travels separately.
     fn spec_for(level: u32) -> crate::level_spec::LevelSpec {
         crate::level_spec::LevelSpec::for_level(
+            crate::roster::roster(),
             crate::seed::Seed::new(1),
             level,
             &crate::unlocks::PermanentUnlocks::new(),
@@ -104,6 +105,36 @@ mod tests {
         let portal_dist = ((portal[0] - door_x).powi(2) + (portal[2] - door_z).powi(2)).sqrt();
         assert!(portal_dist > center_dist,
             "the way onward lies past the fight, not toward the entrance");
+    }
+
+    #[test]
+    fn the_portal_rides_the_arena_even_on_farthest_ties() {
+        // The fixed fixture's den (arena) and closet tie at two hops from
+        // the porch. The linker only requires the arena to be AMONG the
+        // farthest; the portal must not re-derive its own tie-break and
+        // land in the closet (live bug: level 13's portal in the bath).
+        let grammar = crate::test_fixtures::fixed_fixture_grammar();
+        let spec = crate::level_spec::LevelSpec::for_level(
+            &grammar,
+            crate::seed::Seed::new(1),
+            1,
+            &crate::unlocks::PermanentUnlocks::new(),
+        );
+        let graph = crate::generator::generate_for_spec(&spec, crate::seed::Seed::new(1), false)
+            .expect("the fixture builds");
+        let arena = graph.boss_room().expect("fixed levels mark the arena");
+        let room = graph.room(arena).expect("arena room");
+        let origin = room.world_position(spec.pitch.tile, spec.pitch.story);
+        let portal = portal_position(&graph, spec.pitch).expect("portal placed");
+        for k in [0, 2] {
+            let lo = origin[k];
+            let hi = origin[k] + room.template.extents[k] as f32 * spec.pitch.tile;
+            assert!(
+                portal[k] >= lo && portal[k] <= hi,
+                "the way onward lies in the arena: portal {portal:?} vs arena \
+                 [{lo}, {hi}] on axis {k}"
+            );
+        }
     }
 
     #[test]

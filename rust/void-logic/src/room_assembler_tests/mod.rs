@@ -6,6 +6,7 @@ mod placement;
 mod assembly;
 mod corners;
 mod panels;
+mod shell;
 mod theming;
 
 /// Assemble at the pinned test pitch. The production door is
@@ -144,23 +145,40 @@ fn rotate_y(x: f32, z: f32, theta: f32) -> (f32, f32) {
     (x * c + z * s, -x * s + z * c)
 }
 
-/// Completeness/assignment invariant: structural geometry is fixed, so
-/// every placement `assemble` emits is `Collision::Static`. The Godot
-/// shell turns each into a `StaticBody3D` with a mesh-derived collider —
-/// no structural mesh can be emitted without a collider intent.
+/// Collision-role invariant (playtest 2026-07-06: fusing the render
+/// triangles into one hollow trimesh both leaked at a corner seam and
+/// caged grinding bodies): the flat skin — walls, floors, ceilings, door
+/// frames — is `Skin` (render-only; the watertight cell shell owns that
+/// plane's physics), while the curved corner stack protrudes into the
+/// room and carries a solid convex hull. Nothing structural is `Static`
+/// (the fused trimesh) anymore.
 #[test]
-fn structural_assembly_is_all_static() {
+fn flat_skin_is_render_only_and_corner_curves_are_convex_solids() {
     let placements = assemble_default(&small_room(), &[], [0.0, 0.0, 0.0]);
     assert!(!placements.is_empty(), "a sealed room should emit geometry");
+    let mut corner_pieces = 0;
     for p in &placements {
-        assert_eq!(
-            p.collision,
-            Collision::Static,
-            "structural mesh {} must be Static, got {:?}",
-            p.scene,
-            p.collision,
-        );
+        // The Astra corner stack: WallAstra_Corner_Round_*, TopAstra_Curve_Round_*.
+        if p.scene.contains("_Round") {
+            corner_pieces += 1;
+            assert_eq!(
+                p.collision,
+                Collision::ConvexSolid,
+                "corner piece {} protrudes into the room and needs a solid hull, got {:?}",
+                p.scene,
+                p.collision,
+            );
+        } else {
+            assert_eq!(
+                p.collision,
+                Collision::Skin,
+                "flat skin {} is render-only over the shell, got {:?}",
+                p.scene,
+                p.collision,
+            );
+        }
     }
+    assert!(corner_pieces > 0, "a sealed room has corner pieces");
 }
 
 /// The single shared prop classifier: loose debris tumbles (`Dynamic`),

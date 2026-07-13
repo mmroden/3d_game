@@ -117,9 +117,12 @@ fn all_orientations_draw_from_the_one_pool() {
 
 /// Panels are structure: Static, into the fused room collider.
 #[test]
-fn panel_assembly_is_all_static() {
+fn panel_assembly_is_all_skin() {
+    // Panel plates ARE the boundary plane — render-only skin; the
+    // watertight cell shell owns that plane's physics (playtest
+    // 2026-07-06: render triangles as collider = the art's holes).
     for p in panels(&sealed_3x3x3(), &[], 7) {
-        assert_eq!(p.collision, Collision::Static,
-            "panel {} must be Static", p.scene);
+        assert_eq!(p.collision, Collision::Skin,
+            "panel {} must be Skin", p.scene);
     }
 }

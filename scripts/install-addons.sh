@@ -272,7 +272,7 @@ if [ -d "$EVIL_MECHS_SRC" ]; then
             # The mech's PBR maps ship loose in a sibling "(Textures)" folder the
             # FBX doesn't reference; pass it so decimate.py rebuilds the material.
             tex="$(find "$EVIL_MECHS_SRC" -maxdepth 1 -type d -iname "*Evil_mech_${n}*Textures*" | head -1)"
-            "$BLENDER" --background --python "$(dirname "$0")/decimate.py" -- \
+            "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/decimate.py" -- \
                 "$src" "$ENEMIES_DIR/evil_mech_${n}.glb" "$DECIMATE_TARGET" "$tex" 2>&1 \
                 | grep -i "decimate:" || echo "  (mech ${n}: no decimation summary — check Blender output)"
         done
@@ -300,14 +300,14 @@ if [ -d "$SPHERES_SRC" ]; then
             src="$(find "$SPHERES_SRC" -maxdepth 1 -iname "*Sphere_ship_${n}*.fbx" | head -1)"
             [ -n "$src" ] || continue
             tex="$(find "$SPHERES_SRC" -maxdepth 1 -type d -iname "*Sphere_ship_${n}*Textures*" | head -1)"
-            "$BLENDER" --background --python "$(dirname "$0")/decimate.py" -- \
+            "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/decimate.py" -- \
                 "$src" "$ENEMIES_DIR/sphere_ship_${n}.glb" "$DECIMATE_TARGET" "$tex" 2>&1 \
                 | grep -i "decimate:" || echo "  (sphere ${n}: no decimation summary — check Blender output)"
         done
         src="$(find "$SPHERES_SRC" -maxdepth 1 -iname "*Alien_troop_01*.fbx" | head -1)"
         if [ -n "$src" ]; then
             tex="$(find "$SPHERES_SRC" -maxdepth 1 -type d -iname "*Alien_troop_01*Textures*" | head -1)"
-            "$BLENDER" --background --python "$(dirname "$0")/decimate.py" -- \
+            "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/decimate.py" -- \
                 "$src" "$ENEMIES_DIR/alien_troop_01.glb" "$DECIMATE_TARGET" "$tex" 2>&1 \
                 | grep -i "decimate:" || echo "  (alien troop: no decimation summary — check Blender output)"
         fi
@@ -318,6 +318,154 @@ else
     echo "  spheres not found, skipping sphere enemies."
 fi
 
+# ========== Enemy models (CGTrader grey spheres: planet-3 drone roster) ==========
+# Five provider drops in mixed shapes: three OBJ+MTL sphere drones with their
+# PBR maps in .rar archives, the apartment boss as loose FBX + .rar textures
+# (two base coats — Rusted is the game's read), and UMSFD_02 as a ready .glb
+# that still rides the decimation pass (the enemy tri budget is a contract,
+# probe-enforced). Archives extract once into unpacked/ beside the sources;
+# raw provider files stay untouched.
+
+GREY_SPHERES_SRC="$SHIPS_SRC/grey_spheres"
+
+extract_archive() {  # <archive> <dest-dir> — idempotent (dest exists = done)
+    local archive="$1" dest="$2"
+    [ -d "$dest" ] && return 0
+    mkdir -p "$dest"
+    # bsdtar first: the macOS system one reads these .rar files; 7z builds
+    # often lack the rar codec. A failed extraction removes dest so the next
+    # run retries instead of trusting a half-extracted directory.
+    if ! bsdtar -xf "$archive" -C "$dest" 2>/dev/null \
+        && ! 7z x -y -o"$dest" "$archive" >/dev/null 2>&1; then
+        rm -rf "$dest"
+        echo "  ERROR: could not extract $archive (bsdtar and 7z both failed)"
+        return 1
+    fi
+}
+
+# The textures archives wrap their maps in a folder (or don't) — resolve to
+# whichever directory actually holds the images.
+tex_root() {  # <unpacked-dir>
+    local dir
+    dir="$(find "$1" -mindepth 1 -maxdepth 1 -type d | head -1)"
+    if [ -n "$dir" ]; then echo "$dir"; else echo "$1"; fi
+}
+
+if [ -d "$GREY_SPHERES_SRC" ]; then
+    ENEMIES_DIR="$GODOT_DIR/addons/enemies"
+    mkdir -p "$ENEMIES_DIR"
+    if [ ! -x "$BLENDER" ]; then
+        echo "  WARNING: Blender not found at $BLENDER — run 'make deps'. Skipping grey spheres."
+    else
+        UNPACKED="$GREY_SPHERES_SRC/unpacked"
+        echo "  Decimating grey-sphere drone models (target ${DECIMATE_TARGET} tris)..."
+        for n in 01 02 03; do
+            obj_rar="$(find "$GREY_SPHERES_SRC" -maxdepth 1 -iname "*Sphere_drone_${n}_OBJ.rar" | head -1)"
+            tex_rar="$(find "$GREY_SPHERES_SRC" -maxdepth 1 -iname "*Sphere_drone_${n}_Textures.rar" | head -1)"
+            [ -n "$obj_rar" ] || continue
+            extract_archive "$obj_rar" "$UNPACKED/sphere_drone_${n}_obj"
+            [ -z "$tex_rar" ] || extract_archive "$tex_rar" "$UNPACKED/sphere_drone_${n}_tex"
+            src="$(find "$UNPACKED/sphere_drone_${n}_obj" -iname "*.obj" | head -1)"
+            [ -n "$src" ] || continue
+            "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/decimate.py" -- \
+                "$src" "$ENEMIES_DIR/sphere_drone_${n}.glb" "$DECIMATE_TARGET" \
+                "$(tex_root "$UNPACKED/sphere_drone_${n}_tex")" 2>&1 \
+                | grep -i "decimate:" || echo "  (sphere drone ${n}: no decimation summary — check Blender output)"
+        done
+
+        src="$(find "$GREY_SPHERES_SRC" -maxdepth 1 -iname "*apartment_boss*.fbx" | head -1)"
+        if [ -n "$src" ]; then
+            tex_rar="$(find "$GREY_SPHERES_SRC" -maxdepth 1 -iname "*apartment_boss*Textures*.rar" | head -1)"
+            [ -z "$tex_rar" ] || extract_archive "$tex_rar" "$UNPACKED/apartment_boss_tex"
+            "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/decimate.py" -- \
+                "$src" "$ENEMIES_DIR/apartment_boss.glb" "$DECIMATE_TARGET" \
+                "$(tex_root "$UNPACKED/apartment_boss_tex")" "Base Rusted.png" 2>&1 \
+                | grep -i "decimate:" || echo "  (apartment boss: no decimation summary — check Blender output)"
+        fi
+
+        src="$(find "$GREY_SPHERES_SRC" -maxdepth 1 -iname "*UMSFD_02*.glb" | head -1)"
+        if [ -n "$src" ]; then
+            tex_rar="$(find "$GREY_SPHERES_SRC" -maxdepth 1 -iname "*UMSFD_02*Textures*.rar" | head -1)"
+            [ -z "$tex_rar" ] || extract_archive "$tex_rar" "$UNPACKED/umsfd_02_tex"
+            "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/decimate.py" -- \
+                "$src" "$ENEMIES_DIR/umsfd_02.glb" "$DECIMATE_TARGET" \
+                "$(tex_root "$UNPACKED/umsfd_02_tex")" 2>&1 \
+                | grep -i "decimate:" || echo "  (umsfd_02: no decimation summary — check Blender output)"
+        fi
+        chmod -R u+w "$ENEMIES_DIR"
+        echo "  Grey-sphere drone models installed."
+    fi
+else
+    echo "  grey_spheres not found, skipping planet-3 drones."
+fi
+
+# ========== Planet-3 apartment environment (CGTrader archviz FBX -> glB) ==========
+# The fixed level geometry for levels 13-15: one archviz apartment exported
+# from 3ds Max/Corona whose texture references arrive broken (empty filename
+# fields). apartment.py parses the FBX's own connection table to rewire the
+# maps from the textures zip, keeps full geometry (a single environment
+# instance — no decimation), caps textures, and writes one .glb. The probe
+# catalogs addons/environments/ into rosters/environments.generated.toml.
+
+APARTMENT_SRC="$ASSETS_DIR/apartment"
+APARTMENT_FBX="$(find "$APARTMENT_SRC" -maxdepth 1 -iname "*apartment*.fbx" 2>/dev/null | head -1)"
+APARTMENT_MAX="$(find "$APARTMENT_SRC" -maxdepth 1 -iname "*apartment*.max" 2>/dev/null | head -1)"
+APARTMENT_TEX_ZIP="$(find "$APARTMENT_SRC" -maxdepth 1 -iname "*textures*.zip" 2>/dev/null | head -1)"
+APARTMENT_TEX_CAP=2048
+APARTMENT_MAT_TABLE="$APARTMENT_SRC/max_materials.json"
+
+if [ -n "$APARTMENT_FBX" ] && [ -n "$APARTMENT_TEX_ZIP" ]; then
+    # LFS pointer stub instead of the real file = the clone skipped LFS.
+    if head -c 12 "$APARTMENT_FBX" | grep -q "^version http"; then
+        echo "  ERROR: $APARTMENT_FBX is a git-lfs pointer stub."
+        echo "  Run 'make deps' (installs git-lfs) then 'git lfs pull'."
+        exit 1
+    fi
+    ENVIRONMENTS_DIR="$GODOT_DIR/addons/environments"
+    mkdir -p "$ENVIRONMENTS_DIR"
+    if [ ! -x "$BLENDER" ]; then
+        echo "  WARNING: Blender not found at $BLENDER — run 'make deps'. Skipping apartment."
+    else
+        # The .max scene is the authoring truth for materials (the FBX
+        # export destroyed most Corona bindings). Extract its material
+        # table once per .max change; the material plan merges it over the
+        # FBX-derived recovery.
+        if [ -n "$APARTMENT_MAX" ] && { [ ! -f "$APARTMENT_MAT_TABLE" ] || [ "$APARTMENT_MAX" -nt "$APARTMENT_MAT_TABLE" ]; }; then
+            echo "  Extracting material table from .max source..."
+            "$BLENDER" --background --python-exit-code 1 \
+                --python "$(dirname "$0")/extract-max-materials.py" -- \
+                "$APARTMENT_MAX" "$APARTMENT_MAT_TABLE" 2>&1 \
+                | grep -i "extract-max:" || echo "  (extract-max: no summary — check Blender output)"
+        fi
+        # The FBX material oracle: classes, all texture-channel links,
+        # container (RaySwitch/Layered) edges, transparency/emission props.
+        # The ONE place the FBX connection tables get parsed; material_plan.py
+        # turns it into per-material plans, `make test-assets` audits it.
+        APARTMENT_FBX_TABLE="$APARTMENT_SRC/fbx_materials.json"
+        if [ ! -f "$APARTMENT_FBX_TABLE" ] || [ "$APARTMENT_FBX" -nt "$APARTMENT_FBX_TABLE" ]; then
+            echo "  Extracting material oracle from FBX connection tables..."
+            "$BLENDER" --background --python-exit-code 1 \
+                --python "$(dirname "$0")/extract-fbx-materials.py" -- \
+                "$APARTMENT_FBX" "$APARTMENT_FBX_TABLE" 2>&1 \
+                | grep -i "extract-fbx-materials:" || echo "  (extract-fbx-materials: no summary — check Blender output)"
+        fi
+        echo "  Converting apartment environment (full detail, ${APARTMENT_TEX_CAP}px textures)..."
+        "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/apartment.py" -- \
+            "$APARTMENT_FBX" "$ENVIRONMENTS_DIR/apartment.glb" \
+            "$APARTMENT_TEX_ZIP" "$APARTMENT_TEX_CAP" "$APARTMENT_MAT_TABLE" \
+            "rosters/windows/apartment.toml" "$APARTMENT_FBX_TABLE" 2>&1 \
+            | grep -i "apartment:" || echo "  (apartment: no summary — check Blender output)"
+        if [ ! -f "$ENVIRONMENTS_DIR/apartment.glb" ]; then
+            echo "  ERROR: apartment conversion produced no glb"
+            exit 1
+        fi
+        chmod -R u+w "$ENVIRONMENTS_DIR"
+        echo "  Apartment environment installed."
+    fi
+else
+    echo "  apartment FBX/textures not found, skipping planet-3 environment."
+fi
+
 # ========== Planet-2 wall panels (CGTrader parts kit -> per-panel glB) ==========
 # B11 cubic-cell panel worlds: the "Sci-Fi Parts Kit Vol 01" GLB carries 32
 # flat panels as sibling objects; split-panels.py decimates each to game
@@ -325,10 +473,15 @@ fi
 # face — there are no floors or ceilings in 6DOF (see the B11 plan).
 WALLS_SRC="$ASSETS_DIR/more_walls"
 VOL01=$(find "$WALLS_SRC" -maxdepth 1 -name "*Vol*01*.glb" 2>/dev/null | head -1)
+if [ -n "$VOL01" ] && head -c 12 "$VOL01" | grep -q "^version http"; then
+    echo "  ERROR: $VOL01 is a git-lfs pointer stub."
+    echo "  Run 'make deps' (installs git-lfs) then 'git lfs pull'."
+    exit 1
+fi
 if [ -n "$VOL01" ]; then
     echo "  Splitting planet-2 wall panels (target 800 tris each)..."
     mkdir -p "$GODOT_DIR/addons/walls"
-    "$BLENDER" --background --python "$(dirname "$0")/split-panels.py" -- \
+    "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/split-panels.py" -- \
         "$VOL01" "$GODOT_DIR/addons/walls" 800 >/dev/null 2>&1 || \
         echo "  WARNING: panel split failed"
     echo "  Wall panels installed: $(ls "$GODOT_DIR/addons/walls" | wc -l | tr -d ' ')"
@@ -356,7 +509,7 @@ if [ -f "$JUMP_GATE_SRC" ]; then
         echo "  WARNING: Blender not found at $BLENDER — run 'make deps'. Skipping jump gate."
     else
         echo "  Converting jump gate (target ${JUMP_GATE_TARGET} tris)..."
-        "$BLENDER" --background --python "$(dirname "$0")/decimate.py" -- \
+        "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/decimate.py" -- \
             "$JUMP_GATE_SRC" "$PROPS_DIR/jump_gate.glb" "$JUMP_GATE_TARGET" \
             "$(dirname "$JUMP_GATE_SRC")" 2>&1 \
             | grep -i "decimate:" || echo "  (jump gate: no decimation summary — check Blender output)"

@@ -102,15 +102,15 @@ func test_enemy_fires_inside_the_full_game_stack():
 	assert_eq(gm.get_phase_name(), "Playing", "must reach Playing")
 	await wait_process_frames(2)
 
-	# Park the player right beside a SHOOTER (SentryDrone id 10 — the level-1
-	# roster is sentries only, so the pinned level MUST field one; swarmers
-	# never fire). Node-transform teleport is what the AI reads.
+	# Park the player right beside a FIRING enemy, found by CAPABILITY (its def
+	# fires projectiles — swarmers and bombers don't). Node-transform teleport
+	# is what the AI reads.
 	var shooter: RigidBody3D = null
 	for e in lm.find_children("*", "EnemyDrone", true, false):
-		if e.enemy_type_id == 10:
+		if e.def_fires():
 			shooter = e
 			break
-	assert_not_null(shooter, "level 1 spawns only SentryDrones — one must exist")
+	assert_not_null(shooter, "the opening level must field a firing enemy for this test")
 	if shooter == null:
 		return
 	player.global_position = shooter.global_position + Vector3(0, 0, 5)
@@ -284,6 +284,10 @@ func _full_stack_aimed_at_enemy(aim_offset: Vector3) -> Dictionary:
 	assert_not_null(enemy, "the pinned level must field at least one enemy")
 	if enemy == null:
 		return {}
+	# Freeze the target: these contracts pin AIM GEOMETRY at a known
+	# offset — a live chaser drifts off the measured angle (and can wander
+	# INTO a deliberately wild beam).
+	enemy.freeze = true
 	var fill = enemy.get_node_or_null("HealthBarFill")
 	assert_not_null(fill, "the target needs a health bar to observe")
 	if fill == null:
@@ -313,6 +317,9 @@ func _full_stack_aimed_at_enemy(aim_offset: Vector3) -> Dictionary:
 		+ lateral * aim_offset.x + Vector3.UP * aim_offset.y
 	player.look_at(aim_point)
 	player.reset_physics_interpolation()
+	# Freeze the shooter too: the pinned level's OTHER enemies keep firing,
+	# and bolt knockback on a live body walks the measured aim angle.
+	player.freeze = true
 	return {"player": player, "enemy": enemy, "fill": fill}
 
 
@@ -337,10 +344,11 @@ func _assert_trigger_hurts(setup: Dictionary, expect_hurt: bool, message: String
 	assert_eq(hurt, expect_hurt, message)
 
 
-func test_valkyrie_cannon_fires_only_once_owned():
-	# The green keystone: buying the Valkyrie arms a heavy bolt alongside the
-	# Vanguard's hitscan lasers. Before ownership the trigger spawns no bolts
-	# at all (hitscan is beams, not pool slots) — so the pool is the witness.
+func test_valkyrie_cannon_charges_bars_and_dumps_on_the_left_trigger():
+	# The charge redesign (playtest 2026-07-06): the Valkyrie owns the left
+	# trigger; bars fill over time (1.5s each) and a PRESS dumps every
+	# stored bolt — a fresh rack dumps nothing. The primary stays
+	# hitscan-only (beams, not pool slots), so the pool is the witness.
 	var player = _spawn_player(Vector3.ZERO)
 	player.set_controls_enabled(true)
 	var pool := BoltPool.new()
@@ -348,20 +356,74 @@ func test_valkyrie_cannon_fires_only_once_owned():
 	add_child_autofree(pool)
 	await wait_physics_frames(1, "let the pool join its group")
 
-	Input.action_press("fire")
-	await wait_physics_frames(30, "an unowned cannon must stay silent")
+	Input.action_press("fire_secondary")
+	await wait_physics_frames(10, "an unowned cannon must stay silent")
 	assert_eq(pool.live_count(), 0,
-		"without the Valkyrie the trigger is hitscan only — no pooled bolts")
+		"without the Valkyrie the left trigger spawns nothing")
+	Input.action_release("fire_secondary")
 
 	player.set_valkyrie_owned(true)
+	# Fresh rack: the press dumps stored bars, and there are none yet.
+	Input.action_press("fire_secondary")
+	await wait_physics_frames(5, "an empty rack must stay silent")
+	Input.action_release("fire_secondary")
+	assert_eq(pool.live_count(), 0,
+		"a fresh rack holds no bolts — charge first")
+
+	Input.action_press("fire")
+	await wait_physics_frames(30, "the primary must stay hitscan-only")
+	assert_eq(pool.live_count(), 0,
+		"the Valkyrie left the primary trigger — no bolts on fire")
+	Input.action_release("fire")
+
+	await wait_physics_frames(200, "1.67s at the 120Hz physics tick — fills the first bar")
+	Input.action_press("fire_secondary")
 	var fired := false
-	for _i in range(120):
+	for _i in range(10):
 		await get_tree().physics_frame
 		if pool.live_count() > 0:
 			fired = true
 			break
+	Input.action_release("fire_secondary")
+	assert_true(fired, "the trigger press dumps the stored bar")
+
+
+func test_lasers_run_parallel_and_full_length_in_the_void():
+	# Owner's call (playtest 2026-07-06): lasers are lasers — each wing beam
+	# runs straight down its own line until it hits something, else full
+	# range. NEVER converged on a point (the old converge-on-the-crosshair
+	# visual was an unasked-for experiment). Damage still rides the reticle
+	# line with the assist cone; the aim-geometry tests pin that separately.
+	var player = _spawn_player(Vector3.ZERO)
+	player.set_controls_enabled(true)
+	await wait_physics_frames(2, "let the ship settle in the empty void")
+
+	# Beams parent to the tree root and earlier tests' orphans linger there
+	# (their ships are gone, nothing ages them out) — only the diff is ours.
+	var stale := {}
+	for n in get_tree().root.get_children():
+		if n is MeshInstance3D and n.has_meta("beam_age"):
+			stale[n.get_instance_id()] = true
+
+	Input.action_press("fire")
+	await wait_physics_frames(2, "one volley away")
 	Input.action_release("fire")
-	assert_true(fired, "owning the Valkyrie arms the heavy bolt on the same trigger")
+
+	var beams := []
+	for n in get_tree().root.get_children():
+		if n is MeshInstance3D and n.has_meta("beam_age") and not stale.has(n.get_instance_id()):
+			beams.append(n)
+	assert_true(beams.size() >= 2, "a volley is two wing beams (got %d)" % beams.size())
+	if beams.size() < 2:
+		return
+	var reference: Vector3 = beams[0].global_transform.basis.z.normalized()
+	for i in range(1, beams.size()):
+		var axis: Vector3 = beams[i].global_transform.basis.z.normalized()
+		assert_lt(reference.angle_to(axis), 0.001,
+			"wing beams run parallel — no convergence point, hit or miss")
+	for b in beams:
+		assert_gt(b.mesh.size.z, 99.0,
+			"nothing to hit in the void: the beam runs its full range")
 
 
 func test_swarmer_proximity_slows_player_instead_of_damaging():
@@ -375,8 +437,12 @@ func test_swarmer_proximity_slows_player_instead_of_damaging():
 	if enemy_scene == null:
 		pass_test("skipped — scene not available")
 		return
+	var swarmers := EnemyDrone.enemy_keys_with_ai("swarmer")
+	assert_gt(swarmers.size(), 0, "the grammar must declare a swarmer for the latch-slow test")
+	if swarmers.is_empty():
+		return
 	var enemy = enemy_scene.instantiate()
-	enemy.enemy_type_id = 1 # QuadOrb (swarmer)
+	enemy.enemy_key = swarmers[0]  # a swarmer, found by capability
 	add_child_autofree(enemy)
 	enemy.global_position = Vector3(1.5, 0, 0) # within SWARM_LATCH_RANGE (2.0)
 	await wait_physics_frames(4, "swarmer should bog the player down while latched")
@@ -465,7 +531,7 @@ func test_small_drones_are_hittable_with_aim_forgiveness():
 	var player = _spawn_player(Vector3.ZERO)
 	player.set_controls_enabled(true)
 	var enemy = load("res://scenes/enemies/enemy.tscn").instantiate()
-	enemy.enemy_type_id = 3  # EyeDrone — one of the tiny spheres
+	enemy.enemy_key = EnemyDrone.enemy_keys()[0]  # any declared enemy — hull-hittable is model-agnostic
 	add_child_autofree(enemy)
 	enemy.global_position = Vector3(1.0, 0.5, -20)
 	enemy.freeze = true  # hold the geometry still for a precise ray test
@@ -508,7 +574,7 @@ func test_sphere_gunner_hull_is_hittable():
 	var player = _spawn_player(Vector3.ZERO)
 	player.set_controls_enabled(true)
 	var enemy = load("res://scenes/enemies/enemy.tscn").instantiate()
-	enemy.enemy_type_id = 6  # SphereGunner
+	enemy.enemy_key = EnemyDrone.enemy_keys()[0]  # any declared enemy — hull-hittable is model-agnostic
 	add_child_autofree(enemy)
 	enemy.global_position = Vector3(0, 0.5, -15)
 	enemy.freeze = true

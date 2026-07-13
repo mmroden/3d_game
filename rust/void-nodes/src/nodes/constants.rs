@@ -18,6 +18,7 @@ pub mod signals {
     pub const RETURN_PRESSED: &str = "return_pressed";
     pub const RESPAWN_PRESSED: &str = "respawn_pressed";
     pub const NEW_GAME_SELECTED: &str = "new_game_selected";
+    pub const BESTIARY_SELECTED: &str = "bestiary_selected";
     pub const CONTINUE_SELECTED: &str = "continue_selected";
     pub const SBS_TOGGLED: &str = "sbs_toggled";
     pub const MSAA_TOGGLED: &str = "msaa_toggled";
@@ -47,6 +48,7 @@ pub mod signals {
 pub mod methods {
     pub const START_NEW_GAME: &str = "start_new_game";
     pub const CONTINUE_GAME: &str = "continue_game";
+    pub const SHOW_BESTIARY_FROM_MENU: &str = "show_bestiary_from_menu";
     pub const ON_ENEMY_KILLED: &str = "on_enemy_killed";
     pub const ON_PORTAL_ENTERED: &str = "on_portal_entered";
     pub const ON_SBS_TOGGLED: &str = "on_sbs_toggled";
@@ -56,6 +58,7 @@ pub mod methods {
     pub const ON_RENDER_VIEWPORTS_CHANGED: &str = "on_render_viewports_changed";
     pub const ON_BOSS_ARENA_ENTERED: &str = "on_boss_arena_entered";
     pub const SEAL_BOSS_GATE: &str = "seal_boss_gate";
+    pub const RISE_BOSS: &str = "rise_boss";
     pub const SET_SEALED: &str = "set_sealed";
     pub const SET_DORMANT: &str = "set_dormant";
     pub const DISARM: &str = "disarm";
@@ -108,6 +111,7 @@ pub mod methods {
     pub const CONFIGURE_SHIP: &str = "configure_ship";
     pub const SET_CONTROLS_ENABLED: &str = "set_controls_enabled";
     pub const SET_VALKYRIE_OWNED: &str = "set_valkyrie_owned";
+    pub const SET_VALKYRIE_UPGRADES: &str = "set_valkyrie_upgrades";
     pub const SET_RADAR_CONTACTS: &str = "set_radar_contacts";
     pub const REFRESH_SHOP: &str = "refresh_shop";
     pub const SHOW_LOADING: &str = "show_loading";
@@ -127,7 +131,9 @@ pub mod methods {
     pub const ON_PLAYER_COLLIDED: &str = "on_player_collided";
     pub const ON_PLAYER_SLOWED: &str = "on_player_slowed";
     pub const APPLY_SLOW: &str = "apply_slow";
+    pub const APPLY_TRACTOR: &str = "apply_tractor";
     pub const UPDATE_SLOW: &str = "update_slow";
+    pub const FLASH_DAMAGE: &str = "flash_damage";
     pub const ON_POWER_MODE_CHANGED: &str = "on_power_mode_changed";
     pub const APPLY_DORMANCY: &str = "apply_dormancy";
     pub const ENTER_INITIAL_PHASE: &str = "enter_initial_phase";
@@ -152,6 +158,7 @@ pub mod actions {
     pub const ROLL_LEFT: &str = "roll_left";
     pub const ROLL_RIGHT: &str = "roll_right";
     pub const FIRE: &str = "fire";
+    pub const FIRE_SECONDARY: &str = "fire_secondary";
     pub const OPEN_MENU: &str = "open_menu";
     pub const MENU_UP: &str = "menu_up";
     pub const MENU_DOWN: &str = "menu_down";
@@ -191,6 +198,7 @@ pub mod groups {
     pub const PLAYER: &str = "player";
     pub const ENEMIES: &str = "enemies";
     pub const BOLT_POOL: &str = "bolt_pool";
+    pub const CLOUD_POOL: &str = "cloud_pool";
     pub const PLAYER_DRONES: &str = "player_drones";
 }
 
@@ -359,6 +367,7 @@ mod tests {
             methods::ON_PLAYER_DAMAGED,
             methods::ON_PLAYER_SLOWED,
             methods::APPLY_SLOW,
+            methods::APPLY_TRACTOR,
             methods::UPDATE_SLOW,
             methods::UPDATE_SHIELD,
             methods::ON_POWER_MODE_CHANGED,

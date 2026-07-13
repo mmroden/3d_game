@@ -26,7 +26,7 @@ use void_logic::stereo::{
 /// so distance doesn't fix the "off-center element, one eye reaching" blur. The
 /// quad scales with distance, so on-screen size is unchanged. The material
 /// disables depth test (`setup_ui_plane`) so this depth isn't occluded by walls.
-const DEFAULT_UI_PLANE_DISTANCE: f32 = 10.0;
+const DEFAULT_UI_PLANE_DISTANCE: f32 = 4.0;
 
 /// First-class view manager: owns the display pipeline (mono or SBS stereo).
 ///
@@ -77,6 +77,7 @@ impl INode3D for ViewManager {
         self.connect_to_game_manager();
         self.connect_to_window_resize();
         godot_print!("ViewManager ready — {}", self.current_mode.label());
+        self.log_display_geometry("startup");
     }
 
     fn process(&mut self, _delta: f64) {
@@ -110,6 +111,37 @@ impl ViewManager {
         if self.current_mode == DisplayMode::SideBySide {
             self.resize_ui_plane();
         }
+        self.log_display_geometry("window resized");
+    }
+
+    /// Log the physical display geometry (playtest 2026-07-06: mirrored
+    /// vs extended xReal monitors run very different resolutions and the
+    /// UI misfits silently — the log names the setup a report came from).
+    fn log_display_geometry(&self, context: &str) {
+        let ds = DisplayServer::singleton();
+        let screen = ds.screen_get_size();
+        let window = ds.window_get_size();
+        // macOS reports PIXELS while the OS Displays widget reports POINTS
+        // (playtest 2026-07-09: "4112x2658" read as impossible — it is the
+        // 2x Retina backing store of 2056x1329 pt, downsampled to the
+        // panel). Print the scale so the log decodes itself.
+        let scale = ds.screen_get_scale();
+        let config = self.stereo_config();
+        godot_print!(
+            "Display [{context}]: screen {}x{} px (scale {:.1} = {:.0}x{:.0} pt), \
+             window {}x{} ({:?}), mode {}, per-eye {}x{}",
+            screen.x,
+            screen.y,
+            scale,
+            screen.x as f32 / scale,
+            screen.y as f32 / scale,
+            window.x,
+            window.y,
+            ds.window_get_mode(),
+            self.current_mode.label(),
+            config.viewport_width,
+            config.viewport_height,
+        );
     }
 
     /// Called when GameManager emits options_changed.
@@ -131,6 +163,7 @@ impl ViewManager {
             self.resize_ui_plane();
             self.apply_visibility(sbs);
             self.park_player_camera();
+            self.log_display_geometry("display mode change");
 
             // Publish the now-active 3D viewports so telemetry re-targets
             // measurement onto the eyes (SBS) or the root (mono).
@@ -247,13 +280,18 @@ impl ViewManager {
 
     fn stereo_config(&self) -> StereoConfig {
         let ds = DisplayServer::singleton();
-        // In fullscreen, window_get_size() may not reflect the new dims yet
-        // (macOS animates the transition). Use screen_get_size() which is
-        // available immediately.
-        let win = match ds.window_get_mode() {
-            WindowMode::FULLSCREEN | WindowMode::EXCLUSIVE_FULLSCREEN => ds.screen_get_size(),
-            _ => ds.window_get_size(),
-        };
+        // The WINDOW is the truth: on notched Macs a fullscreen window is
+        // SHORTER than the screen (the camera-housing band), so substituting
+        // screen_get_size() whenever fullscreen sized the eyes 78 px too
+        // tall — permanently (playtest 2026-07-09). The old workaround
+        // (macOS animates the fullscreen transition, so the window size can
+        // lag a beat) survives as a fallback for the degenerate report
+        // only; the OS resize event re-runs sizing once the transition
+        // settles, so a transiently stale read self-heals.
+        let mut win = ds.window_get_size();
+        if win.x <= 0 || win.y <= 0 {
+            win = ds.screen_get_size();
+        }
         // In SBS mode the window is 2x wide; per-eye width is half that.
         let w = if self.current_mode == DisplayMode::SideBySide {
             (win.x / 2) as u32

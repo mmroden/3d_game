@@ -4,6 +4,7 @@
 pub mod abstract_graph;
 pub mod armament;
 pub mod cell;
+pub mod fixed_layout;
 pub mod generator;
 pub mod room_theme;
 pub mod roster;
@@ -26,14 +27,18 @@ pub mod enemy_ai;
 pub mod laser;
 pub mod bestiary;
 pub mod currency;
+pub mod damage_flash;
 pub mod debuff;
 pub mod kill_tracker;
 pub mod kinetics;
+pub mod tractor;
 pub mod game_phase;
 pub mod planet;
 pub mod boss;
 pub mod boss_fight;
 pub mod level_spec;
+#[cfg(test)]
+mod test_fixtures;
 pub mod portal;
 pub mod ui_layout;
 pub mod ui_style;

@@ -56,6 +56,10 @@ pub struct GameManager {
     current_power_mode: i32,
     /// Which bestiary entry the pre-level briefing is currently showing.
     bestiary_index: usize,
+    /// The bestiary was opened from the main menu (root-level catalog),
+    /// not the pre-level briefing — so select/back return to the menu
+    /// instead of starting a mission (playtest 2026-07-07).
+    bestiary_from_menu: bool,
     /// Set when the shop was entered by losing a life: its Continue restarts
     /// the current level (same seed) instead of advancing to the next.
     pending_respawn: bool,
@@ -81,6 +85,40 @@ pub struct GameManager {
     #[export]
     start_level: i32,
 
+    /// Reference-capture knob (`--shot=x,y,z,yaw_deg[,pitch_deg]`): after
+    /// the level builds, park the ship at exactly this pose, motionless.
+    /// Captures then compare against vendor stills from a REPRODUCIBLE
+    /// vantage — authored per reference image, never eyeballed per run.
+    /// Empty = off.
+    #[export]
+    shot_pose: GString,
+
+    /// Capture-mode view override (`--sbs=0/1`): forces stereo off/on for
+    /// this run WITHOUT touching the saved options — reference
+    /// comparisons want mono regardless of the developer's preference.
+    /// -1 = no override.
+    #[export]
+    sbs_override: i32,
+
+    /// Where the shot sequence saves its frames (`--shot-dir=path`); with
+    /// a directory set, the run QUITS after the last pose — one boot
+    /// visits every authored vantage in seconds. Empty = park only.
+    #[export]
+    shot_dir: GString,
+
+    /// Capture-mode populace override (`--populace=0`): builds levels
+    /// through the structure-only path — architecture, lights, panes, no
+    /// enemies photobombing reference shots. -1 = normal build.
+    #[export]
+    populace_override: i32,
+
+    /// The parsed `shot_pose` list ("x,y,z,yaw[,pitch];…") and the
+    /// sequencer's cursor: which pose the ship is parked at, and how many
+    /// frames it has settled there (culling/lights need a few).
+    shot_poses: Vec<[f32; 5]>,
+    shot_index: usize,
+    shot_timer: i32,
+
     /// Edge detection for the F9/F10 level-hop cheat (held-state latch).
     debug_hop_held: (bool, bool),
 }
@@ -101,10 +139,18 @@ impl INode for GameManager {
             pending_level_build: 0,
             current_power_mode: 0,
             bestiary_index: 0,
+            bestiary_from_menu: false,
             pending_respawn: false,
             boss_fight: None,
             level_spec: None,
             start_level: 0,
+            shot_pose: GString::new(),
+            sbs_override: -1,
+            shot_dir: GString::new(),
+            populace_override: -1,
+            shot_poses: Vec::new(),
+            shot_index: 0,
+            shot_timer: 0,
             debug_hop_held: (false, false),
             fixed_seed: 0,
         }
@@ -134,6 +180,18 @@ impl INode for GameManager {
                 if let Ok(seed) = v.parse::<i64>() {
                     self.fixed_seed = seed;
                 }
+            } else if let Some(v) = arg.strip_prefix("--shot=") {
+                self.shot_pose = v.into();
+            } else if let Some(v) = arg.strip_prefix("--shot-dir=") {
+                self.shot_dir = v.into();
+            } else if let Some(v) = arg.strip_prefix("--populace=") {
+                if let Ok(p) = v.parse::<i32>() {
+                    self.populace_override = p.clamp(0, 1);
+                }
+            } else if let Some(v) = arg.strip_prefix("--sbs=") {
+                if let Ok(sbs) = v.parse::<i32>() {
+                    self.sbs_override = sbs.clamp(0, 1);
+                }
             }
         }
 
@@ -147,6 +205,11 @@ impl INode for GameManager {
         // Load remembered preferences into the one model object first,
         // so the broadcast below seeds consumers from the saved values.
         self.load_options();
+        // Capture-mode view override: beats the saved preference for this
+        // run only (never written back — save_options is menu-driven).
+        if self.sbs_override >= 0 {
+            self.game_options.sbs_enabled = self.sbs_override != 0;
+        }
         // Load any persisted run so "Continue" survives a quit.
         self.load_run();
         self.connect_ui_signals();
@@ -199,6 +262,7 @@ impl INode for GameManager {
             if self.pending_level_build == 0 {
                 if self.phase == GamePhase::Playing {
                     self.regenerate_level();
+                    self.apply_shot_pose();
                 }
                 self.push_loading_veil(false);
             }
@@ -220,6 +284,9 @@ impl INode for GameManager {
 
         // Tick shield regeneration
         self.run_state.tick_shield(delta as f32);
+
+        // Reference-capture sequencing (no-op without a shot list).
+        self.tick_shot_sequence();
 
         // Signal wiring is no longer a per-frame tax: the Faucet pools build the
         // whole level roster during the load, and `regenerate_level` wires it
@@ -244,6 +311,15 @@ impl GameManager {
     #[func]
     fn enter_initial_phase(&mut self) {
         self.show_phase(self.phase);
+        // Dev knob: a boot with a level under inspection (`make run
+        // LEVEL=N` / the start_level export) walks itself into the mission
+        // — new game, default loadout, briefing. The menu walk is for
+        // players, not for looking at level N.
+        if self.start_level > 0 {
+            self.start_new_game();
+            self.advance_from_ship_select();
+            self.advance_from_bestiary();
+        }
     }
 
     /// Called from UI: start a fresh new game.
@@ -326,14 +402,16 @@ impl GameManager {
 
     /// Called when an enemy dies (connected to enemy_killed signal).
     #[func]
-    pub fn on_enemy_killed(&mut self, type_id: i32) {
-        // A kill comes off a LIVE drone, so the id must resolve — the
-        // demand door panics on an undeclared one. Retired-id tolerance
+    pub fn on_enemy_killed(&mut self, key: GString) {
+        // A kill comes off a LIVE drone, so the key must resolve — the
+        // demand door panics on an undeclared one. Retired-key tolerance
         // belongs to history readers (kill summary, bestiary), not here.
         let grammar = void_logic::roster::roster();
-        let id = grammar.expect_enemy_by_crossing_id(type_id as u16);
-        let def = grammar.enemy(id);
-        self.run_state.record_kill(def.crossing_id);
+        let ekey = grammar
+            .enemy_key(&key.to_string())
+            .expect("a kill off a live drone carries a declared key");
+        let def = grammar.enemy(ekey);
+        self.run_state.record_kill(ekey);
         godot_print!(
             "Kill: {} | Cache dropped: {} components",
             def.name, def.reward,
@@ -347,7 +425,7 @@ impl GameManager {
             .as_ref()
             .and_then(|s| s.boss.as_ref())
             .map(|b| b.boss);
-        if staged_boss == Some(id) {
+        if staged_boss == Some(ekey) {
             let drops = self
                 .level_spec
                 .as_ref()
@@ -359,6 +437,19 @@ impl GameManager {
                     godot_print!(
                         "Boss down — gather all {drops} drops to open the arena"
                     );
+                }
+            }
+        }
+        // A miniboss has no reward ritual: defeat(0) resolves the fight at
+        // the kill and the room re-opens AT ONCE — a wounded player can flee
+        // the moment the anchor drops (owner 2026-07-06). Same staging's-call
+        // discipline: only the enemy the spec placed advances the seal.
+        let staged_miniboss = self.level_spec.as_ref().and_then(|s| s.miniboss);
+        if staged_miniboss == Some(ekey) {
+            if let Some(fight) = &mut self.boss_fight {
+                if fight.defeat(0) {
+                    godot_print!("Miniboss down — the room re-opens");
+                    self.set_boss_seal(false);
                 }
             }
         }
@@ -397,8 +488,18 @@ impl GameManager {
         if !engaged {
             return;
         }
-        godot_print!("Boss fight engaged — the arena seals");
+        godot_print!("The fight engages — the room seals");
         self.set_boss_seal(true);
+        self.rise_staged_boss();
+        // Only the BOSS arena's seal restores shields (owner's calls
+        // 2026-07-06/09): full shields on entry, so loitering outside the
+        // door for regen buys nothing — a once-per-level mercy the recurring
+        // miniboss never hands out. Health stays either way — you fight with
+        // the hull you brought.
+        if self.level_spec.as_ref().is_some_and(|s| s.boss.is_some()) {
+            self.run_state.restore_shields();
+            self.update_hud();
+        }
         self.queue_music_push();
         // Every enemy gets the engage fan-out; `activate_escorts` is a no-op
         // for drones without OnEngage minions, so no type filtering here.
@@ -416,6 +517,15 @@ impl GameManager {
         let Some(parent) = self.base().get_parent() else { return };
         if let Some(mut lm) = parent.try_get_node_as::<Node>(nodes::LEVEL_MANAGER) {
             lm.call(methods::SEAL_BOSS_GATE, &[Variant::from(sealed)]);
+        }
+    }
+
+    /// Fan the boss rise out to the LevelManager — arena entry is the
+    /// staged boss's spawn beat.
+    fn rise_staged_boss(&self) {
+        let Some(parent) = self.base().get_parent() else { return };
+        if let Some(mut lm) = parent.try_get_node_as::<Node>(nodes::LEVEL_MANAGER) {
+            lm.call(methods::RISE_BOSS, &[]);
         }
     }
 
@@ -450,9 +560,15 @@ impl GameManager {
                 Some(spec) => spec.background.clone(),
                 None => return, // pre-spec boot frame: nothing to play yet
             },
-            MusicBed::Boss => match self.level_spec.as_ref().and_then(|s| s.boss.as_ref()) {
-                Some(staging) => staging.track.clone(),
-                None => return,
+            MusicBed::Boss => match self.level_spec.as_ref() {
+                // The staged fight plays its slot's declared track; the
+                // miniboss rides the boss bed on track 1 (which track a
+                // miniboss gets is an open tuning question — design doc).
+                Some(spec) if spec.boss.is_some() => {
+                    spec.boss.as_ref().expect("just checked").track.clone()
+                }
+                Some(spec) if spec.miniboss.is_some() => audio_catalog::boss_track(1),
+                _ => return,
             },
         };
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
@@ -538,6 +654,14 @@ impl GameManager {
                     Receipt::ChargeAdded(charges) => {
                         godot_print!("Surge charge bought ({charges} in the rack)");
                     }
+                    Receipt::ValkyrieBarAdded(bars) => {
+                        godot_print!("Valkyrie bar bought ({bars} in the row)");
+                        self.sync_player_state();
+                    }
+                    Receipt::ValkyrieRefillAdded(level) => {
+                        godot_print!("Valkyrie refill bought (level {level})");
+                        self.sync_player_state();
+                    }
                     Receipt::UnlockGranted(unlock) => {
                         godot_print!("Permanent unlock bought: {}", unlock.display_name());
                         // A permanent purchase must never be lostable —
@@ -566,6 +690,11 @@ impl GameManager {
             return;
         }
         if self.run_state.use_shield_burst() {
+            // The spend is audible (playtest 2026-07-06) — non-positional,
+            // it's the player's own gear.
+            if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
+                audio.bind_mut().play_event(SfxEvent::ShieldBurst);
+            }
             self.update_hud();
         }
     }
@@ -659,21 +788,50 @@ impl GameManager {
         }
     }
 
-    /// Called from the bestiary UI's Select/Fire: begin the mission. Browsing is
-    /// separate (see `on_bestiary_paged`), so this always drops into the level.
+    /// Open the bestiary as a root-level catalog from the main menu
+    /// (playtest 2026-07-07). The saved profile's sightings are the source,
+    /// so sync them into the run state first; the `bestiary_from_menu` flag
+    /// routes select/back back to the menu instead of a mission.
+    #[func]
+    pub fn show_bestiary_from_menu(&mut self) {
+        if self.phase != GamePhase::MainMenu {
+            return;
+        }
+        if let Some(save) = &self.save_game {
+            self.run_state.profile = save.profile.clone();
+        }
+        self.bestiary_from_menu = true;
+        self.transition_to(GamePhase::Bestiary);
+    }
+
+    /// Called from the bestiary UI's Select/Fire. From the pre-level briefing
+    /// this begins the mission; from the root-level menu browse it returns to
+    /// the menu (browsing is separate — see `on_bestiary_paged`).
     #[func]
     pub fn advance_from_bestiary(&mut self) {
-        if self.phase == GamePhase::Bestiary {
+        if self.phase != GamePhase::Bestiary {
+            return;
+        }
+        if self.bestiary_from_menu {
+            self.bestiary_from_menu = false;
+            self.transition_to(GamePhase::MainMenu);
+        } else {
             self.transition_to(GamePhase::Playing);
         }
     }
 
-    /// Called from the bestiary UI's back press (circle is always back):
-    /// return to the loadout screen. The two share one backdrop, so this is
-    /// a content flip, not a rebuild.
+    /// Called from the bestiary UI's back press (circle is always back).
+    /// From the briefing this returns to the loadout (a content flip on the
+    /// shared backdrop, no rebuild); from the menu browse, back to the menu.
     #[func]
     pub fn back_from_bestiary(&mut self) {
-        if self.phase == GamePhase::Bestiary {
+        if self.phase != GamePhase::Bestiary {
+            return;
+        }
+        if self.bestiary_from_menu {
+            self.bestiary_from_menu = false;
+            self.transition_to(GamePhase::MainMenu);
+        } else {
             self.transition_to(GamePhase::ShipSelect);
             self.show_ship_select_ui();
         }
@@ -712,17 +870,15 @@ impl GameManager {
         let Some(entry) = entries.get(self.bestiary_index) else { return };
         let Some(parent) = self.base().get_parent() else { return };
 
-        let (kind_id, enemy_id): (i32, i32) = match entry.kind {
-            BestiaryKind::OrganicCache => (0, -1),
-            BestiaryKind::ComponentCache => (1, -1),
-            BestiaryKind::Enemy(t) => {
-                (2, void_logic::roster::roster().enemy(t).crossing_id as i32)
-            }
+        let (kind_id, enemy_key): (i32, GString) = match entry.kind {
+            BestiaryKind::OrganicCache => (0, GString::new()),
+            BestiaryKind::ComponentCache => (1, GString::new()),
+            BestiaryKind::Enemy(t) => (2, GString::from(t.as_str())),
         };
         if let Some(mut turntable) = parent.try_get_node_as::<Node>(nodes::TURNTABLE) {
             turntable.call(
                 methods::SHOW_ENTRY,
-                &[Variant::from(kind_id), Variant::from(enemy_id)],
+                &[Variant::from(kind_id), Variant::from(enemy_key)],
             );
         }
 
@@ -926,6 +1082,12 @@ impl GameManager {
         self.game_options.sbs_enabled
     }
 
+    /// GUT door for the shot sequencer's cadence (see SHOT_SETTLE_FRAMES).
+    #[func]
+    fn shot_settle_frames(&self) -> i32 {
+        Self::SHOT_SETTLE_FRAMES
+    }
+
     /// Test seam: discard in-memory options and reload from disk, as a
     /// fresh launch would.
     #[func]
@@ -942,6 +1104,44 @@ impl GameManager {
     #[func]
     fn clear_save_for_tests(&mut self) {
         self.wipe_save();
+    }
+
+    /// TEST DOOR (see `clear_save_for_tests`): swap THE grammar for a
+    /// test-owned fixture (godot/tests/fixtures/grammar/), so shell
+    /// scenarios never depend on the owner's rosters/ tuning. The fixture
+    /// links against the real model catalog. `environment` carries a fixture
+    /// zone map for fixed-paradigm scenarios — pass "" for grid worlds.
+    /// Returns false (and logs the violation list) if it does not link.
+    #[func]
+    pub fn install_test_grammar(
+        enemies: GString,
+        kits: GString,
+        kit_grids: GString,
+        planet: GString,
+        environment: GString,
+    ) -> bool {
+        let environment = environment.to_string();
+        let environments: Vec<&str> =
+            if environment.is_empty() { Vec::new() } else { vec![environment.as_str()] };
+        match void_logic::roster::override_grammar_from(
+            &enemies.to_string(),
+            &kits.to_string(),
+            &kit_grids.to_string(),
+            &[&planet.to_string()],
+            &environments,
+        ) {
+            Ok(()) => true,
+            Err(e) => {
+                godot_error!("fixture grammar failed to link:\n{e}");
+                false
+            }
+        }
+    }
+
+    /// TEST DOOR: drop the fixture — the shipped grammar resumes.
+    #[func]
+    pub fn clear_test_grammar() {
+        void_logic::roster::clear_grammar_override();
     }
 
     /// Forget the save, memory and disk. New Game rides this (the explicit
@@ -1006,6 +1206,11 @@ impl GameManager {
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
             audio.bind_mut().play_event_at(event, hit_position);
         }
+        // Push BEFORE flashing: the tint reads the bar's displayed zone, so
+        // the bar must show the post-hit fraction within this same callback
+        // (the per-frame push would lag a threshold-crossing hit by a frame).
+        self.update_hud();
+        self.flash_hud_damage(outcome);
         if !self.run_state.is_alive() {
             self.on_player_death();
         }
@@ -1028,6 +1233,9 @@ impl GameManager {
         if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
             audio.bind_mut().play_event(event);
         }
+        // Push BEFORE flashing — same ordering contract as on_player_damaged.
+        self.update_hud();
+        self.flash_hud_damage(outcome);
         if !self.run_state.is_alive() {
             self.on_player_death();
         }
@@ -1039,6 +1247,19 @@ impl GameManager {
         let Some(parent) = self.base().get_parent() else { return };
         if let Some(mut hud) = Self::find_ui_node(&parent, nodes::HUD) {
             hud.call(methods::UPDATE_SLOW, &[Variant::from(active)]);
+        }
+    }
+
+    /// Flash the HUD damage tint — the HULL-severity alarm (owner
+    /// 2026-07-09): silent while the shield absorbs; a breach tints at the
+    /// zone the health bar displays. The caller pushes `update_hud` FIRST,
+    /// so the bar (and therefore the tint) shows the POST-hit fraction —
+    /// "is or would be" — with no second health crossing.
+    fn flash_hud_damage(&self, outcome: DamageOutcome) {
+        let Some(parent) = self.base().get_parent() else { return };
+        if let Some(mut hud) = Self::find_ui_node(&parent, nodes::HUD) {
+            let hull = matches!(outcome, DamageOutcome::HullHit);
+            hud.call(methods::FLASH_DAMAGE, &[Variant::from(hull)]);
         }
     }
 
@@ -1184,12 +1405,10 @@ impl GameManager {
     pub fn get_kill_summary(&self) -> Dictionary<GString, i32> {
         let mut dict = Dictionary::new();
         let grammar = void_logic::roster::roster();
-        for (crossing_id, count) in self.run_state.kills.summary() {
-            // summary() lists only ids the grammar declares, so the def
-            // resolves; a retired id counts toward totals but is unlisted.
-            if let Some(id) = grammar.enemy_by_crossing_id(crossing_id) {
-                dict.set(grammar.enemy(id).name.as_str(), count as i32);
-            }
+        for (ekey, count) in self.run_state.kills.summary() {
+            // summary() lists only keys the grammar declares, so the def
+            // resolves directly.
+            dict.set(grammar.enemy(ekey).name.as_str(), count as i32);
         }
         dict
     }
@@ -1315,9 +1534,8 @@ impl GameManager {
             .as_ref()
             .map(|s| s.coverage.clone())
             .unwrap_or_default();
-        let grammar = void_logic::roster::roster();
         for enemy in coverage {
-            if self.run_state.mark_enemy_seen(grammar.enemy(enemy).crossing_id) {
+            if self.run_state.mark_enemy_seen(enemy) {
                 grew = true;
             }
         }
@@ -1481,8 +1699,13 @@ impl GameManager {
             ]);
             // Arm (or disarm) the Valkyrie from the profile — RESET_LOADOUT
             // above wiped the node's cache, and ownership is green state the
-            // node must never read from disk itself.
+            // node must never read from disk itself. Upgrades go first so
+            // the arming builds the row at the bought width and rate.
             let valkyrie = self.run_state.profile.unlocks.contains(Unlock::Valkyrie);
+            player.call(methods::SET_VALKYRIE_UPGRADES, &[
+                Variant::from(self.run_state.valkyrie_bars_bought as i32),
+                Variant::from(self.run_state.valkyrie_refill_level as i32),
+            ]);
             player.call(methods::SET_VALKYRIE_OWNED, &[Variant::from(valkyrie)]);
         }
     }
@@ -1635,6 +1858,8 @@ impl GameManager {
                 menu.connect(signals::NEW_GAME_SELECTED, &new_game);
                 let continue_game = self.base().callable(methods::CONTINUE_GAME);
                 menu.connect(signals::CONTINUE_SELECTED, &continue_game);
+                let bestiary = self.base().callable(methods::SHOW_BESTIARY_FROM_MENU);
+                menu.connect(signals::BESTIARY_SELECTED, &bestiary);
                 let sbs = self.base().callable(methods::ON_SBS_TOGGLED);
                 menu.connect(signals::SBS_TOGGLED, &sbs);
                 let msaa = self.base().callable(methods::ON_MSAA_TOGGLED);
@@ -1871,17 +2096,115 @@ impl GameManager {
         }
     }
 
+    /// The reference-capture knob: park the ship at the first authored
+    /// pose (`shot_pose` = "x,y,z,yaw_deg[,pitch_deg];…"). Runs after
+    /// every level build; [`tick_shot_sequence`] then visits the rest —
+    /// one boot frames EVERY authored vantage, reproducibly.
+    fn apply_shot_pose(&mut self) {
+        let spec = self.shot_pose.to_string();
+        if spec.is_empty() {
+            return;
+        }
+        self.shot_poses = spec
+            .split(';')
+            .filter_map(|pose| {
+                let vals: Vec<f32> = pose
+                    .split(',')
+                    .filter_map(|s| s.trim().parse().ok())
+                    .collect();
+                if vals.len() < 4 {
+                    godot_warn!("shot pose needs x,y,z,yaw_deg[,pitch_deg]: '{pose}'");
+                    return None;
+                }
+                Some([vals[0], vals[1], vals[2], vals[3],
+                      vals.get(4).copied().unwrap_or(0.0)])
+            })
+            .collect();
+        self.shot_index = 0;
+        self.shot_timer = 0;
+        if let Some(pose) = self.shot_poses.first().copied() {
+            self.park_at(pose);
+        }
+    }
+
+    /// Frames-at-pose before a shot saves and the sequence advances —
+    /// culling and light state need a few frames to settle.
+    const SHOT_SETTLE_FRAMES: i32 = 6;
+
+    /// Advance the shot sequence: settle, save the frame (when a
+    /// `--shot-dir=` is set), step to the next pose; quit after the last
+    /// save so capture runs end themselves.
+    fn tick_shot_sequence(&mut self) {
+        if self.shot_poses.is_empty() || self.shot_index >= self.shot_poses.len() {
+            return;
+        }
+        self.shot_timer += 1;
+        if self.shot_timer < Self::SHOT_SETTLE_FRAMES {
+            return;
+        }
+        self.save_shot_frame(self.shot_index);
+        self.shot_timer = 0;
+        self.shot_index += 1;
+        if let Some(pose) = self.shot_poses.get(self.shot_index).copied() {
+            self.park_at(pose);
+        } else if !self.shot_dir.is_empty() {
+            self.base().get_tree().quit();
+        }
+    }
+
+    /// One viewport frame to `<shot_dir>/shot_NN.png` (no-op without a
+    /// directory — headless runs have no rendered viewport to read).
+    fn save_shot_frame(&self, index: usize) {
+        let dir = self.shot_dir.to_string();
+        if dir.is_empty() {
+            return;
+        }
+        let Some(viewport) = self.base().get_viewport() else { return };
+        let Some(texture) = viewport.get_texture() else { return };
+        let Some(image) = texture.get_image() else { return };
+        let path = format!("{dir}/shot_{index:02}.png");
+        image.save_png(&path);
+        godot_print!("shot {index} saved -> {path}");
+    }
+
+    /// Park the ship at a pose, motionless (position, yaw, pitch).
+    fn park_at(&mut self, pose: [f32; 5]) {
+        let Some(parent) = self.base().get_parent() else { return };
+        let Some(mut player) = parent.try_get_node_as::<Node3D>(nodes::PLAYER) else { return };
+        player.set_global_position(Vector3::new(pose[0], pose[1], pose[2]));
+        player.set_rotation_degrees(Vector3::new(pose[4], pose[3], 0.0));
+        if let Ok(mut body) = player.clone().try_cast::<godot::classes::RigidBody3D>() {
+            body.set_linear_velocity(Vector3::ZERO);
+            body.set_angular_velocity(Vector3::ZERO);
+        }
+        player.reset_physics_interpolation();
+    }
+
     fn regenerate_level(&mut self) {
         // ONE spec construction per level entry: every attribute (pitch,
         // paradigm, roster, boss staging incl. the red container and the
         // rolled hull) resolves here, against the profile, and this same
         // value drives the build and every later mediator decision.
         let spec = LevelSpec::for_level(
+            void_logic::roster::roster(),
             self.run_state.run_seed,
             self.run_state.current_level,
             &self.run_state.profile.unlocks,
         );
-        self.boss_fight = spec.boss.as_ref().map(|_| BossFight::new());
+        // Every level entry names its run seed — any playtest moment is
+        // reproducible (playtest 2026-07-09: an unlogged random seed made a
+        // spawn-swarm configuration unrecoverable).
+        godot_print!(
+            "Level {} | run seed {} | reproduce: make run SEED={} LEVEL={}",
+            self.run_state.current_level,
+            self.run_state.run_seed.as_i64(),
+            self.run_state.run_seed.as_i64(),
+            self.run_state.current_level,
+        );
+        // ONE seal FSM per level, whoever anchors it: the staged boss or the
+        // spec-placed miniboss (never both — LevelSpec enforces it).
+        self.boss_fight =
+            (spec.boss.is_some() || spec.miniboss.is_some()).then(BossFight::new);
         self.level_spec = Some(spec.clone());
         let Some(parent) = self.base().get_parent() else { return };
         if let Some(level_mgr) = parent.try_get_node_as::<LevelManager>(nodes::LEVEL_MANAGER) {
@@ -1893,9 +2216,12 @@ impl GameManager {
             // Typed crossing — no stringly staging pre-calls, no property
             // pushes syncing duplicate state.
             let seed = self.run_state.level_seed();
+            // Capture-mode: `--populace=0` rides the bestiary's
+            // structure-only path — no enemies in reference frames.
+            let structure_only = self.populace_override == 0;
             level_mgr
                 .bind_mut()
-                .build_from_spec(spec, seed.as_i64(), false);
+                .build_from_spec(spec, seed.as_i64(), structure_only);
         }
         // `generate_level` builds synchronously (add_child is synchronous), so
         // the whole pre-instantiated roster — enemies, dormant minions, currency

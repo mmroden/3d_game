@@ -36,21 +36,17 @@ pub struct Pitch {
 impl Pitch {
     /// The pitch DERIVES from the planet's declared kit (rosters/kits.toml,
     /// measured by the make-assets probe once it lands) — nobody authors a
-    /// cell dimension anywhere else.
+    /// cell dimension anywhere else. Shipped-grammar door for
+    /// [`Roster::pitch_for_level`].
     pub fn for_level(level: u32) -> Self {
-        let roster = crate::roster::roster();
-        let def = roster.planet_for_level(level.max(1));
-        let kit = &roster.kits[def.kits[0].0];
-        Self { tile: kit.tile, story: kit.story }
+        crate::roster::roster().pitch_for_level(level)
     }
 }
 
 /// Whether this level is built in the panel paradigm: the planet's declared
 /// kit decides (cubic cells skinned from one panel pool vs layered megakit).
 pub fn panel_world(level: u32) -> bool {
-    let roster = crate::roster::roster();
-    let def = roster.planet_for_level(level.max(1));
-    roster.kits[def.kits[0].0].paradigm == crate::roster::schema::KitParadigm::Panel
+    crate::roster::roster().panel_world(level)
 }
 
 /// The interstitial banner for a level entry: `Some((title, flavor))` when
@@ -131,13 +127,30 @@ mod tests {
 
     #[test]
     fn the_algebra_reconstructs_the_level() {
-        // planet_of and planet_relative are a proper quotient/remainder pair.
+        // planet_of and planet_relative are a proper quotient/remainder
+        // pair over the DECLARED per-planet strides (planets need not share
+        // a length — planet 3 is shorter than 1 and 2); past the declared
+        // table the newest planet's stride repeats. Reconstruction walks
+        // the same declarations, so retuning lengths can't break this.
+        let declared: Vec<(u32, u32)> = crate::roster::roster()
+            .planets
+            .iter()
+            .map(|p| (p.planet, p.levels))
+            .collect();
+        let level_base = |planet: u32| -> u32 {
+            let mut base = 0;
+            for (number, levels) in &declared {
+                if *number < planet {
+                    base += levels;
+                }
+            }
+            let last = declared.last().expect("linker guarantees planets");
+            // Virtual planets past the table repeat the newest stride.
+            base + planet.saturating_sub(last.0 + 1) * last.1
+        };
         for level in 1..=36 {
-            // Both planets declare six levels today, so the algebra still
-            // reconstructs with a uniform stride; per-planet strides are the
-            // roster's business (locate), not a constant's.
-            let rebuilt = (planet_of(level) - 1) * 6 + planet_relative(level);
-            assert_eq!(rebuilt, level);
+            let rebuilt = level_base(planet_of(level)) + planet_relative(level);
+            assert_eq!(rebuilt, level, "level {level} reconstructs from its planet algebra");
         }
     }
 }

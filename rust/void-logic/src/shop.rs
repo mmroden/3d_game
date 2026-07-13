@@ -32,6 +32,12 @@ pub enum ShopItemId {
     /// One Shield Surge refill (blue) — stocked only once the green item
     /// is owned. Its id sits AFTER the unlocks so their ids never shift.
     ShieldCharge,
+    /// One more Valkyrie charge bar (blue) — stocked once the cannon is
+    /// owned; 10k anchoring the 1.6× stat ladder (playtest 2026-07-06).
+    ValkyrieBar,
+    /// One Valkyrie refill level (blue): −0.1 s per bar down to the 1.0 s
+    /// floor, where the ladder closes.
+    ValkyrieRefill,
 }
 
 /// Number of stat ids; Laser, ExtraLife, then the unlocks follow.
@@ -45,6 +51,8 @@ impl ShopItemId {
             Self::ExtraLife => STAT_IDS + 1,
             Self::Unlock(unlock) => STAT_IDS + 2 + unlock.id(),
             Self::ShieldCharge => STAT_IDS + 2 + Unlock::ALL.len() as i32,
+            Self::ValkyrieBar => STAT_IDS + 3 + Unlock::ALL.len() as i32,
+            Self::ValkyrieRefill => STAT_IDS + 4 + Unlock::ALL.len() as i32,
         }
     }
 
@@ -56,6 +64,8 @@ impl ShopItemId {
             0 => Some(Self::Laser),
             1 => Some(Self::ExtraLife),
             n if n - 2 == Unlock::ALL.len() as i32 => Some(Self::ShieldCharge),
+            n if n - 3 == Unlock::ALL.len() as i32 => Some(Self::ValkyrieBar),
+            n if n - 4 == Unlock::ALL.len() as i32 => Some(Self::ValkyrieRefill),
             n => Unlock::from_id(n - 2).map(Self::Unlock),
         }
     }
@@ -90,6 +100,10 @@ pub enum Receipt {
     UnlockGranted(Unlock),
     /// Shield Surge charges after the refill.
     ChargeAdded(u32),
+    /// Valkyrie charge bars after the purchase.
+    ValkyrieBarAdded(u32),
+    /// Valkyrie refill level after the purchase.
+    ValkyrieRefillAdded(u32),
 }
 
 /// Why a purchase was refused. The run is untouched in every refusal.
@@ -112,6 +126,12 @@ const LIFE_STEP_COST: u32 = 5_000;
 const SHIELD_CHARGE_COST: u32 = 5_000;
 /// Rack capacity — the HUD counter's ceiling.
 const SHIELD_CHARGE_CAP: u32 = 9;
+/// First Valkyrie charge bar: 10k anchoring the 1.6× stat ladder
+/// (owner's number, playtest 2026-07-06).
+const VALKYRIE_BAR_BASE_COST: u32 = 10_000;
+/// First Valkyrie refill level: 5k on the same ladder (owner's call,
+/// 2026-07-06).
+const VALKYRIE_REFILL_BASE_COST: u32 = 5_000;
 
 /// Base price per stat kind — the catalog's relative value ordering.
 fn stat_base_cost(kind: UpgradeKind) -> u32 {
@@ -137,6 +157,19 @@ fn stat_cost(run: &RunState, kind: UpgradeKind) -> u32 {
 /// this run (losing one never discounts the next).
 fn life_cost(run: &RunState) -> u32 {
     LIFE_BASE_COST.saturating_add(LIFE_STEP_COST.saturating_mul(run.lives_purchased))
+}
+
+/// Ladder pricing shared by the Valkyrie rows: `base × 1.6^bought`,
+/// rounded to hundreds like the stats.
+fn laddered_cost(base: u32, bought: u32) -> u32 {
+    let raw = base as f32 * STAT_COST_GROWTH.powi(bought as i32);
+    ((raw / 100.0).round() as u32).saturating_mul(100)
+}
+
+/// Refill levels to the 1.0 s floor — where the ladder closes.
+fn valkyrie_refill_cap() -> u32 {
+    use crate::armament::valkyrie as v;
+    ((v::BASE_FILL_SECONDS - v::FILL_FLOOR_SECONDS) / v::FILL_STEP_SECONDS).round() as u32
 }
 
 /// The full catalog priced against `run`, in display order: the five stat
@@ -219,6 +252,45 @@ pub fn offers(run: &RunState) -> Vec<ShopOffer> {
         });
     }
 
+    // Valkyrie charge rows (playtest 2026-07-06): blue, stocked once the
+    // cannon is owned — the row of bars widens, the fill accelerates to
+    // its floor.
+    if run.profile.unlocks.contains(Unlock::Valkyrie) {
+        use crate::armament::valkyrie;
+        let bars = valkyrie::BASE_BARS + run.valkyrie_bars_bought;
+        let cost = laddered_cost(VALKYRIE_BAR_BASE_COST, run.valkyrie_bars_bought);
+        out.push(ShopOffer {
+            id: ShopItemId::ValkyrieBar,
+            label: "Valkyrie Bar".to_string(),
+            detail: format!("charge bars {} → {}", bars, bars + 1),
+            cost,
+            currency: CurrencyKind::Components,
+            affordable: run.components.can_afford(cost),
+            purchasable: true,
+        });
+
+        let capped = run.valkyrie_refill_level >= valkyrie_refill_cap();
+        let cost = laddered_cost(VALKYRIE_REFILL_BASE_COST, run.valkyrie_refill_level);
+        let detail = if capped {
+            format!("{:.1}s per bar — at the floor", valkyrie::fill_seconds_at(run.valkyrie_refill_level))
+        } else {
+            format!(
+                "{:.1}s → {:.1}s per bar",
+                valkyrie::fill_seconds_at(run.valkyrie_refill_level),
+                valkyrie::fill_seconds_at(run.valkyrie_refill_level + 1),
+            )
+        };
+        out.push(ShopOffer {
+            id: ShopItemId::ValkyrieRefill,
+            label: "Valkyrie Refill".to_string(),
+            detail,
+            cost,
+            currency: CurrencyKind::Components,
+            affordable: !capped && run.components.can_afford(cost),
+            purchasable: !capped,
+        });
+    }
+
     // The green section: permanent unlocks, priced in organics. Owned
     // unlocks leave the catalog for good — unlike the maxed laser, they can
     // never come back on offer, so there is no row to keep stable.
@@ -294,6 +366,28 @@ pub fn purchase(run: &mut RunState, id: ShopItemId) -> Result<Receipt, Refusal> 
             run.shield_charges += 1;
             Ok(Receipt::ChargeAdded(run.shield_charges))
         }
+        ShopItemId::ValkyrieBar => {
+            if !run.profile.unlocks.contains(Unlock::Valkyrie) {
+                return Err(Refusal::NotPurchasable);
+            }
+            let cost = laddered_cost(VALKYRIE_BAR_BASE_COST, run.valkyrie_bars_bought);
+            run.components.spend(cost).map_err(Refusal::NotEnough)?;
+            run.valkyrie_bars_bought += 1;
+            Ok(Receipt::ValkyrieBarAdded(
+                crate::armament::valkyrie::BASE_BARS + run.valkyrie_bars_bought,
+            ))
+        }
+        ShopItemId::ValkyrieRefill => {
+            if !run.profile.unlocks.contains(Unlock::Valkyrie)
+                || run.valkyrie_refill_level >= valkyrie_refill_cap()
+            {
+                return Err(Refusal::NotPurchasable);
+            }
+            let cost = laddered_cost(VALKYRIE_REFILL_BASE_COST, run.valkyrie_refill_level);
+            run.components.spend(cost).map_err(Refusal::NotEnough)?;
+            run.valkyrie_refill_level += 1;
+            Ok(Receipt::ValkyrieRefillAdded(run.valkyrie_refill_level))
+        }
     }
 }
 
@@ -309,8 +403,71 @@ mod tests {
     }
 
     #[test]
+    fn valkyrie_charge_rows_sell_blue_behind_the_cannon() {
+        // Playtest 2026-07-06: bars anchor at 10k and ride the 1.6× stat
+        // ladder; both rows stock only once the cannon is owned.
+        let mut run = rich_run();
+        assert!(
+            offers(&run).iter().all(|o| o.id != ShopItemId::ValkyrieBar
+                && o.id != ShopItemId::ValkyrieRefill),
+            "no cannon, no charge rows"
+        );
+        run.profile.unlocks.grant(Unlock::Valkyrie);
+        let bar = offers(&run).iter().find(|o| o.id == ShopItemId::ValkyrieBar)
+            .expect("owning the cannon stocks the bar row").clone();
+        assert_eq!(bar.cost, 10_000, "bars anchor at 10k");
+        assert_eq!(bar.currency, CurrencyKind::Components, "bars are blue");
+        assert_eq!(
+            purchase(&mut run, ShopItemId::ValkyrieBar).expect("rich run affords"),
+            Receipt::ValkyrieBarAdded(crate::armament::valkyrie::BASE_BARS + 1)
+        );
+        let again = offers(&run).iter().find(|o| o.id == ShopItemId::ValkyrieBar)
+            .expect("bar row stays stocked").cost;
+        assert_eq!(again, 16_000, "the bar ladder grows 1.6× like the stats");
+    }
+
+    #[test]
+    fn valkyrie_refill_ladder_stops_at_the_floor() {
+        let mut run = rich_run();
+        run.profile.unlocks.grant(Unlock::Valkyrie);
+        let refill_row = |run: &RunState| offers(run).iter()
+            .find(|o| o.id == ShopItemId::ValkyrieRefill)
+            .expect("owning the cannon stocks the refill row").clone();
+        assert_eq!(refill_row(&run).cost, 5_000, "refills anchor at 5k");
+        for level in 1..=5u32 {
+            assert_eq!(
+                purchase(&mut run, ShopItemId::ValkyrieRefill).expect("rich run affords"),
+                Receipt::ValkyrieRefillAdded(level)
+            );
+        }
+        assert!(!refill_row(&run).purchasable,
+            "level 5 reaches the 1.0s floor — the ladder closes");
+        assert!(purchase(&mut run, ShopItemId::ValkyrieRefill).is_err(),
+            "a closed ladder refuses");
+    }
+
+    #[test]
+    fn run_over_resets_the_valkyrie_charge_upgrades() {
+        // Bars and refills are blue: a run-over's full blue reset clears
+        // them with the rest.
+        let mut run = rich_run();
+        run.profile.unlocks.grant(Unlock::Valkyrie);
+        purchase(&mut run, ShopItemId::ValkyrieBar).expect("affordable");
+        purchase(&mut run, ShopItemId::ValkyrieRefill).expect("affordable");
+        run.apply_death_penalty();
+        assert_eq!(run.valkyrie_bars_bought, 0, "bars are blue — run-over clears them");
+        assert_eq!(run.valkyrie_refill_level, 0, "refill levels too");
+    }
+
+    #[test]
     fn item_id_round_trips() {
-        let mut all = vec![ShopItemId::Laser, ShopItemId::ExtraLife];
+        let mut all = vec![
+            ShopItemId::Laser,
+            ShopItemId::ExtraLife,
+            ShopItemId::ShieldCharge,
+            ShopItemId::ValkyrieBar,
+            ShopItemId::ValkyrieRefill,
+        ];
         all.extend(UpgradeKind::ALL.iter().map(|k| ShopItemId::Stat(*k)));
         for item in all {
             assert_eq!(ShopItemId::from_id(item.id()), Some(item),
@@ -337,7 +494,9 @@ mod tests {
                 ShopItemId::Stat(_)
                 | ShopItemId::Laser
                 | ShopItemId::ExtraLife
-                | ShopItemId::ShieldCharge => CurrencyKind::Components,
+                | ShopItemId::ShieldCharge
+                | ShopItemId::ValkyrieBar
+                | ShopItemId::ValkyrieRefill => CurrencyKind::Components,
             };
             assert_eq!(offer.currency, expected,
                 "{:?} belongs to the {expected:?} section", offer.id);

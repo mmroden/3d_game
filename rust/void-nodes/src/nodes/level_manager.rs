@@ -1,13 +1,14 @@
 use godot::prelude::*;
 use godot::classes::{
-    CollisionShape3D, ConcavePolygonShape3D, MeshInstance3D, Node3D, INode3D, OmniLight3D,
-    PackedScene, ResourceLoader, RigidBody3D, StaticBody3D,
+    BoxShape3D, CollisionShape3D, ConcavePolygonShape3D, MeshInstance3D, Node3D, INode3D,
+    OmniLight3D, PackedScene, ResourceLoader, RigidBody3D, StaticBody3D,
 };
 
 use super::constants::{groups, methods, nodes, scenes, signals};
 use super::godot_util;
 use super::live_handle::{LiveRef, LiveVec, LiveOpt};
 use super::bolt_pool::BoltPool;
+use super::cloud_pool::CloudPool;
 use super::boss_gate::{BossGate, BossTrigger};
 use super::enemy_drone::EnemyDrone;
 use super::currency_cache::CurrencyCache;
@@ -21,7 +22,7 @@ use super::views::ViewManager;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
-use void_logic::generator::{generate, GeneratorConfig};
+use void_logic::generator;
 use void_logic::level_spec::LevelSpec;
 use void_logic::level_assembly::{self, RoomBounds};
 use void_logic::level_graph::{LevelGraph, RENDER_ROOM_DEPTH};
@@ -29,7 +30,6 @@ use void_logic::room_furnisher::LightState;
 use void_logic::room_assembler::{Collision, MeshPlacement};
 use void_logic::portal as portal_sys;
 use void_logic::seed::Seed;
-use void_logic::spatial_layout;
 
 fn vec3(a: [f32; 3]) -> Vector3 {
     Vector3::new(a[0], a[1], a[2])
@@ -75,6 +75,11 @@ pub struct LevelManager {
     /// a sibling of the room containers so bolts escape per-room culling, and it
     /// outlives the room nodes `build_level` frees. Re-dormanted on each rebuild.
     bolt_pool: Option<LiveRef<BoltPool>>,
+    /// The level's dust-cloud ring buffer (Faucet Principle tier 2). Built once
+    /// and reused across regenerations, exactly like `bolt_pool` — a sibling of
+    /// the room containers so clouds escape per-room culling. Re-dormanted on
+    /// each rebuild.
+    cloud_pool: Option<LiveRef<CloudPool>>,
     /// The level's blue-cache pool (Faucet Principle tier 1): one dormant
     /// currency cache per enemy, pre-built during the load and parented here
     /// under the LevelManager (not under a room container) so a dropped cache
@@ -89,12 +94,18 @@ pub struct LevelManager {
     /// Hive's bay. One-life-per-level like the caches: freed and rebuilt on
     /// regeneration.
     player_drones: LiveVec<PlayerDrone>,
-    /// The arena seal on a boss level (`None` elsewhere) — pre-built
-    /// unsealed with the level, flipped by GameManager off the fight FSM.
-    boss_gate: Option<LiveRef<BossGate>>,
+    /// The room seal (empty off sealed levels) — every active connector of a
+    /// boss arena OR a miniboss room gets a gate, pre-built unsealed with the
+    /// level, flipped as ONE set by GameManager off the fight FSM. A boss
+    /// arena has one connector; a miniboss room has however many.
+    boss_gates: LiveVec<BossGate>,
     /// The exit portal on a boss level (`None` elsewhere) — pre-built
     /// dormant; activates when the fight's reward is collected.
     boss_portal: Option<LiveRef<Portal>>,
+    /// The staged boss on a boss level (`None` elsewhere) — pre-built
+    /// DORMANT like any reserved minion; the arena entry rises it
+    /// (playtest 2026-07-06: a live boss died to corridor sniping).
+    staged_boss: Option<LiveRef<EnemyDrone>>,
     /// The typed description of the level under (or after) construction —
     /// THE door for every level attribute (pitch, paradigm, roster, boss
     /// staging). Constructed by GameManager (production) or the test door
@@ -105,6 +116,12 @@ pub struct LevelManager {
     blinking_lights: LiveVec<OmniLight3D, f32>,
     /// Accumulated time driving the blink phase.
     blink_time: f32,
+    /// The world environment's ambient settings as they were BEFORE a fixed
+    /// level overrode them (source, color, energy) — captured on the first
+    /// override, restored on the next non-overriding build. The space
+    /// levels' dark ambient is authored in main.tscn; the house's daylight
+    /// ambient is authored on its environment file. One truth each.
+    saved_ambient: Option<(i32, Color, f32)>,
 }
 
 /// Dim fixtures emit a fraction of their rated energy — a weak glow.
@@ -123,13 +140,16 @@ impl INode3D for LevelManager {
             current_room: None,
             player: None,
             bolt_pool: None,
+            cloud_pool: None,
             caches: LiveVec::new(),
             player_drones: LiveVec::new(),
-            boss_gate: None,
+            boss_gates: LiveVec::new(),
             boss_portal: None,
+            staged_boss: None,
             spec: None,
             blinking_lights: LiveVec::new(),
             blink_time: 0.0,
+            saved_ambient: None,
         }
     }
 
@@ -228,16 +248,142 @@ impl LevelManager {
         )
     }
 
-    /// Seal or open the arena gate (no-op off boss levels). GameManager
-    /// drives this from physics callbacks, so the flip rides call_deferred
-    /// (the house dormancy pattern — space state never mutates mid-step).
+    /// Seal or open the room's gates as ONE set (no-op off sealed levels).
+    /// GameManager drives this from physics callbacks, so each flip rides
+    /// call_deferred (the house dormancy pattern — space state never mutates
+    /// mid-step). A boss arena flips its one gate; a miniboss room flips all
+    /// of its connectors together.
     #[func]
     pub fn seal_boss_gate(&mut self, sealed: bool) {
-        if let Some(gate) = &self.boss_gate {
-            gate.with(|g| {
-                g.call_deferred(methods::SET_SEALED, &[Variant::from(sealed)]);
+        for i in 0..self.boss_gates.len() {
+            if let Some(mut gate) = self.boss_gates.get_live(i) {
+                gate.call_deferred(methods::SET_SEALED, &[Variant::from(sealed)]);
+            }
+        }
+    }
+
+    /// Rise the staged boss (no-op off boss levels): dormant since the
+    /// build, it becomes visible and tangible exactly when the fight
+    /// engages — `activate_at` rides the same deferred dormancy flip as
+    /// every reserved minion.
+    #[func]
+    pub fn rise_boss(&mut self) {
+        if let Some(boss) = &self.staged_boss {
+            boss.with(|b| {
+                let pos = b.get_global_position();
+                b.bind_mut().activate_at(pos);
             });
         }
+    }
+
+    /// Apply (or restore) the world-environment ambient for this build's
+    /// paradigm. A fixed environment authors daylight ambient — the
+    /// stand-in for the bounce its window light would produce under GI;
+    /// every other build restores what main.tscn authored (the space
+    /// levels' darkness is a look, not a default). No-op without a
+    /// WorldEnvironment sibling (bare test stacks).
+    fn apply_ambient_override(&mut self, spec: &LevelSpec) {
+        use godot::classes::environment::AmbientSource;
+        use godot::classes::WorldEnvironment;
+        let Some(parent) = self.base().get_parent() else { return };
+        let Some(we) = parent.try_get_node_as::<WorldEnvironment>("WorldEnvironment") else {
+            return;
+        };
+        let Some(mut env) = we.get_environment() else { return };
+        let ambient = if let void_logic::level_spec::Paradigm::Fixed(e) = &spec.paradigm {
+            e.ambient
+        } else {
+            None
+        };
+        match ambient {
+            Some(a) => {
+                if self.saved_ambient.is_none() {
+                    self.saved_ambient = Some((
+                        env.get_ambient_source().ord(),
+                        env.get_ambient_light_color(),
+                        env.get_ambient_light_energy(),
+                    ));
+                }
+                env.set_ambient_source(AmbientSource::COLOR);
+                env.set_ambient_light_color(Color::from_rgb(a.color[0], a.color[1], a.color[2]));
+                env.set_ambient_light_energy(a.energy);
+            }
+            None => {
+                if let Some((source, color, energy)) = self.saved_ambient.take() {
+                    env.set_ambient_source(AmbientSource::from_ord(source));
+                    env.set_ambient_light_color(color);
+                    env.set_ambient_light_energy(energy);
+                }
+            }
+        }
+    }
+
+    /// Build the seal for one anchored room: a `BossGate` across EVERY active
+    /// connector (a boss arena has one; a miniboss room has however many) plus
+    /// the interior entry sensor — "entering the room" IS the engagement,
+    /// however the player comes in. Both parent under the room container
+    /// (freed and culled with it); the gates push into `boss_gates`, flipped
+    /// as one set. One build path for the boss arena and the miniboss alike.
+    fn build_room_seal(&mut self, graph: &LevelGraph, room_pos: usize) {
+        let story = self.pitch().story;
+        let cell = self.pitch().tile;
+        let Some(mut room_node) = self.room_nodes.get_live(room_pos) else { return };
+        let Some(room_idx) = graph.room_indices().nth(room_pos) else { return };
+        let Some(room) = graph.room(room_idx) else { return };
+        let origin = room.world_position(cell, story);
+        // Fixed levels build the entry sensor but no gates (v1): zone
+        // connectors are coarse graph doorways, not the house's actual
+        // openings — a barrier there would float in a wall and seal
+        // nothing real. The open house's staged fight engages on entry
+        // and holds the portal dark until resolved; that is the seal.
+        let fixed = matches!(
+            self.spec.as_ref().map(|s| &s.paradigm),
+            Some(void_logic::level_spec::Paradigm::Fixed(_))
+        );
+        let connectors =
+            if fixed { Vec::new() } else { graph.active_connectors(room_idx) };
+        for conn in connectors {
+            let center = Vector3::new(
+                origin[0] + (conn.offset[0] as f32 + 0.5) * cell,
+                origin[1] + conn.offset[1] as f32 * story + story * 0.5,
+                origin[2] + (conn.offset[2] as f32 + 0.5) * cell,
+            );
+            let dir = conn.facing.grid_offset();
+            let outward = Vector3::new(dir[0] as f32, dir[1] as f32, dir[2] as f32);
+            // The barrier sits in the doorway plane (half a cell out, where
+            // room wall meets corridor), thin axis along the way through.
+            let mut gate = BossGate::new_alloc();
+            gate.bind_mut().set_span(cell, story);
+            room_node.add_child(&gate);
+            gate.set_global_position(center + outward * (0.5 * cell));
+            if dir[0] != 0 {
+                gate.set_rotation(Vector3::new(0.0, std::f32::consts::FRAC_PI_2, 0.0));
+            }
+            self.boss_gates.push(&gate, ());
+        }
+        // The sensor spans the whole room interior (inset ~1m from the walls).
+        let [ex, ey, ez] = room.template.extents;
+        let interior = Vector3::new(
+            ex as f32 * cell - 2.0,
+            ey as f32 * story - 1.0,
+            ez as f32 * cell - 2.0,
+        );
+        let center = Vector3::new(
+            origin[0] + ex as f32 * cell * 0.5,
+            origin[1] + ey as f32 * story * 0.5,
+            origin[2] + ez as f32 * cell * 0.5,
+        );
+        let mut trigger = BossTrigger::new_alloc();
+        trigger.bind_mut().set_extents(interior);
+        room_node.add_child(&trigger);
+        trigger.set_global_position(center);
+    }
+
+    /// The staged boss node by ROLE, if this level staged a fight — so tests
+    /// and UI can reference "the boss" without knowing which def it fights as.
+    #[func]
+    pub fn staged_boss_node(&self) -> Option<Gd<EnemyDrone>> {
+        self.staged_boss.as_ref().and_then(|r| r.with(|b| b.clone()))
     }
 
     /// Light or darken the boss level's portal (no-op off boss levels).
@@ -378,6 +524,7 @@ impl LevelManager {
 
     fn door_spec(&self, seed: i64) -> LevelSpec {
         LevelSpec::for_level(
+            void_logic::roster::roster(),
             Seed::from_i64(seed),
             self.current_level.max(1) as u32,
             &void_logic::unlocks::PermanentUnlocks::new(),
@@ -397,27 +544,20 @@ impl LevelManager {
         let seed = Seed::from_i64(seed);
         self.current_level = spec.level as i32;
         self.spec = Some(spec.clone());
-        let config = GeneratorConfig::for_spec(&spec, seed);
 
-        let mut graph = match generate(&config) {
+        // THE generation door (void-logic): sweeps + arena post-process for
+        // generated paradigms, the authored zone lookup for fixed ones. A
+        // staged fight whose arena failed to attach comes back with no
+        // boss_room — the shell's business is only how loudly to complain.
+        let graph = match generator::generate_for_spec(&spec, seed, structure_only) {
             Ok(g) => g,
             Err(e) => {
                 godot_error!("Level generation failed: {e:?}");
                 return;
             }
         };
-
-        // Boss levels grow their arena as a post-process: a long approach
-        // corridor off the farthest room ending in the sealed-off arena. The
-        // arena becomes the new farthest room, so the portal and exit-room
-        // accents follow with zero changes. The backdrop build stays bossless.
-        if !structure_only && spec.boss.is_some() {
-            let entry = graph.room_indices().next();
-            let attached = entry
-                .and_then(|e| spatial_layout::attach_boss_room(&mut graph, e, spec.pitch));
-            if attached.is_none() {
-                godot_warn!("Boss arena failed to attach; level runs bossless");
-            }
+        if !structure_only && spec.boss.is_some() && graph.boss_room().is_none() {
+            godot_warn!("Boss arena failed to attach; level runs bossless");
         }
 
         // Assemble each room's content, grouped into the three build steps the
@@ -432,7 +572,8 @@ impl LevelManager {
         // that used to live inline here now lives in the manifest. Its rooms
         // align one-for-one with `rooms` (both from `spawn_list_full`).
         let level = self.current_level;
-        let manifest = level_assembly::manifest(&graph, &spec, seed);
+        let manifest =
+            level_assembly::manifest(void_logic::roster::roster(), &graph, &spec, seed);
 
         // Drop any room nodes from a previous level before rebuilding.
         self.room_nodes.for_each_live(|_, node, _| node.queue_free());
@@ -451,14 +592,19 @@ impl LevelManager {
         self.player_drones.for_each_live(|_, node, _| node.queue_free());
         self.player_drones.clear();
         // Boss fixtures (gate + trigger are LM children freed below with a
-        // fresh handle set; the portal is freed with its room).
-        self.boss_gate = None;
+        // fresh handle set; the portal is freed with its room; the boss is
+        // freed with its room like every enemy).
+        self.boss_gates.clear();
         self.boss_portal = None;
+        self.staged_boss = None;
 
         // The bolt ring survives the rebuild: build it once, then re-dormant it
         // so any bolt from the previous level is cleared. It is a sibling of the
         // room containers, so per-room culling never touches it.
         self.ensure_bolt_pool();
+        // The dust-cloud ring rides the same lifecycle as the bolt ring: built
+        // once, re-dormanted on rebuild, a sibling of the rooms.
+        self.ensure_cloud_pool();
 
         // Pre-build the player's subdrone squad, dormant, as siblings of the
         // rooms (they escort the player across rooms, so per-room culling must
@@ -490,8 +636,9 @@ impl LevelManager {
             // ONE merged collider per room instead of a body per tile (keeps
             // Jolt's broadphase and gen time sane).
             let mut static_meshes: Vec<Gd<Node3D>> = Vec::new();
+            let mut solid_meshes: Vec<Gd<Node3D>> = Vec::new();
             for entry in &room.structure {
-                if Self::place_mesh(&mut loader, &mut room_node, entry, &mut static_meshes, &mut loose_rng) {
+                if Self::place_mesh(&mut loader, &mut room_node, entry, &mut static_meshes, &mut solid_meshes, &mut loose_rng) {
                     mesh_count += 1;
                 }
             }
@@ -525,7 +672,7 @@ impl LevelManager {
                 // --- Step 2: non-enemy inhabitants — furnished props (cell-rolled)
                 // and organics containers (template loot spawns).
                 for entry in &room.props {
-                    if Self::place_mesh(&mut loader, &mut room_node, entry, &mut static_meshes, &mut loose_rng) {
+                    if Self::place_mesh(&mut loader, &mut room_node, entry, &mut static_meshes, &mut solid_meshes, &mut loose_rng) {
                         mesh_count += 1;
                     }
                 }
@@ -540,11 +687,27 @@ impl LevelManager {
                 // SAME room, its cache pre-built dormant under the level. On
                 // the parent's death it activates them — no death-path or
                 // per-drop instantiate remains.
-                for spawn in &manifest.rooms[room_index].enemies {
+                let room_anchor = manifest.rooms[room_index].anchor;
+                for (enemy_index, spawn) in
+                    manifest.rooms[room_index].enemies.iter().enumerate()
+                {
+                    // The room's dormant SEAL ANCHOR — a staged boss OR a
+                    // miniboss, the manifest's call — spawns DORMANT and rises
+                    // on room entry, not at build, so it can't be sniped from a
+                    // corridor before the fight begins (playtest 2026-07-06).
+                    // Every other enemy in the room spawns live.
+                    let is_anchor = room_anchor == Some(enemy_index);
+                    // The staged-boss anchor (vs a miniboss) additionally
+                    // stages its counted drop set below — a miniboss has no
+                    // reward ritual, so its bound cache stays ordinary.
+                    let is_boss = is_anchor && spec.boss.is_some();
                     let Some(mut parent) = Self::spawn_enemy(
-                        &mut loader, &mut room_node, spawn.enemy_type, level, spawn.position, false,
+                        &mut loader, &mut room_node, spawn.enemy_type, level, spawn.position, is_anchor,
                     ) else { continue };
                     enemy_count += 1;
+                    if is_anchor {
+                        self.staged_boss = Some(LiveRef::new(&parent));
+                    }
 
                     for minion in &spawn.minions {
                         if let Some(minion_node) = Self::spawn_enemy(
@@ -553,11 +716,6 @@ impl LevelManager {
                             parent.bind_mut().bind_minion(&minion_node, minion.trigger);
                         }
                     }
-
-                    // "Is this the boss" is the staging's call, not a type
-                    // check: exactly the enemy the level's slot staged.
-                    let is_boss =
-                        spec.boss.as_ref().map(|b| b.boss) == Some(spawn.enemy_type);
                     let mut level_mgr: Gd<Node3D> = self.base().clone().cast();
                     if let Some(mut cache_node) = Self::build_cache(&mut loader, &mut level_mgr) {
                         parent.bind_mut().bind_cache(&cache_node);
@@ -591,8 +749,33 @@ impl LevelManager {
                 }
             }
 
-            // Fuse the room's statics — structure AND surface-mounted props —
-            // now that every Static placement has been collected.
+            // The room's PHYSICS: ONE static body carrying the watertight
+            // shell (a solid box per sealed cell face, doorways open —
+            // derived and unit-tested in void-logic) plus a snug convex
+            // hull per protruding corner piece. Built after populace so a
+            // late ConvexSolid placement can never be dropped. The skin
+            // meshes are the room's LOOK; this body is the wall the
+            // engine knows.
+            if !room.shell.is_empty() || !solid_meshes.is_empty() {
+                let mut shell_body = StaticBody3D::new_alloc();
+                shell_body.set_name("RoomShell");
+                for slab in &room.shell {
+                    let mut boxy = BoxShape3D::new_gd();
+                    boxy.set_size(vec3(slab.size));
+                    let mut col = CollisionShape3D::new_alloc();
+                    col.set_shape(&boxy);
+                    col.set_position(vec3(slab.center));
+                    shell_body.add_child(&col);
+                }
+                let mut shell_node = shell_body.clone().upcast::<Node>();
+                for solid in &solid_meshes {
+                    godot_util::add_convex_collision(&mut shell_node, solid, solid.get_transform());
+                }
+                room_node.add_child(&shell_body);
+            }
+            // Fuse the room's statics — surface-mounted props only now
+            // (structure is Skin/ConvexSolid) — after every Static
+            // placement has been collected.
             Self::build_merged_collision(&mut room_node, &static_meshes);
 
             self.room_bounds.push(room.bounds.clone());
@@ -604,6 +787,94 @@ impl LevelManager {
         // for the structure-only backdrop (no exit gate behind the loadout).
         // On a boss level it is pre-built DORMANT (Faucet: built with the
         // level, flipped live when the fight's reward is collected).
+        // The ambient override: fixed environments author the bounce
+        // stand-in; every other build restores the scene's own ambient.
+        self.apply_ambient_override(&spec);
+
+        // Authored daylight (fixed environments), parented under room 0 so
+        // it frees with the level. ALL of an interior's light comes from
+        // outside (owner 2026-07-12): a shadowed sun for the hard stripes,
+        // and each authored window panel as a wide shadowless spot shining
+        // inward — the real-time stand-in for the sheers-as-area-lights
+        // look (the lightmap bake later makes them true emissive panels).
+        if let void_logic::level_spec::Paradigm::Fixed(env) = &spec.paradigm {
+            if let Some(mut room0) = self.room_nodes.get_live(0) {
+                let scale = spec.pitch.tile;
+                if let Some(sun) = env.sun {
+                    let az = sun.azimuth_deg.to_radians();
+                    let el = sun.elevation_deg.to_radians();
+                    // Bearing 0 = model north (-Z), 90 = east (+X); the sun
+                    // SITS at that bearing and shines back into the scene.
+                    let toward_sun = Vector3::new(
+                        az.sin() * el.cos(),
+                        el.sin(),
+                        -az.cos() * el.cos(),
+                    );
+                    let mut sun_light = godot::classes::DirectionalLight3D::new_alloc();
+                    sun_light.set_param(godot::classes::light_3d::Param::ENERGY, sun.energy);
+                    sun_light.set_color(Color::from_rgb(1.0, 0.96, 0.88));
+                    sun_light.set_shadow(true);
+                    room0.add_child(&sun_light);
+                    sun_light.set_global_position(toward_sun * 50.0);
+                    sun_light.look_at(Vector3::ZERO);
+                }
+                for window in &env.windows {
+                    let mut spot = godot::classes::SpotLight3D::new_alloc();
+                    spot.set_param(godot::classes::light_3d::Param::ENERGY, window.energy);
+                    spot.set_param(
+                        godot::classes::light_3d::Param::RANGE,
+                        window.range * scale,
+                    );
+                    // Wide cone: a panel's wash, not a flashlight beam. The
+                    // spot sits half a panel-height OUTSIDE the opening so
+                    // the cone covers the whole window by the time it
+                    // enters — daylight, already diffused by the sheers.
+                    spot.set_param(godot::classes::light_3d::Param::SPOT_ANGLE, 70.0);
+                    // Flat falloff: a daylight panel washes its whole
+                    // throw, it doesn't pool at the glass (attenuation 0
+                    // holds near-constant brightness through the range —
+                    // the documented area-wash setting).
+                    spot.set_param(godot::classes::light_3d::Param::ATTENUATION, 0.2);
+                    spot.set_color(Color::from_rgb(0.98, 0.99, 1.0));
+                    let inward = vec3(window.inward);
+                    let center = vec3(window.center) * scale;
+                    let back_off = window.size[1] * 0.5 * scale;
+                    room0.add_child(&spot);
+                    spot.set_global_position(center - inward * back_off);
+                    spot.look_at(center + inward * (window.range * scale));
+
+                    // The panel itself GLOWS: an emissive quad on the
+                    // opening's plane — the visible light source the spot
+                    // stands in for (and, later, the LightmapGI emitter).
+                    let mut quad_mesh = godot::classes::QuadMesh::new_gd();
+                    quad_mesh.set_size(Vector2::new(
+                        window.size[0] * scale,
+                        window.size[1] * scale,
+                    ));
+                    let mut mat = godot::classes::StandardMaterial3D::new_gd();
+                    mat.set_feature(
+                        godot::classes::base_material_3d::Feature::EMISSION,
+                        true,
+                    );
+                    mat.set_emission(Color::from_rgb(1.0, 0.98, 0.94));
+                    mat.set_emission_energy_multiplier(4.0);
+                    mat.set_albedo(Color::from_rgb(1.0, 1.0, 1.0));
+                    mat.set_shading_mode(
+                        godot::classes::base_material_3d::ShadingMode::UNSHADED,
+                    );
+                    quad_mesh.set_material(&mat);
+                    let mut panel = godot::classes::MeshInstance3D::new_alloc();
+                    panel.set_mesh(&quad_mesh);
+                    panel.set_name(&format!("WindowPanel{}", room0.get_child_count()));
+                    room0.add_child(&panel);
+                    // QuadMesh faces its local +Z: sit ON the plane, face
+                    // the inward direction (visible from inside the room).
+                    panel.set_global_position(center);
+                    panel.look_at(center + inward);
+                }
+            }
+        }
+
         let boss_arena = if structure_only { None } else { graph.boss_room() };
         if !structure_only {
             if let Some(portal_pos) = portal_sys::portal_position(&graph, self.pitch()) {
@@ -631,61 +902,13 @@ impl LevelManager {
             }
         }
 
-        // Boss fixtures: the arena seal across the one doorway and the entry
-        // sensor just inside it. Both parent under the arena's room container
-        // (freed and culled with the room); both are dormancy-flip-only after
-        // this point (Faucet Principle).
-        if let Some(boss_idx) = graph.boss_room() {
-            let story = self.pitch().story;
-            let cell = self.pitch().tile;
-            let arena_pos = graph.room_indices().position(|i| i == boss_idx);
-            let arena_node = arena_pos.and_then(|i| self.room_nodes.get_live(i));
-            let doorway = graph.room(boss_idx).and_then(|room| {
-                graph.active_connectors(boss_idx).first().map(|conn| {
-                    let origin = room.world_position(cell, story);
-                    let center = Vector3::new(
-                        origin[0] + (conn.offset[0] as f32 + 0.5) * cell,
-                        origin[1] + conn.offset[1] as f32 * story + story * 0.5,
-                        origin[2] + (conn.offset[2] as f32 + 0.5) * cell,
-                    );
-                    (center, conn.facing.grid_offset())
-                })
-            });
-            if let (Some(mut arena_node), Some((center, dir))) = (arena_node, doorway) {
-                let outward = Vector3::new(dir[0] as f32, dir[1] as f32, dir[2] as f32);
-                // The barrier sits in the doorway plane (half a cell out,
-                // where arena wall meets corridor), thin axis along the way
-                // through.
-                let mut gate = BossGate::new_alloc();
-                gate.bind_mut().set_span(cell, story);
-                arena_node.add_child(&gate);
-                gate.set_global_position(center + outward * (0.5 * cell));
-                if dir[0] != 0 {
-                    gate.set_rotation(Vector3::new(0.0, std::f32::consts::FRAC_PI_2, 0.0));
-                }
-                self.boss_gate = Some(LiveRef::new(&gate));
-
-                // The sensor spans the whole arena interior (inset ~1m from
-                // the walls): "entering the room" IS the engagement, however
-                // the player comes in — there is no path that skips it.
-                if let Some(room) = graph.room(boss_idx) {
-                    let origin = room.world_position(cell, story);
-                    let [ex, ey, ez] = room.template.extents;
-                    let interior = Vector3::new(
-                        ex as f32 * cell - 2.0,
-                        ey as f32 * story - 1.0,
-                        ez as f32 * cell - 2.0,
-                    );
-                    let arena_center = Vector3::new(
-                        origin[0] + ex as f32 * cell * 0.5,
-                        origin[1] + ey as f32 * story * 0.5,
-                        origin[2] + ez as f32 * cell * 0.5,
-                    );
-                    let mut trigger = BossTrigger::new_alloc();
-                    trigger.bind_mut().set_extents(interior);
-                    arena_node.add_child(&trigger);
-                    trigger.set_global_position(arena_center);
-                }
+        // Room seals: every room the manifest marks with a dormant anchor — a
+        // boss arena and/or a miniboss room — seals its active connectors on
+        // entry, with an interior entry sensor. ONE build path: a boss arena
+        // has a single doorway, a miniboss room seals however many it has.
+        for room_pos in 0..manifest.rooms.len() {
+            if manifest.rooms[room_pos].anchor.is_some() {
+                self.build_room_seal(&graph, room_pos);
             }
         }
 
@@ -763,6 +986,31 @@ impl LevelManager {
         }
     }
 
+    /// Build the dust-cloud pool on first use and re-dormant it on every
+    /// rebuild. Mirrors [`ensure_bolt_pool`](Self::ensure_bolt_pool) exactly:
+    /// the pool is a direct child of this LevelManager (a sibling of the room
+    /// containers), so clouds escape per-room culling and the pool outlives the
+    /// room nodes cleared on rebuild. A pool queue_freed this frame counts as
+    /// gone, so a fresh level always has a usable ring.
+    fn ensure_cloud_pool(&mut self) {
+        let usable = self
+            .cloud_pool
+            .with(|p| {
+                if p.is_queued_for_deletion() {
+                    None
+                } else {
+                    p.bind_mut().reset();
+                    Some(()) // already built and now re-dormanted
+                }
+            })
+            .flatten();
+        if usable.is_none() {
+            let pool = CloudPool::new_alloc();
+            self.base_mut().add_child(&pool);
+            self.cloud_pool = Some(LiveRef::new(&pool));
+        }
+    }
+
     fn collect_static_bodies(node: &Gd<Node>, out: &mut Vec<Gd<Node>>) {
         for child in node.get_children().iter_shared() {
             if child.clone().try_cast::<StaticBody3D>().is_ok() {
@@ -773,10 +1021,11 @@ impl LevelManager {
         }
     }
 
-    /// Fuse every structural mesh's triangles into one `ConcavePolygonShape3D`
-    /// on a single `StaticBody3D` for the whole room. Same triangles as a
-    /// per-mesh trimesh — so collision still hugs corners — but Jolt tracks
-    /// one body instead of thousands. One source: the meshes.
+    /// Fuse the remaining `Static` meshes' triangles (surface-mounted props
+    /// and equipment — never the room skin, whose physics is the watertight
+    /// shell, nor the corner curves, which carry solid convex hulls) into
+    /// one `ConcavePolygonShape3D` on a single `StaticBody3D` per room.
+    /// Jolt tracks one body instead of thousands. One source: the meshes.
     fn build_merged_collision(room_node: &mut Gd<Node3D>, static_meshes: &[Gd<Node3D>]) {
         let mut faces = PackedVector3Array::new();
         for node in static_meshes {
@@ -884,6 +1133,16 @@ impl LevelManager {
         let Some(current_node) = self.level_graph.room_indices().nth(current) else {
             return;
         };
+        // Fixed levels keep every container visible: the whole house is ONE
+        // scene under room 0, so hiding containers would blank the level,
+        // not cull it (v1 relies on Godot's per-object frustum culling; the
+        // zone graph above still drives room_changed and the recon map).
+        if matches!(
+            self.spec.as_ref().map(|s| &s.paradigm),
+            Some(void_logic::level_spec::Paradigm::Fixed(_))
+        ) {
+            return;
+        }
         let visible: std::collections::HashSet<usize> = self
             .level_graph
             .visible_from(current_node, RENDER_ROOM_DEPTH)
@@ -924,23 +1183,21 @@ impl LevelManager {
     fn spawn_enemy(
         loader: &mut Gd<ResourceLoader>,
         parent: &mut Gd<Node3D>,
-        enemy_id: void_logic::roster::EnemyId,
+        enemy_key: void_logic::roster::EnemyKey,
         level: i32,
         pos: [f32; 3],
         dormant: bool,
     ) -> Option<Gd<EnemyDrone>> {
-        // Every enemy is the same node + collider scene; the def (via the
-        // crossing id stamped below) drives stats, model, and collider size.
+        // Every enemy is the same node + collider scene; the def (via the key
+        // stamped below) drives stats, model, and collider size.
         let scene_res = loader.load("res://scenes/enemies/enemy.tscn")?;
         let packed: Gd<PackedScene> = scene_res.cast();
         let instance = packed.instantiate()?;
         let mut enemy = instance.try_cast::<EnemyDrone>().ok()?;
-        // Stamp type + level before entering the tree so ready() configures it.
+        // Stamp key + level before entering the tree so ready() configures it.
         {
             let mut g = enemy.bind_mut();
-            g.set_spawn_type(
-                void_logic::roster::roster().enemy(enemy_id).crossing_id as i32,
-            );
+            g.set_spawn_key(GString::from(enemy_key.as_str()));
             g.set_spawn_level(level);
         }
         enemy.set_position(vec3(pos));
@@ -1009,6 +1266,7 @@ impl LevelManager {
         room_node: &mut Gd<Node3D>,
         entry: &MeshPlacement,
         statics: &mut Vec<Gd<Node3D>>,
+        solids: &mut Vec<Gd<Node3D>>,
         loose_rng: &mut SmallRng,
     ) -> bool {
         let Some(resource) = loader.load(entry.scene) else {
@@ -1024,6 +1282,12 @@ impl LevelManager {
         // The asset pack bakes its own collision via `_convcolonly` node
         // suffixes; strip it so our build owns collision as the single source.
         Self::strip_baked_colliders(&node);
+        // The placement's declared scale (the fixed environment rides its
+        // kit's scale here) — set before any collider is derived, so physics
+        // and render agree.
+        if (entry.scale - 1.0).abs() > 1e-6 {
+            node.set_scale(Vector3::ONE * entry.scale);
+        }
 
         match entry.collision {
             Collision::Dynamic => {
@@ -1040,7 +1304,8 @@ impl LevelManager {
 
                 body.add_child(&node);
                 let node_xform = node.get_transform();
-                godot_util::add_convex_collision(&mut body, &node, node_xform);
+                let mut body_node = body.clone().upcast::<Node>();
+                godot_util::add_convex_collision(&mut body_node, &node, node_xform);
                 room_node.add_child(&body);
                 body.reset_physics_interpolation();
             }
@@ -1052,12 +1317,26 @@ impl LevelManager {
                 room_node.add_child(&node);
                 statics.push(node);
             }
-            Collision::Passable => {
+            Collision::Skin | Collision::Passable => {
+                // Skin: render-only by design — the room's watertight shell
+                // owns that plane's physics (see build's shell emission).
                 node.set_position(vec3(entry.position));
                 if entry.rotation_x.abs() > 0.001 || entry.rotation_y.abs() > 0.001 {
                     node.set_rotation(Vector3::new(entry.rotation_x, entry.rotation_y, 0.0));
                 }
                 room_node.add_child(&node);
+            }
+            Collision::ConvexSolid => {
+                // A protruding solid (curved corner stack): rendered here,
+                // hulled onto the room's ONE shell body by the caller — a
+                // per-piece body would re-explode Jolt's broadphase, the
+                // exact regression the merged-collision pin guards.
+                node.set_position(vec3(entry.position));
+                if entry.rotation_x.abs() > 0.001 || entry.rotation_y.abs() > 0.001 {
+                    node.set_rotation(Vector3::new(entry.rotation_x, entry.rotation_y, 0.0));
+                }
+                room_node.add_child(&node);
+                solids.push(node);
             }
         }
         true

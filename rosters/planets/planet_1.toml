@@ -21,11 +21,11 @@ enemies = ["sentry_drone", "bomber", "eye_drone"]
 
 [[level]]
 relative = 4
-enemies = ["sentry_drone", "bomber", "eye_drone", "quad_shell"]
+enemies = ["sentry_drone", "bomber", "eye_drone", "miniboss_brute"]
 
 [[level]]
 relative = 5
-enemies = ["sentry_drone", "bomber", "eye_drone", "quad_shell"]
+enemies = ["sentry_drone", "bomber", "eye_drone", "miniboss_brute", "latcher"]
 
 [[level]]
 relative = 6

@@ -28,12 +28,14 @@ attack_range = "flat"
 
 [[enemy]]
 key = "template_enemy"   # stable identity (rosters, saves, linker refs)
-id = 1000                # GDScript/save crossing — append-only, never reuse
 name = "Template Enemy"
 blurb = "Bestiary lore — every enemy is catalogued."
 model = "sphere_ship_01"    # a KEY in models.generated.toml (make assets)
 size = 1.0               # metres, longest edge (fit-scaled)
 yaw_offset_deg = 180     # imported front-axis correction (0 or 180 so far)
+muzzles = []             # barrel tips, aim-frame metres [x right, y up,
+                         # z toward the player]; shots round-robin the list,
+                         # [] = fire from the hull centre
 ai = "shooter"           # shooter | kiter | swarmer | tank | bomber
 reward = 800             # components in its death cache
 spawns_directly = true   # false = minion/escort/boss-staged only
@@ -43,10 +45,26 @@ standoff_frac = 0.6      # fighting ring, fraction of attack_range
 fuse_seconds = 0.0       # bomber fuse (default 1.0 on bombers, else 0)
 blast_frac = 0.0         # bomber blast radius, fraction of attack_range
                          # (default 1.5 on bombers, else 0)
+cloud_seconds = 0.0      # detonation leaves an occluding dust cloud at blast
+                         # radius for this long (0 = instant blast only)
 shield_frac = 0.0        # shield pool, fraction of hp (default 0.5 tanks)
 disengage_frac = 1.2     # give-up-the-chase, fraction of detection
 drain_dps = 0.0          # hull drain per second while latched (swarmers)
 bolt_speed = 13.0        # projectile speed, m/s (firing archetypes)
+burst_count = 1          # bolts per trigger pull; the cooldown gates BURSTS
+burst_seconds = 0.1      # in-burst gap between a burst's bolts, seconds
+pellet_count = 1         # pellets fanned per bolt (a shotgun declares more)
+spread_deg = 0.0         # total fan cone, degrees, across the pellets
+bolt_turn_deg = 0.0      # homing steer rate, deg/s (0 = ballistic)
+pull_accel = 0.0         # SIGNED tractor field, m/s²: + drags the player in,
+                         # - shoves away; linear falloff to 0 at attack_range
+alert_radius = 0.0       # alarm aura, metres: while engaged, machines this
+                         # close to IT force-engage the player (0 = no klaxon)
+guard_radius = 0.0       # guardian link, metres: allies this close take their
+                         # damage from THIS enemy's shield first (0 = none;
+                         # declare shield_frac too or there is no pool)
+jink_seconds = 0.0       # erratic dodge: mean seconds between strafe re-rolls
+                         # while engaged (0 = smooth orbit; homing counters it)
 latch_range = 0.0        # attached within this range: slow re-tags, drain
                          # ticks (default 2.0 swarmers, else 0 = never)
 slow_factor = 1.0        # per-tag speed multiplier, compounds; 1.0 = none
@@ -81,7 +99,6 @@ attack_range = "flat"    # blast, shield) follow their base stat's curve
 
 [[enemy]]
 key = "template_minion"
-id = 1001
 name = "Template Minion"
 blurb = "A lesser machine the template enemy fields."
 model = "sphere_ship_02"
@@ -100,7 +117,6 @@ cooldown = 1.2
 
 [[enemy]]
 key = "template_boss"
-id = 1002
 name = "Template Boss"
 blurb = "A staged fight. Its escorts are declared on the boss slot."
 model = "evil_mech_03"
@@ -129,7 +145,7 @@ members = [{ enemy = "template_enemy", count = 2 }]
 # ── Section: kits.toml (interim; the make-assets probe will generate) ───
 
 [kits.template_kit]
-paradigm = "panel"       # layered (tile+story stacks) | panel (cubic cells)
+paradigm = "panel"       # layered (tile+story stacks) | panel (cubic cells) | fixed (pre-modeled scene; declares scale + environment)
 install_dir = "godot/addons/walls"  # repo-relative; disk-pinned populated
 # The kit's grid (tile/story) is NEVER authored: the make-assets probe
 # derives it from the assembly recipe into kits.generated.toml.

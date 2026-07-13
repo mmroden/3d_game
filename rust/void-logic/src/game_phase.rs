@@ -65,6 +65,11 @@ impl GamePhase {
                 | (GamePhase::ShipSelect, GamePhase::Bestiary)
                 | (GamePhase::Bestiary, GamePhase::ShipSelect)
                 | (GamePhase::Bestiary, GamePhase::Playing)
+                // The root-level bestiary: browse the catalog from the menu
+                // and return to it (playtest 2026-07-07), distinct from the
+                // pre-level briefing above.
+                | (GamePhase::MainMenu, GamePhase::Bestiary)
+                | (GamePhase::Bestiary, GamePhase::MainMenu)
                 | (GamePhase::Death, GamePhase::MainMenu)
                 // Losing a life (not the run): through the shop, then back
                 // into the same level via the Shop → Playing edge above.
@@ -134,6 +139,14 @@ mod tests {
         assert!(GamePhase::Bestiary.can_transition_to(GamePhase::ShipSelect));
         assert!(!GamePhase::Bestiary.can_transition_to(GamePhase::Shop));
         assert!(!GamePhase::Playing.can_transition_to(GamePhase::Bestiary));
+    }
+
+    #[test]
+    fn the_bestiary_is_browsable_from_the_main_menu() {
+        // A root-level catalog (playtest 2026-07-07): open the bestiary from
+        // the menu and return to it, distinct from the pre-level briefing.
+        assert!(GamePhase::MainMenu.can_transition_to(GamePhase::Bestiary));
+        assert!(GamePhase::Bestiary.can_transition_to(GamePhase::MainMenu));
     }
 
     #[test]

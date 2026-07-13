@@ -62,6 +62,13 @@ impl ShieldState {
         self.boosted = active;
     }
 
+    /// Cut the post-hit delay short: regen runs on the very next tick.
+    /// The Shield Surge calls this — an emergency recharge that then sits
+    /// dead for the full delay reads as a broken item (playtest 2026-07-06).
+    pub fn wake_regen(&mut self) {
+        self.delay_timer = 0.0;
+    }
+
     /// Reset to full capacity (e.g., on death penalty / new run).
     pub fn reset(&mut self) {
         self.current = self.max_capacity;
@@ -132,6 +139,15 @@ mod tests {
         state.tick(1.5);
         state.tick(100.0);
         assert_eq!(state.current, Shield::new(50.0));
+    }
+
+    #[test]
+    fn wake_regen_cuts_the_post_hit_delay_short() {
+        let mut state = default_shield();
+        state.take_hit(Damage::new(20.0)); // at 30, the 1.5s delay armed
+        state.wake_regen();
+        state.tick(1.0); // 5/sec with no delay left → 35
+        assert_eq!(state.current, Shield::new(35.0));
     }
 
     #[test]

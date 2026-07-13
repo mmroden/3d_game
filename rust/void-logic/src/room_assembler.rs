@@ -44,6 +44,17 @@ pub enum Collision {
     /// Decorative only — no collider (cables, holograms, light fixtures).
     /// A deliberate, named choice, never an omission.
     Passable,
+    /// Boundary skin — walls, floors, ceilings, door frames: render-only,
+    /// because the room's watertight cell shell (`shell_slabs`) owns the
+    /// physics at that plane. Still a named intent, never an omission
+    /// (playtest 2026-07-06: using the render triangles as the collider
+    /// gave the walls the art's seam holes).
+    Skin,
+    /// A solid piece protruding into the room (the curved corner stack):
+    /// a `StaticBody3D` with a snug convex hull per mesh. Convex shapes
+    /// have a real interior, so a grinding body is always pushed OUT —
+    /// the hollow-trimesh cage is unrepresentable.
+    ConvexSolid,
 }
 
 impl Collision {
@@ -66,9 +77,75 @@ pub struct MeshPlacement {
     pub position: [f32; 3],
     pub rotation_x: f32,
     pub rotation_y: f32,
+    /// Uniform scale applied at instantiation (1.0 = the scene's own size).
+    /// The fixed-environment mesh rides its kit's declared scale here —
+    /// never baked into the glb, so retuning is a grammar edit.
+    pub scale: f32,
     /// How this mesh collides. Replaces the old `loose` flag: `Dynamic`
     /// is the former `loose: true`; structure is `Static`.
     pub collision: Collision,
+}
+
+// ── Watertight room shell ───────────────────────────────────────────────
+
+/// Shell slab thickness (m). Chunky on purpose: anti-tunneling headroom
+/// under pile-up pressure.
+pub const SHELL_THICKNESS: f32 = 0.5;
+
+/// One axis-aligned solid box of a room's collision shell.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShellSlab {
+    pub center: [f32; 3],
+    pub size: [f32; 3],
+}
+
+/// Derive the room's watertight collision shell straight from the cell
+/// grid: one solid slab per sealed cell face, sitting flush OUTSIDE the
+/// boundary plane and bled tangentially by the shell thickness so
+/// orthogonal slabs overlap along edges and corners — no diagonal
+/// pinholes. Unsealed faces (doorways, shaft mouths) stay open. The
+/// render skin is decorative; THIS is the wall the physics knows
+/// (playtest 2026-07-06: the fused render-triangle trimesh had a real
+/// hole at a corner seam, and hollow trimeshes cage grinding bodies).
+pub fn shell_slabs(grid: &CellGrid) -> Vec<ShellSlab> {
+    let t = grid.tile;
+    let s = grid.story;
+    let th = SHELL_THICKNESS;
+    let mut out = Vec::new();
+    for cell in grid.cells() {
+        // world_center: XZ at the cell center, Y at the cell FLOOR.
+        let wc = cell.world_center;
+        let y_mid = wc[1] + s * 0.5;
+        for face in &cell.sealed_faces {
+            out.push(match face {
+                ConnectorFacing::NegX => ShellSlab {
+                    center: [wc[0] - (t + th) * 0.5, y_mid, wc[2]],
+                    size: [th, s + 2.0 * th, t + 2.0 * th],
+                },
+                ConnectorFacing::PosX => ShellSlab {
+                    center: [wc[0] + (t + th) * 0.5, y_mid, wc[2]],
+                    size: [th, s + 2.0 * th, t + 2.0 * th],
+                },
+                ConnectorFacing::NegZ => ShellSlab {
+                    center: [wc[0], y_mid, wc[2] - (t + th) * 0.5],
+                    size: [t + 2.0 * th, s + 2.0 * th, th],
+                },
+                ConnectorFacing::PosZ => ShellSlab {
+                    center: [wc[0], y_mid, wc[2] + (t + th) * 0.5],
+                    size: [t + 2.0 * th, s + 2.0 * th, th],
+                },
+                ConnectorFacing::NegY => ShellSlab {
+                    center: [wc[0], wc[1] - th * 0.5, wc[2]],
+                    size: [t + 2.0 * th, th, t + 2.0 * th],
+                },
+                ConnectorFacing::PosY => ShellSlab {
+                    center: [wc[0], wc[1] + s + th * 0.5, wc[2]],
+                    size: [t + 2.0 * th, th, t + 2.0 * th],
+                },
+            });
+        }
+    }
+    out
 }
 
 // ── Corner offset geometry ──────────────────────────────────────────────
@@ -139,7 +216,8 @@ pub fn assemble_panels_from_grid(
                 ],
                 rotation_x: rot_x,
                 rotation_y: rot_y,
-                collision: Collision::Static,
+                scale: 1.0,
+                collision: Collision::Skin,
             });
         }
     }
@@ -193,7 +271,7 @@ pub fn assemble_from_grid(
                 {
                     if frame == FrameStyle::Door {
                         let (door_pos, door_rot) = door_placement(pos, *facing, grid.tile);
-                        out.push(MeshPlacement { scene: door, position: door_pos, rotation_x: 0.0, rotation_y: door_rot, collision: Collision::Static });
+                        out.push(MeshPlacement { scene: door, position: door_pos, rotation_x: 0.0, rotation_y: door_rot, scale: 1.0, collision: Collision::Skin });
                     }
                 }
             }
@@ -242,9 +320,9 @@ pub fn assemble_from_grid(
                 continue;
             }
             let (wall_pos, rot) = wall_placement(pos, facing);
-            out.push(MeshPlacement { scene: wall_set.bottom.straight, position: wall_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
-            out.push(MeshPlacement { scene: wall_set.straight.wall, position: wall_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
-            out.push(MeshPlacement { scene: wall_set.straight.ceiling, position: wall_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
+            out.push(MeshPlacement { scene: wall_set.bottom.straight, position: wall_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::Skin });
+            out.push(MeshPlacement { scene: wall_set.straight.wall, position: wall_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::Skin });
+            out.push(MeshPlacement { scene: wall_set.straight.ceiling, position: wall_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::Skin });
         }
 
         // Place corner pieces (5-layer stack) offset from cell center toward interior.
@@ -260,15 +338,18 @@ pub fn assemble_from_grid(
                 let pair = corner_pairs[i];
                 let [ox, oz] = corner_interior_offset(pair);
                 let corner_pos = [pos[0] + ox, pos[1], pos[2] + oz];
+                // The corner stack protrudes into the room: each piece is a
+                // solid convex hull, never fused trimesh (playtest
+                // 2026-07-06 — the corner seam was where bodies leaked).
                 // Bottom layer corners
-                out.push(MeshPlacement { scene: wall_set.bottom.corner_inner, position: corner_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
-                out.push(MeshPlacement { scene: wall_set.bottom.corner_outer, position: corner_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
+                out.push(MeshPlacement { scene: wall_set.bottom.corner_inner, position: corner_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::ConvexSolid });
+                out.push(MeshPlacement { scene: wall_set.bottom.corner_outer, position: corner_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::ConvexSolid });
                 // Wall layer corners
-                out.push(MeshPlacement { scene: wall_set.corner_inner.wall, position: corner_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
-                out.push(MeshPlacement { scene: wall_set.corner_outer.wall, position: corner_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
+                out.push(MeshPlacement { scene: wall_set.corner_inner.wall, position: corner_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::ConvexSolid });
+                out.push(MeshPlacement { scene: wall_set.corner_outer.wall, position: corner_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::ConvexSolid });
                 // Top layer corners
-                out.push(MeshPlacement { scene: wall_set.corner_inner.ceiling, position: corner_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
-                out.push(MeshPlacement { scene: wall_set.corner_outer.ceiling, position: corner_pos, rotation_x: 0.0, rotation_y: rot, collision: Collision::Static });
+                out.push(MeshPlacement { scene: wall_set.corner_inner.ceiling, position: corner_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::ConvexSolid });
+                out.push(MeshPlacement { scene: wall_set.corner_outer.ceiling, position: corner_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::ConvexSolid });
                 if !has_corner {
                     first_corner_rot = rot;
                 }
@@ -283,9 +364,9 @@ pub fn assemble_from_grid(
                 cell.grid_pos[0], cy, cell.grid_pos[2])
         {
             if has_corner {
-                out.push(MeshPlacement { scene: wall_set.corner_inner.floor, position: pos, rotation_x: 0.0, rotation_y: first_corner_rot, collision: Collision::Static });
+                out.push(MeshPlacement { scene: wall_set.corner_inner.floor, position: pos, rotation_x: 0.0, rotation_y: first_corner_rot, scale: 1.0, collision: Collision::Skin });
             } else {
-                out.push(MeshPlacement { scene: wall_set.straight.floor, position: pos, rotation_x: 0.0, rotation_y: 0.0, collision: Collision::Static });
+                out.push(MeshPlacement { scene: wall_set.straight.floor, position: pos, rotation_x: 0.0, rotation_y: 0.0, scale: 1.0, collision: Collision::Skin });
             }
         }
 
@@ -298,9 +379,9 @@ pub fn assemble_from_grid(
         {
             let ceiling_pos = [pos[0], pos[1] + story_height, pos[2]];
             if has_corner {
-                out.push(MeshPlacement { scene: wall_set.corner_inner.floor, position: ceiling_pos, rotation_x: PI, rotation_y: first_corner_rot - FRAC_PI_2, collision: Collision::Static });
+                out.push(MeshPlacement { scene: wall_set.corner_inner.floor, position: ceiling_pos, rotation_x: PI, rotation_y: first_corner_rot - FRAC_PI_2, scale: 1.0, collision: Collision::Skin });
             } else {
-                out.push(MeshPlacement { scene: wall_set.straight.floor, position: ceiling_pos, rotation_x: PI, rotation_y: 0.0, collision: Collision::Static });
+                out.push(MeshPlacement { scene: wall_set.straight.floor, position: ceiling_pos, rotation_x: PI, rotation_y: 0.0, scale: 1.0, collision: Collision::Skin });
             }
         }
     }

@@ -71,14 +71,15 @@ pub struct ScalingRaw {
 #[serde(deny_unknown_fields)]
 pub struct EnemyRaw {
     pub key: String,
-    /// The GDScript/save crossing — append-only, never renumbered.
-    pub id: u16,
     pub name: String,
     /// Bestiary lore — every enemy is catalogued.
     pub blurb: String,
     pub model: String,
     pub size: f32,
     pub yaw_offset_deg: f32,
+    /// Barrel tips in the model's aim frame (x right, y up, z toward the
+    /// player), metres at the def's size. Omitted/empty = fire from centre.
+    pub muzzles: Option<Vec<[f32; 3]>>,
     pub ai: Archetype,
     pub reward: u32,
     /// False for retired/death-only/boss-staged entries (default true).
@@ -96,14 +97,41 @@ pub struct EnemyRaw {
     pub standoff_frac: Option<f32>,
     pub fuse_seconds: Option<f32>,
     pub blast_frac: Option<f32>,
+    /// Detonation cloud (seconds): the blast leaves an occluding dust
+    /// cloud at blast radius for this long. 0 = today's instant blast.
+    pub cloud_seconds: Option<f32>,
     pub shield_frac: Option<f32>,
     pub disengage_frac: Option<f32>,
     pub drain_dps: Option<f32>,
     pub bolt_speed: Option<f32>,
+    /// Weapon-pattern switches (docs/design/enemy_verbs.md): bolts per
+    /// trigger pull, in-burst gap, pellets per bolt, fan cone, homing turn
+    /// rate. Omitted = today's single straight shot.
+    pub burst_count: Option<u8>,
+    pub burst_seconds: Option<f32>,
+    pub pellet_count: Option<u8>,
+    pub spread_deg: Option<f32>,
+    pub bolt_turn_deg: Option<f32>,
+    /// Tractor/repulsor field (SIGNED, m/s²): positive drags the player
+    /// toward this enemy, negative shoves away; linear falloff to zero at
+    /// attack_range. The one switch where negative is legal config.
+    pub pull_accel: Option<f32>,
+    /// Alarm aura (metres): while this enemy is engaged, machines within
+    /// the radius of IT force-engage the player. 0 = no klaxon.
+    pub alert_radius: Option<f32>,
+    /// Guardian link (metres): damage to machines within the radius drinks
+    /// into this enemy's shield first (declare shield_frac too). 0 = none.
+    pub guard_radius: Option<f32>,
+    /// Erratic dodge (seconds): mean time between strafe re-rolls while
+    /// engaged. 0 = the smooth orbit. Homing bolts counter jinkers.
+    pub jink_seconds: Option<f32>,
     pub latch_range: Option<f32>,
     pub slow_factor: Option<f32>,
     pub slow_duration: Option<f32>,
     pub slow_interval: Option<f32>,
+    /// While this enemy lives, its room's exits seal red and the boss
+    /// bed plays — death re-opens them (design 2026-07-06). Default off.
+    pub miniboss: Option<bool>,
 }
 
 fn default_true() -> bool {
@@ -174,6 +202,18 @@ pub struct KitRaw {
     /// (tile/story) is never authored: the probe derives it into
     /// kits.generated.toml and the linker joins the two.
     pub install_dir: String,
+    /// FIXED kits only: world units per authored model meter — the pitch of
+    /// the environment's 1-meter zone grid. The one deliberate exception to
+    /// "the probe derives all grids": a fixed scene has no recipe to derive
+    /// from; scale is a design knob. Required iff `paradigm = "fixed"`.
+    #[serde(default)]
+    pub scale: Option<f32>,
+    /// FIXED kits only: the environment this kit builds, a key into BOTH
+    /// rosters/environments/*.toml (the authored zones) and
+    /// environments.generated.toml (the installed scene). Required iff
+    /// `paradigm = "fixed"`.
+    #[serde(default)]
+    pub environment: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -181,6 +221,10 @@ pub struct KitRaw {
 pub enum KitParadigm {
     Layered,
     Panel,
+    /// A pre-modeled environment scene installed whole (planet 3's
+    /// apartment): no grid derivation, no per-cell skinning — the kit
+    /// declares its `environment` and `scale` instead.
+    Fixed,
 }
 
 // ── rosters/planets/planet_N.toml ────────────────────────────────────────
@@ -193,7 +237,11 @@ pub struct PlanetFile {
     /// `1..=levels` (a gap or an extra is a link error, both directions).
     pub levels: u32,
     pub kits: Vec<String>,
-    pub rooms: RoomGrowthRaw,
+    /// Room-count growth for GENERATED planets. Required for layered/panel
+    /// kits; a fixed planet must omit it — its room count is the authored
+    /// zone count (both directions are link errors).
+    #[serde(default)]
+    pub rooms: Option<RoomGrowthRaw>,
     #[serde(rename = "level", default)]
     pub level_rosters: Vec<LevelRosterRaw>,
     #[serde(rename = "boss_slot", default)]
@@ -243,6 +291,193 @@ pub struct BossAtRaw {
 #[serde(deny_unknown_fields)]
 pub struct ModelsFile {
     pub models: BTreeMap<String, String>,
+}
+
+/// rosters/environments.generated.toml: environment key (file stem) →
+/// res:// path. A separate namespace from [`ModelsFile`] on purpose: that
+/// catalog's contract is "every installed ENEMY model", and enemy defs
+/// resolve against it — mixing the two would let an enemy reference the
+/// planet-3 house as its body.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentsFile {
+    pub environments: BTreeMap<String, String>,
+}
+
+/// rosters/environments/<key>.toml: the HAND-AUTHORED zone map over a fixed
+/// environment scene. Coordinates are model-space meters on the 1-meter
+/// authoring grid (integer box corners); the kit's declared `scale` is the
+/// only bridge to world units.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentFile {
+    pub environment: EnvironmentHeaderRaw,
+    /// Authored sunlight through the scene's window openings — a fixed
+    /// environment's daylight is part of its identity, not a shell default.
+    #[serde(default)]
+    pub sun: Option<SunRaw>,
+    /// The window openings as PANEL LIGHT SOURCES (owner 2026-07-12: all
+    /// of an interior's light comes from outside; the sheers are the
+    /// diffusers). Real-time has no area lights, so the shell renders each
+    /// as a wide shadowless spot shining inward; the lightmap bake later
+    /// upgrades them to true emissive panels.
+    #[serde(rename = "window", default)]
+    pub windows: Vec<WindowRaw>,
+    /// The bounce stand-in: real daylight interiors are lit everywhere by
+    /// light the windows already poured in (GI); real-time has no bounce,
+    /// so the environment authors the ambient term that approximates it.
+    /// Applied as a world-environment override for this level, restored on
+    /// exit. The lightmap bake eventually replaces it with real bounce.
+    #[serde(default)]
+    pub ambient: Option<AmbientRaw>,
+    #[serde(rename = "zone", default)]
+    pub zones: Vec<ZoneRaw>,
+}
+
+/// One window panel: where it sits on the shell, which way it shines,
+/// and how hard. Model-space meters.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowRaw {
+    /// Panel center on the opening's plane.
+    pub center: [f32; 3],
+    /// Panel width and height (along the wall, then vertical), meters.
+    pub size: [f32; 2],
+    /// The direction the light shines INTO the room (the opening's inward
+    /// normal).
+    pub facing: WindowFacingRaw,
+    pub energy: f32,
+    /// Throw distance into the room, model meters (scaled like everything
+    /// else).
+    #[serde(default = "default_window_range")]
+    pub range: f32,
+}
+
+pub(crate) fn default_window_range() -> f32 {
+    4.0
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowFacingRaw {
+    PosX,
+    NegX,
+    PosY,
+    NegY,
+    PosZ,
+    NegZ,
+}
+
+/// The environment's ambient fill (see [`EnvironmentFile::ambient`]).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AmbientRaw {
+    pub energy: f32,
+    /// Linear RGB; omitted = warm daylight white.
+    #[serde(default = "default_ambient_color")]
+    pub color: [f32; 3],
+}
+
+pub(crate) fn default_ambient_color() -> [f32; 3] {
+    [1.0, 0.97, 0.92]
+}
+
+impl WindowFacingRaw {
+    /// The inward unit direction this window shines along.
+    pub fn direction(self) -> [f32; 3] {
+        match self {
+            Self::PosX => [1.0, 0.0, 0.0],
+            Self::NegX => [-1.0, 0.0, 0.0],
+            Self::PosY => [0.0, 1.0, 0.0],
+            Self::NegY => [0.0, -1.0, 0.0],
+            Self::PosZ => [0.0, 0.0, 1.0],
+            Self::NegZ => [0.0, 0.0, -1.0],
+        }
+    }
+}
+
+/// The environment's sun: where it sits and how hard it drives.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SunRaw {
+    /// Compass bearing of the sun, degrees: 0 = model north (-z), 90 = east
+    /// (+x). Light travels FROM this bearing into the scene.
+    pub azimuth_deg: f32,
+    /// Degrees above the horizon (0 exclusive .. 90 inclusive).
+    pub elevation_deg: f32,
+    pub energy: f32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentHeaderRaw {
+    pub key: String,
+    /// The installed scene, a key into environments.generated.toml.
+    pub model: String,
+    /// Light energy per square meter of DERIVED window pane (the
+    /// rosters/windows/ file carries geometry only; brightness is a look
+    /// knob and stays authored). Bigger panes pour in more light.
+    #[serde(default = "default_window_energy_per_m2")]
+    pub window_energy_per_m2: f32,
+}
+
+pub(crate) fn default_window_energy_per_m2() -> f32 {
+    4.0
+}
+
+/// rosters/windows/<env-key>.toml — GENERATED by the asset pipeline
+/// (apartment.py): window panes derived from the scene's glass materials.
+/// Geometry only; never hand-edited.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowsFile {
+    pub environment: String,
+    #[serde(rename = "window", default)]
+    pub windows: Vec<WindowGenRaw>,
+}
+
+/// One derived pane: like [`WindowRaw`] but without light tuning.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowGenRaw {
+    pub center: [f32; 3],
+    pub size: [f32; 2],
+    pub facing: WindowFacingRaw,
+}
+
+/// A coarse gameplay volume over the fixed geometry (culling, spawn
+/// grouping, boss/portal placement) — not a walls-accurate room.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ZoneRaw {
+    pub key: String,
+    #[serde(rename = "box")]
+    pub bounds: ZoneBoxRaw,
+    /// The player-spawn zone (exactly one per environment, enemy-free).
+    #[serde(default)]
+    pub start: bool,
+    /// The staged-fight arena (exactly one per environment, exactly one
+    /// enemy spawn — the anchor the boss rises from).
+    #[serde(default)]
+    pub boss: bool,
+    /// Adjacent zone keys (undirected; declare each opening once).
+    #[serde(default)]
+    pub links: Vec<String>,
+    /// Model-space points inside the box the manifest resolves enemy TYPES
+    /// onto — positions are authored, never invented.
+    #[serde(default)]
+    pub enemy_spawns: Vec<[f32; 3]>,
+    #[serde(default)]
+    pub loot_spawns: Vec<[f32; 3]>,
+}
+
+/// Integer corners on the 1-meter authoring grid: min inclusive,
+/// min + extents exclusive.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ZoneBoxRaw {
+    pub min: [i32; 3],
+    pub extents: [u32; 3],
 }
 
 /// rosters/kits.generated.toml: each kit's grid, DERIVED by the probe from

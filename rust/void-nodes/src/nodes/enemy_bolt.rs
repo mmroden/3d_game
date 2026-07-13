@@ -6,7 +6,8 @@ use godot::classes::{
 
 use super::constants::{groups, methods};
 use super::godot_util;
-use void_logic::armament::{cluster, homing, Faction};
+use super::live_handle::{LiveOpt, LiveRef};
+use void_logic::armament::{cluster, homing, tracer, Faction};
 
 /// A bolt slot's special payload, resolved when the bolt spends itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -15,6 +16,25 @@ pub enum BoltPayload {
     None,
     /// A cluster shell: bursts into player-faction fragments on impact or expiry.
     ClusterBurst,
+}
+
+/// Everything about a bolt's life beyond its ballistics: whose it is, what
+/// it steers at, and what it does when spent. One argument at every fire
+/// site — the ballistic triple (position, velocity, damage) stays loose
+/// because every caller computes those fresh.
+#[derive(Clone, Copy)]
+pub struct BoltProfile {
+    pub faction: Faction,
+    pub homing_target: Option<InstanceId>,
+    pub turn_rad: f32,
+    pub payload: BoltPayload,
+}
+
+impl BoltProfile {
+    /// A plain ballistic bolt for the given side: no lock, no payload.
+    pub fn ballistic(faction: Faction) -> Self {
+        Self { faction, homing_target: None, turn_rad: 0.0, payload: BoltPayload::None }
+    }
 }
 
 /// A bolt: a small Area3D projectile, one slot of the [`BoltPool`] ring
@@ -66,6 +86,13 @@ pub struct EnemyBolt {
     /// the lock and the bolt flies on ballistic (instance-id validated per
     /// tick, the same guard discipline as the generation counter).
     homing_target: Option<InstanceId>,
+    /// Max steering rate (rad/s) for this life's homing lock — the player's
+    /// tracking laser arms `homing::TURN_RATE`, an enemy arms its def's
+    /// `bolt_turn_deg`. 0 = ballistic even with a target.
+    turn_rad: f32,
+    /// The visual mesh, held weakly for the tracer stretch (the collider
+    /// stays a speed-agnostic sphere).
+    mesh: Option<LiveRef<MeshInstance3D>>,
     /// What the bolt does when it spends itself.
     payload: BoltPayload,
 }
@@ -82,6 +109,8 @@ impl IArea3D for EnemyBolt {
             live: false,
             faction: Faction::Enemy,
             homing_target: None,
+            turn_rad: 0.0,
+            mesh: None,
             payload: BoltPayload::None,
         }
     }
@@ -104,6 +133,7 @@ impl IArea3D for EnemyBolt {
         mesh.set_mesh(&sphere);
         mesh.set_surface_override_material(0, &mat);
         self.base_mut().add_child(&mesh);
+        self.mesh = Some(LiveRef::new(&mesh));
 
         // The bolt is its own light source — it lights the dark room as it flies.
         let mut node: Gd<Node3D> = self.base().clone().upcast();
@@ -124,6 +154,11 @@ impl IArea3D for EnemyBolt {
             return;
         }
         self.steer_toward_target(delta as f32);
+        // A steering bolt bends its path — keep the streak on the velocity.
+        // Ballistic bolts hold their arm-time orientation for free.
+        if self.turn_rad > 0.0 {
+            self.shape_tracer();
+        }
         let step = self.velocity * delta as f32;
         let next = self.base().get_global_position() + step;
         self.base_mut().set_global_position(next);
@@ -143,7 +178,7 @@ impl EnemyBolt {
     /// enemy fire site calls.
     #[func]
     pub fn fire(&mut self, position: Vector3, velocity: Vector3, damage: f32) {
-        self.arm(position, velocity, damage, Faction::Enemy, None, BoltPayload::None);
+        self.arm(position, velocity, damage, BoltProfile::ballistic(Faction::Enemy));
     }
 
     /// Arm this slot: reset-in-place and activate. The whole "reset" for an
@@ -156,27 +191,51 @@ impl EnemyBolt {
         position: Vector3,
         velocity: Vector3,
         damage: f32,
-        faction: Faction,
-        homing_target: Option<InstanceId>,
-        payload: BoltPayload,
+        profile: BoltProfile,
     ) {
         self.velocity = velocity;
         self.damage = damage;
         self.age = 0.0;
-        self.faction = faction;
-        self.homing_target = homing_target;
-        self.payload = payload;
+        self.faction = profile.faction;
+        self.homing_target = profile.homing_target;
+        self.turn_rad = profile.turn_rad;
+        self.payload = profile.payload;
         self.generation = self.generation.wrapping_add(1);
         self.base_mut().set_global_position(position);
+        // Every life re-shapes the tracer: a pooled slot may go from a fast
+        // oblong streak to a slow round blob between lives.
+        self.shape_tracer();
         self.activate();
         // Re-placed across the map, not flown there — don't interpolate from the
         // slot's previous resting position (same as spawn-time placement).
         self.base_mut().reset_physics_interpolation();
     }
 
+    /// Point the bolt along its velocity and stretch the mesh into a tracer
+    /// streak spanning `tracer::TRAIL_SECONDS` of travel — fast bolts read
+    /// as oblong tracers, slow ones stay round blobs. The collider is a
+    /// sphere, so rotating the body is free; the mesh alone stretches.
+    fn shape_tracer(&mut self) {
+        let speed = self.velocity.length();
+        if speed <= f32::EPSILON {
+            return; // a parked slot keeps its last shape — it is invisible anyway
+        }
+        let dir = self.velocity / speed;
+        // Any up not colinear with the travel axis serves the frame.
+        let up = if dir.y.abs() > 0.99 { Vector3::RIGHT } else { Vector3::UP };
+        let target = self.base().get_global_position() + dir;
+        self.base_mut().look_at_ex(target).up(up).done();
+        let stretch = tracer::stretch(speed, BOLT_RADIUS * 2.0);
+        // -Z is the look axis: the streak lies along the travel.
+        self.mesh.with(|m| m.set_scale(Vector3::new(1.0, 1.0, stretch)));
+    }
+
     /// Bend the velocity toward the homing target, if the lock still resolves
     /// to a live, visible node; otherwise drop it and fly on ballistic.
     fn steer_toward_target(&mut self, dt: f32) {
+        if self.turn_rad <= 0.0 {
+            return; // armed ballistic — a target without a turn rate never bends
+        }
         let Some(target_id) = self.homing_target else { return };
         let target = Gd::<Node3D>::try_from_instance_id(target_id).ok()
             .filter(|t| t.is_inside_tree() && t.is_visible_in_tree());
@@ -188,7 +247,7 @@ impl EnemyBolt {
         let steered = homing::steer(
             [self.velocity.x, self.velocity.y, self.velocity.z],
             [to.x, to.y, to.z],
-            homing::TURN_RATE,
+            self.turn_rad,
             dt,
         );
         self.velocity = Vector3::new(steered[0], steered[1], steered[2]);
