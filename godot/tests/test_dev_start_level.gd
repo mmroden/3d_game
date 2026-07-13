@@ -9,7 +9,7 @@ const UiStub := preload("res://tests/helpers/ui_stub.gd")
 var _gm: GameManager
 var _lm: LevelManager
 
-func _boot_stack(level: int, seed_value: int, shot := "", sbs := -1) -> void:
+func _boot_stack(level: int, seed_value: int, shot := "", sbs := -1, populace := -1) -> void:
 	var root := Node3D.new()
 	add_child_autofree(root)
 	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
@@ -30,6 +30,7 @@ func _boot_stack(level: int, seed_value: int, shot := "", sbs := -1) -> void:
 	_gm.start_level = level
 	_gm.shot_pose = shot
 	_gm.sbs_override = sbs
+	_gm.populace_override = populace
 	root.add_child(_lm)
 	root.add_child(player)
 	root.add_child(_gm)
@@ -100,6 +101,15 @@ func test_sbs_override_beats_the_saved_view_mode():
 	await _boot_stack(2, 1, "", 1)
 	assert_true(_gm.sbs_enabled(),
 		"--sbs=1 forces stereo on over the default-off profile")
+
+func test_populace_override_builds_an_empty_stage():
+	# Clean reference frames: `--populace=0` builds the level through the
+	# bestiary's structure-only path — architecture, lights and panes,
+	# no enemies to photobomb the comparison shots.
+	await _boot_stack(2, 1, "", -1, 0)
+	var drones := _lm.find_children("*", "EnemyDrone", true, false)
+	assert_eq(drones.size(), 0, "a populace-off boot stages no enemies")
+	assert_eq(_gm.get_phase_name(), "Playing", "…and still flies the level")
 
 func test_fixed_seed_pins_the_world():
 	await _boot_stack(2, 7)

@@ -2,8 +2,9 @@
 # directory. `pose` is the --shot= knob (world x,y,z, yaw_deg, pitch_deg);
 # capture with:
 #   Godot --path godot --write-movie out/frame.png --fixed-fps 10 \
-#       --quit-after 72 --resolution 1144x828 -- \
-#       --level=13 --seed=1 --sbs=0 --shot=<pose>
+#       --resolution 1144x828 -- \
+#       --level=13 --seed=1 --sbs=0 --populace=0 \
+#       --shot=<pose1;pose2;...> --shot-dir=<out>
 #
 # acceptance_stage gates the comparison suite: every stage's contracts
 # always RUN and REPORT at full strictness; stages above the accepted one
@@ -16,16 +17,16 @@ acceptance_stage = 2
 
 [[shot]]
 reference = "kitchen.png"
-pose = "2.5,7.5,10,0,0"
+pose = "0,7.5,17.5,90,0"
 
 [[shot]]
 reference = "kitchen_and_living_area.png"
-pose = "2.5,8,14,0,0"
+pose = "0,8,11,0,0"
 
 [[shot]]
 reference = "look_back_at_entrance.png"
-pose = "2.5,7.5,0,180,0"
+pose = "12,7.5,-4,180,0"
 
 [[shot]]
 reference = "living_area.png"
-pose = "-2.5,7.5,2.5,-90,0"
+pose = "2.5,7.5,2.5,-90,0"

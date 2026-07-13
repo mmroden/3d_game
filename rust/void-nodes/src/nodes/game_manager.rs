@@ -106,6 +106,12 @@ pub struct GameManager {
     #[export]
     shot_dir: GString,
 
+    /// Capture-mode populace override (`--populace=0`): builds levels
+    /// through the structure-only path — architecture, lights, panes, no
+    /// enemies photobombing reference shots. -1 = normal build.
+    #[export]
+    populace_override: i32,
+
     /// The parsed `shot_pose` list ("x,y,z,yaw[,pitch];…") and the
     /// sequencer's cursor: which pose the ship is parked at, and how many
     /// frames it has settled there (culling/lights need a few).
@@ -141,6 +147,7 @@ impl INode for GameManager {
             shot_pose: GString::new(),
             sbs_override: -1,
             shot_dir: GString::new(),
+            populace_override: -1,
             shot_poses: Vec::new(),
             shot_index: 0,
             shot_timer: 0,
@@ -177,6 +184,10 @@ impl INode for GameManager {
                 self.shot_pose = v.into();
             } else if let Some(v) = arg.strip_prefix("--shot-dir=") {
                 self.shot_dir = v.into();
+            } else if let Some(v) = arg.strip_prefix("--populace=") {
+                if let Ok(p) = v.parse::<i32>() {
+                    self.populace_override = p.clamp(0, 1);
+                }
             } else if let Some(v) = arg.strip_prefix("--sbs=") {
                 if let Ok(sbs) = v.parse::<i32>() {
                     self.sbs_override = sbs.clamp(0, 1);
@@ -2205,9 +2216,12 @@ impl GameManager {
             // Typed crossing — no stringly staging pre-calls, no property
             // pushes syncing duplicate state.
             let seed = self.run_state.level_seed();
+            // Capture-mode: `--populace=0` rides the bestiary's
+            // structure-only path — no enemies in reference frames.
+            let structure_only = self.populace_override == 0;
             level_mgr
                 .bind_mut()
-                .build_from_spec(spec, seed.as_i64(), false);
+                .build_from_spec(spec, seed.as_i64(), structure_only);
         }
         // `generate_level` builds synchronously (add_child is synchronous), so
         // the whole pre-instantiated roster — enemies, dormant minions, currency
