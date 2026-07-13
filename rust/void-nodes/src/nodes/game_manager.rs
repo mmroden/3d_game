@@ -85,6 +85,34 @@ pub struct GameManager {
     #[export]
     start_level: i32,
 
+    /// Reference-capture knob (`--shot=x,y,z,yaw_deg[,pitch_deg]`): after
+    /// the level builds, park the ship at exactly this pose, motionless.
+    /// Captures then compare against vendor stills from a REPRODUCIBLE
+    /// vantage — authored per reference image, never eyeballed per run.
+    /// Empty = off.
+    #[export]
+    shot_pose: GString,
+
+    /// Capture-mode view override (`--sbs=0/1`): forces stereo off/on for
+    /// this run WITHOUT touching the saved options — reference
+    /// comparisons want mono regardless of the developer's preference.
+    /// -1 = no override.
+    #[export]
+    sbs_override: i32,
+
+    /// Where the shot sequence saves its frames (`--shot-dir=path`); with
+    /// a directory set, the run QUITS after the last pose — one boot
+    /// visits every authored vantage in seconds. Empty = park only.
+    #[export]
+    shot_dir: GString,
+
+    /// The parsed `shot_pose` list ("x,y,z,yaw[,pitch];…") and the
+    /// sequencer's cursor: which pose the ship is parked at, and how many
+    /// frames it has settled there (culling/lights need a few).
+    shot_poses: Vec<[f32; 5]>,
+    shot_index: usize,
+    shot_timer: i32,
+
     /// Edge detection for the F9/F10 level-hop cheat (held-state latch).
     debug_hop_held: (bool, bool),
 }
@@ -110,6 +138,12 @@ impl INode for GameManager {
             boss_fight: None,
             level_spec: None,
             start_level: 0,
+            shot_pose: GString::new(),
+            sbs_override: -1,
+            shot_dir: GString::new(),
+            shot_poses: Vec::new(),
+            shot_index: 0,
+            shot_timer: 0,
             debug_hop_held: (false, false),
             fixed_seed: 0,
         }
@@ -139,6 +173,14 @@ impl INode for GameManager {
                 if let Ok(seed) = v.parse::<i64>() {
                     self.fixed_seed = seed;
                 }
+            } else if let Some(v) = arg.strip_prefix("--shot=") {
+                self.shot_pose = v.into();
+            } else if let Some(v) = arg.strip_prefix("--shot-dir=") {
+                self.shot_dir = v.into();
+            } else if let Some(v) = arg.strip_prefix("--sbs=") {
+                if let Ok(sbs) = v.parse::<i32>() {
+                    self.sbs_override = sbs.clamp(0, 1);
+                }
             }
         }
 
@@ -152,6 +194,11 @@ impl INode for GameManager {
         // Load remembered preferences into the one model object first,
         // so the broadcast below seeds consumers from the saved values.
         self.load_options();
+        // Capture-mode view override: beats the saved preference for this
+        // run only (never written back — save_options is menu-driven).
+        if self.sbs_override >= 0 {
+            self.game_options.sbs_enabled = self.sbs_override != 0;
+        }
         // Load any persisted run so "Continue" survives a quit.
         self.load_run();
         self.connect_ui_signals();
@@ -204,6 +251,7 @@ impl INode for GameManager {
             if self.pending_level_build == 0 {
                 if self.phase == GamePhase::Playing {
                     self.regenerate_level();
+                    self.apply_shot_pose();
                 }
                 self.push_loading_veil(false);
             }
@@ -225,6 +273,9 @@ impl INode for GameManager {
 
         // Tick shield regeneration
         self.run_state.tick_shield(delta as f32);
+
+        // Reference-capture sequencing (no-op without a shot list).
+        self.tick_shot_sequence();
 
         // Signal wiring is no longer a per-frame tax: the Faucet pools build the
         // whole level roster during the load, and `regenerate_level` wires it
@@ -1018,6 +1069,12 @@ impl GameManager {
     #[func]
     fn sbs_enabled(&self) -> bool {
         self.game_options.sbs_enabled
+    }
+
+    /// GUT door for the shot sequencer's cadence (see SHOT_SETTLE_FRAMES).
+    #[func]
+    fn shot_settle_frames(&self) -> i32 {
+        Self::SHOT_SETTLE_FRAMES
     }
 
     /// Test seam: discard in-memory options and reload from disk, as a
@@ -2026,6 +2083,90 @@ impl GameManager {
         } else {
             Seed::new(rand::rng().random())
         }
+    }
+
+    /// The reference-capture knob: park the ship at the first authored
+    /// pose (`shot_pose` = "x,y,z,yaw_deg[,pitch_deg];…"). Runs after
+    /// every level build; [`tick_shot_sequence`] then visits the rest —
+    /// one boot frames EVERY authored vantage, reproducibly.
+    fn apply_shot_pose(&mut self) {
+        let spec = self.shot_pose.to_string();
+        if spec.is_empty() {
+            return;
+        }
+        self.shot_poses = spec
+            .split(';')
+            .filter_map(|pose| {
+                let vals: Vec<f32> = pose
+                    .split(',')
+                    .filter_map(|s| s.trim().parse().ok())
+                    .collect();
+                if vals.len() < 4 {
+                    godot_warn!("shot pose needs x,y,z,yaw_deg[,pitch_deg]: '{pose}'");
+                    return None;
+                }
+                Some([vals[0], vals[1], vals[2], vals[3],
+                      vals.get(4).copied().unwrap_or(0.0)])
+            })
+            .collect();
+        self.shot_index = 0;
+        self.shot_timer = 0;
+        if let Some(pose) = self.shot_poses.first().copied() {
+            self.park_at(pose);
+        }
+    }
+
+    /// Frames-at-pose before a shot saves and the sequence advances —
+    /// culling and light state need a few frames to settle.
+    const SHOT_SETTLE_FRAMES: i32 = 6;
+
+    /// Advance the shot sequence: settle, save the frame (when a
+    /// `--shot-dir=` is set), step to the next pose; quit after the last
+    /// save so capture runs end themselves.
+    fn tick_shot_sequence(&mut self) {
+        if self.shot_poses.is_empty() || self.shot_index >= self.shot_poses.len() {
+            return;
+        }
+        self.shot_timer += 1;
+        if self.shot_timer < Self::SHOT_SETTLE_FRAMES {
+            return;
+        }
+        self.save_shot_frame(self.shot_index);
+        self.shot_timer = 0;
+        self.shot_index += 1;
+        if let Some(pose) = self.shot_poses.get(self.shot_index).copied() {
+            self.park_at(pose);
+        } else if !self.shot_dir.is_empty() {
+            self.base().get_tree().quit();
+        }
+    }
+
+    /// One viewport frame to `<shot_dir>/shot_NN.png` (no-op without a
+    /// directory — headless runs have no rendered viewport to read).
+    fn save_shot_frame(&self, index: usize) {
+        let dir = self.shot_dir.to_string();
+        if dir.is_empty() {
+            return;
+        }
+        let Some(viewport) = self.base().get_viewport() else { return };
+        let Some(texture) = viewport.get_texture() else { return };
+        let Some(image) = texture.get_image() else { return };
+        let path = format!("{dir}/shot_{index:02}.png");
+        image.save_png(&path);
+        godot_print!("shot {index} saved -> {path}");
+    }
+
+    /// Park the ship at a pose, motionless (position, yaw, pitch).
+    fn park_at(&mut self, pose: [f32; 5]) {
+        let Some(parent) = self.base().get_parent() else { return };
+        let Some(mut player) = parent.try_get_node_as::<Node3D>(nodes::PLAYER) else { return };
+        player.set_global_position(Vector3::new(pose[0], pose[1], pose[2]));
+        player.set_rotation_degrees(Vector3::new(pose[4], pose[3], 0.0));
+        if let Ok(mut body) = player.clone().try_cast::<godot::classes::RigidBody3D>() {
+            body.set_linear_velocity(Vector3::ZERO);
+            body.set_angular_velocity(Vector3::ZERO);
+        }
+        player.reset_physics_interpolation();
     }
 
     fn regenerate_level(&mut self) {

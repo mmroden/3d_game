@@ -128,7 +128,12 @@ def load_tex(basename, non_color=False):
         path = tex_files.get(key)
         img = bpy.data.images.load(path) if path else None
         if img is not None and max(img.size) > tex_cap:
-            img.scale(tex_cap, tex_cap)  # cap before any pixel math
+            # Cap before any pixel math — PRESERVING ASPECT: a square
+            # resize crushes non-square sources (the 1745x3927 wall
+            # paneling lost half its grain to a 2048x2048 squash).
+            w, h = img.size
+            s = tex_cap / max(w, h)
+            img.scale(max(1, round(w * s)), max(1, round(h * s)))
         loaded[key] = img
     if img is not None and non_color:
         img.colorspace_settings.name = "Non-Color"
@@ -408,7 +413,9 @@ for img in bpy.data.images:
     if img.source != "FILE":
         continue
     if max(img.size) > tex_cap:
-        img.scale(tex_cap, tex_cap)
+        w, h = img.size
+        s = tex_cap / max(w, h)
+        img.scale(max(1, round(w * s)), max(1, round(h * s)))  # aspect-true
     img.pack()
 
 total = 0
