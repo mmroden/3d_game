@@ -48,3 +48,6 @@ assets/apartment/*.obj
 
 # OS
 .DS_Store
+
+# Capture-rig frame output (make flythrough, reference shots)
+/out/

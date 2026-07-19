@@ -13,12 +13,12 @@ fn ceiling_corners_emitted_at_same_positions_as_wall_corners() {
     let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], ws);
 
     let wall_corners: Vec<_> = placements.iter()
-        .filter(|p| p.scene == ws.corner_inner.wall)
+        .filter(|p| p.scene == cat().const_scene(ws.corner_inner.wall))
         .map(|p| ((p.position[0] * 100.0) as i32, (p.position[2] * 100.0) as i32, (p.rotation_y * 1000.0) as i32))
         .collect();
 
     let ceil_corners: Vec<_> = placements.iter()
-        .filter(|p| p.scene == ws.corner_inner.ceiling)
+        .filter(|p| p.scene == cat().const_scene(ws.corner_inner.ceiling))
         .map(|p| ((p.position[0] * 100.0) as i32, (p.position[2] * 100.0) as i32, (p.rotation_y * 1000.0) as i32))
         .collect();
 
@@ -71,7 +71,7 @@ fn corners_only_at_xz_corner_cells() {
 
     // Total inner wall corners = number of cells with XZ corner pairs
     let total_corners = placements.iter()
-        .filter(|p| p.scene == ws.corner_inner.wall)
+        .filter(|p| p.scene == cat().const_scene(ws.corner_inner.wall))
         .count();
     assert_eq!(
         total_corners, xz_corner_cells.len(),
@@ -82,7 +82,7 @@ fn corners_only_at_xz_corner_cells() {
     // No corner pieces near non-XZ-corner cell centers
     for cell in &non_xz_corner_cells {
         let count = placements.iter().filter(|p| {
-            p.scene == ws.corner_inner.wall
+            p.scene == cat().const_scene(ws.corner_inner.wall)
             && (p.position[0] - cell.world_center[0]).abs() < 0.01
             && (p.position[2] - cell.world_center[2]).abs() < 0.01
         }).count();
@@ -106,7 +106,7 @@ fn active_connector_removes_corner() {
     let grid = CellGrid::new(&room_3x3(), active, [0.0, 0.0, 0.0], TILE_WIDTH, STORY_HEIGHT);
 
     let corners: Vec<_> = placements.iter()
-        .filter(|p| p.scene == ws.corner_inner.wall)
+        .filter(|p| p.scene == cat().const_scene(ws.corner_inner.wall))
         .collect();
 
     // The connector gap cell should not have any corners
@@ -135,19 +135,19 @@ fn corner_cells_use_curved_floor_platform() {
 
     // Count curved floor tiles at floor level (Y ~ 0).
     let curved_floors = placements.iter().filter(|p| {
-        p.scene == FLOOR_CURVE && p.position[1].abs() < 0.001
+        p.scene == cat().const_scene(FLOOR_CURVE) && p.position[1].abs() < 0.001
     }).count();
     assert_eq!(curved_floors, 4, "4 corner cells should use curved floor, got {curved_floors}");
 
     // Count curved ceiling tiles at ceiling level (Y ~ STORY_HEIGHT).
     let curved_ceilings = placements.iter().filter(|p| {
-        p.scene == FLOOR_CURVE && (p.position[1] - STORY_HEIGHT).abs() < 0.001
+        p.scene == cat().const_scene(FLOOR_CURVE) && (p.position[1] - STORY_HEIGHT).abs() < 0.001
     }).count();
     assert_eq!(curved_ceilings, 4, "4 corner cells should use curved ceiling, got {curved_ceilings}");
 
     // Non-corner cells still use square floor.
     let square_floors = placements.iter().filter(|p| {
-        p.scene == FLOOR && p.position[1].abs() < 0.001
+        p.scene == cat().const_scene(FLOOR) && p.position[1].abs() < 0.001
     }).count();
     assert_eq!(square_floors, 5, "5 non-corner cells should use square floor, got {square_floors}");
 }
@@ -165,8 +165,8 @@ fn outer_corners_emitted_at_same_positions_as_inner_corners() {
         ((p.position[0] * 100.0) as i32, (p.position[2] * 100.0) as i32, (p.rotation_y * 1000.0) as i32)
     };
 
-    let inner_walls: Vec<_> = placements.iter().filter(|p| p.scene == CORNER).map(|p| key(p)).collect();
-    let outer_walls: Vec<_> = placements.iter().filter(|p| p.scene == CORNER_OUTER).map(|p| key(p)).collect();
+    let inner_walls: Vec<_> = placements.iter().filter(|p| p.scene == cat().const_scene(CORNER)).map(|p| key(p)).collect();
+    let outer_walls: Vec<_> = placements.iter().filter(|p| p.scene == cat().const_scene(CORNER_OUTER)).map(|p| key(p)).collect();
 
     assert_eq!(inner_walls.len(), 4, "should have 4 inner wall corners");
     assert_eq!(outer_walls.len(), 4, "should have 4 outer wall corners");
@@ -180,9 +180,9 @@ fn outer_corners_emitted_at_same_positions_as_inner_corners() {
     }
 
     let inner_ceilings: Vec<_> = placements.iter()
-        .filter(|p| p.scene == ws.corner_inner.ceiling).map(|p| key(p)).collect();
+        .filter(|p| p.scene == cat().const_scene(ws.corner_inner.ceiling)).map(|p| key(p)).collect();
     let outer_ceilings: Vec<_> = placements.iter()
-        .filter(|p| p.scene == ws.corner_outer.ceiling).map(|p| key(p)).collect();
+        .filter(|p| p.scene == cat().const_scene(ws.corner_outer.ceiling)).map(|p| key(p)).collect();
 
     assert_eq!(inner_ceilings.len(), 4);
     assert_eq!(outer_ceilings.len(), 4);
@@ -228,11 +228,11 @@ fn ceiling_curved_tiles_land_in_same_quadrant_as_floor_curved_tiles() {
     let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], ws);
 
     let floor_curves: Vec<_> = placements.iter()
-        .filter(|p| p.scene == FLOOR_CURVE && p.position[1].abs() < 0.001)
+        .filter(|p| p.scene == cat().const_scene(FLOOR_CURVE) && p.position[1].abs() < 0.001)
         .collect();
 
     let ceil_curves: Vec<_> = placements.iter()
-        .filter(|p| p.scene == FLOOR_CURVE && (p.position[1] - STORY_HEIGHT).abs() < 0.001)
+        .filter(|p| p.scene == cat().const_scene(FLOOR_CURVE) && (p.position[1] - STORY_HEIGHT).abs() < 0.001)
         .collect();
 
     assert_eq!(floor_curves.len(), 4);

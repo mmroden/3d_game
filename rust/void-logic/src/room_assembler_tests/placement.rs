@@ -154,7 +154,7 @@ fn posx_negz_corner_lands_in_correct_quadrant() {
         ],
         [0.0, 0.0, 0.0],
     );
-    let corners: Vec<_> = placements.iter().filter(|p| p.scene == CORNER).collect();
+    let corners: Vec<_> = placements.iter().filter(|p| p.scene == cat().const_scene(CORNER)).collect();
     assert_eq!(corners.len(), 1, "should have exactly 1 corner (PosX-NegZ)");
 
     let (rx, rz) = rotate_y(-3.0, -3.0, corners[0].rotation_y);
@@ -176,7 +176,7 @@ fn negx_posz_corner_lands_in_correct_quadrant() {
         ],
         [0.0, 0.0, 0.0],
     );
-    let corners: Vec<_> = placements.iter().filter(|p| p.scene == CORNER).collect();
+    let corners: Vec<_> = placements.iter().filter(|p| p.scene == cat().const_scene(CORNER)).collect();
     assert_eq!(corners.len(), 1, "should have exactly 1 corner (NegX-PosZ)");
 
     let (rx, rz) = rotate_y(-3.0, -3.0, corners[0].rotation_y);

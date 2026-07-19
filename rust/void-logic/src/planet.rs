@@ -34,7 +34,7 @@ pub struct Pitch {
 }
 
 impl Pitch {
-    /// The pitch DERIVES from the planet's declared kit (rosters/kits.toml,
+    /// The pitch DERIVES from the planet's declared kit (catalog/kits.toml,
     /// measured by the make-assets probe once it lands) — nobody authors a
     /// cell dimension anywhere else. Shipped-grammar door for
     /// [`Roster::pitch_for_level`].

@@ -1,5 +1,10 @@
-/// Cardinal directions a room connector can face.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Cardinal directions a room connector can face. Serde (snake_case:
+/// "pos_y", "neg_z", …) because the census-v2 variant records reuse this
+/// as THE six-direction vocabulary — a variant's measured detail facing.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum ConnectorFacing {
     PosX,
     NegX,

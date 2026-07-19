@@ -238,38 +238,81 @@ pub const DOOR: &str = megakit_platform!("Door_Frame_Square.gltf");
 /// A panel world's face pool: ONE list serving every cell face — floor,
 /// wall, ceiling are terrestrial words with no meaning here; a face is a
 /// face and rotation is the only difference (the 6DOF principle). Panels
-/// are flat plates authored `pitch × pitch` in XZ, thin in Y, split from
-/// the source kit by `scripts/split-panels.py`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// are flat plates spanning exactly one cell face, split from the source
+/// kit by `scripts/split-panels.py`; the pitch derives from the pool's
+/// measured extent (the probe, `make assets`) — never authored.
+#[derive(Debug, Clone, PartialEq)]
 pub struct PanelSet {
-    pub id: &'static str,
-    /// Every panel spans exactly one cell face; the pitch derives from the
-    /// pool's measured extent (the probe, `make assets`) — never authored.
-    pub panels: &'static [&'static str],
+    pub id: String,
+    pub plates: Vec<PanelPlate>,
 }
 
-macro_rules! wall_panel {
-    ($name:expr) => {
-        concat!("res://addons/walls/", $name)
-    };
+/// One wall plate: its scene and its censused thickness. The assembler
+/// seats each plate's BACK on the cell-face plane (half a thickness
+/// inward) — centered plates leave a void slit at every corner.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PanelPlate {
+    pub scene: super::catalog::SceneId,
+    pub thick: f32,
 }
 
-/// Every panel set — the probe walks these to derive kit pitches.
-pub const ALL_PANEL_SETS: &[PanelSet] = &[PANEL_SET_VOL01];
 
-/// Planet 2's kit: the 3 m plates of cgtrader Sci-Fi Parts Kit Vol 01
-/// (wider plates in the kit are reserved for props / multi-cell faces).
-pub const PANEL_SET_VOL01: PanelSet = PanelSet {
-    id: "vol01",
-    panels: &[
-        wall_panel!("sf_pp01_a_001.glb"),
-        wall_panel!("sf_pp01_a_006.glb"),
-        wall_panel!("sf_pp01_b_001.glb"),
-        wall_panel!("sf_pp01_b_002.glb"),
-        wall_panel!("sf_pp01_c_001.glb"),
-        wall_panel!("sf_pp01_c_002.glb"),
-        wall_panel!("sf_pp01_c_003.glb"),
-        wall_panel!("sf_pp01_d_001.glb"),
-        wall_panel!("sf_pp01_f_001.glb"),
-    ],
-};
+/// One baked library plate as pooled by ROLE (census v2): scene, censused
+/// thickness, and face extents — walls normalized to [width, height]
+/// (height == the story module), floors/ceilings larger-first.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RolePlate {
+    pub scene: super::catalog::SceneId,
+    pub thick: f32,
+    pub face: [f32; 2],
+}
+
+/// A panel kit's role-typed pools, derived by the linker from the baked
+/// variants — never authored. The constructor grabs floor pieces for -Y
+/// faces, ceiling pieces for +Y, wall pieces for XZ faces (yaw at
+/// placement), and layers decorations/add-ons colliderlessly. Replaces
+/// the one-pool-rotated-six-ways [`PanelSet`], whose native-pose axiom
+/// failed (2026-07-18); that type dies with the legacy assembler path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RolePools {
+    pub id: String,
+    pub floor: Vec<RolePlate>,
+    pub ceiling: Vec<RolePlate>,
+    pub wall: Vec<RolePlate>,
+    pub decoration: Vec<RolePlate>,
+    pub addon: Vec<RolePlate>,
+}
+
+// No authored panel list lives here (the old PANEL_SET_VOL01 hand-picked
+// nine plates — seven of which the census later measured as see-through
+// trusses). Wall pools DERIVE: the probe censuses each installed piece
+// into kits.generated.toml, and the CATALOG's linker filters the census
+// against the kit's authored `wall_coverage` policy into owned,
+// SceneId-carrying pools.
+
+impl Triple {
+    /// Every scene this triple references (the catalog interns them all
+    /// at load, so placements can carry ids).
+    pub(super) fn scenes(&self) -> [&'static str; 3] {
+        [self.floor, self.wall, self.ceiling]
+    }
+}
+
+impl LayerSet {
+    pub(super) fn scenes(&self) -> [&'static str; 3] {
+        [self.straight, self.corner_inner, self.corner_outer]
+    }
+}
+
+impl WallSet {
+    /// Every scene in the set, for load-time interning.
+    pub(super) fn scenes(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.straight
+            .scenes()
+            .into_iter()
+            .chain(self.corner_inner.scenes())
+            .chain(self.corner_outer.scenes())
+            .chain(self.short_wall.scenes())
+            .chain(self.bottom.scenes())
+    }
+}

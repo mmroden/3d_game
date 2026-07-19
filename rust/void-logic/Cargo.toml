@@ -14,4 +14,7 @@ toml = "0.8"
 [dev-dependencies]
 # The asset probe (roster/probe.rs, run by `make assets`) measures installed
 # glTF models; parse-only, never shipped in the game dylib.
-gltf = { version = "1", default-features = false }
+gltf = { version = "1", default-features = false, features = ["import", "utils"] }
+# The visual-contract suite (tests/visual.rs) decodes captured frames
+# (image is already in-tree under gltf).
+image = { version = "0.25", default-features = false, features = ["png"] }

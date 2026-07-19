@@ -71,14 +71,14 @@ exactly one `[[level]]` roster per level — complete lists, nothing carries
 over. Behaviour switches omitted in a def resolve to their archetype's
 default in the linker, so authored files never bake defaults in.
 
-Enemy `model` values are keys into `rosters/models.generated.toml` — the
+Enemy `model` values are keys into `catalog/models.generated.toml` — the
 catalog of installed models that `make assets` probes from disk. A model
 typo or a missing install is a link error, and the catalog also lists
 models nothing wears yet (what's *available*, not just what's used).
 
 Kit grids are never authored either: `kits.toml` declares only paradigm and
 install dir, and the probe derives each kit's `tile`/`story` from its
-assembly-recipe meshes into `rosters/kits.generated.toml`.
+assembly-recipe meshes into `catalog/kits.generated.toml`.
 
 `TEMPLATE.toml`, `VOCABULARY.md`, `models.generated.toml`, and
 `kits.generated.toml` are generated (by the build and the asset probe) and

@@ -284,6 +284,11 @@ pub fn assign_positions(abstract_graph: &AbstractGraph) -> LevelGraph {
 
     let mut level = LevelGraph::new();
     let mut placed: HashMap<petgraph::graph::NodeIndex, petgraph::graph::NodeIndex> = HashMap::new();
+    // Placement order, kept beside the lookup map: every pass that walks
+    // "all placed rooms" iterates THIS. A HashMap's order is per-instance
+    // random — iterating it made identical seeds build different levels
+    // whenever a room deferred (flythrough regression, 2026-07-12).
+    let mut placement_order: Vec<petgraph::graph::NodeIndex> = Vec::new();
     let mut visited: HashSet<petgraph::graph::NodeIndex> = HashSet::new();
 
     let max_probe: i32 = 100;
@@ -294,6 +299,7 @@ pub fn assign_positions(abstract_graph: &AbstractGraph) -> LevelGraph {
     let root_level_idx = level.place_room(root_room, [0, 0, 0])
         .expect("root placement cannot overlap");
     placed.insert(root, root_level_idx);
+    placement_order.push(root_level_idx);
     visited.insert(root);
 
     // Track rooms that couldn't be placed during BFS for a retry pass.
@@ -334,6 +340,7 @@ pub fn assign_positions(abstract_graph: &AbstractGraph) -> LevelGraph {
             try_place_child(&mut level, parent_level_idx, designated_pci, &child_room, designated_cci, max_probe)
         {
             placed.insert(abs_node, child_idx);
+            placement_order.push(child_idx);
             continue;
         }
 
@@ -349,6 +356,7 @@ pub fn assign_positions(abstract_graph: &AbstractGraph) -> LevelGraph {
                 try_place_child(&mut level, parent_level_idx, *pci, &child_room, *cci, max_probe)
             {
                 placed.insert(abs_node, child_idx);
+                placement_order.push(child_idx);
                 success = true;
                 break;
             }
@@ -359,10 +367,11 @@ pub fn assign_positions(abstract_graph: &AbstractGraph) -> LevelGraph {
         }
     }
 
-    // Retry pass: try deferred rooms against ALL placed rooms.
+    // Retry pass: try deferred rooms against ALL placed rooms, in
+    // placement order (deterministic — see placement_order above).
     for abs_node in &deferred {
         let child_room = abstract_graph.room(*abs_node).unwrap().clone();
-        let placed_snapshot: Vec<_> = placed.values().copied().collect();
+        let placed_snapshot: Vec<_> = placement_order.clone();
 
         let mut success = false;
         for parent_level_idx in &placed_snapshot {
@@ -373,6 +382,7 @@ pub fn assign_positions(abstract_graph: &AbstractGraph) -> LevelGraph {
                     try_place_child(&mut level, *parent_level_idx, *pci, &child_room, *cci, max_probe)
                 {
                     placed.insert(*abs_node, child_idx);
+                    placement_order.push(child_idx);
                     success = true;
                     break;
                 }

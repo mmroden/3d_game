@@ -27,6 +27,7 @@ pub fn furnish(
     cell_size: f32,
     seed: u64,
     density: RoomDensity,
+    catalog: &crate::asset_catalog::AssetCatalog,
 ) -> Vec<MeshPlacement> {
     let mut out = Vec::new();
     let ex = template.extents[0] as i32;
@@ -78,7 +79,7 @@ pub fn furnish(
                         if !(prop.blocks_flight && on_reserved_path) {
                             let (offset_x, offset_z, rot) = wall_adjacent_offset(face, cell_size);
                             out.push(MeshPlacement {
-                                scene: prop.scene,
+                                scene: catalog.const_scene(prop.scene),
                                 position: [cell_center_x + offset_x, y, cell_center_z + offset_z],
                                 rotation_x: 0.0,
                                 rotation_y: rot,
@@ -94,7 +95,7 @@ pub fn furnish(
                     let prop = &CORNER_PROPS[rng.random_range(0..CORNER_PROPS.len())];
                     if !(prop.blocks_flight && on_reserved_path) {
                         out.push(MeshPlacement {
-                            scene: prop.scene,
+                            scene: catalog.const_scene(prop.scene),
                             position: [cell_center_x, y, cell_center_z],
                             rotation_x: 0.0,
                             rotation_y: 0.0,
@@ -110,7 +111,7 @@ pub fn furnish(
                     // Skip blocking props on reserved path cells.
                     if !(prop.blocks_flight && on_reserved_path) {
                         out.push(MeshPlacement {
-                            scene: prop.scene,
+                            scene: catalog.const_scene(prop.scene),
                             position: [cell_center_x, y, cell_center_z],
                             rotation_x: 0.0,
                             rotation_y: 0.0,
@@ -254,6 +255,7 @@ pub fn flight_paths_clear(
     active_connectors: &[Connector],
     props: &[MeshPlacement],
     cell_size: f32,
+    catalog: &crate::asset_catalog::AssetCatalog,
 ) -> bool {
     use std::collections::{HashSet, VecDeque};
 
@@ -265,7 +267,7 @@ pub fn flight_paths_clear(
     for p in props {
         let cx = (p.position[0] / cell_size).floor() as i32;
         let cz = (p.position[2] / cell_size).floor() as i32;
-        if is_blocking_prop(p.scene) {
+        if is_blocking_prop(catalog.path(p.scene)) {
             blocked.insert((cx, cz));
         }
     }
@@ -428,6 +430,7 @@ pub fn light_fixtures(
     world_origin: [f32; 3],
     pitch: crate::planet::Pitch,
     ambiance_seed: u64,
+    catalog: &crate::asset_catalog::AssetCatalog,
 ) -> Vec<(MeshPlacement, LightSource)> {
     use crate::asset_catalog::CEILING_LIGHTS;
 
@@ -469,7 +472,7 @@ pub fn light_fixtures(
                 fixture_y,
                 world_origin[2] + (cz as f32 + 0.5) * cell_size,
             ];
-            out.push(place_fixture(fixture, mesh_pos, &mut ambiance));
+            out.push(place_fixture(fixture, mesh_pos, &mut ambiance, catalog));
         }
     }
 
@@ -482,6 +485,7 @@ pub fn light_fixtures(
         cell_size,
         story_height,
         &mut ambiance,
+        catalog,
     ));
 
     out
@@ -494,9 +498,10 @@ fn place_fixture(
     fixture: &crate::asset_catalog::LightFixture,
     mesh_pos: [f32; 3],
     ambiance: &mut SmallRng,
+    catalog: &crate::asset_catalog::AssetCatalog,
 ) -> (MeshPlacement, LightSource) {
     let mesh = MeshPlacement {
-        scene: fixture.scene,
+        scene: catalog.const_scene(fixture.scene),
         position: mesh_pos,
         rotation_x: 0.0,
         rotation_y: 0.0,
@@ -532,6 +537,7 @@ fn rim_lights(
     cell_size: f32,
     story_height: f32,
     ambiance: &mut SmallRng,
+    catalog: &crate::asset_catalog::AssetCatalog,
 ) -> Vec<(MeshPlacement, LightSource)> {
     use crate::asset_catalog::{LIGHT_CEILING_SMALL, LIGHT_FLOOR};
 
@@ -564,7 +570,7 @@ fn rim_lights(
         ];
         for (in_bounds, pos) in edges {
             if in_bounds {
-                out.push(place_fixture(&fixture, pos, ambiance));
+                out.push(place_fixture(&fixture, pos, ambiance, catalog));
             }
         }
     }

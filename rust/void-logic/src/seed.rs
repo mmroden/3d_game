@@ -55,6 +55,9 @@ pub mod salt {
     pub const HULL: u64 = 0x0b05_5000_4001;
     /// Panel-world face skins (`room_assembler::assemble_panels_from_grid`).
     pub const PANEL: u64 = 0x9a6e_1c00_5eed_0002;
+    /// Panel-world course covering, assembler v2
+    /// (`room_assembler::assemble_role_pools_from_grid`).
+    pub const PANEL_COURSE: u64 = 0x9a6e_1c00_5eed_0003;
     /// Free-standing prop orientation (`cell::populate`).
     pub const PROP_ORIENT: u64 = 0x9e37_79b9_7f4a_7c15;
     /// Knuth multiplicative mix deriving per-room sub-seeds from the level

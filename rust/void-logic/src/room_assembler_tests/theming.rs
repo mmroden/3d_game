@@ -9,7 +9,7 @@ fn pipe_style_uses_pipe_wall_assets() {
     // Use 3x3 room: 4 non-corner edges get straight walls.
     let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], &asset_catalog::WALL_SET_PIPE);
     let walls: Vec<_> = placements.iter()
-        .filter(|p| p.scene == asset_catalog::WALL_SET_PIPE.straight.wall)
+        .filter(|p| p.scene == cat().const_scene(asset_catalog::WALL_SET_PIPE.straight.wall))
         .collect();
     assert_eq!(walls.len(), 4, "sealed 3x3 room: 4 edge cells get straight walls, corners don't");
     assert_eq!(
@@ -22,7 +22,7 @@ fn pipe_style_uses_pipe_wall_assets() {
 fn pipe_style_uses_pipe_corner_assets() {
     let placements = assemble(&small_room(), &[], [0.0, 0.0, 0.0], &asset_catalog::WALL_SET_PIPE);
     let corners: Vec<_> = placements.iter()
-        .filter(|p| p.scene == asset_catalog::WALL_SET_PIPE.corner_inner.wall)
+        .filter(|p| p.scene == cat().const_scene(asset_catalog::WALL_SET_PIPE.corner_inner.wall))
         .collect();
     assert_eq!(corners.len(), 4, "sealed 1x1 room should have 4 pipe inner corners");
 }
@@ -32,7 +32,7 @@ fn pipe_style_uses_pipe_ceiling_assets() {
     // Use 3x3 room: 4 non-corner edges get straight ceiling strips.
     let placements = assemble(&room_3x3(), &[], [0.0, 0.0, 0.0], &asset_catalog::WALL_SET_PIPE);
     let ceilings: Vec<_> = placements.iter()
-        .filter(|p| p.scene == asset_catalog::WALL_SET_PIPE.straight.ceiling)
+        .filter(|p| p.scene == cat().const_scene(asset_catalog::WALL_SET_PIPE.straight.ceiling))
         .collect();
     assert_eq!(ceilings.len(), 4, "sealed 3x3 room: 4 edge cells get straight ceiling strips, corners don't");
 }
@@ -41,8 +41,8 @@ fn pipe_style_uses_pipe_ceiling_assets() {
 fn pipe_style_uses_pipe_floor_assets() {
     let placements = assemble(&small_room(), &[], [0.0, 0.0, 0.0], &asset_catalog::WALL_SET_PIPE);
     let pipe_floors: Vec<_> = placements.iter()
-        .filter(|p| (p.scene == asset_catalog::WALL_SET_PIPE.straight.floor
-                || p.scene == asset_catalog::WALL_SET_PIPE.corner_inner.floor)
+        .filter(|p| (p.scene == cat().const_scene(asset_catalog::WALL_SET_PIPE.straight.floor)
+                || p.scene == cat().const_scene(asset_catalog::WALL_SET_PIPE.corner_inner.floor))
                 && (p.position[1]).abs() < 0.001)
         .collect();
     assert_eq!(pipe_floors.len(), 1, "1x1 room should have 1 pipe floor");
@@ -60,7 +60,7 @@ fn door_asset_is_always_the_same_regardless_of_style() {
         &asset_catalog::WALL_SET_WINDOW,
     );
     let doors: Vec<_> = placements.iter()
-        .filter(|p| p.scene == asset_catalog::DOOR)
+        .filter(|p| p.scene == cat().const_scene(asset_catalog::DOOR))
         .collect();
     assert_eq!(doors.len(), 2, "corridor should have 2 doors regardless of style");
 }

@@ -73,7 +73,7 @@ impl Collision {
 /// A single mesh to place in the level.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MeshPlacement {
-    pub scene: &'static str,
+    pub scene: crate::asset_catalog::SceneId,
     pub position: [f32; 3],
     pub rotation_x: f32,
     pub rotation_y: f32,
@@ -197,22 +197,27 @@ pub fn assemble_panels_from_grid(
         for face in &cell.sealed_faces {
             // Panel native pose: a plate in XZ, normal +Y. Rotations are
             // Godot YXZ euler (Y then X); each face's normal points INTO
-            // the room so single-sided materials render inward.
-            let (offset, rot_x, rot_y) = match face {
-                ConnectorFacing::NegY => ([0.0, 0.0, 0.0], 0.0, 0.0),
-                ConnectorFacing::PosY => ([0.0, p, 0.0], PI, 0.0),
-                ConnectorFacing::NegZ => ([0.0, half, -half], FRAC_PI_2, 0.0),
-                ConnectorFacing::PosZ => ([0.0, half, half], -FRAC_PI_2, 0.0),
-                ConnectorFacing::NegX => ([-half, half, 0.0], FRAC_PI_2, FRAC_PI_2),
-                ConnectorFacing::PosX => ([half, half, 0.0], FRAC_PI_2, -FRAC_PI_2),
+            // the room so single-sided materials render inward. `inward`
+            // is that same normal as a world direction: each plate SEATS
+            // half its censused thickness along it, back on the face
+            // plane — centered plates leave a void slit at every corner
+            // (flythrough 2026-07-13).
+            let (offset, inward, rot_x, rot_y) = match face {
+                ConnectorFacing::NegY => ([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.0, 0.0),
+                ConnectorFacing::PosY => ([0.0, p, 0.0], [0.0, -1.0, 0.0], PI, 0.0),
+                ConnectorFacing::NegZ => ([0.0, half, -half], [0.0, 0.0, 1.0], FRAC_PI_2, 0.0),
+                ConnectorFacing::PosZ => ([0.0, half, half], [0.0, 0.0, -1.0], -FRAC_PI_2, 0.0),
+                ConnectorFacing::NegX => ([-half, half, 0.0], [1.0, 0.0, 0.0], FRAC_PI_2, FRAC_PI_2),
+                ConnectorFacing::PosX => ([half, half, 0.0], [-1.0, 0.0, 0.0], FRAC_PI_2, -FRAC_PI_2),
             };
-            let scene = panel_set.panels[rng.random_range(0..panel_set.panels.len())];
+            let plate = panel_set.plates[rng.random_range(0..panel_set.plates.len())];
+            let seat = plate.thick * 0.5;
             out.push(MeshPlacement {
-                scene,
+                scene: plate.scene,
                 position: [
-                    wc[0] + offset[0],
-                    wc[1] + offset[1],
-                    wc[2] + offset[2],
+                    wc[0] + offset[0] + inward[0] * seat,
+                    wc[1] + offset[1] + inward[1] * seat,
+                    wc[2] + offset[2] + inward[2] * seat,
                 ],
                 rotation_x: rot_x,
                 rotation_y: rot_y,
@@ -221,6 +226,205 @@ pub fn assemble_panels_from_grid(
             });
         }
     }
+    out
+}
+
+/// Panel-world assembly v2 (phase 4): skin every sealed surface from the
+/// kit's ROLE POOLS — floors from the floor pool, ceilings from the
+/// ceiling pool, wall COURSES covered per-run by the wall pool's width
+/// family through [`crate::coverer`]. Watertightness is an AREA
+/// invariant (covered == sealed minus openings), not a plate count:
+/// wide plates cover several cell faces at once. Deterministic per
+/// `room_seed`.
+pub fn assemble_role_pools_from_grid(
+    grid: &CellGrid,
+    pools: &asset_catalog::RolePools,
+    room_seed: u64,
+) -> Vec<MeshPlacement> {
+    use crate::asset_catalog::RolePlate;
+    use crate::coverer::{cover_run, split_runs};
+    use rand::rngs::SmallRng;
+    use rand::{RngExt, SeedableRng};
+    use std::f32::consts::{FRAC_PI_2, PI};
+
+    // Salted stream (seed-hygiene standard): never the raw room seed.
+    let mut rng = SmallRng::seed_from_u64(room_seed ^ crate::seed::salt::PANEL_COURSE);
+    let p = grid.tile;
+    let [ex, ey, ez] = grid.extents.map(|e| e as i32);
+    let origin = {
+        let c0 = grid.cell_at(0, 0, 0).expect("a grid has cells").world_center;
+        [c0[0] - p * 0.5, c0[1], c0[2] - p * 0.5]
+    };
+    let mut out = Vec::new();
+
+    /// The distinct widths a pool offers the coverer.
+    fn widths(pool: &[RolePlate]) -> Vec<f32> {
+        let mut w: Vec<f32> = pool.iter().map(|pl| pl.face[0]).collect();
+        w.sort_by(|a, b| a.total_cmp(b));
+        w.dedup_by(|a, b| (*a - *b).abs() < 0.001);
+        w
+    }
+    let wall_widths = widths(&pools.wall);
+    let floor_widths = widths(&pools.floor);
+    let ceiling_widths = widths(&pools.ceiling);
+
+    // Cover ONE course: a line of `cells` cell-faces (true = sealed),
+    // holes split it into runs, each run partitions into plate widths,
+    // each width picks uniformly among the pool's plates of that width.
+    // `place` maps (center-offset-along-course, plate) to a placement.
+    let cover_course = |sealed: &[bool],
+                            widths: &[f32],
+                            pool: &[RolePlate],
+                            rng: &mut SmallRng,
+                            out: &mut Vec<MeshPlacement>,
+                            place: &dyn Fn(f32, &RolePlate) -> MeshPlacement| {
+        let len = sealed.len() as f32 * p;
+        let holes: Vec<(f32, f32)> = sealed
+            .iter()
+            .enumerate()
+            .filter(|&(_, &s)| !s)
+            .map(|(i, _)| (i as f32 * p, p))
+            .collect();
+        for (run_off, run_len) in split_runs(len, &holes) {
+            let cover = cover_run(run_len, widths, rng).unwrap_or_else(|| {
+                panic!(
+                    "a {run_len} m run must cover — the filler rule \
+                     guarantees it (pool '{}')",
+                    // Every pool passed here belongs to one kit set.
+                    "role pool"
+                )
+            });
+            let mut cursor = run_off;
+            for w in cover {
+                let candidates: Vec<&RolePlate> = pool
+                    .iter()
+                    .filter(|pl| (pl.face[0] - w).abs() < 0.001)
+                    .collect();
+                let plate = candidates[rng.random_range(0..candidates.len())];
+                out.push(place(cursor + w * 0.5, plate));
+                cursor += w;
+            }
+        }
+    };
+
+    // WALL COURSES: each side plane, story by story. The baked wall pose
+    // is width-X, height-Y, detail +Z; yaw turns +Z INTO the room and
+    // the plate seats half its thickness inward off the face plane.
+    struct Side {
+        facing: ConnectorFacing,
+        yaw: f32,
+        /// inward unit (world), applied to the seat.
+        inward: [f32; 3],
+    }
+    let sides = [
+        Side { facing: ConnectorFacing::NegZ, yaw: 0.0, inward: [0.0, 0.0, 1.0] },
+        Side { facing: ConnectorFacing::PosZ, yaw: PI, inward: [0.0, 0.0, -1.0] },
+        Side { facing: ConnectorFacing::NegX, yaw: FRAC_PI_2, inward: [1.0, 0.0, 0.0] },
+        Side { facing: ConnectorFacing::PosX, yaw: -FRAC_PI_2, inward: [-1.0, 0.0, 0.0] },
+    ];
+    for side in &sides {
+        // The course axis is X for Z-sides, Z for X-sides; the row of
+        // boundary cells supplying the sealed mask follows it.
+        let along_x = matches!(side.facing, ConnectorFacing::NegZ | ConnectorFacing::PosZ);
+        let course_cells = if along_x { ex } else { ez };
+        let plane = match side.facing {
+            ConnectorFacing::NegZ => origin[2],
+            ConnectorFacing::PosZ => origin[2] + ez as f32 * p,
+            ConnectorFacing::NegX => origin[0],
+            ConnectorFacing::PosX => origin[0] + ex as f32 * p,
+            _ => unreachable!(),
+        };
+        for cy in 0..ey {
+            let sealed: Vec<bool> = (0..course_cells)
+                .map(|i| {
+                    let (cx, cz) = match side.facing {
+                        ConnectorFacing::NegZ => (i, 0),
+                        ConnectorFacing::PosZ => (i, ez - 1),
+                        ConnectorFacing::NegX => (0, i),
+                        ConnectorFacing::PosX => (ex - 1, i),
+                        _ => unreachable!(),
+                    };
+                    grid.cell_at(cx, cy, cz)
+                        .is_some_and(|c| c.sealed_faces.contains(&side.facing))
+                })
+                .collect();
+            let y = origin[1] + cy as f32 * p + p * 0.5;
+            cover_course(
+                &sealed,
+                &wall_widths,
+                &pools.wall,
+                &mut rng,
+                &mut out,
+                &|center, plate| {
+                    let seat = plate.thick * 0.5;
+                    let (x, z) = if along_x {
+                        (origin[0] + center, plane + side.inward[2] * seat)
+                    } else {
+                        (plane + side.inward[0] * seat, origin[2] + center)
+                    };
+                    MeshPlacement {
+                        scene: plate.scene,
+                        position: [x, y, z],
+                        rotation_x: 0.0,
+                        rotation_y: side.yaw,
+                        scale: 1.0,
+                        collision: Collision::Skin,
+                    }
+                },
+            );
+        }
+    }
+
+    // FLOOR AND CEILING STRIPS: one course per cell row along X, at the
+    // bottom (detail +Y, seated up off the floor plane) and the top
+    // (detail -Y, seated down off the ceiling plane).
+    for cz in 0..ez {
+        let z = origin[2] + cz as f32 * p + p * 0.5;
+        let floor_sealed: Vec<bool> = (0..ex)
+            .map(|cx| {
+                grid.cell_at(cx, 0, cz)
+                    .is_some_and(|c| c.sealed_faces.contains(&ConnectorFacing::NegY))
+            })
+            .collect();
+        cover_course(
+            &floor_sealed,
+            &floor_widths,
+            &pools.floor,
+            &mut rng,
+            &mut out,
+            &|center, plate| MeshPlacement {
+                scene: plate.scene,
+                position: [origin[0] + center, origin[1] + plate.thick * 0.5, z],
+                rotation_x: 0.0,
+                rotation_y: 0.0,
+                scale: 1.0,
+                collision: Collision::Skin,
+            },
+        );
+        let top = origin[1] + ey as f32 * p;
+        let ceiling_sealed: Vec<bool> = (0..ex)
+            .map(|cx| {
+                grid.cell_at(cx, ey - 1, cz)
+                    .is_some_and(|c| c.sealed_faces.contains(&ConnectorFacing::PosY))
+            })
+            .collect();
+        cover_course(
+            &ceiling_sealed,
+            &ceiling_widths,
+            &pools.ceiling,
+            &mut rng,
+            &mut out,
+            &|center, plate| MeshPlacement {
+                scene: plate.scene,
+                position: [origin[0] + center, top - plate.thick * 0.5, z],
+                rotation_x: 0.0,
+                rotation_y: 0.0,
+                scale: 1.0,
+                collision: Collision::Skin,
+            },
+        );
+    }
+
     out
 }
 
@@ -235,10 +439,11 @@ pub fn assemble_from_grid(
     template: &RoomTemplate,
     active_connectors: &[Connector],
     wall_set: &WallSet,
+    catalog: &asset_catalog::AssetCatalog,
 ) -> Vec<MeshPlacement> {
     let mut out = Vec::new();
     let ey = grid.extents[1] as i32;
-    let door = asset_catalog::DOOR;
+    let door = catalog.const_scene(asset_catalog::DOOR);
     let story_height = grid.story;
 
     // A vertical shaft (an up/down corridor) reads as a square right-angle
@@ -320,9 +525,9 @@ pub fn assemble_from_grid(
                 continue;
             }
             let (wall_pos, rot) = wall_placement(pos, facing);
-            out.push(MeshPlacement { scene: wall_set.bottom.straight, position: wall_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::Skin });
-            out.push(MeshPlacement { scene: wall_set.straight.wall, position: wall_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::Skin });
-            out.push(MeshPlacement { scene: wall_set.straight.ceiling, position: wall_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::Skin });
+            out.push(MeshPlacement { scene: catalog.const_scene(wall_set.bottom.straight), position: wall_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::Skin });
+            out.push(MeshPlacement { scene: catalog.const_scene(wall_set.straight.wall), position: wall_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::Skin });
+            out.push(MeshPlacement { scene: catalog.const_scene(wall_set.straight.ceiling), position: wall_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::Skin });
         }
 
         // Place corner pieces (5-layer stack) offset from cell center toward interior.
@@ -342,14 +547,14 @@ pub fn assemble_from_grid(
                 // solid convex hull, never fused trimesh (playtest
                 // 2026-07-06 — the corner seam was where bodies leaked).
                 // Bottom layer corners
-                out.push(MeshPlacement { scene: wall_set.bottom.corner_inner, position: corner_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::ConvexSolid });
-                out.push(MeshPlacement { scene: wall_set.bottom.corner_outer, position: corner_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::ConvexSolid });
+                out.push(MeshPlacement { scene: catalog.const_scene(wall_set.bottom.corner_inner), position: corner_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::ConvexSolid });
+                out.push(MeshPlacement { scene: catalog.const_scene(wall_set.bottom.corner_outer), position: corner_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::ConvexSolid });
                 // Wall layer corners
-                out.push(MeshPlacement { scene: wall_set.corner_inner.wall, position: corner_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::ConvexSolid });
-                out.push(MeshPlacement { scene: wall_set.corner_outer.wall, position: corner_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::ConvexSolid });
+                out.push(MeshPlacement { scene: catalog.const_scene(wall_set.corner_inner.wall), position: corner_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::ConvexSolid });
+                out.push(MeshPlacement { scene: catalog.const_scene(wall_set.corner_outer.wall), position: corner_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::ConvexSolid });
                 // Top layer corners
-                out.push(MeshPlacement { scene: wall_set.corner_inner.ceiling, position: corner_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::ConvexSolid });
-                out.push(MeshPlacement { scene: wall_set.corner_outer.ceiling, position: corner_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::ConvexSolid });
+                out.push(MeshPlacement { scene: catalog.const_scene(wall_set.corner_inner.ceiling), position: corner_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::ConvexSolid });
+                out.push(MeshPlacement { scene: catalog.const_scene(wall_set.corner_outer.ceiling), position: corner_pos, rotation_x: 0.0, rotation_y: rot, scale: 1.0, collision: Collision::ConvexSolid });
                 if !has_corner {
                     first_corner_rot = rot;
                 }
@@ -364,9 +569,9 @@ pub fn assemble_from_grid(
                 cell.grid_pos[0], cy, cell.grid_pos[2])
         {
             if has_corner {
-                out.push(MeshPlacement { scene: wall_set.corner_inner.floor, position: pos, rotation_x: 0.0, rotation_y: first_corner_rot, scale: 1.0, collision: Collision::Skin });
+                out.push(MeshPlacement { scene: catalog.const_scene(wall_set.corner_inner.floor), position: pos, rotation_x: 0.0, rotation_y: first_corner_rot, scale: 1.0, collision: Collision::Skin });
             } else {
-                out.push(MeshPlacement { scene: wall_set.straight.floor, position: pos, rotation_x: 0.0, rotation_y: 0.0, scale: 1.0, collision: Collision::Skin });
+                out.push(MeshPlacement { scene: catalog.const_scene(wall_set.straight.floor), position: pos, rotation_x: 0.0, rotation_y: 0.0, scale: 1.0, collision: Collision::Skin });
             }
         }
 
@@ -379,9 +584,9 @@ pub fn assemble_from_grid(
         {
             let ceiling_pos = [pos[0], pos[1] + story_height, pos[2]];
             if has_corner {
-                out.push(MeshPlacement { scene: wall_set.corner_inner.floor, position: ceiling_pos, rotation_x: PI, rotation_y: first_corner_rot - FRAC_PI_2, scale: 1.0, collision: Collision::Skin });
+                out.push(MeshPlacement { scene: catalog.const_scene(wall_set.corner_inner.floor), position: ceiling_pos, rotation_x: PI, rotation_y: first_corner_rot - FRAC_PI_2, scale: 1.0, collision: Collision::Skin });
             } else {
-                out.push(MeshPlacement { scene: wall_set.straight.floor, position: ceiling_pos, rotation_x: PI, rotation_y: 0.0, scale: 1.0, collision: Collision::Skin });
+                out.push(MeshPlacement { scene: catalog.const_scene(wall_set.straight.floor), position: ceiling_pos, rotation_x: PI, rotation_y: 0.0, scale: 1.0, collision: Collision::Skin });
             }
         }
     }

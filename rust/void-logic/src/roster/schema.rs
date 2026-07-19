@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::enemy_ai::Archetype;
 use crate::level_assembly::MinionTrigger;
@@ -185,47 +185,7 @@ pub struct SwarmMemberRaw {
     pub count: u8,
 }
 
-// ── rosters/kits.toml (interim; stage 3 generates it) ───────────────────
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct KitsFile {
-    pub kits: BTreeMap<String, KitRaw>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct KitRaw {
-    pub paradigm: KitParadigm,
-    /// Repo-relative directory `make assets` populates for this kit — the
-    /// disk pin ties the kit's claim to installed reality. The kit's GRID
-    /// (tile/story) is never authored: the probe derives it into
-    /// kits.generated.toml and the linker joins the two.
-    pub install_dir: String,
-    /// FIXED kits only: world units per authored model meter — the pitch of
-    /// the environment's 1-meter zone grid. The one deliberate exception to
-    /// "the probe derives all grids": a fixed scene has no recipe to derive
-    /// from; scale is a design knob. Required iff `paradigm = "fixed"`.
-    #[serde(default)]
-    pub scale: Option<f32>,
-    /// FIXED kits only: the environment this kit builds, a key into BOTH
-    /// rosters/environments/*.toml (the authored zones) and
-    /// environments.generated.toml (the installed scene). Required iff
-    /// `paradigm = "fixed"`.
-    #[serde(default)]
-    pub environment: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum KitParadigm {
-    Layered,
-    Panel,
-    /// A pre-modeled environment scene installed whole (planet 3's
-    /// apartment): no grid derivation, no per-cell skinning — the kit
-    /// declares its `environment` and `scale` instead.
-    Fixed,
-}
 
 // ── rosters/planets/planet_N.toml ────────────────────────────────────────
 
@@ -285,24 +245,6 @@ pub struct BossAtRaw {
 
 // ── Generated catalogs (written by the roster probe via `make assets`;
 //    Serialize so emission round-trips through the exact reading schema) ──
-
-/// rosters/models.generated.toml: model key (file stem) → res:// path.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModelsFile {
-    pub models: BTreeMap<String, String>,
-}
-
-/// rosters/environments.generated.toml: environment key (file stem) →
-/// res:// path. A separate namespace from [`ModelsFile`] on purpose: that
-/// catalog's contract is "every installed ENEMY model", and enemy defs
-/// resolve against it — mixing the two would let an enemy reference the
-/// planet-3 house as its body.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EnvironmentsFile {
-    pub environments: BTreeMap<String, String>,
-}
 
 /// rosters/environments/<key>.toml: the HAND-AUTHORED zone map over a fixed
 /// environment scene. Coordinates are model-space meters on the 1-meter
@@ -480,20 +422,6 @@ pub struct ZoneBoxRaw {
     pub extents: [u32; 3],
 }
 
-/// rosters/kits.generated.toml: each kit's grid, DERIVED by the probe from
-/// its assembly recipe + installed meshes (no dimension is ever authored).
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GeneratedKitsFile {
-    pub kits: BTreeMap<String, GeneratedKitRaw>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GeneratedKitRaw {
-    pub tile: f32,
-    pub story: f32,
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

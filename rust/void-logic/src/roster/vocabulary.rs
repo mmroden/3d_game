@@ -10,7 +10,9 @@
 use crate::enemy_ai::Archetype;
 use crate::level_assembly::MinionTrigger;
 
-use super::schema::{BossRewardPolicy, CurveAnchor, CurveKind, KitParadigm};
+use crate::asset_catalog::schema::KitParadigm;
+
+use super::schema::{BossRewardPolicy, CurveAnchor, CurveKind};
 
 fn archetype_line(a: Archetype) -> (&'static str, &'static str) {
     match a {
@@ -592,16 +594,30 @@ mod tests {
         for r in super::RECIPES {
             let enemies = format!("{PREAMBLE}{}", r.enemies);
             let planet = format!("{PLANET_HEADER}{}", r.planet);
-            let kits =
-                "[kits.recipe_kit]\nparadigm = \"panel\"\ninstall_dir = \"godot/addons/walls\"\n";
-            let grid = "[kits.recipe_kit]\ntile = 3.0\nstory = 3.0\n";
-            if let Err(e) = super::super::load_from(
-                &enemies,
+            let kits = "[kits.recipe_kit]\nparadigm = \"panel\"\n\
+                install_dir = \"godot/addons/walls\"\nwall_coverage = 0.9\n";
+            let grid = &format!(
+                "[kits.recipe_kit]\ntile = 3.0\nstory = 3.0\n{}",
+                crate::roster::TEST_CENSUS_ONE_PLATE,
+            );
+            let catalog = crate::asset_catalog::AssetCatalog::load(
                 kits,
                 grid,
-                super::super::MODELS_TOML,
+                crate::asset_catalog::MODELS_TOML,
+                crate::asset_catalog::ENVIRONMENTS_GENERATED_TOML,
+            )
+            .unwrap_or_else(|e| {
+                panic!(
+                    "recipe '{}' catalog no longer links — the doc has drifted:\n{}",
+                    r.name,
+                    e.join("\n")
+                )
+            });
+            if let Err(e) = super::super::load_from(
+                &enemies,
                 &[planet.as_str()],
                 super::super::EnvSources::generated_only(),
+                std::sync::Arc::new(catalog),
             ) {
                 panic!("recipe '{}' no longer links — the doc has drifted:\n{e}", r.name);
             }

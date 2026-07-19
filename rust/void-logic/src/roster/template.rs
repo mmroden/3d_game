@@ -169,8 +169,11 @@ const KITS: &str = r#"# ── Section: kits.toml (interim; the make-assets prob
 [kits.template_kit]
 paradigm = "panel"       # layered (tile+story stacks) | panel (cubic cells) | fixed (pre-modeled scene; declares scale + environment)
 install_dir = "godot/addons/walls"  # repo-relative; disk-pinned populated
+wall_coverage = 0.9      # panel kits only: min censused face coverage to WALL (solid plate 1.0, truss ~0.2); membership derives from the census
 # The kit's grid (tile/story) is NEVER authored: the make-assets probe
-# derives it from the assembly recipe into kits.generated.toml.
+# derives it from the assembly recipe into kits.generated.toml — including
+# each piece's census (face, thickness, coverage) that wall_coverage
+# filters into the kit's wall pool.
 "#;
 
 const PLANET: &str = r#"# ── Section: planets/planet_N.toml ──────────────────────────────────────
@@ -213,14 +216,21 @@ mod tests {
         // The template links against the REAL model catalog: its example
         // enemies wear installed models, so the scaffold stays honest. Its
         // kit grid stands in for what the probe would derive.
-        let template_grid = "[kits.template_kit]\ntile = 3.0\nstory = 3.0\n";
-        if let Err(e) = super::super::load_from(
-            enemies,
+        let template_grid = "[kits.template_kit]\ntile = 3.0\nstory = 3.0\n\
+            pieces = { template_plate = { face = [3.0, 3.0], thick = 0.2, \
+            axis = \"y\", coverage = 1.0, tris = 100, textures = 3 } }\n";
+        let catalog = crate::asset_catalog::AssetCatalog::load(
             kits,
             template_grid,
-            super::super::MODELS_TOML,
+            crate::asset_catalog::MODELS_TOML,
+            crate::asset_catalog::ENVIRONMENTS_GENERATED_TOML,
+        )
+        .unwrap_or_else(|e| panic!("the template catalog no longer links:\n{}", e.join("\n")));
+        if let Err(e) = super::super::load_from(
+            enemies,
             &[planet],
             super::super::EnvSources::generated_only(),
+            std::sync::Arc::new(catalog),
         ) {
             panic!("the template no longer links:\n{e}");
         }

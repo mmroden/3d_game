@@ -8,7 +8,6 @@
 //! This constructor is the join point: it reads the linked roster plus the
 //! profile and produces the immutable per-level value every stage consumes.
 
-use crate::asset_catalog::PanelSet;
 use crate::level_assembly::MinionTrigger;
 use crate::roster::EnemyKey;
 use crate::planet::Pitch;
@@ -17,14 +16,18 @@ use crate::ship_type::ShipType;
 use crate::unlocks::PermanentUnlocks;
 
 /// How a level's rooms are skinned: the megakit's layered wall stacks
-/// (planet 1, themed per room), a panel pool over cubic cells (planet 2+),
-/// or a FIXED pre-modeled environment installed whole (planet 3's
-/// apartment) — the spec carries the environment's authored zones, per its
-/// own doctrine ("no consumer re-derives an attribute").
+/// (planet 1, themed per room), the declared panel kits' derived WALL
+/// POOLS over cubic cells (planet 2+ — one pool skins a room, a level
+/// mixes its kits across rooms), or a FIXED pre-modeled environment
+/// installed whole (planet 3's apartment) — the spec carries the
+/// environment's authored zones, per its own doctrine ("no consumer
+/// re-derives an attribute").
 #[derive(Debug, Clone, PartialEq)]
 pub enum Paradigm {
     Layered,
-    Panel(&'static PanelSet),
+    /// The level's declared panel kits as CATALOG IDS — scheduling facts.
+    /// The plates stay owned by the catalog; assembly resolves per room.
+    Panel(Vec<crate::asset_catalog::KitId>),
     Fixed(crate::roster::EnvironmentDef),
 }
 
@@ -162,7 +165,9 @@ impl LevelSpec {
             paradigm: if let Some(env) = grammar.environment_for_level(level) {
                 Paradigm::Fixed(env.clone())
             } else if grammar.panel_world(level) {
-                Paradigm::Panel(&crate::asset_catalog::PANEL_SET_VOL01)
+                // The declared kits' derived wall pools — census × policy,
+                // resolved by the linker; never a named list here.
+                Paradigm::Panel(grammar.panel_kits_for_level(level))
             } else {
                 Paradigm::Layered
             },

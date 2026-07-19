@@ -436,16 +436,33 @@ mod tests {
 
     #[test]
     fn generate_is_deterministic() {
-        let config = test_config(42);
-        let level_a = generate(&config).expect("gen a");
-        let level_b = generate(&config).expect("gen b");
-        let positions_a: Vec<_> = level_a.room_indices()
-            .filter_map(|idx| level_a.room(idx).map(|r| r.grid_pos))
-            .collect();
-        let positions_b: Vec<_> = level_b.room_indices()
-            .filter_map(|idx| level_b.room(idx).map(|r| r.grid_pos))
-            .collect();
-        assert_eq!(positions_a, positions_b);
+        // Full structure, at budgets big enough to overflow the BFS pass
+        // and exercise the deferred-room retry (the 2026-07-12 flythrough
+        // caught identical seeds building different topologies there).
+        // "reproduce: make run SEED= LEVEL=" is a shipped promise: same
+        // seed, same level — rooms, shapes, AND wiring.
+        for seed in 0..10u64 {
+            let config = GeneratorConfig { max_rooms: 26, ..test_config(seed) };
+            let level_a = generate(&config).expect("gen a");
+            let level_b = generate(&config).expect("gen b");
+
+            let structure = |level: &crate::level_graph::LevelGraph| {
+                let rooms: Vec<_> = level
+                    .room_indices()
+                    .filter_map(|idx| {
+                        level.room(idx).map(|r| (r.grid_pos, r.template.extents))
+                    })
+                    .collect();
+                let mut edges: Vec<_> = level
+                    .edges()
+                    .map(|(a, b, _)| (a.index(), b.index()))
+                    .collect();
+                edges.sort_unstable();
+                (rooms, edges)
+            };
+            assert_eq!(structure(&level_a), structure(&level_b),
+                "seed {seed}: same seed must rebuild the identical level");
+        }
     }
 
     #[test]

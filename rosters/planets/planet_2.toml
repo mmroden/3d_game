@@ -5,7 +5,7 @@
 
 planet = 2
 levels = 6
-kits = ["sf_panels_vol1"]
+kits = ["sf_panels_vol1", "sf_panels_vol3"]
 rooms = { base = 6, per_level = 2 }
 
 [[level]]

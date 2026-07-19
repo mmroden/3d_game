@@ -53,6 +53,20 @@ pub struct LevelManager {
     #[export]
     current_level: i32,
 
+    /// Capture-mode culling override (`--cull=0`): keep every room
+    /// visible regardless of the player's room — exterior establishing
+    /// shots park the camera OUTSIDE all rooms, where depth-culling
+    /// would otherwise leave the level mostly hidden. Same knob family
+    /// as `--populace`/`--sbs` on GameManager. -1 = normal culling.
+    #[export]
+    cull_override: i32,
+
+    /// Capture diagnostic (`--ambient=1`): flat white ambient on every
+    /// build, so a capture's remaining black is a real opening, never an
+    /// unlit wall. -1 = the authored look.
+    #[export]
+    ambient_override: i32,
+
     telemetry: Telemetry,
     /// One container node per room (index = room-list order). Toggling
     /// a container's visibility culls that whole room — geometry and
@@ -133,6 +147,8 @@ impl INode3D for LevelManager {
         Self {
             base,
             current_level: 1_i32,
+            cull_override: -1,
+            ambient_override: -1,
             telemetry: Telemetry::new(),
             room_nodes: LiveVec::new(),
             room_bounds: Vec::new(),
@@ -154,6 +170,20 @@ impl INode3D for LevelManager {
     }
 
     fn ready(&mut self) {
+        // Capture knob from the command line (the GameManager pattern):
+        // explicit args beat exported defaults.
+        for arg in godot::classes::Os::singleton().get_cmdline_user_args().to_vec() {
+            let arg = arg.to_string();
+            if let Some(v) = arg.strip_prefix("--cull=") {
+                if let Ok(c) = v.parse::<i32>() {
+                    self.cull_override = c.clamp(0, 1);
+                }
+            } else if let Some(v) = arg.strip_prefix("--ambient=") {
+                if let Ok(a) = v.parse::<i32>() {
+                    self.ambient_override = a.clamp(0, 1);
+                }
+            }
+        }
         self.connect_render_viewports();
         let target = self.to_gd();
         self.telemetry.register_monitors(
@@ -290,7 +320,25 @@ impl LevelManager {
             return;
         };
         let Some(mut env) = we.get_environment() else { return };
-        let ambient = if let void_logic::level_spec::Paradigm::Fixed(e) = &spec.paradigm {
+        let ambient = if self.ambient_override == 1 {
+            // Capture diagnostic (`--ambient=1`): flat white ambient makes
+            // matte surfaces visible, and the background becomes SENTINEL
+            // MAGENTA for two measured reasons (2026-07-14): an escaping
+            // sightline renders the background color EXACTLY, and metallic
+            // plates (vol03 ships metallic=1) mirror the environment — a
+            // dark sky renders solid metal walls as false void, a bright
+            // sentinel keeps them bright. Same knob family as `--cull`;
+            // never a play-path look.
+            env.set_background(godot::classes::environment::BgMode::COLOR);
+            env.set_bg_color(Color::from_rgb(1.0, 0.0, 1.0));
+            // Fog extinction ate the sentinel: at the authored density the
+            // background reads near-BLACK past ~12 m, so every distant
+            // escape wore the "unlit wall" color and the magenta detector
+            // was blind (all 32 vantages, 2026-07-18). No fog in a
+            // diagnostic that exists to make the background unmistakable.
+            env.set_fog_enabled(false);
+            Some(void_logic::roster::AmbientDef { color: [1.0, 1.0, 1.0], energy: 1.0 })
+        } else if let void_logic::level_spec::Paradigm::Fixed(e) = &spec.paradigm {
             e.ambient
         } else {
             None
@@ -563,7 +611,12 @@ impl LevelManager {
         // Assemble each room's content, grouped into the three build steps the
         // shell mirrors: structure, then non-enemy inhabitants (props +
         // containers), then enemies.
-        let rooms = level_assembly::spawn_list_full(&graph, &spec, seed);
+        let rooms = level_assembly::spawn_list_full(
+            &graph,
+            &spec,
+            seed,
+            &void_logic::roster::roster().catalog,
+        );
 
         // The level manifest (Faucet Principle, tier-1 model): resolves each
         // enemy's type, expands its death-spawn minions, and binds one blue
@@ -1115,6 +1168,12 @@ impl LevelManager {
     /// Show only the player's current room and its portal-neighbors;
     /// hide the rest. Recomputes only when the player changes rooms.
     fn update_room_culling(&mut self, player_pos: [f32; 3]) {
+        if self.cull_override == 0 {
+            // Capture override: the whole level stays visible (exterior
+            // vantages have no "current room" to cull from).
+            self.room_nodes.for_each_live(|_, node, _| node.set_visible(true));
+            return;
+        }
         let Some(current) = level_assembly::room_at(player_pos, &self.room_bounds) else {
             return;
         };
@@ -1269,13 +1328,16 @@ impl LevelManager {
         solids: &mut Vec<Gd<Node3D>>,
         loose_rng: &mut SmallRng,
     ) -> bool {
-        let Some(resource) = loader.load(entry.scene) else {
-            godot_warn!("Could not load: {}", entry.scene);
+        // The ONE place a placement's id becomes a path again: resolve
+        // against the catalog at spawn, borrow ends here.
+        let scene_path = void_logic::roster::roster().catalog.path(entry.scene);
+        let Some(resource) = loader.load(scene_path) else {
+            godot_warn!("Could not load: {}", scene_path);
             return false;
         };
         let packed: Gd<PackedScene> = resource.cast();
         let Some(instance) = packed.instantiate() else {
-            godot_warn!("Could not instantiate: {}", entry.scene);
+            godot_warn!("Could not instantiate: {}", scene_path);
             return false;
         };
         let mut node: Gd<Node3D> = instance.cast();

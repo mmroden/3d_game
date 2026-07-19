@@ -49,6 +49,43 @@ mod wall_sets;
 mod props;
 mod lights;
 
+pub mod catalog;
+pub mod schema;
+
+pub use catalog::{AssetCatalog, Fixture, KitDef, KitId, SceneId};
+
+/// The catalog's embedded sources (catalog/ on disk).
+pub(crate) const KITS_TOML: &str = include_str!("../../../../catalog/kits.toml");
+pub(crate) const KITS_GENERATED_TOML: &str =
+    include_str!("../../../../catalog/kits.generated.toml");
+pub(crate) const MODELS_TOML: &str = include_str!("../../../../catalog/models.generated.toml");
+pub(crate) const ENVIRONMENTS_GENERATED_TOML: &str =
+    include_str!("../../../../catalog/environments.generated.toml");
+
+/// The one shared production catalog (parsed on first use; a bad catalog
+/// panics with the full violation list, exactly like the roster).
+pub fn catalog() -> &'static std::sync::Arc<AssetCatalog> {
+    static CATALOG: std::sync::OnceLock<std::sync::Arc<AssetCatalog>> =
+        std::sync::OnceLock::new();
+    CATALOG.get_or_init(|| {
+        std::sync::Arc::new(
+            AssetCatalog::load(
+                KITS_TOML,
+                KITS_GENERATED_TOML,
+                MODELS_TOML,
+                ENVIRONMENTS_GENERATED_TOML,
+            )
+            .unwrap_or_else(|e| panic!("catalog/ must parse and link:\n{}", e.join("\n"))),
+        )
+    })
+}
+/// The asset probe (`make assets`'s accounting step): test-gated, writes
+/// the generated catalogs. `pub(crate)` so the roster's stale-census
+/// contract test can call [`probe::kit_grids`] until the linker split
+/// moves that test here.
+#[cfg(test)]
+pub(crate) mod probe;
+
 pub use wall_sets::*;
 pub use props::*;
 pub use lights::*;
