@@ -41,6 +41,11 @@ argv = sys.argv[sys.argv.index("--") + 1:]
 kit_path, out_dir, target_tris = argv[0], argv[1], int(argv[2])
 
 TEX_SIZE = 1024
+# Mirror of the linker's grid snap (void-logic asset_catalog/schema.rs
+# GRID_SNAP, metres): an extent within this of the module IS the module.
+# Python can't import the Rust const; the probe's bake contract audits
+# the mirror at `make assets`.
+GRID_SNAP = 0.05
 # A square plate within 5% of the kit's largest square is the same plate
 # with provider slop; anything farther off is a genuinely smaller piece.
 NORMALIZE_TOL = 0.05
@@ -141,11 +146,12 @@ def _mesh_dims(obj):
 def _relief_split_z(obj):
     # (positive, negative) relief mass along Z: geometry weighed by its
     # distance BEYOND the base slab — the peak flat-area depth bin. The
-    # heavier side is the greeble. EXACTLY the probe's relief_split
-    # (asset_catalog/probe.rs); the two ends of the pipeline compute the
-    # same number on the same meshes and cannot disagree by construction
-    # (the winding sum this replaces read modeling conventions instead —
-    # the bake 5/6/8 oscillation saga).
+    # heavier side is the greeble. Mirrors the probe's relief_split
+    # (asset_catalog/probe.rs): two implementations of one rule, kept
+    # honest by the probe's bake-contract audit at `make assets` — the
+    # audit, not construction, is the guarantee. (The winding sum this
+    # replaces read modeling conventions instead — the bake 5/6/8
+    # oscillation saga.)
     BINS = 32
     lo_z = min(v.co[2] for v in obj.data.vertices)
     hi_z = max(v.co[2] for v in obj.data.vertices)
@@ -381,7 +387,7 @@ else:
         # linker's census × policy bar filters truss overbakes into
         # unused files (a Python analytic first over- then under-baked,
         # 2026-07-19; it does not get a third chance).
-        if abs(h - pitch) > 0.05:
+        if abs(h - pitch) > GRID_SNAP:
             print(f"panel: {obj.name!r} not on module ({h:.3f} vs pitch {pitch:.3f}) — no bake")
             continue
         bake_roles(obj, stem, [stem], 0.0)
@@ -405,7 +411,7 @@ else:
             continue
         stacked_h = h1 + h2
         target_w = float(round(w1))
-        if target_w < pitch - 0.05 or target_w <= 0.0:
+        if target_w < pitch - GRID_SNAP or target_w <= 0.0:
             continue
         stretch_w = abs(target_w / w1 - 1.0)
         stretch_h = abs(pitch / stacked_h - 1.0)

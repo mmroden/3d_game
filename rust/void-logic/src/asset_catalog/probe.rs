@@ -67,6 +67,25 @@ fn aabb_extents(path: &Path) -> [f32; 3] {
     [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]]
 }
 
+/// Column-major 4×4 compose, matching `gltf::scene::Transform::matrix()`
+/// — the one shared home for both glTF walks (bounds and measure).
+fn mul(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    let mut out = [[0.0; 4]; 4];
+    for (c, col) in out.iter_mut().enumerate() {
+        for (r, cell) in col.iter_mut().enumerate() {
+            *cell = (0..4).map(|k| a[k][r] * b[c][k]).sum();
+        }
+    }
+    out
+}
+
+const IDENTITY: [[f32; 4]; 4] = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
+
 /// World-space AABB corners (lo, hi) of a glTF file's default scene:
 /// accessor min/max corners composed through the node transforms — bounds
 /// come from the JSON, no buffer loading. Kit pieces bake their stack
@@ -78,17 +97,6 @@ fn aabb_bounds(path: &Path) -> ([f32; 3], [f32; 3]) {
         .document;
     let mut lo = [f32::INFINITY; 3];
     let mut hi = [f32::NEG_INFINITY; 3];
-
-    // Column-major, matching gltf::scene::Transform::matrix().
-    fn mul(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
-        let mut out = [[0.0; 4]; 4];
-        for (c, col) in out.iter_mut().enumerate() {
-            for (r, cell) in col.iter_mut().enumerate() {
-                *cell = (0..4).map(|k| a[k][r] * b[c][k]).sum();
-            }
-        }
-        out
-    }
 
     fn visit(
         node: gltf::Node,
@@ -133,18 +141,12 @@ fn aabb_bounds(path: &Path) -> ([f32; 3], [f32; 3]) {
         }
     }
 
-    let identity = [
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 1.0],
-    ];
     let scene = doc
         .default_scene()
         .or_else(|| doc.scenes().next())
         .unwrap_or_else(|| panic!("{}: no scene", path.display()));
     for node in scene.nodes() {
-        visit(node, identity, &mut lo, &mut hi, path);
+        visit(node, IDENTITY, &mut lo, &mut hi, path);
     }
     assert!(
         lo[0].is_finite(),
@@ -431,16 +433,6 @@ fn measure(path: &Path) -> Measured {
     let (doc, buffers, images) = gltf::import(path)
         .unwrap_or_else(|e| panic!("{}: not an importable glTF ({e})", path.display()));
 
-    fn mul(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
-        let mut out = [[0.0; 4]; 4];
-        for (c, col) in out.iter_mut().enumerate() {
-            for (r, cell) in col.iter_mut().enumerate() {
-                *cell = (0..4).map(|k| a[k][r] * b[c][k]).sum();
-            }
-        }
-        out
-    }
-
     let mut tris: Vec<[[f32; 3]; 3]> = Vec::new();
     fn visit(
         node: gltf::Node,
@@ -482,15 +474,9 @@ fn measure(path: &Path) -> Measured {
             visit(child, world, buffers, tris);
         }
     }
-    let ident = [
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 1.0],
-    ];
     for scene in doc.scenes() {
         for node in scene.nodes() {
-            visit(node, ident, &buffers, &mut tris);
+            visit(node, IDENTITY, &buffers, &mut tris);
         }
     }
     assert!(!tris.is_empty(), "{}: no triangles", path.display());
@@ -699,7 +685,8 @@ fn derive_kit_grid(
     // harmlessly, a gap would not.
     for (src, t, s) in &grids {
         assert!(
-            (t - tile).abs() < 0.05 && (s - story).abs() < 0.05,
+            (t - tile).abs() < super::schema::GRID_SNAP
+                && (s - story).abs() < super::schema::GRID_SNAP,
             "kit '{key}': {src} derives {t:.2}/{s:.2} but {first_src} derives \
              {tile:.2}/{story:.2} — the kit's sets disagree on the grid"
         );

@@ -1328,9 +1328,8 @@ impl LevelManager {
         solids: &mut Vec<Gd<Node3D>>,
         loose_rng: &mut SmallRng,
     ) -> bool {
-        // The ONE place a placement's id becomes a path again: resolve
-        // against the catalog at spawn, borrow ends here.
-        let scene_path = void_logic::roster::roster().catalog.path(entry.scene);
+        // Resolve at the shell's one id→path crossing (godot_util::scene_path).
+        let scene_path = super::godot_util::scene_path(entry.scene);
         let Some(resource) = loader.load(scene_path) else {
             godot_warn!("Could not load: {}", scene_path);
             return false;

@@ -12,16 +12,25 @@ use super::schema::{self, KitParadigm};
 use super::RolePools;
 
 /// Index of a kit in the catalog — the roster's planets store these
-/// after resolving their declared kit keys.
+/// after resolving their declared kit keys. Opaque like [`SceneId`]:
+/// the catalog's `kit()` is the only mint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct KitId(pub usize);
+pub struct KitId(usize);
 
-/// An interned scene in the catalog. 4 bytes, Copy, Eq, Hash. The ONLY
+/// An interned scene in the catalog. 8 bytes, Copy, Eq, Hash. The ONLY
 /// minting path is the catalog's linker — no public constructor, no
 /// `From<&str>`: a SceneId in hand PROVES the scene resolved against the
-/// catalog at link time. Resolve back with [`AssetCatalog::path`].
+/// catalog INSTANCE that minted it (the tag carries the mint; a foreign
+/// id dies loudly at [`AssetCatalog::path`], never resolves to the
+/// wrong arena's scene). Ids from different catalogs never compare
+/// equal. Resolve back with [`AssetCatalog::path`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SceneId(u32);
+pub struct SceneId {
+    /// The minting catalog's load-time nonce.
+    tag: u32,
+    /// Index into that catalog's scene-path arena.
+    index: u32,
+}
 
 /// Every scene GAME CODE must name (as opposed to the open-set pools and
 /// model maps, which code reaches by role or key). Closed set: adding a
@@ -40,26 +49,56 @@ pub enum Fixture {
 /// bestiary models — live in void-nodes `scenes::*` and never flow
 /// through placements; folding them in here is an OPEN scope call,
 /// not assumed.)
-pub(super) const FIXTURE_PATHS: &[(Fixture, &str)] = &[(Fixture::DoorFrame, super::DOOR)];
+pub(super) const FIXTURE_PATHS: &[(Fixture, &str)] =
+    &[(Fixture::DoorFrame, megakit_platform!("Door_Frame_Square.gltf"))];
 
 /// One linked kit: the authored manifest joined to the probe's derived
 /// grid and plate library.
 #[derive(Debug)]
 pub struct KitDef {
     pub key: String,
-    pub paradigm: KitParadigm,
+    /// The linked paradigm — the variant IS the proof: each paradigm's
+    /// payload rides its variant, so a pool-less panel kit or an
+    /// environment-less fixed kit cannot leave the load (the error list
+    /// is the only other exit).
+    pub kind: KitKind,
     /// The grid: probed for layered/panel kits; a fixed kit's declared
     /// scale IS its tile/story (no recipe to derive from).
     pub tile: f32,
     pub story: f32,
     pub install_dir: String,
-    /// FIXED kits: the authored environment KEY. The catalog does not
-    /// know the roster's authored zone maps — the roster resolves this
-    /// key at its own link (the one deliberate cross-boundary join).
-    pub environment: Option<String>,
-    /// PANEL kits: role-typed pools from the baked variants — the one
-    /// plate library. Owned; plates carry interned ids.
-    pub role_pools: Option<RolePools>,
+}
+
+/// What a linked kit builds with.
+#[derive(Debug)]
+pub enum KitKind {
+    /// Tile + story stacks (the megakit).
+    Layered,
+    /// Cubic cells skinned from the baked role pools — the one plate
+    /// library. Owned; plates carry interned ids.
+    Panel(RolePools),
+    /// An authored environment scene, named by KEY. The catalog does
+    /// not know the roster's authored zone maps — the roster resolves
+    /// the key at its own link (the one deliberate cross-boundary join).
+    Fixed { environment: String },
+}
+
+impl KitDef {
+    /// The baked plate library — `Some` iff this is a panel kit.
+    pub fn role_pools(&self) -> Option<&RolePools> {
+        match &self.kind {
+            KitKind::Panel(pools) => Some(pools),
+            KitKind::Layered | KitKind::Fixed { .. } => None,
+        }
+    }
+
+    /// The authored environment KEY — `Some` iff this is a fixed kit.
+    pub fn environment(&self) -> Option<&str> {
+        match &self.kind {
+            KitKind::Fixed { environment } => Some(environment),
+            KitKind::Layered | KitKind::Panel(_) => None,
+        }
+    }
 }
 
 /// The load-time scene interner: builds the arena the catalog serves
@@ -67,21 +106,22 @@ pub struct KitDef {
 struct Interner {
     paths: Vec<String>,
     index: BTreeMap<String, u32>,
+    tag: u32,
 }
 
 impl Interner {
-    fn new() -> Self {
-        Self { paths: Vec::new(), index: BTreeMap::new() }
+    fn new(tag: u32) -> Self {
+        Self { paths: Vec::new(), index: BTreeMap::new(), tag }
     }
 
     fn intern(&mut self, s: &str) -> SceneId {
         if let Some(&i) = self.index.get(s) {
-            return SceneId(i);
+            return SceneId { tag: self.tag, index: i };
         }
         let i = u32::try_from(self.paths.len()).expect("scene arena fits u32");
         self.paths.push(s.to_string());
         self.index.insert(s.to_string(), i);
-        SceneId(i)
+        SceneId { tag: self.tag, index: i }
     }
 }
 
@@ -103,6 +143,9 @@ pub struct AssetCatalog {
     paths: Vec<String>,
     scene_index: BTreeMap<String, u32>,
     fixtures: Vec<(Fixture, SceneId)>,
+    /// This instance's mint: every id this catalog serves carries it,
+    /// and [`AssetCatalog::path`] refuses ids that don't.
+    tag: u32,
 }
 
 impl AssetCatalog {
@@ -156,7 +199,11 @@ impl AssetCatalog {
         // The arena starts with every CONST scene the game can place —
         // wall sets, the door fixture, props, lights — so `id_of` is
         // total over authored tables, then grows with each pool.
-        let mut interner = Interner::new();
+        // The instance mint: a process-wide counter, equality-only (never
+        // gameplay-visible), so parallel test loads stay race-free.
+        static MINT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let tag = MINT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut interner = Interner::new(tag);
         let fixtures: Vec<(Fixture, SceneId)> = FIXTURE_PATHS
             .iter()
             .map(|&(f, p)| (f, interner.intern(p)))
@@ -172,13 +219,18 @@ impl AssetCatalog {
         for path in environments_file.environments.values() {
             interner.intern(path);
         }
+        // Enemy models join the arena too: the roster's defs carry
+        // minted ids, not path copies — the catalog owns every string.
+        for path in models_file.models.values() {
+            interner.intern(path);
+        }
 
         // Kits (BTreeMap: TOML rejects re-declared kit tables). The grid
         // joins in from the probe's derived measurements — never authored.
         // FIXED kits are the one deliberate exception: a fixed scene has
         // no recipe to derive a grid from, so its declared scale IS its
         // tile/story, and it names an authored environment instead.
-        let kits: Vec<KitDef> = kits_file
+        let kits: Vec<Option<KitDef>> = kits_file
             .kits
             .iter()
             .map(|(key, raw)| {
@@ -202,21 +254,20 @@ impl AssetCatalog {
                             1.0
                         }
                     };
-                    if raw.environment.is_none() {
+                    let Some(environment) = raw.environment.clone() else {
                         errors.push(format!(
                             "kit '{key}': a fixed kit must declare its environment \
                              (the authored zone map it builds)"
                         ));
-                    }
-                    return KitDef {
+                        return None;
+                    };
+                    return Some(KitDef {
                         key: key.clone(),
-                        paradigm: raw.paradigm,
+                        kind: KitKind::Fixed { environment },
                         tile: scale,
                         story: scale,
                         install_dir: raw.install_dir.clone(),
-                        environment: raw.environment.clone(),
-                        role_pools: None,
-                    };
+                    });
                 }
                 for (field, present) in [
                     ("scale", raw.scale.is_some()),
@@ -259,10 +310,8 @@ impl AssetCatalog {
                     derive_role_pools(
                         key,
                         &raw.install_dir,
-                        grid.tile,
-                        grid.story,
+                        &grid,
                         raw.wall_coverage.unwrap_or(1.0),
-                        &grid.variants,
                         &mut interner,
                         &mut errors,
                     )
@@ -297,28 +346,36 @@ impl AssetCatalog {
                     }
                     (_, None) => {}
                 }
-                KitDef {
+                let kind = match role_pools {
+                    Some(pools) => KitKind::Panel(pools),
+                    // The no-pooled-variants link error pushed above.
+                    None if raw.paradigm == KitParadigm::Panel => return None,
+                    None => KitKind::Layered,
+                };
+                Some(KitDef {
                     key: key.clone(),
-                    paradigm: raw.paradigm,
+                    kind,
                     tile: grid.tile,
                     story: grid.story,
                     install_dir: raw.install_dir.clone(),
-                    environment: None,
-                    role_pools,
-                }
+                })
             })
             .collect();
 
         if !errors.is_empty() {
             return Err(errors);
         }
+        let kits: Vec<KitDef> = kits
+            .into_iter()
+            .map(|k| k.expect("a kit that links to no def pushed an error"))
+            .collect();
         let kit_index = kits
             .iter()
             .enumerate()
             .map(|(i, k)| (k.key.clone(), i))
             .collect();
 
-        let Interner { paths, index: scene_index } = interner;
+        let Interner { paths, index: scene_index, tag } = interner;
         Ok(Self {
             kits,
             kit_index,
@@ -327,13 +384,20 @@ impl AssetCatalog {
             paths,
             scene_index,
             fixtures,
+            tag,
         })
     }
 
     /// Resolve an id this catalog minted to its res:// path. Borrow —
     /// the string stays owned here.
     pub fn path(&self, id: SceneId) -> &str {
-        &self.paths[id.0 as usize]
+        assert_eq!(
+            id.tag, self.tag,
+            "foreign SceneId: minted by catalog #{}, resolved against #{} — \
+             an id only resolves against the instance that minted it",
+            id.tag, self.tag
+        );
+        &self.paths[id.index as usize]
     }
 
     /// The scene behind a code-known fixture. Infallible: the table is
@@ -348,7 +412,9 @@ impl AssetCatalog {
 
     /// Look up an already-interned path.
     pub(crate) fn id_of(&self, path: &str) -> Option<SceneId> {
-        self.scene_index.get(path).map(|&i| SceneId(i))
+        self.scene_index
+            .get(path)
+            .map(|&i| SceneId { tag: self.tag, index: i })
     }
 
     /// The id of an authored CONST scene (wall sets, props, lights).
@@ -377,9 +443,9 @@ impl AssetCatalog {
         self.kits.iter()
     }
 
-    /// Resolve an enemy-model KEY to its installed res:// path.
-    pub fn model(&self, key: &str) -> Option<&str> {
-        self.models.get(key).map(String::as_str)
+    /// Resolve an enemy-model KEY to its installed scene's minted id.
+    pub fn model_scene_id(&self, key: &str) -> Option<SceneId> {
+        self.models.get(key).and_then(|p| self.id_of(p))
     }
 
     /// Every installed enemy model (contract tests audit against disk).
@@ -387,9 +453,9 @@ impl AssetCatalog {
         self.models.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
 
-    /// Resolve an environment KEY to its installed scene res:// path.
-    pub fn environment_scene(&self, key: &str) -> Option<&str> {
-        self.environments.get(key).map(String::as_str)
+    /// Resolve an environment KEY to its installed scene's minted id.
+    pub fn environment_scene_id(&self, key: &str) -> Option<SceneId> {
+        self.environments.get(key).and_then(|p| self.id_of(p))
     }
 }
 
@@ -402,10 +468,8 @@ impl AssetCatalog {
 fn derive_role_pools(
     key: &str,
     install_dir: &str,
-    tile: f32,
-    story: f32,
+    grid: &schema::GeneratedKitRaw,
     bar: f32,
-    variants: &BTreeMap<String, schema::GeneratedVariantRaw>,
     interner: &mut Interner,
     errors: &mut Vec<String>,
 ) -> Option<RolePools> {
@@ -413,9 +477,9 @@ fn derive_role_pools(
     use crate::room_template::ConnectorFacing;
     use schema::{ThinAxis, VariantRole};
 
-    /// The probe's snap tolerance: extents this close to the module ARE it.
-    const SNAP: f32 = 0.05;
+    use schema::GRID_SNAP as SNAP;
 
+    let (tile, story, variants) = (grid.tile, grid.story, &grid.variants);
     let res_dir = install_dir.trim_start_matches("godot/");
     let (mut floor, mut ceiling, mut wall) = (Vec::new(), Vec::new(), Vec::new());
     let (mut decoration, mut addon) = (Vec::new(), Vec::new());
@@ -507,10 +571,10 @@ fn derive_role_pools(
         && decoration.is_empty()
         && addon.is_empty()
     {
-        // Nothing survived the census × policy filter: the kit has no v2
-        // library (yet). The probe's bake contract at `make assets` is
-        // the loud gate for WHY; during migration the v1 pool still
-        // carries the kit, so this is not a link error.
+        // Nothing survived the census × policy filter: the kit has no
+        // baked library. The probe's bake contract at `make assets` is
+        // the loud gate for WHY; here the None surfaces as the
+        // panel-kit-without-variants link error at the paradigm check.
         return None;
     }
     // Universal fillers: every surface pool carries a 1-module plate, so

@@ -208,6 +208,15 @@ pub fn recolor_glow(glow: &Option<LiveRef<OmniLight3D>>, color: Color) {
     glow.with(|light| light.set_color(Color::from_rgb(color.r, color.g, color.b)));
 }
 
+/// The ONE place a logic-minted [`SceneId`] becomes a res:// path in the
+/// shell: resolve against the grammar's catalog at spawn, borrow ends at
+/// the loader. Every consumer — placements, enemy models, the bestiary
+/// turntable — routes through here; a second resolve site is a review
+/// finding.
+pub fn scene_path(id: void_logic::asset_catalog::SceneId) -> &'static str {
+    void_logic::roster::roster().catalog.path(id)
+}
+
 /// Load the model scene at `path`, instance it under `parent`, scale it to
 /// `length`, and turn it by `front_yaw` — the subject's own front-axis
 /// correction (`ShipType`/`EnemyType` `model_yaw_offset`), so that the

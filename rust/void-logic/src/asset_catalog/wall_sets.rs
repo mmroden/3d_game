@@ -230,8 +230,6 @@ pub const ALL_WALL_SETS: &[WallSet] = &[
     WALL_SET_PADDED,
 ];
 
-/// The door frame asset — structural, not themed.
-pub const DOOR: &str = megakit_platform!("Door_Frame_Square.gltf");
 
 // ── Panel sets (B11 cubic-cell panel worlds) ────────────────────────────
 

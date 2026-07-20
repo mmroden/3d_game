@@ -599,7 +599,7 @@ fn aperture_tile_emits_door_frame_only() {
         [0.0, 0.0, 0.0],
         ws,
     );
-    assert_eq!(count(&placements, asset_catalog::DOOR), 1);
+    assert_eq!(count(&placements, DOOR), 1);
     // The NegX face has a door, not wall layers. NegZ and PosZ each get 4 layers.
     // PosX is sealed (no active connector) and is a corner with NegZ and PosZ.
     // So no straight bottom/shortwall at the NegX position.

@@ -81,6 +81,14 @@ pub struct EnvironmentsFile {
     pub environments: BTreeMap<String, String>,
 }
 
+/// The grid snap tolerance, metres: a measured extent within this of the
+/// module IS the module (split panels decimate a hair under; wall sets
+/// carry cm-scale decorative lips). The ONE home — pool derivation, the
+/// bake qualifier, and the probe's grid agreement all snap with it.
+/// scripts/split-panels.py mirrors the value (Python can't import it);
+/// the probe's bake contract audits the mirror at `make assets`.
+pub const GRID_SNAP: f32 = 0.05;
+
 /// catalog/kits.generated.toml: each kit's grid, DERIVED by the probe from
 /// its assembly recipe + installed meshes (no dimension is ever authored).
 #[derive(Debug, Serialize, Deserialize)]
@@ -94,9 +102,11 @@ pub struct GeneratedKitsFile {
 pub struct GeneratedKitRaw {
     pub tile: f32,
     pub story: f32,
-    /// Panel kits, census v1 (MIGRATION — dies with Transform v2): the
-    /// per-piece census the legacy one-pool assembler links from.
-    /// `variants` wins when present.
+    /// Panel kits, the per-piece census: the probe's raw measurement of
+    /// each authored solid. Links nothing (v1 retired 2026-07-19) but
+    /// deliberately survives — pitch derivation and bake qualification
+    /// read it, and `a_pieces_census_beside_variants_changes_nothing`
+    /// pins that it stays inert at link.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pieces: BTreeMap<String, GeneratedPieceRaw>,
     /// Panel kits, census v2 (see [`GeneratedVariantRaw`]): the BAKED
@@ -175,7 +185,7 @@ impl GeneratedPieceRaw {
     /// which dies with it. The Transform mirrors this to decide what to
     /// bake; the probe's bake contract audits the mirror.
     pub fn qualifies_for_role_bake(&self, module: f32, bar: f32) -> bool {
-        (self.face[1] - module).abs() <= 0.05 && self.coverage >= bar
+        (self.face[1] - module).abs() <= GRID_SNAP && self.coverage >= bar
     }
 }
 

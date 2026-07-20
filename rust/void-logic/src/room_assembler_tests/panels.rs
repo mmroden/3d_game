@@ -77,8 +77,7 @@ fn role_pools() -> &'static crate::asset_catalog::RolePools {
         .kit("test_pool")
         .expect("fixture kit links")
         .1
-        .role_pools
-        .as_ref()
+        .role_pools()
         .expect("variant census derives role pools")
 }
 

@@ -60,7 +60,7 @@ fn door_asset_is_always_the_same_regardless_of_style() {
         &asset_catalog::WALL_SET_WINDOW,
     );
     let doors: Vec<_> = placements.iter()
-        .filter(|p| p.scene == cat().const_scene(asset_catalog::DOOR))
+        .filter(|p| p.scene == cat().fixture(asset_catalog::Fixture::DoorFrame))
         .collect();
     assert_eq!(doors.len(), 2, "corridor should have 2 doors regardless of style");
 }

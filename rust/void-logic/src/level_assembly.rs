@@ -90,7 +90,7 @@ pub fn spawn_list_full(
     use crate::room_theme;
 
     if let crate::level_spec::Paradigm::Fixed(env) = &spec.paradigm {
-        return fixed_spawn_list(graph, env, spec.pitch, catalog);
+        return fixed_spawn_list(graph, env, spec.pitch);
     }
 
     let pitch = spec.pitch;
@@ -114,15 +114,21 @@ pub fn spawn_list_full(
         // (cubic cells; see planet::panel_world and the B11 plan).
         let mut structure = if let crate::level_spec::Paradigm::Panel(kits) = &spec.paradigm {
             // ONE kit skins a room (visual coherence); the level mixes its
-            // declared kits ACROSS rooms — the room seed picks, so the mix
-            // is as reproducible as everything else it rolls. The spec
-            // carries KIT IDS (scheduling facts); the plates stay owned
-            // by the catalog.
-            let kit = catalog.kit_def(kits[(room_seed % kits.len() as u64) as usize]);
+            // declared kits ACROSS rooms — a salted stream off the room
+            // seed picks (seed-hygiene standard: never the raw seed's
+            // bits), so the mix is as reproducible as everything else it
+            // rolls. The spec carries KIT IDS (scheduling facts); the
+            // plates stay owned by the catalog.
+            let kit = {
+                use rand::rngs::SmallRng;
+                use rand::{RngExt, SeedableRng};
+                let mut rng =
+                    SmallRng::seed_from_u64(room_seed ^ crate::seed::salt::KIT_PICK);
+                catalog.kit_def(kits[rng.random_range(0..kits.len())])
+            };
             let pools = kit
-                .role_pools
-                .as_ref()
-                .expect("a linked panel kit carries role pools — the catalog enforces it");
+                .role_pools()
+                .expect("a panel spec's kit ids resolve to panel kits — the roster filters");
             crate::room_assembler::assemble_role_pools_from_grid(&grid, pools, room_seed)
         } else {
             crate::room_assembler::assemble_from_grid(
@@ -267,7 +273,6 @@ fn fixed_spawn_list(
     graph: &LevelGraph,
     env: &crate::roster::EnvironmentDef,
     pitch: Pitch,
-    catalog: &crate::asset_catalog::AssetCatalog,
 ) -> Vec<RoomAssembly> {
     use crate::room_assembler::{Collision, ShellSlab};
     use crate::room_furnisher::{LightAccent, LightSource, LightState};
@@ -338,9 +343,7 @@ fn fixed_spawn_list(
         // boxes are authored in the same model space the mesh occupies).
         let structure = if room_idx == 0 {
             vec![MeshPlacement {
-                scene: catalog
-                    .id_of(env.model)
-                    .expect("environment scenes intern at catalog load"),
+                scene: env.model,
                 position: [0.0, 0.0, 0.0],
                 rotation_x: 0.0,
                 rotation_y: 0.0,
@@ -726,62 +729,6 @@ pub fn flythrough_poses(graph: &LevelGraph, pitch: Pitch) -> Vec<[f32; 5]> {
             [pos[0], pos[1], pos[2], yaw, pitch_deg]
         })
         .collect()
-}
-
-/// Exterior establishing shots for the capture rig: pull-backs derived
-/// from the level's world AABB, aimed at its center — a high diagonal and
-/// a top-down. Same degree/pose format as [`flythrough_poses`].
-pub fn establishing_poses(graph: &LevelGraph, pitch: Pitch) -> Vec<[f32; 5]> {
-    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
-    let mut any = false;
-    for n in graph.room_indices() {
-        let Some(room) = graph.room(n) else { continue };
-        any = true;
-        let origin = room.world_position(pitch.tile, pitch.story);
-        let [ex, ey, ez] = room.template.extents;
-        let max = [
-            origin[0] + ex as f32 * pitch.tile,
-            origin[1] + ey as f32 * pitch.story,
-            origin[2] + ez as f32 * pitch.tile,
-        ];
-        for i in 0..3 {
-            lo[i] = lo[i].min(origin[i]);
-            hi[i] = hi[i].max(max[i]);
-        }
-    }
-    if !any {
-        return Vec::new();
-    }
-    let center = [
-        (lo[0] + hi[0]) * 0.5,
-        (lo[1] + hi[1]) * 0.5,
-        (lo[2] + hi[2]) * 0.5,
-    ];
-    let diag = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2))
-        .sqrt()
-        .max(pitch.tile);
-
-    // Aim a pose at the center from `pos`: yaw about Y (the spawn_pose
-    // convention), pitch raising the nose with +Y.
-    let aim = |pos: [f32; 3]| -> [f32; 5] {
-        let (dx, dy, dz) = (center[0] - pos[0], center[1] - pos[1], center[2] - pos[2]);
-        let horiz = (dx * dx + dz * dz).sqrt();
-        let yaw = if horiz < 1e-3 { 0.0 } else { (-dx).atan2(-dz).to_degrees() };
-        let pitch_deg = dy.atan2(horiz).to_degrees();
-        [pos[0], pos[1], pos[2], yaw, pitch_deg]
-    };
-
-    vec![
-        // High diagonal: outside the AABB along (1, 0.6, 1), a full
-        // diagonal out — frames the whole cluster.
-        aim([
-            hi[0] + diag * 0.7,
-            hi[1] + diag * 0.45,
-            hi[2] + diag * 0.7,
-        ]),
-        // Top-down plan view.
-        aim([center[0], hi[1] + diag, center[2]]),
-    ]
 }
 
 /// Deterministic interior vantages for the visual containment audit: up
@@ -1328,8 +1275,7 @@ mod tests {
             let rp = grammar
                 .catalog
                 .kit_def(id)
-                .role_pools
-                .as_ref()
+                .role_pools()
                 .expect("a linked panel kit carries role pools");
             pool_scenes.extend(
                 rp.floor
@@ -1794,11 +1740,7 @@ mod tests {
             rooms.iter().flat_map(|r| &r.structure).collect();
         assert_eq!(placements.len(), 1, "ONE scene placement for the whole house");
         let house = placements[0];
-        assert_eq!(
-            house.scene,
-            cat().id_of(env.model).expect("environment scene interned"),
-            "the environment's installed scene"
-        );
+        assert_eq!(house.scene, env.model, "the environment's installed scene");
         assert_eq!(house.position, [0.0, 0.0, 0.0], "model origin IS world origin");
         assert_eq!(house.scale, spec.pitch.tile, "the kit's declared scale");
         assert_eq!(
@@ -2034,61 +1976,6 @@ mod tests {
     }
 
     #[test]
-    fn establishing_poses_frame_the_level_from_outside() {
-        for seed in 0..10u64 {
-            let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let poses = establishing_poses(&graph, TEST_PITCH);
-            assert!(!poses.is_empty(), "seed {seed}: a level can be framed");
-
-            // The level's world AABB, for aim checks.
-            let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
-            for n in graph.room_indices() {
-                let room = graph.room(n).unwrap();
-                let origin = room.world_position(TEST_PITCH.tile, TEST_PITCH.story);
-                let [ex, ey, ez] = room.template.extents;
-                let max = [
-                    origin[0] + ex as f32 * TEST_PITCH.tile,
-                    origin[1] + ey as f32 * TEST_PITCH.story,
-                    origin[2] + ez as f32 * TEST_PITCH.tile,
-                ];
-                for i in 0..3 {
-                    lo[i] = lo[i].min(origin[i]);
-                    hi[i] = hi[i].max(max[i]);
-                }
-            }
-            let center = [
-                (lo[0] + hi[0]) * 0.5,
-                (lo[1] + hi[1]) * 0.5,
-                (lo[2] + hi[2]) * 0.5,
-            ];
-
-            for (i, pose) in poses.iter().enumerate() {
-                // Outside every node volume — these are pull-backs.
-                assert!(
-                    !graph.room_indices().any(|n| pose_in_node(&graph, n, pose, TEST_PITCH)),
-                    "seed {seed}: establishing pose {i} sits inside the level"
-                );
-
-                // Aimed at the level: forward vector (yaw/pitch, degrees)
-                // points at the AABB center.
-                let (dx, dy, dz) =
-                    (center[0] - pose[0], center[1] - pose[1], center[2] - pose[2]);
-                let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-                let yaw = pose[3].to_radians();
-                let pitch_r = pose[4].to_radians();
-                let fwd = [
-                    -yaw.sin() * pitch_r.cos(),
-                    pitch_r.sin(),
-                    -yaw.cos() * pitch_r.cos(),
-                ];
-                let dot = (fwd[0] * dx + fwd[1] * dy + fwd[2] * dz) / dist;
-                assert!(dot > 0.99,
-                    "seed {seed}: establishing pose {i} must aim at the level (dot {dot})");
-            }
-        }
-    }
-
-    #[test]
     fn interior_probes_cover_the_level_from_inside() {
         for seed in 0..10u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
@@ -2201,7 +2088,7 @@ mod tests {
             std::collections::BTreeMap::new();
         for &id in &grammar.panel_kits_for_level(level) {
             let kit = grammar.catalog.kit_def(id);
-            if let Some(p) = kit.role_pools.as_ref() {
+            if let Some(p) = kit.role_pools() {
                 for (role, plates) in [
                     ("floor", &p.floor),
                     ("ceiling", &p.ceiling),
@@ -2278,8 +2165,7 @@ mod tests {
             let rp = grammar
                 .catalog
                 .kit_def(id)
-                .role_pools
-                .as_ref()
+                .role_pools()
                 .expect("a linked panel kit carries role pools");
             for pl in rp.floor.iter().chain(&rp.ceiling).chain(&rp.wall) {
                 plate_area.insert(pl.scene, pl.face[0] * pl.face[1]);

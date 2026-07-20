@@ -231,8 +231,7 @@ pub fn assemble_role_pools_from_grid(
                 panic!(
                     "a {run_len} m run must cover — the filler rule \
                      guarantees it (pool '{}')",
-                    // Every pool passed here belongs to one kit set.
-                    "role pool"
+                    pools.id
                 )
             });
             let mut cursor = run_off;
@@ -273,7 +272,9 @@ pub fn assemble_role_pools_from_grid(
             ConnectorFacing::PosZ => origin[2] + ez as f32 * p,
             ConnectorFacing::NegX => origin[0],
             ConnectorFacing::PosX => origin[0] + ex as f32 * p,
-            _ => unreachable!(),
+            ConnectorFacing::NegY | ConnectorFacing::PosY => {
+                unreachable!("`sides` lists only lateral facings")
+            }
         };
         for cy in 0..ey {
             let sealed: Vec<bool> = (0..course_cells)
@@ -283,7 +284,9 @@ pub fn assemble_role_pools_from_grid(
                         ConnectorFacing::PosZ => (i, ez - 1),
                         ConnectorFacing::NegX => (0, i),
                         ConnectorFacing::PosX => (ex - 1, i),
-                        _ => unreachable!(),
+                        ConnectorFacing::NegY | ConnectorFacing::PosY => {
+                            unreachable!("`sides` lists only lateral facings")
+                        }
                     };
                     grid.cell_at(cx, cy, cz)
                         .is_some_and(|c| c.sealed_faces.contains(&side.facing))
@@ -384,7 +387,7 @@ pub fn assemble_from_grid(
 ) -> Vec<MeshPlacement> {
     let mut out = Vec::new();
     let ey = grid.extents[1] as i32;
-    let door = catalog.const_scene(asset_catalog::DOOR);
+    let door = catalog.fixture(asset_catalog::Fixture::DoorFrame);
     let story_height = grid.story;
 
     // A vertical shaft (an up/down corridor) reads as a square right-angle

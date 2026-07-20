@@ -39,7 +39,7 @@ pub(crate) fn test_census_variants(tile: f32) -> String {
 pub mod template;
 pub mod vocabulary;
 
-use crate::asset_catalog::schema::KitParadigm;
+use crate::asset_catalog::KitKind;
 use schema::{
     BossRewardPolicy, CurveAnchor, CurveKind, EnemiesFile, EnvironmentFile,
     PlanetFile,
@@ -243,7 +243,10 @@ pub struct MinionDef {
 pub struct EnemyDef {
     pub key: String,
     pub name: String,
-    pub model: String,
+    /// The installed model scene, as the catalog minted it at link —
+    /// proof the authored model KEY resolved. The shell turns it back
+    /// into a path at its one documented crossing.
+    pub model: crate::asset_catalog::SceneId,
     pub size: f32,
     pub yaw_offset_deg: f32,
     /// Barrel tips in the model's aim frame (x right, y up, z toward the
@@ -408,10 +411,10 @@ pub struct EnvironmentDef {
     pub windows: Vec<WindowDef>,
     /// The world-environment ambient override while this level runs.
     pub ambient: Option<AmbientDef>,
-    /// The installed scene's res:// path (resolved from
-    /// environments.generated.toml — consumers never see keys). Interned:
-    /// `MeshPlacement` carries `'static` scene paths.
-    pub model: &'static str,
+    /// The installed scene, as the catalog minted it at link (resolved
+    /// from environments.generated.toml — consumers never see keys, and
+    /// placements carry the id unchanged).
+    pub model: crate::asset_catalog::SceneId,
     pub zones: Vec<ZoneDef>,
     /// Index of the `start = true` zone (linker-enforced: exactly one).
     pub start_zone: usize,
@@ -548,7 +551,7 @@ impl Roster {
     /// megakit) — its declared kit's paradigm decides.
     pub fn panel_world(&self, level: u32) -> bool {
         let def = self.planet_for_level(level.max(1));
-        self.catalog.kit_def(def.kits[0]).paradigm == KitParadigm::Panel
+        matches!(self.catalog.kit_def(def.kits[0]).kind, KitKind::Panel(_))
     }
 
     /// The wall pools of a level's declared PANEL kits, in declaration
@@ -558,7 +561,7 @@ impl Roster {
         let def = self.planet_for_level(level.max(1));
         def.kits
             .iter()
-            .filter(|&&id| self.catalog.kit_def(id).role_pools.is_some())
+            .filter(|&&id| matches!(self.catalog.kit_def(id).kind, KitKind::Panel(_)))
             .copied()
             .collect()
     }
@@ -614,8 +617,7 @@ impl Roster {
     pub fn environment_for_level(&self, level: u32) -> Option<&EnvironmentDef> {
         let def = self.planet_for_level(level.max(1));
         let kit = self.catalog.kit_def(def.kits[0]);
-        kit.environment
-            .as_deref()
+        kit.environment()
             .and_then(|k| self.kit_environments.get(k))
             .map(|&i| &self.environments[i])
     }
@@ -924,7 +926,7 @@ fn link(
     let defaults = enemies_file.scaling_defaults;
     let enemies: Vec<EnemyDef> = raw_enemies
         .iter()
-        .map(|e| {
+        .filter_map(|e| {
             let at = format!("enemy '{}'", e.key);
             for (field, value) in [
                 ("standoff_frac", e.standoff_frac),
@@ -1035,22 +1037,9 @@ fn link(
                     miniboss: e.miniboss.unwrap_or(false),
                 }
             };
-            EnemyDef {
+            Some(EnemyDef {
                 key: e.key.clone(),
                 name: e.name.clone(),
-                // The def declares a model KEY; the linked def carries the
-                // catalog's res:// path, so consumers never see keys.
-                model: match catalog.model(&e.model) {
-                    Some(path) => path.to_string(),
-                    None => {
-                        errors.push(format!(
-                            "{at}: unknown model '{}' — not in \
-                             catalog/models.generated.toml (run `make assets`)",
-                            e.model
-                        ));
-                        String::new()
-                    }
-                },
                 size: e.size,
                 yaw_offset_deg: e.yaw_offset_deg,
                 muzzles: e.muzzles.clone().unwrap_or_default(),
@@ -1118,7 +1107,22 @@ fn link(
                 },
                 scaling: resolve_scaling(e.scaling.as_ref(), &defaults, &mut errors, &at),
                 behavior,
-            }
+                // The def declares a model KEY; the linked def carries the
+                // catalog's minted id, so consumers never see keys or
+                // paths. LAST field on purpose: the bail-out skips this
+                // def only after every validation above pushed its errors.
+                model: match catalog.model_scene_id(&e.model) {
+                    Some(id) => id,
+                    None => {
+                        errors.push(format!(
+                            "{at}: unknown model '{}' — not in \
+                             catalog/models.generated.toml (run `make assets`)",
+                            e.model
+                        ));
+                        return None;
+                    }
+                },
+            })
         })
         .collect();
 
@@ -1175,7 +1179,7 @@ fn link(
     // catalog. Zone links resolve to indices (undirected at use).
     let environments: Vec<EnvironmentDef> = environment_files
         .iter()
-        .map(|f| {
+        .filter_map(|f| {
             let at = format!("environment '{}'", f.environment.key);
             let zones: Vec<ZoneDef> = f
                 .zones
@@ -1265,26 +1269,28 @@ fn link(
                 }
                 AmbientDef { energy: a.energy, color: a.color }
             });
-            EnvironmentDef {
+            Some(EnvironmentDef {
                 key: f.environment.key.clone(),
                 sun,
                 windows,
                 ambient,
-                model: match catalog.environment_scene(&f.environment.model) {
-                    Some(path) => intern_key(path),
+                start_zone: zones.iter().position(|z| z.start).unwrap_or(0),
+                boss_zone: zones.iter().position(|z| z.boss).unwrap_or(0),
+                zones,
+                // LAST field on purpose: an unknown model bails only
+                // after the authored lighting/zone fields validated.
+                model: match catalog.environment_scene_id(&f.environment.model) {
+                    Some(id) => id,
                     None => {
                         errors.push(format!(
                             "{at}: unknown model '{}' — not in \
                              catalog/environments.generated.toml (run `make assets`)",
                             f.environment.model
                         ));
-                        ""
+                        return None;
                     }
                 },
-                start_zone: zones.iter().position(|z| z.start).unwrap_or(0),
-                boss_zone: zones.iter().position(|z| z.boss).unwrap_or(0),
-                zones,
-            }
+            })
         })
         .collect();
 
@@ -1431,12 +1437,12 @@ fn link(
     // Kits live in the CATALOG (Amendment A): planets declare kit KEYS
     // and resolve them here — the one sanctioned join. An unresolved key
     // is a link error naming the planet.
-    let kit_by_key = |key: &str, errors: &mut Vec<String>, at: &str| -> KitId {
+    let kit_by_key = |key: &str, errors: &mut Vec<String>, at: &str| -> Option<KitId> {
         match catalog.kit(key) {
-            Some((id, _)) => id,
+            Some((id, _)) => Some(id),
             None => {
                 errors.push(format!("{at}: unknown kit '{key}'"));
-                KitId(0)
+                None
             }
         }
     };
@@ -1581,7 +1587,7 @@ fn link(
         // room count is its environment's authored zone count — the file
         // must not also state one (one truth).
         let first_kit = f.kits.first().and_then(|k| catalog.kit(k)).map(|(_, kd)| kd);
-        if first_kit.is_some_and(|kd| kd.paradigm == KitParadigm::Fixed) {
+        if first_kit.is_some_and(|kd| matches!(kd.kind, KitKind::Fixed { .. })) {
             if f.kits.len() > 1 {
                 errors.push(format!(
                     "{at}: a fixed planet declares exactly one kit — its \
@@ -1602,8 +1608,7 @@ fn link(
             }
         }
         let first_kit_zone_count = first_kit
-            .filter(|kd| kd.paradigm == KitParadigm::Fixed)
-            .and_then(|kd| kd.environment.as_deref())
+            .and_then(|kd| kd.environment())
             .and_then(|envk| environments.iter().position(|e| e.key == envk))
             .map(|ei| environments[ei].zones.len() as u32);
         let (rooms_base, rooms_per_level) = match (&f.rooms, first_kit_zone_count) {
@@ -1624,7 +1629,7 @@ fn link(
             }
         };
         let kit_ids: Vec<KitId> =
-            f.kits.iter().map(|k| kit_by_key(k, &mut errors, &at)).collect();
+            f.kits.iter().filter_map(|k| kit_by_key(k, &mut errors, &at)).collect();
         // A planet mixing panel kits mixes them per ROOM on one cell grid,
         // so every panel kit it declares must derive the same grid as its
         // first — kits with different pitches belong to different planets.
@@ -1632,7 +1637,7 @@ fn link(
         // KEY must name an authored zone map this grammar embeds.
         for &id in &kit_ids {
             let kit = catalog.kit_def(id);
-            if let Some(envk) = kit.environment.as_deref() {
+            if let Some(envk) = kit.environment() {
                 if !kit_environments.contains_key(envk) {
                     match environments.iter().position(|e| e.key == envk) {
                         Some(i) => {
@@ -1649,7 +1654,7 @@ fn link(
         if let Some(first) = kit_ids.first().map(|&id| catalog.kit_def(id)) {
             for &id in &kit_ids[1..] {
                 let kit = catalog.kit_def(id);
-                if kit.paradigm == KitParadigm::Panel
+                if matches!(kit.kind, KitKind::Panel(_))
                     && (kit.tile != first.tile || kit.story != first.story)
                 {
                     errors.push(format!(
@@ -1938,8 +1943,7 @@ textures = 3
         let roster = load_panel_fixture(FX_PANEL_KIT, &grid).expect("variants census links");
         let (_, kit) = roster.catalog.kit("fx_panels").unwrap();
         let pools = kit
-            .role_pools
-            .as_ref()
+            .role_pools()
             .expect("a variants census derives role pools");
         assert_eq!(pools.floor.len(), 1);
         assert_eq!(pools.ceiling.len(), 1);
@@ -1972,7 +1976,7 @@ textures = 3
         );
         let roster = load_panel_fixture(FX_PANEL_KIT, &grid).expect("census links");
         let (_, kit) = roster.catalog.kit("fx_panels").unwrap();
-        let pools = kit.role_pools.as_ref().expect("role pools derive from variants");
+        let pools = kit.role_pools().expect("role pools derive from variants");
         assert_eq!(pools.wall.len(), 2, "pieces contribute no plates");
     }
 
@@ -2013,7 +2017,7 @@ textures = 3
         let roster = load_panel_fixture(FX_PANEL_KIT, &fx_variant_grid(&variants))
             .expect("a skipped non-filler is not a link error");
         let (_, kit) = roster.catalog.kit("fx_panels").unwrap();
-        let pools = kit.role_pools.as_ref().expect("pools derive");
+        let pools = kit.role_pools().expect("pools derive");
         assert_eq!(pools.wall.len(), 1, "the mis-baked wide wall is not pooled");
     }
 
@@ -2061,8 +2065,7 @@ textures = 3
                 let pools = roster
                     .catalog
                     .kit_def(kits[0])
-                    .role_pools
-                    .as_ref()
+                    .role_pools()
                     .expect("the spec's kit ids resolve to derived role pools");
                 assert_eq!(
                     pools
