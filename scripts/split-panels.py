@@ -32,6 +32,7 @@ import math
 import os
 import re
 import sys
+import tomllib
 
 import bpy
 import mathutils
@@ -97,6 +98,29 @@ def is_square(obj):
     return face is not None and (face[0] - face[1]) <= SQUARE_TOL * face[0]
 
 
+def _stem(obj):
+    # 'SF PP01_A_001' -> sf_pp01_a_001 (stable, name-derived) — the one
+    # identity the catalog, the census and the authored flips all key on.
+    return re.sub(r"[^a-z0-9]+", "_", obj.name.lower()).strip("_")
+
+
+def _kit_policy():
+    # (wall_coverage, authored per-piece detail flips) from the kit's
+    # manifest — the stems whose artist front is NOT their relief-heavy
+    # side, the one facing fact no measurement can recover.
+    repo = os.path.abspath(os.path.join(out_dir, "..", "..", ".."))
+    with open(os.path.join(repo, "catalog", "kits.toml"), "rb") as f:
+        kits = tomllib.load(f)["kits"]
+    rel = os.path.relpath(out_dir, repo)
+    for kit in kits.values():
+        if kit.get("install_dir") == rel:
+            return kit.get("wall_coverage"), set(kit.get("detail_flip", []))
+    return None, set()
+
+
+bar, FLIP_STEMS = _kit_policy()
+
+
 # ── Pose-normalize stage: thin axis up, detailed side up ───────────────
 # Blender is Z-up and the glTF exporter maps Blender Z to glTF Y, so the
 # native pose here is "thin along Blender Z"; the export then lands thin
@@ -114,11 +138,35 @@ def _mesh_dims(obj):
     lo, hi = _mesh_bounds(obj)
     return [hi[i] - lo[i] for i in range(3)]
 
-def _winding_sum_z(obj):
-    total = 0.0
+def _relief_split_z(obj):
+    # (positive, negative) relief mass along Z: geometry weighed by its
+    # distance BEYOND the base slab — the peak flat-area depth bin. The
+    # heavier side is the greeble. EXACTLY the probe's relief_split
+    # (asset_catalog/probe.rs); the two ends of the pipeline compute the
+    # same number on the same meshes and cannot disagree by construction
+    # (the winding sum this replaces read modeling conventions instead —
+    # the bake 5/6/8 oscillation saga).
+    BINS = 32
+    lo_z = min(v.co[2] for v in obj.data.vertices)
+    hi_z = max(v.co[2] for v in obj.data.vertices)
+    depth = hi_z - lo_z
+    if depth <= 0.0:
+        return 0.0, 0.0
+    flat = [0.0] * BINS
+    weighed = []
     for poly in obj.data.polygons:
-        total += poly.area * poly.normal[2]
-    return total
+        if poly.area <= 0.0:
+            continue
+        c = poly.center[2]
+        b = min(int((c - lo_z) / depth * BINS), BINS - 1)
+        flat[b] += poly.area * abs(poly.normal[2])
+        weighed.append((poly.area, c))
+    peak = max(range(BINS), key=lambda b: flat[b])
+    bin_lo = lo_z + depth * peak / BINS
+    bin_hi = lo_z + depth * (peak + 1) / BINS
+    pos = sum(a * max(0.0, c - bin_hi) for a, c in weighed)
+    neg = sum(a * max(0.0, bin_lo - c) for a, c in weighed)
+    return pos, neg
 
 def pose_normalize(obj):
     dims = _mesh_dims(obj)
@@ -131,12 +179,12 @@ def pose_normalize(obj):
         obj.data.transform(mathutils.Matrix.Rotation(math.radians(90.0), 4, "X"))
     if thin != 2:
         print(f"panel: {obj.name!r} pose-normalized (was thin along {'XYZ'[thin]})")
-    # Detailed side up — where "up" is defined by the PROBE's winding
-    # measure, the one authority (bake 5 proved the two conventions run
-    # exactly inverted: every role measured with its detail flipped).
-    # Blender's winding sum must come out NEGATIVE here for the exported
-    # detail to measure PosY in glTF.
-    if _winding_sum_z(obj) > 0.0:
+    # Artist front up: the relief-heavy side (the greeble), unless the
+    # kit AUTHORS this piece as detailed on its relief-light side
+    # (kits.toml detail_flip). Ties break positive, deterministically,
+    # matching the probe.
+    pos, neg = _relief_split_z(obj)
+    if ((pos >= neg)) == (_stem(obj) in FLIP_STEMS):
         obj.data.transform(mathutils.Matrix.Rotation(math.pi, 4, "X"))
         print(f"panel: {obj.name!r} flipped front-side up")
     # Long axis conventionally on X (width-X): the v2 assembler's course
@@ -177,9 +225,7 @@ for obj in sorted(meshes, key=lambda o: o.name):
         bpy.context.view_layer.objects.active = obj
         bpy.ops.object.modifier_apply(modifier=mod.name)
 
-    # 'SF PP01_A_001' -> sf_pp01_a_001.glb (stable, name-derived).
-    stem = re.sub(r"[^a-z0-9]+", "_", obj.name.lower()).strip("_")
-    out_path = os.path.join(out_dir, f"{stem}.glb")
+    out_path = os.path.join(out_dir, f"{_stem(obj)}.glb")
 
     bpy.ops.object.select_all(action="DESELECT")
     obj.select_set(True)
@@ -202,61 +248,11 @@ print(f"panels: {len(meshes)} exported to {out_dir}")
 # widens the solid/truss gap) — the Rust probe re-measures every baked
 # file and the linker enforces the real bar, so a Python misjudgment
 # fails the load, loudly.
-import tomllib
-
-def _kit_wall_coverage():
-    repo = os.path.abspath(os.path.join(out_dir, "..", "..", ".."))
-    with open(os.path.join(repo, "catalog", "kits.toml"), "rb") as f:
-        kits = tomllib.load(f)["kits"]
-    rel = os.path.relpath(out_dir, repo)
-    for kit in kits.values():
-        if kit.get("install_dir") == rel:
-            return kit.get("wall_coverage")
-    return None
-
 def _face_dims(obj):
     # Mesh-data bounds, never obj.dimensions: data.transform edits do
     # not refresh the evaluated bbox without a depsgraph pass.
     dims = sorted(_mesh_dims(obj), reverse=True)
     return dims[0], dims[1]
-
-def _standing_flips(prior_manifest_path):
-    # PERSISTENT per-source front-flip state, converged by feedback:
-    # last bake's flips (its manifest's own record) XOR the probe's
-    # verdict on that bake (census floor detail neg_y = still wrong,
-    # toggle). Memoryless correction OSCILLATES with period two — a
-    # corrected bake reads a clean census and un-flips itself
-    # (bake 8, 2026-07-19).
-    prev_flips = {}
-    try:
-        with open(prior_manifest_path, "rb") as f:
-            prev_flips = {
-                s: bool(v) for s, v in tomllib.load(f).get("flips", {}).items()
-            }
-    except FileNotFoundError:
-        pass
-    repo = os.path.abspath(os.path.join(out_dir, "..", "..", ".."))
-    rel = os.path.relpath(out_dir, repo)
-    wrong = set()
-    try:
-        with open(os.path.join(repo, "catalog", "kits.generated.toml"), "rb") as f:
-            kits = tomllib.load(f)["kits"]
-        with open(os.path.join(repo, "catalog", "kits.toml"), "rb") as f:
-            manifest_kits = tomllib.load(f)["kits"]
-        key = next(
-            (k for k, v in manifest_kits.items() if v.get("install_dir") == rel), None
-        )
-        if key is not None and key in kits:
-            for stem, v in kits[key].get("variants", {}).items():
-                if v.get("role") == "floor" and v.get("detail") == "neg_y":
-                    wrong.update(v.get("sources", []))
-    except FileNotFoundError:
-        pass
-    return {
-        s
-        for s in set(prev_flips) | wrong
-        if prev_flips.get(s, False) != (s in wrong)
-    }
 
 def _census_solids():
     # {stem: (width, height)} for this kit's SOLID pieces, from the
@@ -300,7 +296,14 @@ def _stack_pieces(obj_a, obj_b, scale_w, scale_h):
         (obj_a, total / 2.0 - ha / 2.0),
     ]:
         tmp = obj.data.copy()
-        tmp.transform(mathutils.Matrix.Translation((0.0, y_center, 0.0)))
+        # Align component BACKS (z_min), not centers: components of
+        # different depths (p 0.15 vs s 0.40) center-aligned leave the
+        # thinner face recessed — background bled through every seam
+        # (capture 2026-07-19). Backs to z=0 here; the whole stack
+        # recenters below so the assembler's thick/2 seat lands the
+        # common back on the face plane.
+        z_min = min(v.co[2] for v in tmp.vertices)
+        tmp.transform(mathutils.Matrix.Translation((0.0, y_center, -z_min)))
         start = len(bm.faces)
         bm.from_mesh(tmp)
         face_ranges.append((start, len(bm.faces), len(mats), tmp.materials[:]))
@@ -318,12 +321,15 @@ def _stack_pieces(obj_a, obj_b, scale_w, scale_h):
     mesh.transform(
         mathutils.Matrix.Diagonal((scale_w, scale_h, 1.0, 1.0))
     )
+    # Recenter depth: backs sit at 0 after alignment; the census thick
+    # is the max depth, and the seat math assumes a centered plate.
+    depth = max(v.co[2] for v in mesh.vertices)
+    mesh.transform(mathutils.Matrix.Translation((0.0, 0.0, -depth / 2.0)))
     combined = bpy.data.objects.new("stack", mesh)
     bpy.context.scene.collection.objects.link(combined)
     return combined
 
 
-bar = _kit_wall_coverage()
 if bar is None:
     print("panels: no wall_coverage authored — no role bake for this kit")
 else:
@@ -338,15 +344,16 @@ else:
     ]
     manifest = []
     baked = 0
-    misfaced = _standing_flips(os.path.join(out_dir, "manifest.toml"))
 
-    def bake_roles(obj, stem, sources, stretch, flip):
+    def bake_roles(obj, stem, sources, stretch):
+        # Pieces arrive ARTIST-FRONT UP from pose_normalize (relief
+        # measure + authored flips); the role rotation is all that's
+        # left to apply.
         global baked
         for role, angle in ROLE_ROTATIONS:
             # Rotate the MESH, export, rotate back — same no-ops-context
             # rule as pose_normalize; the inverse restores exactly.
-            corrected = angle + (math.pi if flip else 0.0)
-            rot = mathutils.Matrix.Rotation(corrected, 4, "X")
+            rot = mathutils.Matrix.Rotation(angle, 4, "X")
             obj.data.transform(rot)
             out_path = os.path.join(out_dir, f"{stem}_{role}.glb")
             bpy.ops.object.select_all(action="DESELECT")
@@ -366,7 +373,7 @@ else:
 
     by_stem = {}
     for obj in sorted(meshes, key=lambda o: o.name):
-        stem = re.sub(r"[^a-z0-9]+", "_", obj.name.lower()).strip("_")
+        stem = _stem(obj)
         by_stem[stem] = obj
         w, h = _face_dims(obj)
         # Bake every ON-MODULE piece (shorter face extent on the pitch):
@@ -377,9 +384,7 @@ else:
         if abs(h - pitch) > 0.05:
             print(f"panel: {obj.name!r} not on module ({h:.3f} vs pitch {pitch:.3f}) — no bake")
             continue
-        if stem in misfaced:
-            print(f"panel: {obj.name!r} census-corrected front flip")
-        bake_roles(obj, stem, [stem], 0.0, stem in misfaced)
+        bake_roles(obj, stem, [stem], 0.0)
     # ── Preassembly stage (census-driven combinatorics, Mark's metric-
     # completion design): same-width SOLID pieces whose heights STACK to
     # the module become one baked plate — e.g. vol03's q (5.6×1.16) on
@@ -406,14 +411,19 @@ else:
         stretch_h = abs(pitch / stacked_h - 1.0)
         if stretch_w > STRETCH_TOL or stretch_h > STRETCH_TOL:
             continue
+        if (s1 in FLIP_STEMS) != (s2 in FLIP_STEMS):
+            # A stack mixing an authored-flip piece with a plain one has
+            # no single artist front — the probe refuses to census it,
+            # so the Transform refuses to build it.
+            print(f"panel: not stacking {s1!r}+{s2!r} — mixed authored detail_flip")
+            continue
         stem = f"{s1}_{s2}_stack"
         combined = _stack_pieces(by_stem[s1], by_stem[s2], target_w / w1, pitch / stacked_h)
-        flip = s1 in misfaced or s2 in misfaced
         print(
             f"panel: stacked {s1!r}+{s2!r} -> {stem} "
             f"({target_w:.1f}x{pitch:.1f}, stretch {max(stretch_w, stretch_h):.3f})"
         )
-        bake_roles(combined, stem, [s1, s2], max(stretch_w, stretch_h), flip)
+        bake_roles(combined, stem, [s1, s2], max(stretch_w, stretch_h))
         mesh = combined.data
         bpy.data.objects.remove(combined)
         bpy.data.meshes.remove(mesh)
@@ -422,12 +432,7 @@ else:
         f.write(
             "# GENERATED by scripts/split-panels.py (the Transform) — do not edit.\n"
             "# Declares each baked role variant; the probe measures the same\n"
-            "# files and the linker cross-checks declaration against measurement.\n"
-            "# [flips] is the Transform's own memory across bakes.\n\n"
+            "# files and the linker cross-checks declaration against measurement.\n\n"
             + "\n".join(manifest)
         )
-        if misfaced:
-            f.write("\n[flips]\n")
-            for s in sorted(misfaced):
-                f.write(f"{s} = true\n")
     print(f"panels: {baked} role variants baked (bar {bar})")

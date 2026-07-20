@@ -275,17 +275,25 @@ fn face_coverage(tris: &[[[f32; 2]; 3]], lo: [f32; 2], hi: [f32; 2]) -> f32 {
 /// through the node transforms, the plate face is the two largest AABB
 /// extents, and coverage rasterizes the triangles projected onto it.
 /// One measured mesh: everything the census records that comes from the
-/// triangles themselves. `detail` is the direction the area-weighted
-/// winding normal points along the thin axis — the side the authored
-/// detail faces.
+/// file itself. `detail` is the relief-heavy side along the thin axis —
+/// the artist's greeble; `relief` is that verdict's confidence (the
+/// mass asymmetry, 0 = symmetric/unmeasurable). The material triplet
+/// answers "did the PBR maps survive the pipeline" without opening
+/// Blender.
 struct Measured {
     face: [f32; 2],
     thick: f32,
     axis: super::schema::ThinAxis,
     detail: crate::room_template::ConnectorFacing,
+    relief: f32,
     coverage: f32,
     tris: u32,
     textures: u8,
+    metallic: f32,
+    roughness: f32,
+    mr_map: bool,
+    metallic_px: f32,
+    rough_px: f32,
 }
 
 fn piece_census(path: &Path) -> super::schema::GeneratedPieceRaw {
@@ -294,24 +302,124 @@ fn piece_census(path: &Path) -> super::schema::GeneratedPieceRaw {
         face: m.face,
         thick: m.thick,
         axis: m.axis,
+        relief: m.relief,
         coverage: m.coverage,
         tris: m.tris,
         textures: m.textures,
+        metallic: m.metallic,
+        roughness: m.roughness,
+        mr_map: m.mr_map,
+        metallic_px: m.metallic_px,
+        rough_px: m.rough_px,
+    }
+}
+
+/// (positive-side, negative-side) relief mass along `thin`: geometry
+/// weighed by its distance BEYOND the base slab — the peak flat-area
+/// depth bin. The heavier side is the greeble. Convention-free where
+/// the winding sum it replaced read modeling conventions (the bake
+/// 5/6/8 oscillation saga); scripts/split-panels.py computes the SAME
+/// split, so Transform and probe cannot disagree by construction.
+fn relief_split(tris: &[[[f32; 3]; 3]], thin: usize) -> (f32, f32) {
+    const BINS: usize = 32;
+    let mut lo = f32::INFINITY;
+    let mut hi = f32::NEG_INFINITY;
+    for t in tris {
+        for v in t {
+            lo = lo.min(v[thin]);
+            hi = hi.max(v[thin]);
+        }
+    }
+    let depth = hi - lo;
+    if !depth.is_finite() || depth <= f32::EPSILON {
+        return (0.0, 0.0);
+    }
+    let mut flat = [0.0f32; BINS];
+    let mut weighed: Vec<(f32, f32)> = Vec::with_capacity(tris.len());
+    for t in tris {
+        let e1 = [t[1][0] - t[0][0], t[1][1] - t[0][1], t[1][2] - t[0][2]];
+        let e2 = [t[2][0] - t[0][0], t[2][1] - t[0][1], t[2][2] - t[0][2]];
+        let cross = [
+            e1[1] * e2[2] - e1[2] * e2[1],
+            e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0],
+        ];
+        let norm = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+        let area = norm / 2.0;
+        if area <= 0.0 {
+            continue;
+        }
+        let c = (t[0][thin] + t[1][thin] + t[2][thin]) / 3.0;
+        // Only face-on area votes for the base slab: a greeble's side
+        // walls are relief, not a candidate base plane.
+        let bin = (((c - lo) / depth) * BINS as f32) as usize;
+        flat[bin.min(BINS - 1)] += area * (cross[thin].abs() / norm);
+        weighed.push((area, c));
+    }
+    let peak = (0..BINS).max_by(|&a, &b| flat[a].total_cmp(&flat[b])).unwrap();
+    let bin_lo = lo + depth * peak as f32 / BINS as f32;
+    let bin_hi = lo + depth * (peak + 1) as f32 / BINS as f32;
+    let mut pos = 0.0;
+    let mut neg = 0.0;
+    for (area, c) in weighed {
+        pos += area * (c - bin_hi).max(0.0);
+        neg += area * (bin_lo - c).max(0.0);
+    }
+    (pos, neg)
+}
+
+/// Mean of channel `offset` across pixels of `stride` bytes, as 0..1;
+/// 1.0 (the glTF neutral multiplier) when the channel does not exist.
+fn channel_mean(pixels: &[u8], stride: usize, offset: usize) -> f32 {
+    if offset >= stride || pixels.len() < stride {
+        return 1.0;
+    }
+    let mut sum = 0u64;
+    let mut n = 0u64;
+    for px in pixels.chunks_exact(stride) {
+        sum += px[offset] as u64;
+        n += 1;
+    }
+    if n == 0 {
+        return 1.0;
+    }
+    sum as f32 / (n as f32 * 255.0)
+}
+
+/// Whether a baked file's census record inverts for the kit's authored
+/// per-piece flips: every source overridden, or none — a mixed stack
+/// has no single artist front to record.
+fn override_inversion(sources: &[String], flips: &[String]) -> Result<bool, String> {
+    let overridden = sources.iter().filter(|s| flips.contains(s)).count();
+    match overridden {
+        0 => Ok(false),
+        n if n == sources.len() => Ok(true),
+        _ => Err(format!(
+            "sources {sources:?} mix authored detail_flip pieces with plain ones — \
+             no single artist front; author both or neither"
+        )),
     }
 }
 
 fn variant_census(
     path: &Path,
     declared: &super::schema::ManifestVariantRaw,
+    flips: &[String],
 ) -> super::schema::GeneratedVariantRaw {
     let m = measure(path);
+    // The census's `detail` MEANS the artist's front: the measured
+    // relief side, inverted for pieces the kit AUTHORS as detailed on
+    // their relief-light side.
+    let inverted = override_inversion(&declared.sources, flips)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     super::schema::GeneratedVariantRaw {
         sources: declared.sources.clone(),
         role: declared.role,
         face: m.face,
         thick: m.thick,
         axis: m.axis,
-        detail: m.detail,
+        detail: if inverted { m.detail.opposite() } else { m.detail },
+        relief: m.relief,
         coverage: m.coverage,
         stretch: declared.stretch,
         tris: m.tris,
@@ -320,7 +428,7 @@ fn variant_census(
 }
 
 fn measure(path: &Path) -> Measured {
-    let (doc, buffers, _images) = gltf::import(path)
+    let (doc, buffers, images) = gltf::import(path)
         .unwrap_or_else(|e| panic!("{}: not an importable glTF ({e})", path.display()));
 
     fn mul(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
@@ -407,18 +515,13 @@ fn measure(path: &Path) -> Measured {
     };
     let (u, v) = if ext[u] >= ext[v] { (u, v) } else { (v, u) };
 
-    // The detail direction: the area-weighted winding normal's sign
-    // along the thin axis — the side the authored faces point out of.
-    let mut normal_sum = [0.0f32; 3];
-    for t in &tris {
-        let e1 = [t[1][0] - t[0][0], t[1][1] - t[0][1], t[1][2] - t[0][2]];
-        let e2 = [t[2][0] - t[0][0], t[2][1] - t[0][1], t[2][2] - t[0][2]];
-        normal_sum[0] += e1[1] * e2[2] - e1[2] * e2[1];
-        normal_sum[1] += e1[2] * e2[0] - e1[0] * e2[2];
-        normal_sum[2] += e1[0] * e2[1] - e1[1] * e2[0];
-    }
+    // The detail direction: the relief-heavy side along the thin axis —
+    // where the artist's greeble is. Ties (a symmetric or featureless
+    // plate) break positive, deterministically, on both sides of the
+    // pipeline.
+    let (relief_pos, relief_neg) = relief_split(&tris, thin);
     use crate::room_template::ConnectorFacing;
-    let positive = normal_sum[thin] >= 0.0;
+    let positive = relief_pos >= relief_neg;
     let detail = match (thin, positive) {
         (0, true) => ConnectorFacing::PosX,
         (0, false) => ConnectorFacing::NegX,
@@ -428,10 +531,51 @@ fn measure(path: &Path) -> Measured {
         _ => ConnectorFacing::NegZ,
     };
 
+    // Material facts, straight from the file. Effective shading is
+    // FACTOR × MAP CHANNEL (glTF: roughness rides green, metallic rides
+    // blue), so the census records both — factors alone lie in both
+    // directions (a matte factor under an absent map, a neutral 1.0
+    // factor over a white metal channel).
+    let mut metallic = 0.0f32;
+    let mut roughness = 1.0f32;
+    let mut mr_map = false;
+    let mut any_material = false;
+    let mut metallic_px = 1.0f32;
+    let mut rough_px = 1.0f32;
+    let mut maps = 0u32;
+    for mat in doc.materials() {
+        let pbr = mat.pbr_metallic_roughness();
+        any_material = true;
+        metallic = metallic.max(pbr.metallic_factor());
+        roughness = roughness.min(pbr.roughness_factor());
+        if let Some(tex) = pbr.metallic_roughness_texture() {
+            mr_map = true;
+            let img = &images[tex.texture().source().index()];
+            let stride = img.pixels.len() / (img.width as usize * img.height as usize).max(1);
+            let (g, b) = (
+                channel_mean(&img.pixels, stride, 1),
+                channel_mean(&img.pixels, stride, 2),
+            );
+            // Across materials keep the SHINIEST verdict — one chrome
+            // material on a matte piece still glares.
+            if maps == 0 || b > metallic_px {
+                metallic_px = b;
+            }
+            if maps == 0 || g < rough_px {
+                rough_px = g;
+            }
+            maps += 1;
+        }
+    }
+    if !any_material {
+        metallic = 1.0;
+    }
+
     let flat: Vec<[[f32; 2]; 3]> = tris
         .iter()
         .map(|t| t.map(|p| [p[u], p[v]]))
         .collect();
+    let relief_total = relief_pos + relief_neg;
     Measured {
         face: [ext[u], ext[v]],
         thick: ext[thin],
@@ -441,9 +585,19 @@ fn measure(path: &Path) -> Measured {
             _ => super::schema::ThinAxis::Z,
         },
         detail,
+        relief: if relief_total > 0.0 {
+            (relief_pos - relief_neg).abs() / relief_total
+        } else {
+            0.0
+        },
         coverage: face_coverage(&flat, [lo[u], lo[v]], [hi[u], hi[v]]),
         tris: tris.len() as u32,
         textures: doc.images().len().min(u8::MAX as usize) as u8,
+        metallic,
+        roughness,
+        mr_map,
+        metallic_px,
+        rough_px,
     }
 }
 
@@ -482,7 +636,7 @@ fn derive_kit_grid(
             let stem = f.file_stem().unwrap().to_string_lossy().into_owned();
             match declared.get(&stem) {
                 Some(d) => {
-                    variants.insert(stem, variant_census(f, d));
+                    variants.insert(stem, variant_census(f, d, &kit.detail_flip));
                 }
                 None => {
                     pieces.insert(stem, piece_census(f));
@@ -775,6 +929,92 @@ mod tests {
              scripts/split-panels.py, then `make assets`):\n{}",
             misposed.join("\n")
         );
+    }
+
+    /// The relief measure: find the base slab (peak flat-area depth
+    /// bin), then weigh geometry BEYOND it on each side. The heavier
+    /// side is the artist's greeble — the measure reads the actual
+    /// semantic, where the old winding sum read a modeling convention
+    /// (the bake 5/6/8 oscillation saga).
+    #[test]
+    fn relief_masses_point_at_the_greebled_side() {
+        // An s×s quad lying flat at height z, as two triangles.
+        fn quad(z: f32, s: f32) -> [[[f32; 3]; 3]; 2] {
+            [
+                [[0.0, 0.0, z], [s, 0.0, z], [s, s, z]],
+                [[0.0, 0.0, z], [s, s, z], [0.0, s, z]],
+            ]
+        }
+        let mut tris = quad(0.0, 3.0).to_vec();
+        tris.extend(quad(0.5, 1.0));
+        let (pos, neg) = super::relief_split(&tris, 2);
+        assert!(
+            pos > 0.0 && neg == 0.0,
+            "greeble above the slab reads positive: pos {pos} neg {neg}"
+        );
+        let mut tris = quad(0.0, 3.0).to_vec();
+        tris.extend(quad(-0.5, 1.0));
+        let (pos, neg) = super::relief_split(&tris, 2);
+        assert!(
+            neg > 0.0 && pos == 0.0,
+            "greeble below the slab reads negative: pos {pos} neg {neg}"
+        );
+        let tris = quad(0.0, 3.0).to_vec();
+        let (pos, neg) = super::relief_split(&tris, 2);
+        assert!(
+            pos == 0.0 && neg == 0.0,
+            "a bare slab has no relief: pos {pos} neg {neg}"
+        );
+    }
+
+    /// Mean of one channel across interleaved pixel bytes — how the
+    /// census reads what a metallic-roughness map actually carries
+    /// (glTF: green = roughness, blue = metallic), where factors alone
+    /// can lie in both directions.
+    #[test]
+    fn channel_mean_reads_one_interleaved_channel() {
+        // Two RGBA pixels: blue channel 0 and 255 — mean 0.5.
+        let px = [10u8, 20, 0, 255, 30, 40, 255, 255];
+        let blue = super::channel_mean(&px, 4, 2);
+        assert!((blue - 0.5).abs() < 1e-3, "blue mean: {blue}");
+        // A channel past the stride is absent: neutral 1.0.
+        assert_eq!(super::channel_mean(&px, 2, 2), 1.0, "absent channel is neutral");
+    }
+
+    /// The authored per-piece flip is only measurable when a baked file's
+    /// sources agree on it: all overridden inverts the record, none keeps
+    /// it, and a MIXED stack has no single artist front — the probe must
+    /// refuse to guess.
+    #[test]
+    fn authored_flips_must_cover_whole_variants() {
+        let sources = ["a".to_string(), "b".to_string()];
+        let both = vec!["a".to_string(), "b".to_string()];
+        let none: Vec<String> = Vec::new();
+        let one = vec!["a".to_string()];
+        assert_eq!(super::override_inversion(&sources, &both), Ok(true));
+        assert_eq!(super::override_inversion(&sources, &none), Ok(false));
+        assert!(
+            super::override_inversion(&sources, &one).is_err(),
+            "a stack mixing overridden and plain sources is unmeasurable"
+        );
+    }
+
+    /// kits.toml authors facing per PIECE — a stem list, the escape
+    /// hatch for pieces whose relief measurement is structurally
+    /// ambiguous. (The kit-wide bool it replaces asserted one bit for
+    /// every piece and silently inverted the exceptions — the marble
+    /// backs of 2026-07-19.)
+    #[test]
+    fn a_kit_authors_per_piece_detail_flips() {
+        let kits: super::KitsFile = toml::from_str(
+            "[kits.k]\n\
+             paradigm = \"panel\"\n\
+             install_dir = \"godot/addons/walls\"\n\
+             wall_coverage = 0.9\n\
+             detail_flip = [\"sf_pp01_d_003\"]\n",
+        )
+        .expect("a stem list parses");
+        assert_eq!(kits.kits["k"].detail_flip, ["sf_pp01_d_003".to_string()]);
     }
 
     /// Every Fixture slot resolves to an installed file — the closed-set

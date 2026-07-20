@@ -31,6 +31,13 @@ pub struct KitRaw {
     /// the census in kits.generated.toml; only this bar is authored.
     /// Required iff `paradigm = "panel"`.
     pub wall_coverage: Option<f32>,
+    /// PANEL kits only: PIECES whose artist front is NOT their
+    /// relief-heavy side — the authored escape hatch for the one case
+    /// the relief measure is structurally blind to. Per piece, never
+    /// per kit: a kit-wide bit silently inverts the exceptions (the
+    /// marble backs of 2026-07-19).
+    #[serde(default)]
+    pub detail_flip: Vec<String>,
     /// FIXED kits only: world units per authored model meter — the pitch of
     /// the environment's 1-meter zone grid. The one deliberate exception to
     /// "the probe derives all grids": a fixed scene has no recipe to derive
@@ -127,8 +134,37 @@ pub struct GeneratedPieceRaw {
     /// Fraction of the plate face covered by geometry: 1.0 = a solid
     /// plate, a truss frame reads well below it.
     pub coverage: f32,
+    /// Confidence of the detail verdict: the relief-mass asymmetry
+    /// about the base slab, 0 = symmetric (facing unmeasurable — author
+    /// it in kits.toml `detail_flip` if it matters) to 1 = one-sided.
+    /// Absent in pre-relief censuses.
+    #[serde(default)]
+    pub relief: f32,
     pub tris: u32,
     pub textures: u8,
+    /// Strongest metallic factor across the file's materials. With no
+    /// metallic-roughness map, factors alone drive shading — the shiny/
+    /// matte question is answered here, not in Blender.
+    #[serde(default)]
+    pub metallic: f32,
+    /// Smoothest roughness factor across the file's materials.
+    #[serde(default = "one")]
+    pub roughness: f32,
+    /// Whether any material carries a metallic-roughness texture.
+    #[serde(default)]
+    pub mr_map: bool,
+    /// Mean of the metallic map's blue channel (the shiniest material's;
+    /// effective metal = factor × this). 1.0 with no map.
+    #[serde(default = "one")]
+    pub metallic_px: f32,
+    /// Mean of the roughness map's green channel (the smoothest
+    /// material's; effective roughness = factor × this). 1.0 with no map.
+    #[serde(default = "one")]
+    pub rough_px: f32,
+}
+
+fn one() -> f32 {
+    1.0
 }
 
 impl GeneratedPieceRaw {
@@ -190,6 +226,10 @@ pub struct GeneratedVariantRaw {
     /// Measured direction the authored detail faces — floors bake to
     /// `pos_y`, ceilings to `neg_y`, walls to `pos_z` (yaw at placement).
     pub detail: crate::room_template::ConnectorFacing,
+    /// Confidence of the detail verdict (relief-mass asymmetry; see
+    /// [`GeneratedPieceRaw::relief`]). Absent in pre-relief censuses.
+    #[serde(default)]
+    pub relief: f32,
     /// Fraction of the face covered by geometry (1.0 = solid plate).
     pub coverage: f32,
     /// Stretch the conversion applied to reach the module, as a fraction

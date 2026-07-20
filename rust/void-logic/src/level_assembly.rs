@@ -2178,7 +2178,7 @@ mod tests {
     /// how often each scene places across a generated level —
     /// repetition, pool balance, and per-kit mix at a glance.
     ///
-    ///     LEVEL=7 SEED=1 make test-rust FILTER=panel_usage_census -- --ignored
+    ///     LEVEL=7 SEED=1 make test-rust FILTER=panel_usage_census TESTFLAGS=--ignored
     #[test]
     #[ignore = "debug instrumentation — run by hand with --nocapture"]
     fn panel_usage_census() {
@@ -2188,19 +2188,92 @@ mod tests {
         let config = config_for(run_seed, crate::generator::rooms_for_level(level), level);
         let graph = generate(&config).expect("generates");
         let rooms = spawn_list_full(&graph, &spec, Seed::new(run_seed), cat());
-        let mut counts: std::collections::BTreeMap<&str, usize> =
-            std::collections::BTreeMap::new();
+        let mut counts: std::collections::HashMap<crate::asset_catalog::SceneId, usize> =
+            std::collections::HashMap::new();
         for room in &rooms {
             for m in &room.structure {
-                *counts.entry(spath(m.scene)).or_default() += 1;
+                *counts.entry(m.scene).or_default() += 1;
             }
         }
         let total: usize = counts.values().sum();
         println!("census: level {level} seed {run_seed} — {total} placements, {} distinct scenes", counts.len());
-        let mut by_count: Vec<_> = counts.into_iter().collect();
-        by_count.sort_by(|a, b| b.1.cmp(&a.1));
-        for (scene, n) in by_count {
-            println!("census: {n:5}  {scene}");
+        // The variety statistic is PER PIECE within each (kit, role)
+        // pool — the group the coverer actually picks from. Per-kit room
+        // counts only witness the pick-a-kit stage; equality of
+        // distribution lives a level down. Attribution is post-hoc from
+        // production output via the catalog's pools (fixture scenes match
+        // no pool and fall through).
+        let grammar = crate::roster::roster();
+        let mut scene_pool: std::collections::HashMap<crate::asset_catalog::SceneId, (&str, &str)> =
+            std::collections::HashMap::new();
+        let mut scene_face: std::collections::HashMap<crate::asset_catalog::SceneId, [f32; 2]> =
+            std::collections::HashMap::new();
+        let mut pool_sizes: std::collections::BTreeMap<(&str, &str), usize> =
+            std::collections::BTreeMap::new();
+        for &id in &grammar.panel_kits_for_level(level) {
+            let kit = grammar.catalog.kit_def(id);
+            if let Some(p) = kit.role_pools.as_ref() {
+                for (role, plates) in [
+                    ("floor", &p.floor),
+                    ("ceiling", &p.ceiling),
+                    ("wall", &p.wall),
+                    ("decoration", &p.decoration),
+                    ("addon", &p.addon),
+                ] {
+                    pool_sizes.insert((kit.key.as_str(), role), plates.len());
+                    for pl in plates {
+                        scene_pool.insert(pl.scene, (kit.key.as_str(), role));
+                        scene_face.insert(pl.scene, pl.face);
+                    }
+                }
+            }
+            if let Some(p) = kit.panel_pool.as_ref() {
+                pool_sizes.insert((kit.key.as_str(), "v1"), p.plates.len());
+                for pl in &p.plates {
+                    scene_pool.insert(pl.scene, (kit.key.as_str(), "v1"));
+                }
+            }
+        }
+        let mut rooms_by_kit: std::collections::BTreeMap<&str, usize> =
+            std::collections::BTreeMap::new();
+        for room in &rooms {
+            if let Some(&(kit, _)) = room
+                .structure
+                .iter()
+                .find_map(|m| scene_pool.get(&m.scene))
+            {
+                *rooms_by_kit.entry(kit).or_default() += 1;
+            }
+        }
+        println!("census: {} rooms by kit:", rooms.len());
+        for (kit, n) in &rooms_by_kit {
+            println!("census: {n:5}  {kit}");
+        }
+        let mut by_pool: std::collections::BTreeMap<(&str, &str), Vec<(crate::asset_catalog::SceneId, usize)>> =
+            std::collections::BTreeMap::new();
+        for (&scene, &n) in &counts {
+            let Some(&pool) = scene_pool.get(&scene) else { continue };
+            by_pool.entry(pool).or_default().push((scene, n));
+        }
+        for ((kit, role), mut members) in by_pool {
+            let placed: usize = members.iter().map(|(_, n)| n).sum();
+            let pool_n = pool_sizes[&(kit, role)];
+            members.sort_by(|a, b| b.1.cmp(&a.1));
+            println!(
+                "census: {kit}/{role} — {placed} placements over {}/{pool_n} pool members",
+                members.len()
+            );
+            for (scene, n) in members {
+                let dims = scene_face
+                    .get(&scene)
+                    .map(|f| format!("{:.1}x{:.1}", f[0], f[1]))
+                    .unwrap_or_default();
+                println!(
+                    "census: {n:5} ({:4.1}%) {dims:>8}  {}",
+                    100.0 * n as f32 / placed as f32,
+                    spath(scene)
+                );
+            }
         }
     }
 

@@ -221,7 +221,7 @@ test-assets:
 # has its own door, `make check-visual`.
 test-rust:
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
-		cd $(RUST_DIR) && $(CARGO) test --lib $(FILTER) -- --nocapture
+		cd $(RUST_DIR) && $(CARGO) test --lib $(FILTER) -- --nocapture $(TESTFLAGS)
 
 # Regenerate rosters/VOCABULARY.md from the closed-vocabulary enums.
 # `make build` runs this; the standalone target is the fast manual path.
