@@ -405,7 +405,7 @@ fi
 # fields). apartment.py parses the FBX's own connection table to rewire the
 # maps from the textures zip, keeps full geometry (a single environment
 # instance — no decimation), caps textures, and writes one .glb. The probe
-# catalogs addons/environments/ into rosters/environments.generated.toml.
+# catalogs addons/environments/ into catalog/environments.generated.toml.
 
 APARTMENT_SRC="$ASSETS_DIR/apartment"
 APARTMENT_FBX="$(find "$APARTMENT_SRC" -maxdepth 1 -iname "*apartment*.fbx" 2>/dev/null | head -1)"
@@ -466,28 +466,53 @@ else
     echo "  apartment FBX/textures not found, skipping planet-3 environment."
 fi
 
-# ========== Planet-2 wall panels (CGTrader parts kit -> per-panel glB) ==========
-# B11 cubic-cell panel worlds: the "Sci-Fi Parts Kit Vol 01" GLB carries 32
-# flat panels as sibling objects; split-panels.py decimates each to game
-# weight and exports one stable-named .glb per panel. Panels serve ANY cell
-# face — there are no floors or ceilings in 6DOF (see the B11 plan).
+# ========== Panel-world kits (CGTrader parts kits -> per-piece glB) ==========
+# B11 cubic-cell panel worlds: each "Sci-Fi Parts Kit" pack carries its
+# pieces as sibling objects (Vol 01: one GLB with embedded textures; Vol 03:
+# a .blend with its Principled graphs wired to the loose PBR maps beside
+# it). split-panels.py sniffs the format, snaps near-pitch squares to the
+# kit's largest square, decimates each piece to game weight, and exports one
+# stable-named .glb per piece. Pieces serve ANY cell face — there are no
+# floors or ceilings in 6DOF (see the B11 plan). A new "Vol N" pack is one
+# more split_panel_kit line (+ its kits.toml entry).
 WALLS_SRC="$ASSETS_DIR/more_walls"
-VOL01=$(find "$WALLS_SRC" -maxdepth 1 -name "*Vol*01*.glb" 2>/dev/null | head -1)
-if [ -n "$VOL01" ] && head -c 12 "$VOL01" | grep -q "^version http"; then
-    echo "  ERROR: $VOL01 is a git-lfs pointer stub."
-    echo "  Run 'make deps' (installs git-lfs) then 'git lfs pull'."
-    exit 1
-fi
-if [ -n "$VOL01" ]; then
-    echo "  Splitting planet-2 wall panels (target 800 tris each)..."
-    mkdir -p "$GODOT_DIR/addons/walls"
+
+# split_panel_kit <label> <source> <install_dir>
+split_panel_kit() {
+    local label="$1" src="$2" dest="$3"
+    if [ -z "$src" ] || [ ! -f "$src" ]; then
+        echo "  $label source not found, skipping."
+        return
+    fi
+    if head -c 12 "$src" | grep -q "^version http"; then
+        echo "  ERROR: $src is a git-lfs pointer stub."
+        echo "  Run 'make deps' (installs git-lfs) then 'git lfs pull'."
+        exit 1
+    fi
+    echo "  Splitting $label panels (target 800 tris each)..."
+    mkdir -p "$dest"
+    # Fresh slate for the GLBS: a stale piece or variant from a prior
+    # run would be censused as if current. The manifest SURVIVES — it
+    # carries the Transform's persistent flip state into the next bake
+    # (the split overwrites it at the end of its run).
+    rm -f "$dest"/*.glb
+    # Full split output to a log — the Transform's decisions (bakes,
+    # skips, stacks, flips) are run artifacts, not noise; swallowing
+    # them into /dev/null bred ad-hoc out-of-band Blender runs.
+    mkdir -p "$(dirname "$0")/../out"
     "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/split-panels.py" -- \
-        "$VOL01" "$GODOT_DIR/addons/walls" 800 >/dev/null 2>&1 || \
-        echo "  WARNING: panel split failed"
-    echo "  Wall panels installed: $(ls "$GODOT_DIR/addons/walls" | wc -l | tr -d ' ')"
-else
-    echo "  more_walls kit not found, skipping planet-2 panels."
-fi
+        "$src" "$dest" 800 > "$(dirname "$0")/../out/split-$label.log" 2>&1 || \
+        echo "  WARNING: $label panel split failed (see out/split-$label.log)"
+    echo "  $label pieces installed: $(ls "$dest" | wc -l | tr -d ' ')"
+}
+
+# -iname: provider archives mix "Vol+01" dirs with "vol 03" filenames.
+split_panel_kit "vol01" \
+    "$(find "$WALLS_SRC" -maxdepth 1 -iname "*vol*01*.glb" 2>/dev/null | head -1)" \
+    "$GODOT_DIR/addons/walls"
+split_panel_kit "vol03" \
+    "$(find "$WALLS_SRC" -maxdepth 2 -iname "*vol*03*.blend" 2>/dev/null | head -1)" \
+    "$GODOT_DIR/addons/walls_vol3"
 
 # ========== Jump gate (CGTrader OBJ -> decimated glB) ==========
 # The end-of-level exit portal model. Ships as a ~78k-tri OBJ + .mtl + loose PBR

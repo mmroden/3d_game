@@ -49,6 +49,43 @@ mod wall_sets;
 mod props;
 mod lights;
 
+pub mod catalog;
+pub mod schema;
+
+pub use catalog::{AssetCatalog, Fixture, KitDef, KitId, KitKind, SceneId};
+
+/// The catalog's embedded sources (catalog/ on disk).
+pub(crate) const KITS_TOML: &str = include_str!("../../../../catalog/kits.toml");
+pub(crate) const KITS_GENERATED_TOML: &str =
+    include_str!("../../../../catalog/kits.generated.toml");
+pub(crate) const MODELS_TOML: &str = include_str!("../../../../catalog/models.generated.toml");
+pub(crate) const ENVIRONMENTS_GENERATED_TOML: &str =
+    include_str!("../../../../catalog/environments.generated.toml");
+
+/// The one shared production catalog (parsed on first use; a bad catalog
+/// panics with the full violation list, exactly like the roster).
+pub fn catalog() -> &'static std::sync::Arc<AssetCatalog> {
+    static CATALOG: std::sync::OnceLock<std::sync::Arc<AssetCatalog>> =
+        std::sync::OnceLock::new();
+    CATALOG.get_or_init(|| {
+        std::sync::Arc::new(
+            AssetCatalog::load(
+                KITS_TOML,
+                KITS_GENERATED_TOML,
+                MODELS_TOML,
+                ENVIRONMENTS_GENERATED_TOML,
+            )
+            .unwrap_or_else(|e| panic!("catalog/ must parse and link:\n{}", e.join("\n"))),
+        )
+    })
+}
+/// The asset probe (`make assets`'s accounting step): test-gated, writes
+/// the generated catalogs. `pub(crate)` so the roster's stale-census
+/// contract test can call [`probe::kit_grids`] until the linker split
+/// moves that test here.
+#[cfg(test)]
+pub(crate) mod probe;
+
 pub use wall_sets::*;
 pub use props::*;
 pub use lights::*;
@@ -78,8 +115,10 @@ pub fn all_scene_paths() -> Vec<&'static str> {
         }
     }
 
-    // Door
-    paths.push(DOOR);
+    // Fixtures (the closed set of code-named scenes)
+    for &(_, path) in catalog::FIXTURE_PATHS {
+        paths.push(path);
+    }
 
     // Props
     for p in WALL_ADJACENT_PROPS {
@@ -109,6 +148,38 @@ pub fn all_scene_paths() -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Amendment A, mint/resolve round-trip: an id the catalog minted
+    /// resolves to exactly the path it was minted from — for every
+    /// authored const scene in the arena.
+    #[test]
+    fn scene_ids_round_trip_through_the_catalog() {
+        let cat = catalog();
+        for path in all_scene_paths() {
+            let id = cat.id_of(path).expect("authored const scenes intern at load");
+            assert_eq!(cat.path(id), path);
+        }
+    }
+
+    /// Amendment A, foreign-id panic: a SceneId proves it was minted by
+    /// the catalog IN HAND, not merely that some catalog once minted it.
+    /// Tests hold production and fixture catalogs side by side; an
+    /// in-bounds id resolved against the wrong instance must die loudly,
+    /// never silently name the wrong scene. The twin here is the
+    /// strictest case — same sources, different mint.
+    #[test]
+    #[should_panic(expected = "foreign SceneId")]
+    fn resolving_a_foreign_scene_id_panics() {
+        let twin = AssetCatalog::load(
+            KITS_TOML,
+            KITS_GENERATED_TOML,
+            MODELS_TOML,
+            ENVIRONMENTS_GENERATED_TOML,
+        )
+        .expect("the embedded catalog links");
+        let foreign = twin.fixture(Fixture::DoorFrame);
+        catalog().path(foreign);
+    }
 
     /// Every scene path in the asset catalog must resolve to a real .gltf file
     /// on disk under the godot/ directory. This catches broken references at

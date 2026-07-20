@@ -13,13 +13,35 @@
 //! are the opposite: never hand-edited, re-rendered by `make build`.
 
 pub mod schema;
+
+/// The minimum census a PANEL kit links with (append after tile/story):
+/// a baked filler variant in each surface role — pools derive from
+/// variants alone, and a kit without pooled variants is a link error by
+/// design (v1 retired 2026-07-19). Inline table so header-renaming
+/// doctor tests carry it along.
 #[cfg(test)]
-mod probe;
+pub(crate) fn test_census_variants(tile: f32) -> String {
+    let v = |stem: &str, role: &str, axis: &str, detail: &str| {
+        format!(
+            "{stem} = {{ sources = [\"plate\"], role = \"{role}\", \
+             face = [{tile:.1}, {tile:.1}], thick = 0.2, axis = \"{axis}\", \
+             detail = \"{detail}\", coverage = 1.0, stretch = 0.0, \
+             tris = 100, textures = 3 }}"
+        )
+    };
+    format!(
+        "variants = {{ {}, {}, {} }}\n",
+        v("plate_floor", "floor", "y", "pos_y"),
+        v("plate_ceiling", "ceiling", "y", "neg_y"),
+        v("plate_wall", "wall", "z", "pos_z"),
+    )
+}
 pub mod template;
 pub mod vocabulary;
 
+use crate::asset_catalog::KitKind;
 use schema::{
-    BossRewardPolicy, CurveAnchor, CurveKind, EnemiesFile, EnvironmentFile, KitParadigm, KitsFile,
+    BossRewardPolicy, CurveAnchor, CurveKind, EnemiesFile, EnvironmentFile,
     PlanetFile,
     ScalingRaw,
 };
@@ -28,11 +50,6 @@ use crate::enemy_ai::Archetype;
 use crate::level_assembly::MinionTrigger;
 
 const ENEMIES_TOML: &str = include_str!("../../../../rosters/enemies.toml");
-const KITS_TOML: &str = include_str!("../../../../rosters/kits.toml");
-pub(crate) const MODELS_TOML: &str = include_str!("../../../../rosters/models.generated.toml");
-const KITS_GENERATED_TOML: &str = include_str!("../../../../rosters/kits.generated.toml");
-pub(crate) const ENVIRONMENTS_GENERATED_TOML: &str =
-    include_str!("../../../../rosters/environments.generated.toml");
 // PLANET_TOMLS / ENVIRONMENT_TOMLS: every rosters/planets/*.toml and
 // rosters/environments/*.toml, embedded by build.rs — a new file wires
 // itself in by existing.
@@ -43,9 +60,11 @@ include!(concat!(env!("OUT_DIR"), "/planet_tomls.rs"));
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SwarmId(pub usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct KitId(pub usize);
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CurveId(pub usize);
+
+// Kit identity/defs live in the CATALOG (Amendment A); re-exported so
+// planet defs and consumers keep one obvious path.
+pub use crate::asset_catalog::{KitDef, KitId};
 
 // ── The one enemy identity ───────────────────────────────────────────────
 
@@ -224,7 +243,10 @@ pub struct MinionDef {
 pub struct EnemyDef {
     pub key: String,
     pub name: String,
-    pub model: String,
+    /// The installed model scene, as the catalog minted it at link —
+    /// proof the authored model KEY resolved. The shell turns it back
+    /// into a path at its one documented crossing.
+    pub model: crate::asset_catalog::SceneId,
     pub size: f32,
     pub yaw_offset_deg: f32,
     /// Barrel tips in the model's aim frame (x right, y up, z toward the
@@ -325,20 +347,6 @@ impl CurveDef {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct KitDef {
-    pub key: String,
-    pub paradigm: KitParadigm,
-    pub tile: f32,
-    pub story: f32,
-    /// Repo-relative directory `make assets` populates for this kit.
-    pub install_dir: String,
-    /// FIXED kits: the environment this kit builds (index into
-    /// [`Roster::environments`]). The kit's tile/story ARE its declared
-    /// scale — a fixed scene's pitch is the design knob, not a probe
-    /// measurement.
-    pub environment: Option<usize>,
-}
 
 /// A coarse authored volume over a fixed environment's geometry — the
 /// LevelGraph node, spawn group, and culling unit of a fixed level.
@@ -403,10 +411,10 @@ pub struct EnvironmentDef {
     pub windows: Vec<WindowDef>,
     /// The world-environment ambient override while this level runs.
     pub ambient: Option<AmbientDef>,
-    /// The installed scene's res:// path (resolved from
-    /// environments.generated.toml — consumers never see keys). Interned:
-    /// `MeshPlacement` carries `'static` scene paths.
-    pub model: &'static str,
+    /// The installed scene, as the catalog minted it at link (resolved
+    /// from environments.generated.toml — consumers never see keys, and
+    /// placements carry the id unchanged).
+    pub model: crate::asset_catalog::SceneId,
     pub zones: Vec<ZoneDef>,
     /// Index of the `start = true` zone (linker-enforced: exactly one).
     pub start_zone: usize,
@@ -458,7 +466,14 @@ pub struct Roster {
     pub enemies: Vec<EnemyDef>,
     pub swarms: Vec<SwarmDef>,
     pub curves: Vec<(String, CurveDef)>,
-    pub kits: Vec<KitDef>,
+    /// The linked asset catalog this grammar resolved against — kits,
+    /// models, environment scenes. Shared (Arc): the production roster
+    /// holds the process catalog; fixtures hold their own.
+    pub catalog: std::sync::Arc<crate::asset_catalog::AssetCatalog>,
+    /// Fixed-kit environment KEY → index into `environments` (the
+    /// authored zone maps): the one cross-boundary join, resolved and
+    /// validated at link.
+    kit_environments: std::collections::BTreeMap<String, usize>,
     /// Sorted by planet number, contiguous from 1.
     pub planets: Vec<PlanetDef>,
     /// Fixed-level environments, in embedding order; fixed kits index in.
@@ -528,7 +543,7 @@ impl Roster {
     /// cell dimension anywhere else.
     pub fn pitch_for_level(&self, level: u32) -> crate::planet::Pitch {
         let def = self.planet_for_level(level.max(1));
-        let kit = &self.kits[def.kits[0].0];
+        let kit = self.catalog.kit_def(def.kits[0]);
         crate::planet::Pitch { tile: kit.tile, story: kit.story }
     }
 
@@ -536,7 +551,19 @@ impl Roster {
     /// megakit) — its declared kit's paradigm decides.
     pub fn panel_world(&self, level: u32) -> bool {
         let def = self.planet_for_level(level.max(1));
-        self.kits[def.kits[0].0].paradigm == schema::KitParadigm::Panel
+        matches!(self.catalog.kit_def(def.kits[0]).kind, KitKind::Panel(_))
+    }
+
+    /// The wall pools of a level's declared PANEL kits, in declaration
+    /// order (empty for layered/fixed planets). IDS, not pools — the
+    /// catalog owns the plates; consumers resolve per room at assembly.
+    pub fn panel_kits_for_level(&self, level: u32) -> Vec<crate::asset_catalog::KitId> {
+        let def = self.planet_for_level(level.max(1));
+        def.kits
+            .iter()
+            .filter(|&&id| matches!(self.catalog.kit_def(id).kind, KitKind::Panel(_)))
+            .copied()
+            .collect()
     }
 
     /// The planet NUMBER a level belongs to (counts past the declared
@@ -589,8 +616,10 @@ impl Roster {
     /// is fixed-paradigm (planet 3's apartment). `None` = generated level.
     pub fn environment_for_level(&self, level: u32) -> Option<&EnvironmentDef> {
         let def = self.planet_for_level(level.max(1));
-        let kit = &self.kits[def.kits[0].0];
-        kit.environment.map(|i| &self.environments[i])
+        let kit = self.catalog.kit_def(def.kits[0]);
+        kit.environment()
+            .and_then(|k| self.kit_environments.get(k))
+            .map(|&i| &self.environments[i])
     }
 }
 
@@ -602,11 +631,9 @@ impl Roster {
 pub fn load() -> Result<Roster, String> {
     load_from(
         ENEMIES_TOML,
-        KITS_TOML,
-        KITS_GENERATED_TOML,
-        MODELS_TOML,
         PLANET_TOMLS,
         EnvSources::shipped(),
+        crate::asset_catalog::catalog().clone(),
     )
 }
 
@@ -615,7 +642,6 @@ pub fn load() -> Result<Roster, String> {
 /// argument because they link as one unit — the fixed paradigm's inputs.
 pub(crate) struct EnvSources<'a> {
     pub authored: &'a [&'a str],
-    pub generated: &'a str,
     pub windows: &'a [&'a str],
 }
 
@@ -624,20 +650,15 @@ impl EnvSources<'static> {
     pub(crate) fn shipped() -> Self {
         Self {
             authored: ENVIRONMENT_TOMLS,
-            generated: ENVIRONMENTS_GENERATED_TOML,
             windows: WINDOW_TOMLS,
         }
     }
 
-    /// No authored environments (grid-paradigm grammars); the generated
-    /// catalog still loads — fixed kits validate against it.
+    /// No authored environments (grid-paradigm grammars); scene lookups
+    /// resolve against the catalog the caller supplies.
     #[cfg(test)]
     pub(crate) fn generated_only() -> Self {
-        Self {
-            authored: &[],
-            generated: ENVIRONMENTS_GENERATED_TOML,
-            windows: &[],
-        }
+        Self { authored: &[], windows: &[] }
     }
 }
 
@@ -670,17 +691,20 @@ pub fn override_grammar_from(
     planets: &[&str],
     environments: &[&str],
 ) -> Result<(), String> {
+    let catalog = std::sync::Arc::new(
+        crate::asset_catalog::AssetCatalog::load(
+            kits,
+            kit_grids,
+            crate::asset_catalog::MODELS_TOML,
+            crate::asset_catalog::ENVIRONMENTS_GENERATED_TOML,
+        )
+        .map_err(|e| e.join("\n"))?,
+    );
     let g = load_from(
         enemies,
-        kits,
-        kit_grids,
-        MODELS_TOML,
         planets,
-        EnvSources {
-            authored: environments,
-            generated: ENVIRONMENTS_GENERATED_TOML,
-            windows: WINDOW_TOMLS,
-        },
+        EnvSources { authored: environments, windows: WINDOW_TOMLS },
+        catalog,
     )?;
     *OVERRIDE.write().expect("grammar override lock") = Some(Box::leak(Box::new(g)));
     Ok(())
@@ -693,40 +717,17 @@ pub fn clear_grammar_override() {
 
 pub(crate) fn load_from(
     enemies: &str,
-    kits: &str,
-    kit_grids: &str,
-    models: &str,
     planets: &[&str],
     env: EnvSources,
+    catalog: std::sync::Arc<crate::asset_catalog::AssetCatalog>,
 ) -> Result<Roster, String> {
-    let EnvSources { authored: environments, generated: environments_generated, windows } = env;
+    let EnvSources { authored: environments, windows } = env;
     let mut errors: Vec<String> = Vec::new();
 
     let enemies_file: Option<EnemiesFile> = match toml::from_str(enemies) {
         Ok(f) => Some(f),
         Err(e) => {
             errors.push(format!("enemies.toml: {e}"));
-            None
-        }
-    };
-    let kits_file: Option<KitsFile> = match toml::from_str(kits) {
-        Ok(f) => Some(f),
-        Err(e) => {
-            errors.push(format!("kits.toml: {e}"));
-            None
-        }
-    };
-    let models_file: Option<schema::ModelsFile> = match toml::from_str(models) {
-        Ok(f) => Some(f),
-        Err(e) => {
-            errors.push(format!("models.generated.toml: {e}"));
-            None
-        }
-    };
-    let kit_grids_file: Option<schema::GeneratedKitsFile> = match toml::from_str(kit_grids) {
-        Ok(f) => Some(f),
-        Err(e) => {
-            errors.push(format!("kits.generated.toml: {e}"));
             None
         }
     };
@@ -752,14 +753,7 @@ pub(crate) fn load_from(
             }
         })
         .collect();
-    let environments_generated_file: Option<schema::EnvironmentsFile> =
-        match toml::from_str(environments_generated) {
-            Ok(f) => Some(f),
-            Err(e) => {
-                errors.push(format!("environments.generated.toml: {e}"));
-                None
-            }
-        };
+
     let windows_files: Vec<schema::WindowsFile> = windows
         .iter()
         .enumerate()
@@ -772,34 +766,18 @@ pub(crate) fn load_from(
         })
         .collect();
 
-    let (
-        Some(enemies_file),
-        Some(kits_file),
-        Some(kit_grids_file),
-        Some(models_file),
-        Some(environments_generated_file),
-    ) = (
-        enemies_file,
-        kits_file,
-        kit_grids_file,
-        models_file,
-        environments_generated_file,
-    )
-    else {
+    let Some(enemies_file) = enemies_file else {
         return Err(errors.join("\n"));
     };
 
     link(
         enemies_file,
-        kits_file,
-        kit_grids_file,
-        models_file,
         planet_files,
         ParsedEnvFiles {
             authored: environment_files,
-            generated: environments_generated_file,
             windows: windows_files,
         },
+        catalog,
         errors,
     )
 }
@@ -807,22 +785,18 @@ pub(crate) fn load_from(
 /// The parsed counterpart of [`EnvSources`]: one linker argument.
 struct ParsedEnvFiles {
     authored: Vec<EnvironmentFile>,
-    generated: schema::EnvironmentsFile,
     windows: Vec<schema::WindowsFile>,
 }
 
 fn link(
     enemies_file: EnemiesFile,
-    kits_file: KitsFile,
-    kit_grids_file: schema::GeneratedKitsFile,
-    models_file: schema::ModelsFile,
     planet_files: Vec<PlanetFile>,
     env: ParsedEnvFiles,
+    catalog: std::sync::Arc<crate::asset_catalog::AssetCatalog>,
     mut errors: Vec<String>,
 ) -> Result<Roster, String> {
     let ParsedEnvFiles {
         authored: environment_files,
-        generated: environments_generated_file,
         windows: windows_files,
     } = env;
     // Curves (BTreeMap: TOML itself rejects a re-declared [curves.X] table).
@@ -952,7 +926,7 @@ fn link(
     let defaults = enemies_file.scaling_defaults;
     let enemies: Vec<EnemyDef> = raw_enemies
         .iter()
-        .map(|e| {
+        .filter_map(|e| {
             let at = format!("enemy '{}'", e.key);
             for (field, value) in [
                 ("standoff_frac", e.standoff_frac),
@@ -1063,22 +1037,9 @@ fn link(
                     miniboss: e.miniboss.unwrap_or(false),
                 }
             };
-            EnemyDef {
+            Some(EnemyDef {
                 key: e.key.clone(),
                 name: e.name.clone(),
-                // The def declares a model KEY; the linked def carries the
-                // catalog's res:// path, so consumers never see keys.
-                model: match models_file.models.get(&e.model) {
-                    Some(path) => path.clone(),
-                    None => {
-                        errors.push(format!(
-                            "{at}: unknown model '{}' — not in \
-                             rosters/models.generated.toml (run `make assets`)",
-                            e.model
-                        ));
-                        String::new()
-                    }
-                },
                 size: e.size,
                 yaw_offset_deg: e.yaw_offset_deg,
                 muzzles: e.muzzles.clone().unwrap_or_default(),
@@ -1146,7 +1107,22 @@ fn link(
                 },
                 scaling: resolve_scaling(e.scaling.as_ref(), &defaults, &mut errors, &at),
                 behavior,
-            }
+                // The def declares a model KEY; the linked def carries the
+                // catalog's minted id, so consumers never see keys or
+                // paths. LAST field on purpose: the bail-out skips this
+                // def only after every validation above pushed its errors.
+                model: match catalog.model_scene_id(&e.model) {
+                    Some(id) => id,
+                    None => {
+                        errors.push(format!(
+                            "{at}: unknown model '{}' — not in \
+                             catalog/models.generated.toml (run `make assets`)",
+                            e.model
+                        ));
+                        return None;
+                    }
+                },
+            })
         })
         .collect();
 
@@ -1203,7 +1179,7 @@ fn link(
     // catalog. Zone links resolve to indices (undirected at use).
     let environments: Vec<EnvironmentDef> = environment_files
         .iter()
-        .map(|f| {
+        .filter_map(|f| {
             let at = format!("environment '{}'", f.environment.key);
             let zones: Vec<ZoneDef> = f
                 .zones
@@ -1293,26 +1269,28 @@ fn link(
                 }
                 AmbientDef { energy: a.energy, color: a.color }
             });
-            EnvironmentDef {
+            Some(EnvironmentDef {
                 key: f.environment.key.clone(),
                 sun,
                 windows,
                 ambient,
-                model: match environments_generated_file.environments.get(&f.environment.model) {
-                    Some(path) => intern_key(path),
-                    None => {
-                        errors.push(format!(
-                            "{at}: unknown model '{}' — not in \
-                             rosters/environments.generated.toml (run `make assets`)",
-                            f.environment.model
-                        ));
-                        ""
-                    }
-                },
                 start_zone: zones.iter().position(|z| z.start).unwrap_or(0),
                 boss_zone: zones.iter().position(|z| z.boss).unwrap_or(0),
                 zones,
-            }
+                // LAST field on purpose: an unknown model bails only
+                // after the authored lighting/zone fields validated.
+                model: match catalog.environment_scene_id(&f.environment.model) {
+                    Some(id) => id,
+                    None => {
+                        errors.push(format!(
+                            "{at}: unknown model '{}' — not in \
+                             catalog/environments.generated.toml (run `make assets`)",
+                            f.environment.model
+                        ));
+                        return None;
+                    }
+                },
+            })
         })
         .collect();
 
@@ -1456,100 +1434,23 @@ fn link(
         }
     }
 
-    // Kits (BTreeMap: TOML rejects re-declared kit tables). The grid joins
-    // in from the probe's derived measurements — never authored. FIXED kits
-    // are the one deliberate exception: a fixed scene has no recipe to
-    // derive a grid from, so its declared scale IS its tile/story, and it
-    // joins an authored environment instead.
-    let kits: Vec<KitDef> = kits_file
-        .kits
-        .iter()
-        .map(|(key, raw)| {
-            if raw.paradigm == KitParadigm::Fixed {
-                let scale = match raw.scale {
-                    Some(s) if s.is_finite() && s > 0.0 => s,
-                    Some(s) => {
-                        errors.push(format!(
-                            "kit '{key}': scale must be finite and > 0, got {s}"
-                        ));
-                        1.0
-                    }
-                    None => {
-                        errors.push(format!(
-                            "kit '{key}': a fixed kit must declare scale \
-                             (world units per model meter)"
-                        ));
-                        1.0
-                    }
-                };
-                let environment = match raw.environment.as_deref() {
-                    Some(k) => {
-                        let found = environments.iter().position(|e| e.key == k);
-                        if found.is_none() {
-                            errors.push(format!("kit '{key}': unknown environment '{k}'"));
-                        }
-                        found
-                    }
-                    None => {
-                        errors.push(format!(
-                            "kit '{key}': a fixed kit must declare its environment \
-                             (the authored zone map it builds)"
-                        ));
-                        None
-                    }
-                };
-                return KitDef {
-                    key: key.clone(),
-                    paradigm: raw.paradigm,
-                    tile: scale,
-                    story: scale,
-                    install_dir: raw.install_dir.clone(),
-                    environment,
-                };
-            }
-            for (field, present) in [
-                ("scale", raw.scale.is_some()),
-                ("environment", raw.environment.is_some()),
-            ] {
-                if present {
-                    errors.push(format!(
-                        "kit '{key}': {field} is a fixed-kit knob — a generated \
-                         kit derives its grid from the probe"
-                    ));
-                }
-            }
-            let grid = match kit_grids_file.kits.get(key) {
-                Some(g) => g.clone(),
-                None => {
-                    errors.push(format!(
-                        "kit '{key}': no derived grid in \
-                         rosters/kits.generated.toml (run `make assets`)"
-                    ));
-                    schema::GeneratedKitRaw { tile: 0.0, story: 0.0 }
-                }
-            };
-            KitDef {
-                key: key.clone(),
-                paradigm: raw.paradigm,
-                tile: grid.tile,
-                story: grid.story,
-                install_dir: raw.install_dir.clone(),
-                environment: None,
-            }
-        })
-        .collect();
-    let kit_by_key = |key: &str, errors: &mut Vec<String>, at: &str| -> KitId {
-        match kits.iter().position(|k| k.key == key) {
-            Some(i) => KitId(i),
+    // Kits live in the CATALOG (Amendment A): planets declare kit KEYS
+    // and resolve them here — the one sanctioned join. An unresolved key
+    // is a link error naming the planet.
+    let kit_by_key = |key: &str, errors: &mut Vec<String>, at: &str| -> Option<KitId> {
+        match catalog.kit(key) {
+            Some((id, _)) => Some(id),
             None => {
                 errors.push(format!("{at}: unknown kit '{key}'"));
-                KitId(0)
+                None
             }
         }
     };
 
     // Planets: contiguous from 1, one file per planet, fleets in-band.
     let mut planets: Vec<PlanetDef> = Vec::new();
+    let mut kit_environments: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
     for f in &planet_files {
         let at = format!("planet {}", f.planet);
         if planets.iter().any(|p| p.planet == f.planet) {
@@ -1685,8 +1586,8 @@ fn link(
         // Room growth: a GENERATED planet declares it; a FIXED planet's
         // room count is its environment's authored zone count — the file
         // must not also state one (one truth).
-        let first_kit = f.kits.first().and_then(|k| kits.iter().find(|kd| kd.key == *k));
-        if first_kit.is_some_and(|kd| kd.paradigm == KitParadigm::Fixed) {
+        let first_kit = f.kits.first().and_then(|k| catalog.kit(k)).map(|(_, kd)| kd);
+        if first_kit.is_some_and(|kd| matches!(kd.kind, KitKind::Fixed { .. })) {
             if f.kits.len() > 1 {
                 errors.push(format!(
                     "{at}: a fixed planet declares exactly one kit — its \
@@ -1707,8 +1608,8 @@ fn link(
             }
         }
         let first_kit_zone_count = first_kit
-            .filter(|kd| kd.paradigm == KitParadigm::Fixed)
-            .and_then(|kd| kd.environment)
+            .and_then(|kd| kd.environment())
+            .and_then(|envk| environments.iter().position(|e| e.key == envk))
             .map(|ei| environments[ei].zones.len() as u32);
         let (rooms_base, rooms_per_level) = match (&f.rooms, first_kit_zone_count) {
             (Some(r), None) => (r.base, r.per_level),
@@ -1727,10 +1628,47 @@ fn link(
                 (0, 0)
             }
         };
+        let kit_ids: Vec<KitId> =
+            f.kits.iter().filter_map(|k| kit_by_key(k, &mut errors, &at)).collect();
+        // A planet mixing panel kits mixes them per ROOM on one cell grid,
+        // so every panel kit it declares must derive the same grid as its
+        // first — kits with different pitches belong to different planets.
+        // The cross-boundary env join: a fixed kit's declared environment
+        // KEY must name an authored zone map this grammar embeds.
+        for &id in &kit_ids {
+            let kit = catalog.kit_def(id);
+            if let Some(envk) = kit.environment() {
+                if !kit_environments.contains_key(envk) {
+                    match environments.iter().position(|e| e.key == envk) {
+                        Some(i) => {
+                            kit_environments.insert(envk.to_string(), i);
+                        }
+                        None => errors.push(format!(
+                            "kit '{}': unknown environment '{envk}'",
+                            kit.key
+                        )),
+                    }
+                }
+            }
+        }
+        if let Some(first) = kit_ids.first().map(|&id| catalog.kit_def(id)) {
+            for &id in &kit_ids[1..] {
+                let kit = catalog.kit_def(id);
+                if matches!(kit.kind, KitKind::Panel(_))
+                    && (kit.tile != first.tile || kit.story != first.story)
+                {
+                    errors.push(format!(
+                        "{at}: kit '{}' derives grid {}/{} but '{}' derives \
+                         {}/{} — one planet, one grid",
+                        kit.key, kit.tile, kit.story, first.key, first.tile, first.story
+                    ));
+                }
+            }
+        }
         planets.push(PlanetDef {
             planet: f.planet,
             levels: f.levels,
-            kits: f.kits.iter().map(|k| kit_by_key(k, &mut errors, &at)).collect(),
+            kits: kit_ids,
             rooms_base,
             rooms_per_level,
             rosters,
@@ -1752,7 +1690,7 @@ fn link(
     }
 
     if errors.is_empty() {
-        Ok(Roster { enemies, swarms, curves, kits, planets, environments })
+        Ok(Roster { enemies, swarms, curves, catalog, kit_environments, planets, environments })
     } else {
         Err(errors.join("\n"))
     }
@@ -1775,7 +1713,14 @@ mod tests {
         load().expect("rosters/ must parse and link")
     }
 
-    const TEMPLATE_GRID: &str = "[kits.template_kit]\ntile = 3.0\nstory = 3.0\n";
+    /// The stand-in for the probe's derivation: grid + the filler-trio
+    /// census a panel kit needs to pool (see [`test_census_variants`]).
+    fn template_grid() -> String {
+        format!(
+            "[kits.template_kit]\ntile = 3.0\nstory = 3.0\n{}",
+            test_census_variants(3.0)
+        )
+    }
 
     /// The template scaffold — every construct the grammar accepts, with its
     /// defaults — split into loadable sections. Linker-rule and mechanism
@@ -1787,11 +1732,37 @@ mod tests {
         let enemies = parts.next().expect("enemies section").to_string();
         let kits = parts.next().expect("kits section").to_string();
         let planet = parts.next().expect("planet section").to_string();
-        (enemies, kits, TEMPLATE_GRID.to_string(), planet)
+        (enemies, kits, template_grid(), planet)
+    }
+
+    use crate::asset_catalog::{
+        ENVIRONMENTS_GENERATED_TOML, KITS_GENERATED_TOML, KITS_TOML, MODELS_TOML,
+    };
+
+    /// Test shim over the SPLIT load: builds a fixture catalog, then
+    /// links the grammar against it — link-rule tests keep one entry and
+    /// their original shape, whichever side of the boundary a rule
+    /// lives on.
+    fn load_split(
+        enemies: &str,
+        kits: &str,
+        kit_grids: &str,
+        models: &str,
+        planets: &[&str],
+        env: EnvSources,
+    ) -> Result<Roster, String> {
+        let catalog = crate::asset_catalog::AssetCatalog::load(
+            kits,
+            kit_grids,
+            models,
+            ENVIRONMENTS_GENERATED_TOML,
+        )
+        .map_err(|e| e.join("\n"))?;
+        load_from(enemies, planets, env, std::sync::Arc::new(catalog))
     }
 
     fn load_template(enemies: &str, kits: &str, grid: &str, planet: &str) -> Result<Roster, String> {
-        load_from(enemies, kits, grid, MODELS_TOML, &[planet], EnvSources::generated_only())
+        load_split(enemies, kits, grid, MODELS_TOML, &[planet], EnvSources::generated_only())
     }
 
     fn template_roster() -> Roster {
@@ -1845,14 +1816,360 @@ enemy_spawns = [[5.0, 1.0, 1.0]]
     /// Load the fixed fixture with a doctored environment/kit/planet.
     fn load_fixed(env: &str, kits: &str, planet: &str) -> Result<Roster, String> {
         let (enemies, _, _, _) = template_parts();
-        load_from(
+        load_split(
             &enemies,
             kits,
             "[kits]\n",
             MODELS_TOML,
             &[planet],
-            EnvSources { authored: &[env], generated: ENVIRONMENTS_GENERATED_TOML, windows: &[] },
+            EnvSources { authored: &[env], windows: &[] },
         )
+    }
+
+    // ── Panel-kit wall pools: census (probe pieces) × authored policy ──
+
+    /// A panel kit with an authored coverage policy.
+    const FX_PANEL_KIT: &str = "[kits.fx_panels]\nparadigm = \"panel\"\n\
+        install_dir = \"godot/addons/fx_walls\"\nwall_coverage = 0.9\n";
+
+    /// The probe's census for it: two wall-worthy squares (one exactly on
+    /// pitch, one within tolerance), a truss square, a solid strip, and a
+    /// small solid tile — only the first two may pool.
+    const FX_PANEL_GRID: &str = r#"
+[kits.fx_panels]
+tile = 3.0
+story = 3.0
+
+[kits.fx_panels.pieces.solid_a]
+face = [3.0, 3.0]
+thick = 0.2
+axis = "y"
+coverage = 1.0
+tris = 100
+textures = 3
+
+[kits.fx_panels.pieces.solid_b]
+face = [2.999, 2.998]
+thick = 0.2
+axis = "y"
+coverage = 0.97
+tris = 100
+textures = 3
+
+[kits.fx_panels.pieces.truss_a]
+face = [3.0, 3.0]
+thick = 0.2
+axis = "y"
+coverage = 0.2
+tris = 100
+textures = 3
+
+[kits.fx_panels.pieces.strip_a]
+face = [5.0, 3.0]
+thick = 0.2
+axis = "y"
+coverage = 1.0
+tris = 100
+textures = 3
+
+[kits.fx_panels.pieces.tile_a]
+face = [1.0, 1.0]
+thick = 0.1
+axis = "y"
+coverage = 1.0
+tris = 100
+textures = 3
+"#;
+
+    const FX_PANEL_PLANET: &str = "planet = 1\nlevels = 1\nkits = [\"fx_panels\"]\n\
+        rooms = { base = 6, per_level = 2 }\n\
+        [[level]]\nrelative = 1\nenemies = [\"template_enemy\"]\n";
+
+    fn load_panel_fixture(kits: &str, grid: &str) -> Result<Roster, String> {
+        let (enemies, _, _, _) = template_parts();
+        load_split(
+            &enemies,
+            kits,
+            grid,
+            MODELS_TOML,
+            &[FX_PANEL_PLANET],
+            EnvSources::generated_only(),
+        )
+    }
+
+
+    /// One census-v2 variant record — tests compose grids from these,
+    /// doctoring only what the RULE under test needs (never shipped data).
+    fn fx_variant(
+        stem: &str,
+        role: &str,
+        face: [f32; 2],
+        axis: &str,
+        detail: &str,
+        stretch: f32,
+    ) -> String {
+        format!(
+            "[kits.fx_panels.variants.{stem}]\n\
+             sources = [\"{stem}_src\"]\nrole = \"{role}\"\n\
+             face = [{}, {}]\nthick = 0.2\naxis = \"{axis}\"\n\
+             detail = \"{detail}\"\ncoverage = 1.0\nstretch = {stretch:?}\n\
+             tris = 100\ntextures = 3\n",
+            face[0], face[1],
+        )
+    }
+
+    fn fx_variant_grid(variants: &[String]) -> String {
+        format!(
+            "[kits.fx_panels]\ntile = 3.0\nstory = 3.0\n\n{}",
+            variants.join("\n")
+        )
+    }
+
+    /// The healthy baked set: a 1-module filler in each surface role,
+    /// one wide wall, one decoration (with a preassembly-style stretch).
+    fn fx_variants_healthy() -> Vec<String> {
+        vec![
+            fx_variant("base_floor", "floor", [3.0, 3.0], "y", "pos_y", 0.0),
+            fx_variant("base_ceiling", "ceiling", [3.0, 3.0], "y", "neg_y", 0.0),
+            fx_variant("base_wall", "wall", [3.0, 3.0], "z", "pos_z", 0.0),
+            fx_variant("wide_wall", "wall", [5.0, 3.0], "z", "pos_z", 0.0),
+            fx_variant("greeble", "decoration", [1.0, 0.9], "z", "pos_z", 0.07),
+        ]
+    }
+
+    #[test]
+    fn variants_derive_role_pools() {
+        let grid = fx_variant_grid(&fx_variants_healthy());
+        let roster = load_panel_fixture(FX_PANEL_KIT, &grid).expect("variants census links");
+        let (_, kit) = roster.catalog.kit("fx_panels").unwrap();
+        let pools = kit
+            .role_pools()
+            .expect("a variants census derives role pools");
+        assert_eq!(pools.floor.len(), 1);
+        assert_eq!(pools.ceiling.len(), 1);
+        assert_eq!(pools.wall.len(), 2);
+        assert_eq!(pools.decoration.len(), 1);
+        assert!(pools.addon.is_empty());
+        let wide = pools
+            .wall
+            .iter()
+            .find(|p| p.face[0] > 4.0)
+            .expect("the wide wall pools");
+        assert_eq!(wide.face, [5.0, 3.0], "wall faces read [width, height]");
+        assert!(
+            roster.catalog.path(wide.scene).starts_with("res://"),
+            "pool ids resolve to res:// scenes, got {}",
+            roster.catalog.path(wide.scene)
+        );
+        assert!((wide.thick - 0.2).abs() < 1e-6, "censused thickness carries");
+    }
+
+    #[test]
+    fn a_pieces_census_beside_variants_changes_nothing() {
+        // The pieces census SURVIVES v1 (pitch derivation, bake
+        // qualification, the probe's bake contract) — but it links
+        // nothing anymore: a kit carrying both censuses derives exactly
+        // the pools its variants alone would.
+        let grid = format!(
+            "{FX_PANEL_GRID}\n{}",
+            fx_variants_healthy().join("\n")
+        );
+        let roster = load_panel_fixture(FX_PANEL_KIT, &grid).expect("census links");
+        let (_, kit) = roster.catalog.kit("fx_panels").unwrap();
+        let pools = kit.role_pools().expect("role pools derive from variants");
+        assert_eq!(pools.wall.len(), 2, "pieces contribute no plates");
+    }
+
+    #[test]
+    fn a_missing_surface_filler_is_a_link_error() {
+        // Every surface role must keep a 1-module filler — the coverer's
+        // completion guarantee. The wall case still has the wide plate,
+        // so the error is specifically about the FILLER, not emptiness.
+        for role in ["floor", "ceiling", "wall"] {
+            let variants: Vec<String> = fx_variants_healthy()
+                .into_iter()
+                .filter(|v| !v.starts_with(&format!("[kits.fx_panels.variants.base_{role}]")))
+                .collect();
+            let err = load_panel_fixture(FX_PANEL_KIT, &fx_variant_grid(&variants))
+                .unwrap_err();
+            assert!(
+                err.contains("fx_panels") && err.contains(role) && err.contains("filler"),
+                "{role}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mis_baked_variant_is_not_pooled() {
+        // Census × policy: a variant whose measured pose disagrees with
+        // its role is SKIPPED, never pooled and never a link error on
+        // its own — the game must not be hostage to a Transform bug
+        // (the loud gate is the probe's bake contract at `make assets`).
+        // Corrupting a FILLER therefore surfaces as the filler rule:
+        let mut variants = fx_variants_healthy();
+        variants[0] = fx_variant("base_floor", "floor", [3.0, 3.0], "z", "pos_y", 0.0);
+        let err = load_panel_fixture(FX_PANEL_KIT, &fx_variant_grid(&variants)).unwrap_err();
+        assert!(err.contains("floor") && err.contains("filler"), "{err}");
+
+        // Corrupting a NON-filler links fine — the plate is just absent.
+        let mut variants = fx_variants_healthy();
+        variants[3] = fx_variant("wide_wall", "wall", [6.0, 3.0], "z", "neg_z", 0.0);
+        let roster = load_panel_fixture(FX_PANEL_KIT, &fx_variant_grid(&variants))
+            .expect("a skipped non-filler is not a link error");
+        let (_, kit) = roster.catalog.kit("fx_panels").unwrap();
+        let pools = kit.role_pools().expect("pools derive");
+        assert_eq!(pools.wall.len(), 1, "the mis-baked wide wall is not pooled");
+    }
+
+    #[test]
+    fn a_wall_off_the_story_module_is_a_link_error() {
+        let mut variants = fx_variants_healthy();
+        variants.push(fx_variant("odd_wall", "wall", [4.0, 2.5], "z", "pos_z", 0.0));
+        let err = load_panel_fixture(FX_PANEL_KIT, &fx_variant_grid(&variants)).unwrap_err();
+        assert!(err.contains("odd_wall") && err.contains("story"), "{err}");
+    }
+
+    #[test]
+    fn variant_stretch_beyond_unit_is_a_link_error() {
+        let mut variants = fx_variants_healthy();
+        variants.push(fx_variant("taffy", "decoration", [1.0, 1.0], "z", "pos_z", 1.5));
+        let err = load_panel_fixture(FX_PANEL_KIT, &fx_variant_grid(&variants)).unwrap_err();
+        assert!(err.contains("taffy") && err.contains("stretch"), "{err}");
+    }
+
+    #[test]
+    fn a_panel_kit_without_baked_variants_is_a_link_error() {
+        // v1 is retired: a pieces-only census carries no kit. A panel
+        // kit links through its baked role pools alone, and the error
+        // names the healer.
+        let err = load_panel_fixture(FX_PANEL_KIT, FX_PANEL_GRID).unwrap_err();
+        assert!(
+            err.contains("fx_panels") && err.contains("variants"),
+            "the error names the kit and the missing bake: {err}"
+        );
+    }
+
+    #[test]
+    fn a_panel_level_spec_carries_its_declared_pools() {
+        let roster = load_panel_fixture(FX_PANEL_KIT, &fx_variant_grid(&fx_variants_healthy()))
+            .expect("the panel fixture links");
+        let spec = crate::level_spec::LevelSpec::for_level(
+            &roster,
+            crate::seed::Seed::new(1),
+            1,
+            &crate::unlocks::PermanentUnlocks::new(),
+        );
+        match &spec.paradigm {
+            crate::level_spec::Paradigm::Panel(kits) => {
+                assert_eq!(kits.len(), 1, "one declared panel kit");
+                let pools = roster
+                    .catalog
+                    .kit_def(kits[0])
+                    .role_pools()
+                    .expect("the spec's kit ids resolve to derived role pools");
+                assert_eq!(
+                    pools
+                        .wall
+                        .iter()
+                        .map(|p| roster.catalog.path(p.scene))
+                        .collect::<Vec<_>>(),
+                    [
+                        "res://addons/fx_walls/base_wall.glb",
+                        "res://addons/fx_walls/wide_wall.glb",
+                    ],
+                    "the spec speaks the grammar's derived pools"
+                );
+            }
+            other => panic!("a panel planet's spec is Panel, got {other:?}"),
+        }
+    }
+
+    /// A second panel kit; its census tile is a fixture knob so agreement
+    /// tests can doctor it.
+    fn fx_panel_kit2(tile: f32) -> (String, String) {
+        let variant = |stem: &str, role: &str, axis: &str, detail: &str| {
+            format!(
+                "[kits.fx_panels2.variants.{stem}]\n\
+                 sources = [\"{stem}_src\"]\nrole = \"{role}\"\n\
+                 face = [{tile}, {tile}]\nthick = 0.2\naxis = \"{axis}\"\n\
+                 detail = \"{detail}\"\ncoverage = 1.0\nstretch = 0.0\n\
+                 tris = 100\ntextures = 3\n"
+            )
+        };
+        (
+            "[kits.fx_panels2]\nparadigm = \"panel\"\n\
+             install_dir = \"godot/addons/fx_walls2\"\nwall_coverage = 0.9\n"
+                .to_string(),
+            format!(
+                "[kits.fx_panels2]\ntile = {tile}\nstory = {tile}\n\n{}{}{}",
+                variant("floor2", "floor", "y", "pos_y"),
+                variant("ceiling2", "ceiling", "y", "neg_y"),
+                variant("wall2", "wall", "z", "pos_z"),
+            ),
+        )
+    }
+
+    const FX_TWO_KIT_PLANET: &str = "planet = 1\nlevels = 1\n\
+        kits = [\"fx_panels\", \"fx_panels2\"]\n\
+        rooms = { base = 6, per_level = 2 }\n\
+        [[level]]\nrelative = 1\nenemies = [\"template_enemy\"]\n";
+
+    fn load_two_kit_fixture(tile2: f32) -> Result<Roster, String> {
+        let (enemies, _, _, _) = template_parts();
+        let (kit2, grid2) = fx_panel_kit2(tile2);
+        load_split(
+            &enemies,
+            &format!("{FX_PANEL_KIT}{kit2}"),
+            &format!("{}\n{grid2}", fx_variant_grid(&fx_variants_healthy())),
+            MODELS_TOML,
+            &[FX_TWO_KIT_PLANET],
+            EnvSources::generated_only(),
+        )
+    }
+
+    #[test]
+    fn a_planet_mixing_panel_kits_pools_them_all() {
+        let roster = load_two_kit_fixture(3.0).expect("agreeing kits link");
+        let kits = roster.panel_kits_for_level(1);
+        assert_eq!(
+            kits.iter()
+                .map(|&id| roster.catalog.kit_def(id).key.as_str())
+                .collect::<Vec<_>>(),
+            ["fx_panels", "fx_panels2"],
+            "both declared kits pool, in declaration order"
+        );
+    }
+
+    #[test]
+    fn panel_kits_of_one_planet_must_agree_on_the_grid() {
+        let err = load_two_kit_fixture(2.0).unwrap_err();
+        assert!(
+            err.contains("fx_panels2") && err.contains("grid"),
+            "the error names the disagreeing kit: {err}"
+        );
+    }
+
+    #[test]
+    fn a_panel_kit_must_declare_its_coverage_policy() {
+        let kit = "[kits.fx_panels]\nparadigm = \"panel\"\n\
+            install_dir = \"godot/addons/fx_walls\"\n";
+        let err =
+            load_panel_fixture(kit, &fx_variant_grid(&fx_variants_healthy())).unwrap_err();
+        assert!(
+            err.contains("fx_panels") && err.contains("wall_coverage"),
+            "the error names the kit and the missing policy: {err}"
+        );
+    }
+
+    #[test]
+    fn coverage_policy_on_a_non_panel_kit_is_a_link_error() {
+        let doctored = FX_FIXED_KIT.replace("scale = 5.0", "scale = 5.0\nwall_coverage = 0.9");
+        assert_ne!(doctored, FX_FIXED_KIT, "the fixture kit is fixed");
+        let err = load_fixed(FX_ENV, &doctored, FX_FIXED_PLANET).unwrap_err();
+        assert!(
+            err.contains("wall_coverage") && err.contains("panel-kit knob"),
+            "the error names the misplaced policy: {err}"
+        );
     }
 
     #[test]
@@ -2055,7 +2372,7 @@ enemy_spawns = [[5.0, 1.0, 1.0]]
         let (enemies, kits, grid, planet) = template_parts();
         let doctored = kits.replace("install_dir", "scale = 5.0\ninstall_dir");
         assert_ne!(kits, doctored, "the template declares a generated kit");
-        let err = load_from(
+        let err = load_split(
             &enemies,
             &doctored,
             &grid,
@@ -2086,7 +2403,7 @@ enemy_spawns = [[5.0, 1.0, 1.0]]
             .collect::<Vec<_>>()
             .join("\n");
         assert_ne!(planet, doctored, "the template declares rooms");
-        let err = load_from(
+        let err = load_split(
             &enemies,
             &kits,
             &grid,
@@ -2119,13 +2436,13 @@ enemy_spawns = [[5.0, 1.0, 1.0]]
         let two_kits = format!("{FX_FIXED_KIT}{kits}");
         let doctored = FX_FIXED_PLANET
             .replace("kits = [\"fx_house\"]", "kits = [\"fx_house\", \"template_kit\"]");
-        let err = load_from(
+        let err = load_split(
             &enemies,
             &two_kits,
             &grid,
             MODELS_TOML,
             &[&doctored],
-            EnvSources { authored: &[FX_ENV], generated: ENVIRONMENTS_GENERATED_TOML, windows: &[] },
+            EnvSources { authored: &[FX_ENV], windows: &[] },
         )
         .unwrap_err();
         assert!(
@@ -2193,7 +2510,7 @@ enemy_spawns = [[5.0, 1.0, 1.0]]
         // surfaces here (run `make assets`).
         assert_eq!(
             KITS_GENERATED_TOML,
-            super::probe::kit_grids(),
+            crate::asset_catalog::probe::kit_grids(),
             "kits.generated.toml is stale — run `make assets`"
         );
     }
@@ -2208,7 +2525,7 @@ enemy_spawns = [[5.0, 1.0, 1.0]]
             .find(|l| l.trim_start().starts_with("model = "))
             .expect("the shipped grammar declares models");
         let doctored = ENEMIES_TOML.replacen(model_line, "model = \"no_such_model\"", 1);
-        let err = load_from(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS, EnvSources::shipped()).unwrap_err();
+        let err = load_split(&doctored, KITS_TOML, KITS_GENERATED_TOML, MODELS_TOML, PLANET_TOMLS, EnvSources::shipped()).unwrap_err();
         assert!(
             err.contains("unknown model 'no_such_model'"),
             "the linker must name the missing catalog key: {err}"
@@ -2221,7 +2538,7 @@ enemy_spawns = [[5.0, 1.0, 1.0]]
         // directions — a probe that ran against a different install, or a
         // model deleted since, surfaces here (run `make assets`).
         let repo = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
-        let catalog: schema::ModelsFile =
+        let catalog: crate::asset_catalog::schema::ModelsFile =
             toml::from_str(MODELS_TOML).expect("models.generated.toml parses");
         for (key, res) in &catalog.models {
             let disk = format!("{repo}/godot/{}", res.trim_start_matches("res://"));
@@ -2325,11 +2642,12 @@ enemy_spawns = [[5.0, 1.0, 1.0]]
             size = 1.0\nyaw_offset_deg = 0\nai = \"shooter\"\nreward = 100\nspawns_directly = true\n\
             [enemy.stats]\nhp = 5.0\nspeed = 9.0\ndamage = 3.0\ndetection = 25.0\nattack_range = 10.0\ncooldown = 1.0\n";
         let models = "[models]\nm0 = \"res://x/m0.glb\"\nm1 = \"res://x/m1.glb\"\n";
-        let kits = "[kits.k]\nparadigm = \"panel\"\ninstall_dir = \"godot/addons/walls\"\n";
-        let grid = "[kits.k]\ntile = 3.0\nstory = 3.0\n";
+        let kits = "[kits.k]\nparadigm = \"panel\"\ninstall_dir = \"godot/addons/walls\"\n\
+            wall_coverage = 0.9\n";
+        let grid = &format!("[kits.k]\ntile = 3.0\nstory = 3.0\n{}", test_census_variants(3.0));
         let planet = "planet = 1\nlevels = 1\nkits = [\"k\"]\nrooms = { base = 6, per_level = 2 }\n\n\
             [[level]]\nrelative = 1\nenemies = [\"fx_swarmer\", \"fx_shooter\"]\n";
-        let roster = load_from(enemies, kits, grid, models, &[planet], EnvSources::generated_only()).unwrap();
+        let roster = load_split(enemies, kits, grid, models, &[planet], EnvSources::generated_only()).unwrap();
         let sw = roster.enemy(roster.enemy_key("fx_swarmer").unwrap());
         let sh = roster.enemy(roster.enemy_key("fx_shooter").unwrap());
         assert!(sw.behavior.latch_range > 0.0, "a swarmer latches by default");
@@ -2366,10 +2684,10 @@ enemy_spawns = [[5.0, 1.0, 1.0]]
         let enemies = parts.next().expect("enemies section");
         let kits = parts.next().expect("kits section");
         let planet = parts.next().expect("planet section");
-        let grid = "[kits.template_kit]\ntile = 3.0\nstory = 3.0\n";
+        let grid = &template_grid();
 
         // Off by default: the template declares no miniboss.
-        let roster = load_from(enemies, kits, grid, MODELS_TOML, &[planet], EnvSources::generated_only()).unwrap();
+        let roster = load_split(enemies, kits, grid, MODELS_TOML, &[planet], EnvSources::generated_only()).unwrap();
         for key in roster.enemy_keys() {
             assert!(
                 !roster.enemy(key).behavior.miniboss,
@@ -2380,7 +2698,7 @@ enemy_spawns = [[5.0, 1.0, 1.0]]
 
         // Declared, it reads back: flip the switch on the first enemy block.
         let doctored = enemies.replacen("ai = ", "miniboss = true\nai = ", 1);
-        let roster = load_from(&doctored, kits, grid, MODELS_TOML, &[planet], EnvSources::generated_only()).unwrap();
+        let roster = load_split(&doctored, kits, grid, MODELS_TOML, &[planet], EnvSources::generated_only()).unwrap();
         assert!(
             roster.enemy_keys().any(|key| roster.enemy(key).behavior.miniboss),
             "the declared switch reads back"
@@ -2551,11 +2869,12 @@ enemy_spawns = [[5.0, 1.0, 1.0]]
             size = 1.0\nyaw_offset_deg = 0\nai = \"shooter\"\nreward = 100\nspawns_directly = true\n\
             [enemy.stats]\nhp = 5.0\nspeed = 9.0\ndamage = 3.0\ndetection = 25.0\nattack_range = 10.0\ncooldown = 1.0\n";
         let models = "[models]\nm0 = \"res://x/m0.glb\"\n";
-        let kits = "[kits.k]\nparadigm = \"panel\"\ninstall_dir = \"godot/addons/walls\"\n";
-        let grid = "[kits.k]\ntile = 3.0\nstory = 3.0\n";
+        let kits = "[kits.k]\nparadigm = \"panel\"\ninstall_dir = \"godot/addons/walls\"\n\
+            wall_coverage = 0.9\n";
+        let grid = &format!("[kits.k]\ntile = 3.0\nstory = 3.0\n{}", test_census_variants(3.0));
         let planet = "planet = 1\nlevels = 1\nkits = [\"k\"]\nrooms = { base = 6, per_level = 2 }\n\n\
             [[level]]\nrelative = 1\nenemies = [\"fx_shooter\"]\n";
-        let roster = load_from(enemies, kits, grid, models, &[planet], EnvSources::generated_only()).unwrap();
+        let roster = load_split(enemies, kits, grid, models, &[planet], EnvSources::generated_only()).unwrap();
         let b = roster.enemy(roster.enemy_key("fx_shooter").unwrap()).behavior;
         assert_eq!(b.burst_count, 1, "one bolt per trigger pull by default");
         assert!(b.burst_seconds > 0.0, "the in-burst gap is a real interval");
@@ -2672,7 +2991,7 @@ enemy_spawns = [[5.0, 1.0, 1.0]]
         // 2026-07-05) — run it first on a fresh checkout. Stage 3's probe
         // deepens this from "directory has content" to measured dimensions.
         let repo = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
-        for kit in &loaded().kits {
+        for kit in loaded().catalog.kits() {
             let dir = format!("{repo}/{}", kit.install_dir);
             let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
                 panic!(

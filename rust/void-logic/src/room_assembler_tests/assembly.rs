@@ -50,8 +50,8 @@ fn every_xz_sealed_boundary_has_wall_or_corner() {
                     && (p.position[2] - cell.world_center[2]).abs() < 2.1
             };
 
-            let has_wall = placements.iter().any(|p| p.scene == WALL && near_center(p));
-            let has_corner = placements.iter().any(|p| p.scene == CORNER && near_center(p));
+            let has_wall = placements.iter().any(|p| p.scene == cat().const_scene(WALL) && near_center(p));
+            let has_corner = placements.iter().any(|p| p.scene == cat().const_scene(CORNER) && near_center(p));
             assert!(
                 has_wall || has_corner,
                 "room {:?} cell {:?}: XZ sealed boundary should have WALL or CORNER",
@@ -102,7 +102,7 @@ fn y_only_sealed_cells_have_floor_ceiling_not_walls() {
 
     // No wall mesh should be exactly at this cell's center
     let has_wall_at_center = placements.iter().any(|p| {
-        p.scene == WALL && at_center(p)
+        p.scene == cat().const_scene(WALL) && at_center(p)
     });
     assert!(!has_wall_at_center,
         "Y-only cell should NOT have wall mesh at its center (Y faces are floor/ceiling)");
@@ -150,7 +150,7 @@ fn sealed_small_room_wall_and_corner_counts() {
 
     // Position verification: corners are offset from cell center (2.0, 0, 2.0)
     // by interior_offset. All corners at floor Y level.
-    let corners: Vec<_> = placements.iter().filter(|p| p.scene == CORNER).collect();
+    let corners: Vec<_> = placements.iter().filter(|p| p.scene == cat().const_scene(CORNER)).collect();
     for c in &corners {
         assert!(c.position[1].abs() < 0.001, "corners should be at floor Y level: {:?}", c.position);
     }
@@ -229,7 +229,7 @@ fn corridor_with_both_ends_active() {
     assert_eq!(count(&placements, CORNER), 0, "no corners — no two walls meet");
 
     // Position verification: walls at NegZ and PosZ should have opposite rotations.
-    let walls: Vec<_> = placements.iter().filter(|p| p.scene == WALL).collect();
+    let walls: Vec<_> = placements.iter().filter(|p| p.scene == cat().const_scene(WALL)).collect();
     let wall_rots: Vec<f32> = walls.iter().map(|w| w.rotation_y).collect();
     assert!(
         (wall_rots[0] - wall_rots[1]).abs() > 0.1,
@@ -237,7 +237,7 @@ fn corridor_with_both_ends_active() {
     );
 
     // Doors at NegX and PosX should have opposite rotations.
-    let doors: Vec<_> = placements.iter().filter(|p| p.scene == DOOR).collect();
+    let doors: Vec<_> = placements.iter().filter(|p| p.scene == cat().const_scene(DOOR)).collect();
     let door_rots: Vec<f32> = doors.iter().map(|d| d.rotation_y).collect();
     assert!(
         (door_rots[0] - door_rots[1]).abs() > 0.1,
@@ -283,7 +283,7 @@ fn large_room_sealed_walls() {
     // Position verification: all 4 corners at floor Y level with 4 distinct rotations.
     // In a 2x2 room, all corners converge at the room center (interior offsets
     // from each cell push toward center). Differentiated by rotation, not position.
-    let corners: Vec<_> = placements.iter().filter(|p| p.scene == CORNER).collect();
+    let corners: Vec<_> = placements.iter().filter(|p| p.scene == cat().const_scene(CORNER)).collect();
     for c in &corners {
         assert!(c.position[1].abs() < 0.001, "corner at floor Y: {:?}", c.position);
     }
@@ -401,9 +401,9 @@ fn sealed_3x3_room_full_surface_coverage() {
 
     // Walls should NOT be at the same XZ as any corner piece — corners and
     // straight walls are mutually exclusive at a given cell.
-    let walls: Vec<_> = placements.iter().filter(|p| p.scene == WALL).collect();
+    let walls: Vec<_> = placements.iter().filter(|p| p.scene == cat().const_scene(WALL)).collect();
     let corner_positions: Vec<(i32, i32)> = placements.iter()
-        .filter(|p| p.scene == CORNER)
+        .filter(|p| p.scene == cat().const_scene(CORNER))
         .map(|p| ((p.position[0] * 100.0) as i32, (p.position[2] * 100.0) as i32))
         .collect();
     for w in &walls {
@@ -432,7 +432,7 @@ fn posy_connector_removes_ceiling_no_hatch() {
     assert_eq!(count_floors(&placements, 0.0), 1, "floor should remain");
     // No hatch/door should be placed at the ceiling opening
     let ceiling_doors: Vec<_> = placements.iter()
-        .filter(|p| p.scene == DOOR && (p.position[1] - STORY_HEIGHT).abs() < 0.001)
+        .filter(|p| p.scene == cat().const_scene(DOOR) && (p.position[1] - STORY_HEIGHT).abs() < 0.001)
         .collect();
     assert_eq!(ceiling_doors.len(), 0,
         "no door/hatch at vertical ceiling opening — clean hole only");
@@ -450,7 +450,7 @@ fn negy_connector_removes_floor_no_hatch() {
     assert_eq!(count_ceiling_tiles(&placements, 0.0, 5.0), 1, "ceiling should remain");
     // No hatch/door should be placed at the floor opening
     let floor_doors: Vec<_> = placements.iter()
-        .filter(|p| p.scene == DOOR && p.position[1].abs() < 0.001)
+        .filter(|p| p.scene == cat().const_scene(DOOR) && p.position[1].abs() < 0.001)
         .collect();
     assert_eq!(floor_doors.len(), 0,
         "no door/hatch at vertical floor opening — clean hole only");
@@ -498,11 +498,11 @@ fn adjacent_rooms_walls_do_not_overlap() {
     );
 
     let walls_a: Vec<([f32; 3], i32)> = room_a_placements.iter()
-        .filter(|p| p.scene == WALL)
+        .filter(|p| p.scene == cat().const_scene(WALL))
         .map(|p| (p.position, (p.rotation_y * 1000.0) as i32))
         .collect();
     let walls_b: Vec<([f32; 3], i32)> = room_b_placements.iter()
-        .filter(|p| p.scene == WALL)
+        .filter(|p| p.scene == cat().const_scene(WALL))
         .map(|p| (p.position, (p.rotation_y * 1000.0) as i32))
         .collect();
 
@@ -599,7 +599,7 @@ fn aperture_tile_emits_door_frame_only() {
         [0.0, 0.0, 0.0],
         ws,
     );
-    assert_eq!(count(&placements, asset_catalog::DOOR), 1);
+    assert_eq!(count(&placements, DOOR), 1);
     // The NegX face has a door, not wall layers. NegZ and PosZ each get 4 layers.
     // PosX is sealed (no active connector) and is a corner with NegZ and PosZ.
     // So no straight bottom/shortwall at the NegX position.
@@ -641,9 +641,9 @@ fn no_geometry_at_interior_positions() {
             && (p.position[2] - center.world_center[2]).abs() < 0.001
     };
     let wall_at_center = placements.iter().any(|p| {
-        (p.scene == ws.straight.wall || p.scene == ws.bottom.straight
-            || p.scene == ws.short_wall.straight || p.scene == ws.straight.ceiling
-            || p.scene == ws.corner_inner.wall || p.scene == ws.corner_outer.wall)
+        (p.scene == cat().const_scene(ws.straight.wall) || p.scene == cat().const_scene(ws.bottom.straight)
+            || p.scene == cat().const_scene(ws.short_wall.straight) || p.scene == cat().const_scene(ws.straight.ceiling)
+            || p.scene == cat().const_scene(ws.corner_inner.wall) || p.scene == cat().const_scene(ws.corner_outer.wall))
             && at_center(p)
     });
     assert!(!wall_at_center, "interior cell should have no wall-layer geometry at its center");

@@ -147,8 +147,11 @@ members = [{ enemy = "template_enemy", count = 2 }]
 [kits.template_kit]
 paradigm = "panel"       # layered (tile+story stacks) | panel (cubic cells) | fixed (pre-modeled scene; declares scale + environment)
 install_dir = "godot/addons/walls"  # repo-relative; disk-pinned populated
+wall_coverage = 0.9      # panel kits only: min censused face coverage to WALL (solid plate 1.0, truss ~0.2); membership derives from the census
 # The kit's grid (tile/story) is NEVER authored: the make-assets probe
-# derives it from the assembly recipe into kits.generated.toml.
+# derives it from the assembly recipe into kits.generated.toml — including
+# each piece's census (face, thickness, coverage) that wall_coverage
+# filters into the kit's wall pool.
 
 # ================= 8< =================
 # ── Section: planets/planet_N.toml ──────────────────────────────────────

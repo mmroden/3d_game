@@ -345,7 +345,7 @@ fn dense_populate_fills_majority_of_cells() {
     use crate::room_theme::THEME_WAREHOUSE;
     // THEME_WAREHOUSE has Dense density.
     let mut grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0, 5.0);
-    grid.populate(&THEME_WAREHOUSE, 42);
+    grid.populate(&THEME_WAREHOUSE, 42, crate::test_fixtures::cat());
     let occupied = grid.cells().iter()
         .filter(|c| matches!(c.occupant, CellOccupant::Props(_)))
         .count();
@@ -365,7 +365,7 @@ fn sparse_populate_leaves_most_cells_empty() {
         density: RoomDensity::Sparse,
     };
     let mut grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0, 5.0);
-    grid.populate(&sparse_theme, 42);
+    grid.populate(&sparse_theme, 42, crate::test_fixtures::cat());
     let occupied = grid.cells().iter()
         .filter(|c| matches!(c.occupant, CellOccupant::Props(_)))
         .count();
@@ -384,7 +384,7 @@ fn connector_gap_cells_never_occupied() {
         4.0,
         5.0,
     );
-    grid.populate(&THEME_WAREHOUSE, 42);
+    grid.populate(&THEME_WAREHOUSE, 42, crate::test_fixtures::cat());
     let gap_occupied = grid.cells().iter()
         .filter(|c| c.kind == CellKind::ConnectorGap)
         .any(|c| matches!(c.occupant, CellOccupant::Props(_)));
@@ -395,7 +395,7 @@ fn connector_gap_cells_never_occupied() {
 fn no_cell_has_more_than_one_occupant() {
     use crate::room_theme::THEME_WAREHOUSE;
     let mut grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0, 5.0);
-    grid.populate(&THEME_WAREHOUSE, 42);
+    grid.populate(&THEME_WAREHOUSE, 42, crate::test_fixtures::cat());
     // Each cell is either Empty or Prop — by type system this is guaranteed,
     // but verify prop_placements count matches occupied cell count.
     let occupied = grid.cells().iter()
@@ -410,7 +410,7 @@ fn populate_uses_themed_props() {
     use crate::room_theme::THEME_WAREHOUSE;
     use crate::asset_catalog;
     let mut grid = CellGrid::new(&room_3x3(), &[], [0.0, 0.0, 0.0], 4.0, 5.0);
-    grid.populate(&THEME_WAREHOUSE, 42);
+    grid.populate(&THEME_WAREHOUSE, 42, crate::test_fixtures::cat());
     let placements = grid.prop_placements();
     // All placed props should come from the warehouse palette.
     let warehouse_scenes: Vec<&str> = asset_catalog::WAREHOUSE_WALL_PROPS.iter()
@@ -420,8 +420,11 @@ fn populate_uses_themed_props() {
         .map(|p| p.scene)
         .collect();
     for p in &placements {
-        assert!(warehouse_scenes.contains(&p.scene),
-            "prop '{}' not in warehouse palette", p.scene);
+        assert!(
+            warehouse_scenes.contains(&crate::test_fixtures::spath(p.scene)),
+            "prop '{}' not in warehouse palette",
+            crate::test_fixtures::spath(p.scene)
+        );
     }
 }
 
@@ -455,7 +458,7 @@ fn floating_upper_story_center_props_are_dynamic() {
     let mut checked = 0;
     for seed in 0..60 {
         let mut grid = CellGrid::new(&tall, &[], [0.0, 0.0, 0.0], 4.0, 5.0);
-        grid.populate(&theme, seed);
+        grid.populate(&theme, seed, crate::test_fixtures::cat());
         for cell in grid.cells() {
             if cell.kind != CellKind::Interior || cell.grid_pos[1] == 0 {
                 continue;
@@ -466,7 +469,8 @@ fn floating_upper_story_center_props_are_dynamic() {
                         p.collision,
                         Collision::Dynamic,
                         "floating center prop '{}' at story {} must be Dynamic",
-                        p.scene, cell.grid_pos[1]
+                        crate::test_fixtures::spath(p.scene),
+                        cell.grid_pos[1]
                     );
                     checked += 1;
                 }
@@ -491,10 +495,10 @@ fn columns_stacked_in_multi_story_room() {
     let mut found_stacked = false;
     for seed in 0..200 {
         let mut grid = CellGrid::new(&template, &[], [0.0, 0.0, 0.0], 4.0, 5.0);
-        grid.populate(&THEME_WAREHOUSE, seed);
+        grid.populate(&THEME_WAREHOUSE, seed, crate::test_fixtures::cat());
         let placements = grid.prop_placements();
         let columns: Vec<_> = placements.iter()
-            .filter(|p| p.scene.contains("/columns/"))
+            .filter(|p| crate::test_fixtures::spath(p.scene).contains("/columns/"))
             .collect();
         if columns.is_empty() {
             continue;
@@ -549,13 +553,16 @@ fn center_props_placed_in_single_story_room() {
         loot_spawns: vec![],
         extents: [5, 1, 5],
     };
-    let center_scenes: std::collections::HashSet<&str> = crate::asset_catalog::CENTER_PROPS
-        .iter().map(|p| p.scene).collect();
+    let center_scenes: std::collections::HashSet<crate::asset_catalog::SceneId> =
+        crate::asset_catalog::CENTER_PROPS
+            .iter()
+            .map(|p| crate::test_fixtures::cat().const_scene(p.scene))
+            .collect();
     let mut found_center = false;
     for seed in 0..100 {
         let mut grid = CellGrid::new(&room, &[], [0.0, 0.0, 0.0], 4.0, 5.0);
-        grid.populate(&THEME_GENERIC, seed);
-        if grid.prop_placements().iter().any(|p| center_scenes.contains(p.scene)) {
+        grid.populate(&THEME_GENERIC, seed, crate::test_fixtures::cat());
+        if grid.prop_placements().iter().any(|p| center_scenes.contains(&p.scene)) {
             found_center = true;
             break;
         }
@@ -594,7 +601,7 @@ fn no_column_near_connector_gap_in_generated_rooms() {
 
         for populate_seed in 0..20 {
             let mut grid = CellGrid::new(&room, &active, [0.0, 0.0, 0.0], 4.0, 5.0);
-            grid.populate(&THEME_WAREHOUSE, populate_seed);
+            grid.populate(&THEME_WAREHOUSE, populate_seed, crate::test_fixtures::cat());
 
             let gap_positions: std::collections::HashSet<[i32; 3]> = grid.cells().iter()
                 .filter(|c| c.kind == CellKind::ConnectorGap)
@@ -604,7 +611,7 @@ fn no_column_near_connector_gap_in_generated_rooms() {
             for cell in grid.cells() {
                 if let CellOccupant::Props(ref props) = cell.occupant {
                     for p in props {
-                        if p.scene.contains("/columns/") {
+                        if crate::test_fixtures::spath(p.scene).contains("/columns/") {
                             let near = gap_positions.iter().any(|gap| {
                                 let dx = (gap[0] - cell.grid_pos[0]).abs();
                                 let dz = (gap[2] - cell.grid_pos[2]).abs();
@@ -633,11 +640,11 @@ fn no_column_adjacent_to_connector_gap() {
     let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX, frame: FrameStyle::Door }];
     for seed in 0..200 {
         let mut grid = CellGrid::new(&room_3x3(), &active, [0.0, 0.0, 0.0], 4.0, 5.0);
-        grid.populate(&THEME_WAREHOUSE, seed);
+        grid.populate(&THEME_WAREHOUSE, seed, crate::test_fixtures::cat());
         for cell in grid.cells() {
             if let CellOccupant::Props(ref props) = cell.occupant {
                 for p in props {
-                    if p.scene.contains("/columns/") {
+                    if crate::test_fixtures::spath(p.scene).contains("/columns/") {
                         // Check if this cell is XZ-adjacent to a ConnectorGap
                         let [cx, _, cz] = cell.grid_pos;
                         let adjacent_to_gap = grid.cells().iter().any(|other| {

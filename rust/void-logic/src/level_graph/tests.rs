@@ -698,3 +698,34 @@ fn visible_from_never_crosses_a_teleporter() {
         "rooms reachable by flying through corridors stay in view"
     );
 }
+
+// --- path_between: the artery lookup (capture rig fly-throughs) ---
+
+#[test]
+fn path_between_walks_the_chain_end_to_end() {
+    let mut graph = LevelGraph::new();
+    let a = graph.place_room(room_1x1_east_west(), [0, 0, 0]).unwrap();
+    let c = graph.place_room(corridor_1x1_east_west(), [1, 0, 0]).unwrap();
+    let b = graph.place_room(room_1x1_east_west(), [2, 0, 0]).unwrap();
+    graph.connect_adjacent(a, c).unwrap();
+    graph.connect_adjacent(c, b).unwrap();
+
+    assert_eq!(graph.path_between(a, b), vec![a, c, b],
+        "endpoints included, the corridor visited between them");
+}
+
+#[test]
+fn path_between_identical_endpoints_is_the_single_node() {
+    let mut graph = LevelGraph::new();
+    let a = graph.place_room(room_1x1_east_west(), [0, 0, 0]).unwrap();
+    assert_eq!(graph.path_between(a, a), vec![a]);
+}
+
+#[test]
+fn path_between_disconnected_nodes_is_empty() {
+    let mut graph = LevelGraph::new();
+    let a = graph.place_room(room_1x1_east_west(), [0, 0, 0]).unwrap();
+    let b = graph.place_room(room_1x1_east_west(), [5, 0, 0]).unwrap();
+    assert!(graph.path_between(a, b).is_empty(),
+        "no edge, no path — never a phantom hop");
+}

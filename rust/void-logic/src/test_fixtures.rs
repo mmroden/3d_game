@@ -6,7 +6,24 @@
 //! shell's grammar-override test door): `godot/tests/fixtures/grammar/`.
 //! It links against the REAL model catalog so the shell can build it.
 
-use crate::roster::{load_from, EnvSources, Roster, ENVIRONMENTS_GENERATED_TOML, MODELS_TOML};
+use crate::asset_catalog::{ENVIRONMENTS_GENERATED_TOML, MODELS_TOML};
+use crate::roster::{load_from, EnvSources, Roster};
+
+/// The SHIPPED catalog — the ONE test-support home for it (helper
+/// duplication across test modules is plaque; see design-review §10).
+/// Tests that assemble against real assets resolve their placements'
+/// ids here; fixture-grammar tests resolve through their own
+/// `roster.catalog` instead.
+pub fn cat() -> &'static crate::asset_catalog::AssetCatalog {
+    crate::asset_catalog::catalog()
+}
+
+/// A placement's scene as its res:// path — for FAMILY assertions
+/// (`spath(id).contains("Platform")`). Identity assertions compare ids:
+/// `p.scene == cat().const_scene(WS.straight.wall)`.
+pub fn spath(id: crate::asset_catalog::SceneId) -> &'static str {
+    crate::asset_catalog::catalog().path(id)
+}
 
 pub const FX_ENEMIES: &str = include_str!("../../../godot/tests/fixtures/grammar/enemies.toml");
 pub const FX_KITS: &str = include_str!("../../../godot/tests/fixtures/grammar/kits.toml");
@@ -24,13 +41,18 @@ pub const FX_ENV_FIXED: &str =
 /// on-death-brood parent (`fx_brood_parent`), and a miniboss
 /// (`fx_miniboss`) — every mechanism subject, guaranteed at any seed.
 pub fn fixture_grammar() -> Roster {
-    load_from(
-        FX_ENEMIES,
+    let catalog = crate::asset_catalog::AssetCatalog::load(
         FX_KITS,
         FX_KIT_GRIDS,
         MODELS_TOML,
+        ENVIRONMENTS_GENERATED_TOML,
+    )
+    .unwrap_or_else(|e| panic!("the fixture catalog links: {}", e.join("\n")));
+    load_from(
+        FX_ENEMIES,
         &[FX_PLANET],
         EnvSources::generated_only(),
+        std::sync::Arc::new(catalog),
     )
     .expect("the fixture grammar links")
 }
@@ -39,13 +61,18 @@ pub fn fixture_grammar() -> Roster {
 /// `fx_house` environment (porch start, den arena), staging `fx_boss` at
 /// every level. The zone map rides the real installed apartment scene.
 pub fn fixed_fixture_grammar() -> Roster {
-    load_from(
-        FX_ENEMIES,
+    let catalog = crate::asset_catalog::AssetCatalog::load(
         FX_KITS_FIXED,
         "[kits]\n",
         MODELS_TOML,
+        ENVIRONMENTS_GENERATED_TOML,
+    )
+    .unwrap_or_else(|e| panic!("the fixed fixture catalog links: {}", e.join("\n")));
+    load_from(
+        FX_ENEMIES,
         &[FX_PLANET_FIXED],
-        EnvSources { authored: &[FX_ENV_FIXED], generated: ENVIRONMENTS_GENERATED_TOML, windows: &[] },
+        EnvSources { authored: &[FX_ENV_FIXED], windows: &[] },
+        std::sync::Arc::new(catalog),
     )
     .expect("the fixed fixture grammar links")
 }

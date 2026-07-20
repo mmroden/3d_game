@@ -163,7 +163,7 @@ impl Turntable {
             KIND_ORGANIC_CACHE => (Some(scenes::BARREL_MODEL), [0.2, 0.9, 0.2, 1.0]),
             KIND_COMPONENT_CACHE => (Some(scenes::BARREL_MODEL), [0.2, 0.5, 1.0, 1.0]),
             KIND_ENEMY => (
-                ekey.map(|k| roster().enemy(k).model.as_str()),
+                ekey.map(|k| godot_util::scene_path(roster().enemy(k).model)),
                 // Neutral glow so the unlit enemy reads in the dark room.
                 [1.0, 1.0, 0.95, 1.0],
             ),

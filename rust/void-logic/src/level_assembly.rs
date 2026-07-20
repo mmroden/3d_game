@@ -63,10 +63,11 @@ pub fn spawn_list(
     graph: &LevelGraph,
     spec: &crate::level_spec::LevelSpec,
     seed: Seed,
+    catalog: &crate::asset_catalog::AssetCatalog,
 ) -> (Vec<MeshPlacement>, Vec<LightSource>) {
     let mut meshes = Vec::new();
     let mut lights = Vec::new();
-    for room in spawn_list_full(graph, spec, seed) {
+    for room in spawn_list_full(graph, spec, seed, catalog) {
         meshes.extend(room.structure);
         meshes.extend(room.props);
         lights.extend(room.lights);
@@ -81,6 +82,7 @@ pub fn spawn_list_full(
     graph: &LevelGraph,
     spec: &crate::level_spec::LevelSpec,
     seed: Seed,
+    catalog: &crate::asset_catalog::AssetCatalog,
 ) -> Vec<RoomAssembly> {
     use crate::cell::CellGrid;
     use crate::level_graph::RENDER_ROOM_DEPTH;
@@ -110,17 +112,34 @@ pub fn spawn_list_full(
         // Step 1 data — the room's shell. One paradigm per planet: the
         // megakit's layered walls on planet 1, the panel pool from planet 2
         // (cubic cells; see planet::panel_world and the B11 plan).
-        let mut structure = if let crate::level_spec::Paradigm::Panel(set) = spec.paradigm {
-            crate::room_assembler::assemble_panels_from_grid(&grid, set, room_seed)
+        let mut structure = if let crate::level_spec::Paradigm::Panel(kits) = &spec.paradigm {
+            // ONE kit skins a room (visual coherence); the level mixes its
+            // declared kits ACROSS rooms — a salted stream off the room
+            // seed picks (seed-hygiene standard: never the raw seed's
+            // bits), so the mix is as reproducible as everything else it
+            // rolls. The spec carries KIT IDS (scheduling facts); the
+            // plates stay owned by the catalog.
+            let kit = {
+                use rand::rngs::SmallRng;
+                use rand::{RngExt, SeedableRng};
+                let mut rng =
+                    SmallRng::seed_from_u64(room_seed ^ crate::seed::salt::KIT_PICK);
+                catalog.kit_def(kits[rng.random_range(0..kits.len())])
+            };
+            let pools = kit
+                .role_pools()
+                .expect("a panel spec's kit ids resolve to panel kits — the roster filters");
+            crate::room_assembler::assemble_role_pools_from_grid(&grid, pools, room_seed)
         } else {
             crate::room_assembler::assemble_from_grid(
                 &grid,
                 &room.template,
                 &active,
                 theme.wall_set,
+                catalog,
             )
         };
-        grid.populate(theme, room_seed);
+        grid.populate(theme, room_seed, catalog);
         // Step 2 data — furnished fixtures (cell-rolled). The start room's
         // spawn square stays empty: the player materializes there and
         // shares it with nothing (playtest 2026-07-04).
@@ -135,7 +154,7 @@ pub fn spawn_list_full(
         }
 
         let mut lights = Vec::new();
-        for (mesh, light) in room_furnisher::light_fixtures(&room.template, &active, origin, pitch, room_seed) {
+        for (mesh, light) in room_furnisher::light_fixtures(&room.template, &active, origin, pitch, room_seed, catalog) {
             // Light fixtures are part of the shell: they render in the structure
             // step and are passable, so they never join the merged collider.
             structure.push(mesh);
@@ -513,7 +532,7 @@ pub fn manifest(
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
 
-    let rooms_assembly = spawn_list_full(graph, spec, seed);
+    let rooms_assembly = spawn_list_full(graph, spec, seed, &grammar.catalog);
     let mut enemy_rng = SmallRng::seed_from_u64(seed.value());
 
     // A staged boss claims its arena outright: the schedule names the kind,
@@ -666,6 +685,121 @@ pub fn spawn_pose(graph: &LevelGraph, pitch: Pitch) -> ([f32; 3], f32) {
     (pos, yaw)
 }
 
+/// The capture rig's reproducible artery: one pose per node on the
+/// start→exit path (rooms AND corridors), each at its node's volumetric
+/// center, yawed at its successor (the [`spawn_pose`] facing convention)
+/// and pitched to track climbs. Angles in DEGREES — rig-ready
+/// (`--shot=x,y,z,yaw,pitch;…`).
+pub fn flythrough_poses(graph: &LevelGraph, pitch: Pitch) -> Vec<[f32; 5]> {
+    let Some(start) = graph.room_indices().next() else { return Vec::new() };
+    let Some(exit) = graph.exit_room(start) else { return Vec::new() };
+
+    let centers: Vec<[f32; 3]> = graph
+        .path_between(start, exit)
+        .into_iter()
+        .filter_map(|n| graph.room(n))
+        .map(|room| {
+            let origin = room.world_position(pitch.tile, pitch.story);
+            let [ex, ey, ez] = room.template.extents;
+            [
+                origin[0] + ex as f32 * pitch.tile * 0.5,
+                origin[1] + ey as f32 * pitch.story * 0.5,
+                origin[2] + ez as f32 * pitch.tile * 0.5,
+            ]
+        })
+        .collect();
+
+    centers
+        .iter()
+        .enumerate()
+        .map(|(i, &pos)| {
+            // Look along the travel direction: at the next center, or —
+            // for the final pose — onward from the previous one.
+            let (from, to) = if i + 1 < centers.len() {
+                (pos, centers[i + 1])
+            } else if i > 0 {
+                (centers[i - 1], pos)
+            } else {
+                return [pos[0], pos[1], pos[2], 0.0, 0.0];
+            };
+            let (dx, dy, dz) = (to[0] - from[0], to[1] - from[1], to[2] - from[2]);
+            let horiz = (dx * dx + dz * dz).sqrt();
+            let yaw = if horiz < 1e-3 { 0.0 } else { (-dx).atan2(-dz).to_degrees() };
+            let pitch_deg = dy.atan2(horiz).to_degrees();
+            [pos[0], pos[1], pos[2], yaw, pitch_deg]
+        })
+        .collect()
+}
+
+/// Deterministic interior vantages for the visual containment audit: up
+/// to `budget` poses on room INNER cells (a full tile clear of every XZ
+/// wall — the vantage carries a chase camera), spread across the level's
+/// rooms, each yawed toward its room's center. "Inside the level" is
+/// derived — cell centers of placed rooms — never authored. Same pose
+/// format as [`flythrough_poses`].
+pub fn interior_probe_poses(graph: &LevelGraph, pitch: Pitch, budget: usize) -> Vec<[f32; 5]> {
+    // Rooms only (a corridor vantage is a degenerate close-up), largest
+    // first so the budget favors the spaces the player actually fights in.
+    let mut rooms: Vec<_> = graph
+        .room_indices()
+        .filter_map(|n| graph.room(n))
+        .filter(|r| r.template.kind == crate::room_template::TemplateKind::Room)
+        .collect();
+    rooms.sort_by_key(|r| {
+        let [ex, ey, ez] = r.template.extents;
+        std::cmp::Reverse((ex * ey * ez, r.grid_pos))
+    });
+    if rooms.is_empty() || budget == 0 {
+        return Vec::new();
+    }
+
+    // Round-robin the budget across rooms; within a room, walk the INNER
+    // cell diagonal (distinct cells for successive visits), looking at
+    // the room's center.
+    let mut out = Vec::with_capacity(budget);
+    let mut round = 0;
+    while out.len() < budget {
+        let mut placed_this_round = false;
+        for room in &rooms {
+            if out.len() >= budget {
+                break;
+            }
+            let [ex, ey, ez] = room.template.extents;
+            // Inner cells: 1..extent-1 per XZ axis; a 1- or 2-wide room
+            // has no camera-safe interior and hosts no probe.
+            let inner = (ex.min(ez) as usize).saturating_sub(2);
+            if round >= inner {
+                continue;
+            }
+            let origin = room.world_position(pitch.tile, pitch.story);
+            let (cx, cz) = (1.0 + round as f32, 1.0 + round as f32);
+            let cy = (round % ey as usize) as f32;
+            let pos = [
+                origin[0] + (cx + 0.5) * pitch.tile,
+                origin[1] + (cy + 0.5) * pitch.story,
+                origin[2] + (cz + 0.5) * pitch.tile,
+            ];
+            let center = [
+                origin[0] + ex as f32 * pitch.tile * 0.5,
+                origin[2] + ez as f32 * pitch.tile * 0.5,
+            ];
+            let (dx, dz) = (center[0] - pos[0], center[1] - pos[2]);
+            let yaw = if dx.abs() + dz.abs() < 1e-3 {
+                (round % 4) as f32 * 90.0
+            } else {
+                (-dx).atan2(-dz).to_degrees()
+            };
+            out.push([pos[0], pos[1], pos[2], yaw, 0.0]);
+            placed_this_round = true;
+        }
+        if !placed_this_round {
+            break; // every room's safe interior is exhausted
+        }
+        round += 1;
+    }
+    out
+}
+
 
 
 #[cfg(test)]
@@ -698,6 +832,8 @@ mod emitter_tests {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_fixtures::{cat, spath};
+
     /// Attribute spec for tests: fresh profile, pinned run seed. The
     /// GENERATION seed still travels separately.
     fn spec_for(level: u32) -> crate::level_spec::LevelSpec {
@@ -767,7 +903,7 @@ mod tests {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
             let cell = 4.0;
             let (pos, _) = spawn_pose(&graph, TEST_PITCH);
-            let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(seed));
+            let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(seed), cat());
             let start = &rooms[0];
             let half = cell * 0.5;
             for p in &start.props {
@@ -806,7 +942,7 @@ mod tests {
                 max_room_y: 6,
             };
             let Ok(graph) = generate(&config) else { continue };
-            let assemblies = spawn_list_full(&graph, &spec_for(1), Seed::new(seed));
+            let assemblies = spawn_list_full(&graph, &spec_for(1), Seed::new(seed), cat());
 
             for (i, idx) in graph.room_indices().enumerate() {
                 let room = graph.room(idx).unwrap();
@@ -820,11 +956,11 @@ mod tests {
                 let asm = &assemblies[i];
                 // Square: a shaft emits straight walls and no rounded corners.
                 assert_eq!(
-                    asm.structure.iter().filter(|m| m.scene.contains("Corner_Round")).count(),
+                    asm.structure.iter().filter(|m| spath(m.scene).contains("Corner_Round")).count(),
                     0,
                     "seed {seed}: vertical shaft still has rounded corner pieces"
                 );
-                if asm.structure.iter().any(|m| m.scene.contains("_Straight")) {
+                if asm.structure.iter().any(|m| spath(m.scene).contains("_Straight")) {
                     square_shaft_seen = true;
                 }
                 // Rim-lit: all ceilings are open, so any light is a rim light.
@@ -863,7 +999,7 @@ mod tests {
                 max_room_y: 6,
             };
             let Ok(graph) = generate(&config) else { continue };
-            let (meshes, _lights) = spawn_list(&graph, &spec_for(1), Seed::new(seed));
+            let (meshes, _lights) = spawn_list(&graph, &spec_for(1), Seed::new(seed), cat());
 
             for (a, _b, kind) in graph.edges() {
                 let EdgeKind::Adjacent { from_connector, .. } = kind else {
@@ -899,7 +1035,7 @@ mod tests {
                 passages_checked += 1;
 
                 for placement in &meshes {
-                    if !placement.scene.contains("Platform") {
+                    if !spath(placement.scene).contains("Platform") {
                         continue; // only floor/ceiling slabs can cap the hole
                     }
                     let [px, py, pz] = placement.position;
@@ -909,7 +1045,7 @@ mod tests {
                         !(in_footprint && on_plane),
                         "seed {seed}: '{}' at {:?} caps the vertical aperture \
                          (footprint x[{x0:.1},{x1:.1}] z[{z0:.1},{z1:.1}] plane y {plane_y:.1})",
-                        placement.scene,
+                        spath(placement.scene),
                         placement.position
                     );
                 }
@@ -936,7 +1072,7 @@ mod tests {
     #[test]
     fn one_assembly_per_room() {
         let graph = generate(&test_config(7)).expect("generation");
-        let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(7));
+        let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(7), cat());
         assert_eq!(rooms.len(), graph.room_count());
     }
 
@@ -951,7 +1087,7 @@ mod tests {
         let mut any_enemy = false;
         for seed in 0..30u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(seed));
+            let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(seed), cat());
             for room in &rooms {
                 assert!(!room.structure.is_empty(), "seed {seed}: a room had no structure");
                 any_container |= !room.containers.is_empty();
@@ -970,7 +1106,7 @@ mod tests {
         // spawn — even though its template may define enemy spawns.
         for seed in 0..30u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(seed));
+            let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(seed), cat());
             if let Some(start) = rooms.first() {
                 assert!(start.enemies.is_empty(), "seed {seed}: start room has enemies");
             }
@@ -982,7 +1118,7 @@ mod tests {
         // Each room's bounds must be a non-degenerate box derived from
         // its geometry — the stub (min == max) fails this.
         let graph = generate(&test_config(7)).expect("generation");
-        let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(7));
+        let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(7), cat());
         for (i, room) in rooms.iter().enumerate() {
             for a in 0..3 {
                 assert!(
@@ -998,7 +1134,7 @@ mod tests {
     #[test]
     fn room_at_locates_interior_points_and_rejects_distant_ones() {
         let graph = generate(&test_config(7)).expect("generation");
-        let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(7));
+        let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(7), cat());
         let bounds: Vec<_> = rooms.iter().map(|r| r.bounds.clone()).collect();
 
         for room in &rooms {
@@ -1032,7 +1168,7 @@ mod tests {
 
         for seed in 0..30u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(seed));
+            let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(seed), cat());
             if rooms.is_empty() {
                 continue;
             }
@@ -1097,7 +1233,7 @@ mod tests {
         // would be warm-white (red ≈ 1.0), so this pins the wiring.
         for seed in 0..30u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(seed));
+            let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(seed), cat());
             if rooms.is_empty() || rooms[0].lights.is_empty() {
                 continue;
             }
@@ -1129,19 +1265,44 @@ mod tests {
         // no megakit walls (one paradigm per planet, owner's call).
         let config = config_for(1, crate::generator::rooms_for_level(7), 7);
         let graph = generate(&config).expect("generates");
-        let rooms = spawn_list_full(&graph, &spec_for(7), Seed::new(1));
+        let rooms = spawn_list_full(&graph, &spec_for(7), Seed::new(1), cat());
+        // The level's wall pools, as the grammar derives them (census ×
+        // policy) — the only panels allowed on structure.
+        let grammar = crate::roster::roster();
+        let mut pool_scenes: std::collections::HashSet<crate::asset_catalog::SceneId> =
+            std::collections::HashSet::new();
+        for &id in &grammar.panel_kits_for_level(7) {
+            let rp = grammar
+                .catalog
+                .kit_def(id)
+                .role_pools()
+                .expect("a linked panel kit carries role pools");
+            pool_scenes.extend(
+                rp.floor
+                    .iter()
+                    .chain(&rp.ceiling)
+                    .chain(&rp.wall)
+                    .map(|pl| pl.scene),
+            );
+        }
         let mut any_panel = false;
         for room in &rooms {
             for m in &room.structure {
                 // Light FIXTURES (props) may stay megakit for now — the ban
                 // is on structural skin: walls, platforms, corners, trims.
                 assert!(
-                    !m.scene.contains("megakit/walls")
-                        && !m.scene.contains("megakit/platforms"),
+                    !spath(m.scene).contains("megakit/walls")
+                        && !spath(m.scene).contains("megakit/platforms"),
                     "planet 2 must not place megakit structure: {}",
-                    m.scene
+                    spath(m.scene)
                 );
-                if m.scene.contains("addons/walls/") {
+                if spath(m.scene).contains("addons/walls") {
+                    assert!(
+                        pool_scenes.contains(&m.scene),
+                        "{} skins a wall but is not in the derived pools \
+                         (truss? strip? the census said no)",
+                        spath(m.scene)
+                    );
                     any_panel = true;
                 }
             }
@@ -1153,9 +1314,9 @@ mod tests {
     fn planet_one_keeps_the_megakit() {
         let config = config_for(1, crate::generator::rooms_for_level(1), 1);
         let graph = generate(&config).expect("generates");
-        let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(1));
+        let rooms = spawn_list_full(&graph, &spec_for(1), Seed::new(1), cat());
         let any_megakit = rooms.iter().flat_map(|r| &r.structure)
-            .any(|m| m.scene.contains("quaternius"));
+            .any(|m| spath(m.scene).contains("quaternius"));
         assert!(any_megakit, "planet 1 stays terrestrial megakit");
     }
 
@@ -1176,7 +1337,7 @@ mod tests {
     fn manifest_covers_every_assembly_enemy_position() {
         for seed in 0..20u64 {
             let Ok(graph) = generate(&test_config(seed)) else { continue };
-            let assembly = spawn_list_full(&graph, &spec_for(1), Seed::new(seed));
+            let assembly = spawn_list_full(&graph, &spec_for(1), Seed::new(seed), cat());
             let m = manifest(roster(), &graph, &spec_for(5), Seed::new(seed));
             assert_eq!(m.rooms.len(), assembly.len(), "seed {seed}: room count differs");
             for (room, room_asm) in m.rooms.iter().zip(&assembly) {
@@ -1466,7 +1627,7 @@ mod tests {
         );
         let graph = generate(&crate::generator::GeneratorConfig::for_spec(&spec, level_seed))
             .expect("the pinned seed must generate");
-        let rooms = spawn_list_full(&graph, &spec, level_seed);
+        let rooms = spawn_list_full(&graph, &spec, level_seed, cat());
         assert!(
             rooms.iter().any(|r| !r.containers.is_empty()),
             "fixture run seed 1 must place a green cache on level 1 — the GUT suite drives this run"
@@ -1574,7 +1735,7 @@ mod tests {
         let (_, spec) = fixed_fixture();
         let env = fixed_env(&spec).clone();
         let graph = crate::generator::generate_for_spec(&spec, Seed::new(1), false).unwrap();
-        let rooms = spawn_list_full(&graph, &spec, Seed::new(1));
+        let rooms = spawn_list_full(&graph, &spec, Seed::new(1), cat());
         let placements: Vec<&MeshPlacement> =
             rooms.iter().flat_map(|r| &r.structure).collect();
         assert_eq!(placements.len(), 1, "ONE scene placement for the whole house");
@@ -1599,7 +1760,7 @@ mod tests {
         let (_, spec) = fixed_fixture();
         let env = fixed_env(&spec).clone();
         let graph = crate::generator::generate_for_spec(&spec, Seed::new(1), false).unwrap();
-        let rooms = spawn_list_full(&graph, &spec, Seed::new(1));
+        let rooms = spawn_list_full(&graph, &spec, Seed::new(1), cat());
         assert_eq!(rooms.len(), env.zones.len());
         for (idx, room) in graph.room_indices().zip(&rooms) {
             let placed = graph.room(idx).expect("room");
@@ -1623,7 +1784,7 @@ mod tests {
     fn fixed_assembly_keeps_the_start_clear_and_spawns_in_bounds() {
         let (_, spec) = fixed_fixture();
         let graph = crate::generator::generate_for_spec(&spec, Seed::new(1), false).unwrap();
-        let rooms = spawn_list_full(&graph, &spec, Seed::new(1));
+        let rooms = spawn_list_full(&graph, &spec, Seed::new(1), cat());
         assert!(rooms[0].enemies.is_empty(), "the start zone stays clear");
         for (i, room) in rooms.iter().enumerate() {
             for e in &room.enemies {
@@ -1649,7 +1810,7 @@ mod tests {
         let (_, spec) = fixed_fixture();
         let env = fixed_env(&spec).clone();
         let graph = crate::generator::generate_for_spec(&spec, Seed::new(1), false).unwrap();
-        let rooms = spawn_list_full(&graph, &spec, Seed::new(1));
+        let rooms = spawn_list_full(&graph, &spec, Seed::new(1), cat());
         let slabs: Vec<_> = rooms.iter().flat_map(|r| &r.shell).collect();
         // Independent derivation of the boundary contract: one slab per
         // unit zone-cell face not shared with another zone cell — the
@@ -1714,7 +1875,7 @@ mod tests {
     fn fixed_manifest_anchors_the_boss_and_covers_every_position() {
         let (grammar, spec) = fixed_fixture();
         let graph = crate::generator::generate_for_spec(&spec, Seed::new(1), false).unwrap();
-        let rooms = spawn_list_full(&graph, &spec, Seed::new(1));
+        let rooms = spawn_list_full(&graph, &spec, Seed::new(1), cat());
         let m = manifest(&grammar, &graph, &spec, Seed::new(1));
         // Every assembly enemy position gets a type (the standing manifest
         // contract, exercised on the fixed path).
@@ -1737,4 +1898,308 @@ mod tests {
             "the arena manifests the staged boss"
         );
     }
+
+    // --- flythrough_poses: the capture rig's reproducible artery ---
+
+    /// A pose sits inside node `n`'s world AABB (small tolerance).
+    fn pose_in_node(
+        graph: &LevelGraph,
+        n: petgraph::graph::NodeIndex,
+        pose: &[f32; 5],
+        pitch: crate::planet::Pitch,
+    ) -> bool {
+        let Some(room) = graph.room(n) else { return false };
+        let origin = room.world_position(pitch.tile, pitch.story);
+        let [ex, ey, ez] = room.template.extents;
+        let eps = 0.01;
+        pose[0] >= origin[0] - eps
+            && pose[0] <= origin[0] + ex as f32 * pitch.tile + eps
+            && pose[1] >= origin[1] - eps
+            && pose[1] <= origin[1] + ey as f32 * pitch.story + eps
+            && pose[2] >= origin[2] - eps
+            && pose[2] <= origin[2] + ez as f32 * pitch.tile + eps
+    }
+
+    #[test]
+    fn flythrough_walks_the_artery_looking_where_it_goes() {
+        for seed in 0..10u64 {
+            let Ok(graph) = generate(&test_config(seed)) else { continue };
+            let poses = flythrough_poses(&graph, TEST_PITCH);
+            assert!(!poses.is_empty(), "seed {seed}: a level has an artery");
+
+            // Starts in the start room, ends in the exit room.
+            let start = graph.room_indices().next().unwrap();
+            let exit = graph.exit_room(start).unwrap();
+            assert!(pose_in_node(&graph, start, poses.first().unwrap(), TEST_PITCH),
+                "seed {seed}: the artery departs from the start room");
+            assert!(pose_in_node(&graph, exit, poses.last().unwrap(), TEST_PITCH),
+                "seed {seed}: the artery arrives at the exit room");
+
+            // The camera never leaves the level: every pose is inside
+            // SOME node's volume.
+            for (i, pose) in poses.iter().enumerate() {
+                assert!(
+                    graph.room_indices().any(|n| pose_in_node(&graph, n, pose, TEST_PITCH)),
+                    "seed {seed}: pose {i} escapes the level"
+                );
+            }
+
+            // Each pose looks where it goes: yaw (degrees) faces the
+            // successor; climbs pitch the camera with the motion.
+            for (i, pair) in poses.windows(2).enumerate() {
+                let (p, q) = (&pair[0], &pair[1]);
+                let (dx, dy, dz) = (q[0] - p[0], q[1] - p[1], q[2] - p[2]);
+                let len = (dx * dx + dz * dz).sqrt();
+                if len < 0.1 {
+                    if dy.abs() > 0.1 {
+                        assert!(p[4] * dy > 0.0,
+                            "seed {seed}: pose {i} pitches with its vertical hop");
+                    }
+                    continue;
+                }
+                let yaw = p[3].to_radians();
+                let dot = (-yaw.sin()) * dx / len + (-yaw.cos()) * dz / len;
+                assert!(dot > 0.99,
+                    "seed {seed}: pose {i} must face its successor (dot {dot})");
+            }
+        }
+    }
+
+    #[test]
+    fn flythrough_is_deterministic() {
+        let graph = generate(&test_config(3)).expect("seed 3 generates");
+        assert_eq!(
+            flythrough_poses(&graph, TEST_PITCH),
+            flythrough_poses(&graph, TEST_PITCH),
+            "same graph, same artery — the rig depends on it"
+        );
+    }
+
+    #[test]
+    fn interior_probes_cover_the_level_from_inside() {
+        for seed in 0..10u64 {
+            let Ok(graph) = generate(&test_config(seed)) else { continue };
+            let poses = interior_probe_poses(&graph, TEST_PITCH, 12);
+            assert!(!poses.is_empty(), "seed {seed}: a level has interiors to probe");
+            assert!(poses.len() <= 12, "seed {seed}: the probe respects its budget");
+
+            // Every probe is INSIDE some node's volume — that is the
+            // definition of an interior vantage.
+            for (i, pose) in poses.iter().enumerate() {
+                assert!(
+                    graph.room_indices().any(|n| pose_in_node(&graph, n, pose, TEST_PITCH)),
+                    "seed {seed}: probe {i} is not inside the level"
+                );
+            }
+
+            // Coverage, not a cluster: probes land in more than one room
+            // (any non-trivial level has several).
+            if graph.room_count() > 3 {
+                let mut hosts = std::collections::HashSet::new();
+                for pose in &poses {
+                    for n in graph.room_indices() {
+                        if pose_in_node(&graph, n, pose, TEST_PITCH) {
+                            hosts.insert(n.index());
+                            break;
+                        }
+                    }
+                }
+                assert!(hosts.len() > 1,
+                    "seed {seed}: probes cluster in one room ({hosts:?})");
+            }
+
+            // A vantage carries a chase camera: the probe stands clear of
+            // its host's XZ walls (a boundary-cell park embeds the camera
+            // in the wall — the BLIND frames of 2026-07-14) and looks
+            // toward the room's center, never point-blank at a plate.
+            for (i, pose) in poses.iter().enumerate() {
+                let host = graph
+                    .room_indices()
+                    .find(|n| pose_in_node(&graph, *n, pose, TEST_PITCH))
+                    .unwrap();
+                let room = graph.room(host).unwrap();
+                let origin = room.world_position(TEST_PITCH.tile, TEST_PITCH.story);
+                let [ex, _ey, ez] = room.template.extents;
+                let dx0 = pose[0] - origin[0];
+                let dx1 = origin[0] + ex as f32 * TEST_PITCH.tile - pose[0];
+                let dz0 = pose[2] - origin[2];
+                let dz1 = origin[2] + ez as f32 * TEST_PITCH.tile - pose[2];
+                let min_clear = dx0.min(dx1).min(dz0).min(dz1);
+                assert!(
+                    min_clear >= TEST_PITCH.tile - 1e-3,
+                    "seed {seed}: probe {i} parks {min_clear:.2}m from a wall \
+                     (needs a full tile of camera clearance)"
+                );
+
+                let center = [
+                    origin[0] + ex as f32 * TEST_PITCH.tile * 0.5,
+                    origin[2] + ez as f32 * TEST_PITCH.tile * 0.5,
+                ];
+                let (dx, dz) = (center[0] - pose[0], center[1] - pose[2]);
+                if dx.abs() + dz.abs() > 0.1 {
+                    let yaw = pose[3].to_radians();
+                    let dot = -yaw.sin() * dx - yaw.cos() * dz;
+                    assert!(dot > 0.0,
+                        "seed {seed}: probe {i} looks away from its room");
+                }
+            }
+
+            // Deterministic: the audit must see what the last run saw.
+            assert_eq!(poses, interior_probe_poses(&graph, TEST_PITCH, 12),
+                "seed {seed}: same graph, same probes");
+        }
+    }
+
+    /// Usage census (debug instrument, the flythrough_dump pattern):
+    /// how often each scene places across a generated level —
+    /// repetition, pool balance, and per-kit mix at a glance.
+    ///
+    ///     LEVEL=7 SEED=1 make test-rust FILTER=panel_usage_census TESTFLAGS=--ignored
+    #[test]
+    #[ignore = "debug instrumentation — run by hand with --nocapture"]
+    fn panel_usage_census() {
+        let level: u32 = std::env::var("LEVEL").ok().and_then(|v| v.parse().ok()).unwrap_or(7);
+        let run_seed: u64 = std::env::var("SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+        let spec = spec_for(level);
+        let config = config_for(run_seed, crate::generator::rooms_for_level(level), level);
+        let graph = generate(&config).expect("generates");
+        let rooms = spawn_list_full(&graph, &spec, Seed::new(run_seed), cat());
+        let mut counts: std::collections::HashMap<crate::asset_catalog::SceneId, usize> =
+            std::collections::HashMap::new();
+        for room in &rooms {
+            for m in &room.structure {
+                *counts.entry(m.scene).or_default() += 1;
+            }
+        }
+        let total: usize = counts.values().sum();
+        println!("census: level {level} seed {run_seed} — {total} placements, {} distinct scenes", counts.len());
+        // The variety statistic is PER PIECE within each (kit, role)
+        // pool — the group the coverer actually picks from. Per-kit room
+        // counts only witness the pick-a-kit stage; equality of
+        // distribution lives a level down. Attribution is post-hoc from
+        // production output via the catalog's pools (fixture scenes match
+        // no pool and fall through).
+        let grammar = crate::roster::roster();
+        let mut scene_pool: std::collections::HashMap<crate::asset_catalog::SceneId, (&str, &str)> =
+            std::collections::HashMap::new();
+        let mut scene_face: std::collections::HashMap<crate::asset_catalog::SceneId, [f32; 2]> =
+            std::collections::HashMap::new();
+        let mut pool_sizes: std::collections::BTreeMap<(&str, &str), usize> =
+            std::collections::BTreeMap::new();
+        for &id in &grammar.panel_kits_for_level(level) {
+            let kit = grammar.catalog.kit_def(id);
+            if let Some(p) = kit.role_pools() {
+                for (role, plates) in [
+                    ("floor", &p.floor),
+                    ("ceiling", &p.ceiling),
+                    ("wall", &p.wall),
+                    ("decoration", &p.decoration),
+                    ("addon", &p.addon),
+                ] {
+                    pool_sizes.insert((kit.key.as_str(), role), plates.len());
+                    for pl in plates {
+                        scene_pool.insert(pl.scene, (kit.key.as_str(), role));
+                        scene_face.insert(pl.scene, pl.face);
+                    }
+                }
+            }
+        }
+        let mut rooms_by_kit: std::collections::BTreeMap<&str, usize> =
+            std::collections::BTreeMap::new();
+        for room in &rooms {
+            if let Some(&(kit, _)) = room
+                .structure
+                .iter()
+                .find_map(|m| scene_pool.get(&m.scene))
+            {
+                *rooms_by_kit.entry(kit).or_default() += 1;
+            }
+        }
+        println!("census: {} rooms by kit:", rooms.len());
+        for (kit, n) in &rooms_by_kit {
+            println!("census: {n:5}  {kit}");
+        }
+        let mut by_pool: std::collections::BTreeMap<(&str, &str), Vec<(crate::asset_catalog::SceneId, usize)>> =
+            std::collections::BTreeMap::new();
+        for (&scene, &n) in &counts {
+            let Some(&pool) = scene_pool.get(&scene) else { continue };
+            by_pool.entry(pool).or_default().push((scene, n));
+        }
+        for ((kit, role), mut members) in by_pool {
+            let placed: usize = members.iter().map(|(_, n)| n).sum();
+            let pool_n = pool_sizes[&(kit, role)];
+            members.sort_by(|a, b| b.1.cmp(&a.1));
+            println!(
+                "census: {kit}/{role} — {placed} placements over {}/{pool_n} pool members",
+                members.len()
+            );
+            for (scene, n) in members {
+                let dims = scene_face
+                    .get(&scene)
+                    .map(|f| format!("{:.1}x{:.1}", f[0], f[1]))
+                    .unwrap_or_default();
+                println!(
+                    "census: {n:5} ({:4.1}%) {dims:>8}  {}",
+                    100.0 * n as f32 / placed as f32,
+                    spath(scene)
+                );
+            }
+        }
+    }
+
+    /// Containment invariant over REAL generated panel levels: every
+    /// sealed cell face of every room carries exactly one wall plate —
+    /// what reads as a hole in a capture must be an aperture (active
+    /// connector) or darkness, never missing geometry.
+    #[test]
+    fn generated_panel_rooms_are_watertight() {
+        use crate::cell::CellGrid;
+        let spec = spec_for(7);
+        let pitch = spec.pitch;
+        let grammar = crate::roster::roster();
+        // Plate AREA by scene: the invariant is AREA — covered == sealed
+        // — wide plates cover several faces at once.
+        let mut plate_area: std::collections::HashMap<crate::asset_catalog::SceneId, f32> =
+            std::collections::HashMap::new();
+        for &id in &grammar.panel_kits_for_level(7) {
+            let rp = grammar
+                .catalog
+                .kit_def(id)
+                .role_pools()
+                .expect("a linked panel kit carries role pools");
+            for pl in rp.floor.iter().chain(&rp.ceiling).chain(&rp.wall) {
+                plate_area.insert(pl.scene, pl.face[0] * pl.face[1]);
+            }
+        }
+        for seed in 0..5u64 {
+            let config = config_for(seed, crate::generator::rooms_for_level(7), 7);
+            let graph = generate(&config).expect("generates");
+            let rooms = spawn_list_full(&graph, &spec, Seed::new(seed), cat());
+            for (room_idx, idx) in graph.room_indices().enumerate() {
+                let room = graph.room(idx).unwrap();
+                let active = graph.active_connectors(idx);
+                let origin = room.world_position(pitch.tile, pitch.story);
+                let grid =
+                    CellGrid::new(&room.template, &active, origin, pitch.tile, pitch.story);
+                let sealed: usize = grid.cells().iter().map(|c| c.sealed_faces.len()).sum();
+                let sealed_area = sealed as f32 * pitch.tile * pitch.tile;
+                let covered: f32 = rooms[room_idx]
+                    .structure
+                    .iter()
+                    .filter_map(|m| plate_area.get(&m.scene))
+                    .sum();
+                // 1% relative: plate meshes run a hair under the grid
+                // (2.9989 on a 3.0 pitch — the seam slop the snap
+                // absorbs); a real missing plate is ~9 m², two orders
+                // above this tolerance on any room.
+                assert!(
+                    (covered - sealed_area).abs() < sealed_area * 0.01,
+                    "seed {seed} room {room_idx}: {sealed_area} m² sealed but \
+                     {covered} m² covered — the shell leaks"
+                );
+            }
+        }
+    }
+
+    
 }

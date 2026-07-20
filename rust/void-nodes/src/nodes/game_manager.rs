@@ -2142,6 +2142,24 @@ impl GameManager {
         if self.shot_timer < Self::SHOT_SETTLE_FRAMES {
             return;
         }
+        // Save only when the RENDERED camera is verifiably at the pose:
+        // the eye cameras mirror the player camera's physics-interpolated
+        // transform, which goes stale across pause boundaries (the
+        // loading veil) — a frame saved then wears the previous pose's
+        // pixels (L12-S1, 2026-07-14). Waiting costs frames; saving a lie
+        // costs a run.
+        let pose = self.shot_poses[self.shot_index];
+        let rendered_at = self
+            .base()
+            .get_parent()
+            .and_then(|p| p.try_get_node_as::<godot::classes::Camera3D>(nodes::PLAYER_CAMERA))
+            .map(|mut c| c.get_global_transform_interpolated().origin);
+        if let Some(at) = rendered_at {
+            let parked = Vector3::new(pose[0], pose[1], pose[2]);
+            if (at - parked).length() > 1.0 {
+                return; // interpolation not yet snapped — keep settling
+            }
+        }
         self.save_shot_frame(self.shot_index);
         self.shot_timer = 0;
         self.shot_index += 1;
@@ -2164,19 +2182,36 @@ impl GameManager {
         let Some(image) = texture.get_image() else { return };
         let path = format!("{dir}/shot_{index:02}.png");
         image.save_png(&path);
-        godot_print!("shot {index} saved -> {path}");
+        // The pose the frame ACTUALLY rendered from — capture-integrity
+        // questions get answered from the log, not by inference.
+        let at = self
+            .base()
+            .get_parent()
+            .and_then(|p| p.try_get_node_as::<Node3D>(nodes::PLAYER))
+            .map(|pl| pl.get_global_position())
+            .unwrap_or_default();
+        godot_print!(
+            "shot {index} saved at ({:.1}, {:.1}, {:.1}) -> {path}",
+            at.x, at.y, at.z
+        );
     }
 
-    /// Park the ship at a pose, motionless (position, yaw, pitch).
+    /// Park the ship at a pose, motionless (position, yaw, pitch). The
+    /// body FREEZES for the duration of the sequence: a parked vantage is
+    /// a camera dolly, and physics (penetration resolution, sleep) was
+    /// observed shoving teleported bodies off their poses mid-run — whole
+    /// capture tails rendered one stuck vantage (2026-07-14).
     fn park_at(&mut self, pose: [f32; 5]) {
         let Some(parent) = self.base().get_parent() else { return };
         let Some(mut player) = parent.try_get_node_as::<Node3D>(nodes::PLAYER) else { return };
-        player.set_global_position(Vector3::new(pose[0], pose[1], pose[2]));
-        player.set_rotation_degrees(Vector3::new(pose[4], pose[3], 0.0));
         if let Ok(mut body) = player.clone().try_cast::<godot::classes::RigidBody3D>() {
+            body.set_freeze_mode(godot::classes::rigid_body_3d::FreezeMode::STATIC);
+            body.set_freeze_enabled(true);
             body.set_linear_velocity(Vector3::ZERO);
             body.set_angular_velocity(Vector3::ZERO);
         }
+        player.set_global_position(Vector3::new(pose[0], pose[1], pose[2]));
+        player.set_rotation_degrees(Vector3::new(pose[4], pose[3], 0.0));
         player.reset_physics_interpolation();
     }
 
@@ -2230,5 +2265,14 @@ impl GameManager {
         // scan. Idempotent, so a later rebuild rewires nothing already connected.
         self.wire_level_signals();
         self.queue_music_push();
+        // A shot sequence parked its first pose BEFORE this build — and the
+        // build just respawned the player at the spawn pose, so the first
+        // frame would capture the spawn view wearing pose 0's name (every
+        // run's shot_00 was mislabeled until 2026-07-14). Re-park and
+        // restart the settle clock.
+        if let Some(pose) = self.shot_poses.get(self.shot_index).copied() {
+            self.shot_timer = 0;
+            self.park_at(pose);
+        }
     }
 }

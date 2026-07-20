@@ -214,7 +214,7 @@ impl IRigidBody3D for EnemyDrone {
         self.base_mut().add_child(&pivot);
         if let Some(model) = godot_util::spawn_model_fitted(
             &mut pivot,
-            def.model.as_str(),
+            godot_util::scene_path(def.model),
             def.size,
         ) {
             // ONE whole-model convex hull: the enemy's collider is a HIT

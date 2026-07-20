@@ -231,6 +231,15 @@ impl LevelGraph {
         self.boss_room.or_else(|| self.farthest_room_from(start))
     }
 
+    /// The node sequence of the shortest hop path `a -> b`, endpoints
+    /// included; empty when no path connects them. petgraph's astar —
+    /// never a hand-rolled walk.
+    pub fn path_between(&self, a: NodeIndex, b: NodeIndex) -> Vec<NodeIndex> {
+        petgraph::algo::astar(&self.graph, a, |n| n == b, |_| 1u32, |_| 0u32)
+            .map(|(_, path)| path)
+            .unwrap_or_default()
+    }
+
     /// Room nodes visible from `start` for rendering: the node itself plus
     /// every node reachable without entering more than `budget` opaque
     /// rooms. Corridors are transparent (free to pass — they have exactly

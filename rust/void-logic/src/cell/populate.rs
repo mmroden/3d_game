@@ -14,7 +14,12 @@ impl CellGrid {
     /// Each eligible cell gets at most one occupant, chosen from the theme's
     /// palette based on the cell's kind. Density controls probability.
     /// ConnectorGap cells stay empty. Blocking props skip reserved path cells.
-    pub fn populate(&mut self, theme: &RoomTheme, seed: u64) {
+    pub fn populate(
+        &mut self,
+        theme: &RoomTheme,
+        seed: u64,
+        catalog: &crate::asset_catalog::AssetCatalog,
+    ) {
         // Density thresholds: (numerator, denominator) per category.
         let (wall_num, wall_den, center_num, center_den, corner_num, corner_den) = match theme.density {
             RoomDensity::Sparse  => (1usize, 5usize, 1, 8, 1, 6),
@@ -63,7 +68,7 @@ impl CellGrid {
                             let base_y = cell.world_center[1] - cell.grid_pos[1] as f32 * story_height;
                             let placements: Vec<MeshPlacement> = (0..ey).map(|cy| {
                                 MeshPlacement {
-                                    scene: prop.scene,
+                                    scene: catalog.const_scene(prop.scene),
                                     position: [
                                         cell.world_center[0],
                                         base_y + cy as f32 * story_height,
@@ -78,7 +83,7 @@ impl CellGrid {
                             cell.occupant = CellOccupant::Props(placements);
                         } else {
                             cell.occupant = CellOccupant::Props(vec![MeshPlacement {
-                                scene: prop.scene,
+                                scene: catalog.const_scene(prop.scene),
                                 position: cell.world_center,
                                 rotation_x: 0.0,
                                 rotation_y: orient.random_range(0.0..TAU),
@@ -104,7 +109,7 @@ impl CellGrid {
                             ConnectorFacing::NegY | ConnectorFacing::PosY => (0.0, 0.0, 0.0),
                         };
                         cell.occupant = CellOccupant::Props(vec![MeshPlacement {
-                            scene: prop.scene,
+                            scene: catalog.const_scene(prop.scene),
                             position: [
                                 cell.world_center[0] + offset_x,
                                 cell.world_center[1],
@@ -131,7 +136,7 @@ impl CellGrid {
                             Collision::Dynamic
                         };
                         cell.occupant = CellOccupant::Props(vec![MeshPlacement {
-                            scene: prop.scene,
+                            scene: catalog.const_scene(prop.scene),
                             position: cell.world_center,
                             rotation_x: 0.0,
                             rotation_y: orient.random_range(0.0..TAU),

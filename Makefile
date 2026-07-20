@@ -1,4 +1,4 @@
-.PHONY: deps deps-rust deps-godot deps-gut require-rust check test-rust test-godot test-assets demo edit clean run build build-release assets assets-materials
+.PHONY: deps deps-rust deps-godot deps-gut require-rust check check-visual test-rust test-godot test-assets demo edit clean run build build-release assets assets-install assets-import assets-probe assets-materials
 
 # Project-local tool paths
 TOOLS_DIR := $(CURDIR)/tools
@@ -29,54 +29,53 @@ BLENDER := /Applications/Blender.app/Contents/MacOS/Blender
 
 # --- Targets ---
 
+PYENV := tools/pyenv
+
 # One-time / occasional setup: installs the toolchains and tools. NOT a
 # prerequisite of build/run/check — those just use what's already installed
 # (see require-rust). Re-run after a machine setup or to update the toolchain.
-deps: deps-rust deps-godot deps-gut deps-python deps-lfs
+# One door, everything inline: Blender (headless mesh work), git-lfs (provider
+# files over GitHub's 100 MB limit — without it a clone gets pointer stubs),
+# the asset-pipeline python venv (system python; the brew one has a broken
+# ensurepip, 2026-07-12), the io_scene_max Blender extension (.max material
+# recovery, installed via Blender's own extension system), and the headless
+# Godot editor LSP that Serena's GDScript support dials (TCP 6008, dialed
+# ONCE at Serena startup — so it must be up first; pid -> out/godot-lsp.pid,
+# kill that to stop it).
+deps: deps-rust deps-godot deps-gut
 	@if [ -x "$(BLENDER)" ]; then \
 		echo "Blender already installed ($$($(BLENDER) --version 2>/dev/null | head -1))."; \
 	else \
 		echo "==> Installing Blender (headless mesh decimation for 'make assets')..."; \
 		brew install --cask blender; \
 	fi
-	@echo "All dependencies ready."
-
-# Git LFS carries the provider files GitHub's 100 MB limit rejects (the
-# apartment .max/.fbx/textures.zip and the more_walls Vol01 kit — see
-# .gitattributes). Without it a clone gets pointer stubs and make assets
-# fails loudly (install-addons.sh guards for that).
-deps-lfs:
 	@if ! command -v git-lfs >/dev/null 2>&1; then \
 		echo "==> Installing git-lfs (large provider assets)..."; \
 		brew install git-lfs; \
 	fi
 	@git lfs install --local >/dev/null
-	@echo "git-lfs ready ($$(git lfs version | cut -d' ' -f1))."
-
-# Project python venv (tools/pyenv): the asset pipeline's non-Blender python
-# deps, pinned. Used by scripts/extract-max-materials.py (.max material
-# recovery). Built on the macOS system python — the brew one has a broken
-# ensurepip (libexpat mismatch, 2026-07-12).
-PYENV := tools/pyenv
-deps-python: deps-max-importer
 	@if [ ! -x "$(PYENV)/bin/python3" ]; then \
 		echo "==> Creating asset-pipeline python venv ($(PYENV))..."; \
 		/usr/bin/python3 -m venv $(PYENV); \
 	fi
 	@$(PYENV)/bin/pip install --quiet "olefile==0.47" "pytest==8.4.1"
-	@echo "Python venv ready ($$($(PYENV)/bin/python3 --version))."
-
-# The io_scene_max Blender extension (GPL): parses .max scenes incl. Corona
-# materials. Installed through Blender's OWN extension system (the
-# extensions.blender.org repo) — the sanctioned pathway, wheels and all.
-# scripts/extract-max-materials.py runs it headless to recover the
-# material->texture wiring the provider's FBX export destroyed.
-deps-max-importer:
 	@if ! $(BLENDER) --command extension list 2>/dev/null | grep -q "io_scene_max.*\[installed\]"; then \
 		echo "==> Installing io_scene_max via Blender extensions..."; \
 		$(BLENDER) --online-mode --command extension install --sync --enable io_scene_max; \
 	fi
-	@echo "io_scene_max extension ready."
+	@if lsof -nP -iTCP:6008 -sTCP:LISTEN >/dev/null 2>&1; then \
+		echo "Godot LSP already listening on 6008."; \
+	else \
+		echo "==> Starting headless Godot editor LSP on 6008..."; \
+		mkdir -p out; \
+		nohup $(GODOT) --headless --editor --lsp-port 6008 --path $(GODOT_DIR) > out/godot-lsp.log 2>&1 & echo $$! > out/godot-lsp.pid; \
+		ok=0; for i in $$(seq 1 30); do \
+			if lsof -nP -iTCP:6008 -sTCP:LISTEN >/dev/null 2>&1; then ok=1; break; fi; sleep 1; \
+		done; \
+		[ $$ok -eq 1 ] || { echo "ERROR: Godot LSP did not come up (see out/godot-lsp.log)"; exit 1; }; \
+		echo "Godot LSP up (pid $$(cat out/godot-lsp.pid))."; \
+	fi
+	@echo "All dependencies ready."
 
 # Bootstrap + update the Rust toolchain (network). Explicit only — kept out of
 # the build/run hot path so a flaky download can't break every command. The
@@ -113,11 +112,25 @@ deps-godot:
 		echo "Godot $(GODOT_VERSION) installed to $(GODOT_APP)"; \
 	fi
 
-assets: build deps-godot
+# The asset pipeline, assembled from its three doors — each independently
+# runnable when only its stage changed (a Transform edit needs only
+# `make assets-install assets-probe`; a material fix only
+# `make assets-import assets-probe`). Correctness pressure and
+# reproducibility pressure, granularly.
+assets: assets-install assets-import assets-probe
+
+# Door 1: provider packs -> installed addons (Blender conversions,
+# panel splits + role bakes; split logs land in out/split-<kit>.log).
+assets-install: build deps-godot
 	@test -d $(ASSETS_DIR)/quaternius-megakit || { echo "ERROR: assets/ not found. Download paid assets manually into assets/."; exit 1; }
 	@echo "==> Installing Godot addons from asset packs..."
 	@BLENDER="$(BLENDER)" ./scripts/install-addons.sh $(ASSETS_DIR) $(GODOT_DIR)
 	@echo "Addons installed."
+
+# Door 2: the three-pass Godot import (sidecars -> material script +
+# mipmaps -> restored materials; invokes assets-materials between
+# passes 2 and 3).
+assets-import: deps-godot
 	@rm -f $(GODOT_DIR)/.godot/uid_cache.bin
 	@chmod -R u+w $(GODOT_DIR)/.godot/imported 2>/dev/null; rm -rf $(GODOT_DIR)/.godot/imported || true
 	@echo "==> Importing assets (pass 1: generates .import sidecars)..."
@@ -135,14 +148,17 @@ assets: build deps-godot
 	@echo "==> Reimporting assets (pass 3: with restored materials)..."
 	@rm -f $(GODOT_DIR)/.godot/uid_cache.bin
 	$(GODOT) --headless --import --path $(GODOT_DIR)
-	@# Final accounting: probe the installed assets into the generated
-	@# catalogs the roster linker resolves against — the enemy-model map
-	@# (models.generated.toml) and each kit's recipe-derived grid
-	@# (kits.generated.toml).
-	@echo "==> Probing installed assets into the roster catalogs..."
+	@echo "Import complete."
+
+# Door 3: the final accounting — probe the installed assets into the
+# generated catalogs the linkers resolve against (the enemy-model map,
+# each kit's grid + census). Runs alone after any Transform-only change:
+# `make assets-install assets-probe`.
+assets-probe:
+	@echo "==> Probing installed assets into the asset catalogs..."
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && $(CARGO) test -p void_logic --quiet probe_installed_assets -- --ignored >/dev/null
-	@echo "Import complete."
+	@echo "Catalogs regenerated."
 
 deps-gut:
 	@if [ -d "$(GUT_DIR)" ]; then \
@@ -164,9 +180,23 @@ check: build deps-godot deps-gut
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && \
 		$(CARGO) clippy -- -D warnings && \
-		$(CARGO) test
+		$(CARGO) test --lib
 	@$(MAKE) test-godot
+	@$(MAKE) check-visual
 	@echo "All checks passed."
+
+# The visual-contract suite (rust/void-logic/tests/visual.rs): boots the
+# real game at grammar-derived poses, captures frames, asserts on the
+# images (e.g. planet 2 containment). Part of `make check`; isolatable:
+#   make check-visual                  # every contract
+#   LEVEL=8 SEED=2 make check-visual   # one level/seed, frames kept in out/visual/
+check-visual: build-release deps-godot
+	@echo "==> Running visual contracts (log: out/visual/last-run.log)..."
+	@mkdir -p $(CURDIR)/out/visual
+	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
+		cd $(RUST_DIR) && GODOT="$(GODOT)" $(CARGO) test -p void_logic --test visual -- --nocapture \
+			> $(CURDIR)/out/visual/last-run.log 2>&1; \
+		code=$$?; cat $(CURDIR)/out/visual/last-run.log; exit $$code
 
 # Re-copies sanitized .tres materials from asset packs and re-applies
 # local material patches (no reimport).
@@ -181,14 +211,17 @@ assets-materials:
 # (fbx_materials.json / max_materials.json), the material plan, and the
 # built .glb. Answers "why does this surface have no texture/reflection"
 # BEFORE a playtest does. Extracts are produced by `make assets`.
-test-assets: deps-python
+test-assets:
+	@test -x "$(PYENV)/bin/python3" || { echo "ERROR: python venv missing — run 'make deps'"; exit 1; }
 	@echo "==> Running asset-pipeline audit (pytest)..."
 	@$(PYENV)/bin/python3 -m pytest scripts/tests -q
 
 # Filtered Rust tests with output: make test-rust FILTER=test_name
+# Library tests only — the visual suite (tests/visual.rs) boots Godot and
+# has its own door, `make check-visual`.
 test-rust:
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
-		cd $(RUST_DIR) && $(CARGO) test $(FILTER) -- --nocapture
+		cd $(RUST_DIR) && $(CARGO) test --lib $(FILTER) -- --nocapture $(TESTFLAGS)
 
 # Regenerate rosters/VOCABULARY.md from the closed-vocabulary enums.
 # `make build` runs this; the standalone target is the fast manual path.
@@ -212,7 +245,9 @@ roster-template:
 # GUT runs under an isolated HOME so its user:// (savegame.cfg, options.cfg)
 # never touches the developer's real profile — tests exercise real
 # persistence, and real persistence must not wipe real progress.
-test-godot: deps-godot deps-gut
+# build first: GUT drives the COMPILED extension — a stale dylib tests
+# yesterday's code (84 phantom failures, 2026-07-18).
+test-godot: build deps-godot deps-gut
 	@echo "==> Running Godot tests (GUT)$(if $(F), [F=$(F) T=$(T)])..."
 	@mkdir -p $(GODOT_DIR)/.godot/test_home
 	@GODOT_DISABLE_LEAK_CHECKS=1 HOME=$(abspath $(GODOT_DIR)/.godot/test_home) \

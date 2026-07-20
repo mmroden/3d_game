@@ -13,6 +13,26 @@ pub enum PropPlacement {
     Ceiling,
 }
 
+/// Every prop table's scenes, for the catalog's load-time interning —
+/// a placement can only carry a SceneId the arena knows.
+pub(super) fn all_scenes() -> impl Iterator<Item = &'static str> {
+    [
+        WALL_ADJACENT_PROPS,
+        CENTER_PROPS,
+        CORNER_PROPS,
+        CEILING_PROPS,
+        WAREHOUSE_WALL_PROPS,
+        WAREHOUSE_CENTER_PROPS,
+        COMMAND_WALL_PROPS,
+        COMMAND_CENTER_PROPS,
+        LABORATORY_WALL_PROPS,
+        LABORATORY_CENTER_PROPS,
+    ]
+    .into_iter()
+    .flatten()
+    .map(|p| p.scene)
+}
+
 /// A prop that can be placed inside rooms.
 #[derive(Debug, Clone, Copy)]
 pub struct PropEntry {

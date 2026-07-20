@@ -4,6 +4,7 @@
 pub mod abstract_graph;
 pub mod armament;
 pub mod cell;
+pub mod coverer;
 pub mod fixed_layout;
 pub mod generator;
 pub mod room_theme;

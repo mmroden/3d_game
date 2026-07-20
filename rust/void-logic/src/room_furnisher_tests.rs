@@ -1,6 +1,7 @@
 use super::*;
 use crate::asset_catalog;
 use crate::room_template::*;
+use crate::test_fixtures::{cat, spath};
 
 fn room_3x3() -> RoomTemplate {
     RoomTemplate {
@@ -45,14 +46,21 @@ fn corridor_1x1() -> RoomTemplate {
     }
 }
 
-/// All wall-adjacent prop scene paths for easy lookup.
-fn wall_adjacent_scenes() -> Vec<&'static str> {
-    asset_catalog::WALL_ADJACENT_PROPS.iter().map(|p| p.scene).collect()
+/// All wall-adjacent prop scenes, as ids — fixed at the source so every
+/// `.contains(&p.scene)` site below stayed untouched.
+fn wall_adjacent_scenes() -> Vec<asset_catalog::SceneId> {
+    asset_catalog::WALL_ADJACENT_PROPS
+        .iter()
+        .map(|p| cat().const_scene(p.scene))
+        .collect()
 }
 
-/// All center prop scene paths.
-fn center_scenes() -> Vec<&'static str> {
-    asset_catalog::CENTER_PROPS.iter().map(|p| p.scene).collect()
+/// All center prop scenes, as ids.
+fn center_scenes() -> Vec<asset_catalog::SceneId> {
+    asset_catalog::CENTER_PROPS
+        .iter()
+        .map(|p| cat().const_scene(p.scene))
+        .collect()
 }
 
 /// Check if a cell (cx, cz) is on the room boundary.
@@ -69,7 +77,7 @@ fn room_3x3_gets_at_least_one_prop() {
     let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX, frame: FrameStyle::Door }, Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX, frame: FrameStyle::Door }];
     let mut found_any = false;
     for seed in 0..20 {
-        let props = furnish(&template, &active, [0.0, 0.0, 0.0], 4.0, seed, RoomDensity::Normal);
+        let props = furnish(&template, &active, [0.0, 0.0, 0.0], 4.0, seed, RoomDensity::Normal, cat());
         if !props.is_empty() {
             found_any = true;
             break;
@@ -88,7 +96,7 @@ fn wall_adjacent_props_are_at_boundary_cells() {
     let ez = template.extents[2] as i32;
 
     for seed in 0..10 {
-        let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Normal);
+        let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Normal, cat());
         for p in &props {
             if wall_scenes.contains(&p.scene) {
                 // Convert meter position back to cell index
@@ -97,7 +105,7 @@ fn wall_adjacent_props_are_at_boundary_cells() {
                 assert!(
                     is_boundary(cx, cz, ex, ez),
                     "wall-adjacent prop '{}' at {:?} maps to cell ({cx},{cz}) which is not a boundary cell",
-                    p.scene, p.position
+                    spath(p.scene), p.position
                 );
             }
         }
@@ -114,7 +122,7 @@ fn center_props_are_at_non_boundary_cells() {
     let ez = template.extents[2] as i32;
 
     for seed in 0..10 {
-        let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Normal);
+        let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Normal, cat());
         for p in &props {
             if center_sc.contains(&p.scene) {
                 let cx = ((p.position[0] / cell_size).floor()) as i32;
@@ -122,7 +130,7 @@ fn center_props_are_at_non_boundary_cells() {
                 assert!(
                     !is_boundary(cx, cz, ex, ez),
                     "center prop '{}' at {:?} maps to boundary cell ({cx},{cz})",
-                    p.scene, p.position
+                    spath(p.scene), p.position
                 );
             }
         }
@@ -146,14 +154,14 @@ fn no_props_at_active_connector_cells() {
         .collect();
 
     for seed in 0..10 {
-        let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Normal);
+        let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Normal, cat());
         for p in &props {
             let cx = ((p.position[0] / cell_size).floor()) as i32;
             let cz = ((p.position[2] / cell_size).floor()) as i32;
             assert!(
                 !connector_cells.contains(&(cx, cz)),
                 "prop '{}' at {:?} is in active connector cell ({cx},{cz})",
-                p.scene, p.position
+                spath(p.scene), p.position
             );
         }
     }
@@ -166,7 +174,7 @@ fn no_prop_position_overlaps() {
     let active = vec![Connector { offset: [0, 0, 2], facing: ConnectorFacing::NegX, frame: FrameStyle::Door }, Connector { offset: [4, 0, 2], facing: ConnectorFacing::PosX, frame: FrameStyle::Door }];
 
     for seed in 0..10 {
-        let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Normal);
+        let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Normal, cat());
         for (i, a) in props.iter().enumerate() {
             for (j, b) in props.iter().enumerate() {
                 if i != j {
@@ -176,7 +184,9 @@ fn no_prop_position_overlaps() {
                     assert!(
                         !same_pos,
                         "props overlap at {:?}: '{}' and '{}'",
-                        a.position, a.scene, b.scene
+                        a.position,
+                        spath(a.scene),
+                        spath(b.scene)
                     );
                 }
             }
@@ -193,7 +203,7 @@ fn wall_adjacent_props_are_rotated_to_match_wall() {
     let wall_scenes = wall_adjacent_scenes();
 
     for seed in 0..20 {
-        let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Normal);
+        let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Normal, cat());
         for p in &props {
             if wall_scenes.contains(&p.scene) {
                 let cx = ((p.position[0] / cell_size).floor()) as i32;
@@ -223,11 +233,11 @@ fn corridor_gets_no_center_props() {
     let center_sc = center_scenes();
 
     for seed in 0..20 {
-        let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Normal);
+        let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Normal, cat());
         for p in &props {
             assert!(
                 !center_sc.contains(&p.scene),
-                "corridor should not have center prop '{}'", p.scene
+                "corridor should not have center prop '{}'", spath(p.scene)
             );
         }
     }
@@ -239,7 +249,7 @@ fn corridor_gets_no_center_props() {
 fn every_room_cell_gets_at_least_one_light_fixture() {
     let template = room_3x3();
     let cell_size = 4.0;
-    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: cell_size, story: 5.0 }, 0);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: cell_size, story: 5.0 }, 0, cat());
     let cell_count = (template.extents[0] * template.extents[2]) as usize;
     assert_eq!(
         fixtures.len(), cell_count,
@@ -250,7 +260,7 @@ fn every_room_cell_gets_at_least_one_light_fixture() {
 #[test]
 fn corridor_gets_light_fixtures() {
     let template = corridor_1x1();
-    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 0);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 0, cat());
     assert!(
         !fixtures.is_empty(),
         "corridor should get at least 1 light fixture"
@@ -263,7 +273,7 @@ fn light_fixture_mesh_at_ceiling_height() {
     let cell_size = 4.0;
     let cell_height = 5.0; // planet-1 story — tests may hold literals
     let origin_y = 0.0;
-    let fixtures = light_fixtures(&template, &[], [0.0, origin_y, 0.0], crate::planet::Pitch { tile: cell_size, story: 5.0 }, 0);
+    let fixtures = light_fixtures(&template, &[], [0.0, origin_y, 0.0], crate::planet::Pitch { tile: cell_size, story: 5.0 }, 0, cat());
     for (mesh, _) in &fixtures {
         let expected_y = origin_y + cell_height - 0.1;
         assert!(
@@ -277,11 +287,11 @@ fn light_fixture_mesh_at_ceiling_height() {
 #[test]
 fn light_source_within_fixture_bounds() {
     let template = room_3x3();
-    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 0);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 0, cat());
     for (mesh, light) in &fixtures {
         // Find which fixture catalog entry this is
         let fixture_entry = asset_catalog::ALL_LIGHTS.iter()
-            .find(|f| f.scene == mesh.scene)
+            .find(|f| cat().const_scene(f.scene) == mesh.scene)
             .expect("fixture scene should be in catalog");
 
         // The light offset from the fixture should be within the fixture bounds
@@ -304,7 +314,7 @@ fn light_source_inside_room_bounds() {
     let template = room_5x5();
     let cell_size = 4.0;
     let origin = [4.0, 2.0, 8.0];
-    let fixtures = light_fixtures(&template, &[], origin, crate::planet::Pitch { tile: cell_size, story: 5.0 }, 0);
+    let fixtures = light_fixtures(&template, &[], origin, crate::planet::Pitch { tile: cell_size, story: 5.0 }, 0, cat());
     let max_x = origin[0] + template.extents[0] as f32 * cell_size;
     let max_z = origin[2] + template.extents[2] as f32 * cell_size;
     let cell_height = 5.0; // planet-1 story — tests may hold literals
@@ -330,7 +340,7 @@ fn light_source_inside_room_bounds() {
 fn light_source_range_covers_cell() {
     let cell_size = 4.0;
     let template = room_3x3();
-    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: cell_size, story: 5.0 }, 0);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: cell_size, story: 5.0 }, 0, cat());
     for (_, light) in &fixtures {
         assert!(
             light.range >= cell_size / 2.0,
@@ -353,7 +363,7 @@ fn multi_story_room_lights_only_at_top_floor() {
         loot_spawns: vec![],
         extents: [3, 2, 3],
     };
-    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 0);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 0, cat());
     let cell_height = 5.0; // planet-1 story — tests may hold literals
     // Only top floor (cy=1) has ceilings → 3x3 = 9 lights, NOT 18.
     assert_eq!(
@@ -387,7 +397,7 @@ fn no_light_where_ceiling_removed_by_connector() {
         extents: [1, 1, 1],
     };
     let active = vec![Connector { offset: [0, 0, 0], facing: ConnectorFacing::PosY, frame: FrameStyle::Door }];
-    let fixtures = light_fixtures(&template, &active, [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 0);
+    let fixtures = light_fixtures(&template, &active, [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 0, cat());
     assert_eq!(
         fixtures.len(), 0,
         "cell with active PosY connector has no ceiling → no light"
@@ -411,7 +421,7 @@ fn no_lights_over_a_2x2_ceiling_opening() {
         extents: [4, 1, 4],
     };
     let active = vec![template.connectors[0]];
-    let fixtures = light_fixtures(&template, &active, [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 0);
+    let fixtures = light_fixtures(&template, &active, [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 0, cat());
     // The four open cells (1,1)(1,2)(2,1)(2,2) → world centers (6/10, *, 6/10):
     // no fixture may sit on any of them.
     let over_hole = [(6.0, 6.0), (6.0, 10.0), (10.0, 6.0), (10.0, 10.0)];
@@ -451,7 +461,7 @@ fn rim_lights_ring_a_vertical_opening() {
         extents: [4, 1, 4],
     };
     let active = vec![template.connectors[0]];
-    let fixtures = light_fixtures(&template, &active, [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 0);
+    let fixtures = light_fixtures(&template, &active, [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 0, cat());
     assert_eq!(
         fixtures.len(),
         16,
@@ -493,8 +503,8 @@ fn light_ambiance_is_deterministic_for_a_seed() {
     // Same seed → identical states and colors, so a level looks the same
     // every time it is generated.
     let template = room_5x5();
-    let a = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 777);
-    let b = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 777);
+    let a = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 777, cat());
+    let b = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 777, cat());
     assert_eq!(a.len(), b.len());
     for ((_, la), (_, lb)) in a.iter().zip(b.iter()) {
         assert_eq!(la.state, lb.state);
@@ -534,7 +544,7 @@ fn most_lights_are_dark_in_an_abandoned_base() {
     // Over a large room, Off should dominate (≈50%) — the feature's
     // whole point is that lights exist but mostly are not on.
     let template = room_5x5();
-    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 12345);
+    let fixtures = light_fixtures(&template, &[], [0.0, 0.0, 0.0], crate::planet::Pitch { tile: 4.0, story: 5.0 }, 12345, cat());
     let off = fixtures.iter().filter(|(_, l)| l.state == LightState::Off).count();
     let on = fixtures.iter().filter(|(_, l)| l.state == LightState::On).count();
     assert!(
@@ -552,7 +562,7 @@ fn empty_room_paths_between_opposite_openings() {
     let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX, frame: FrameStyle::Door }, Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX, frame: FrameStyle::Door }];
     let props = vec![]; // no props
     assert!(
-        flight_paths_clear(&template, &active, &props, 4.0),
+        flight_paths_clear(&template, &active, &props, 4.0, cat()),
         "empty room should have clear paths"
     );
 }
@@ -562,7 +572,7 @@ fn empty_room_paths_between_adjacent_openings() {
     let template = room_3x3();
     let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX, frame: FrameStyle::Door }, Connector { offset: [1, 0, 0], facing: ConnectorFacing::NegZ, frame: FrameStyle::Door }];
     assert!(
-        flight_paths_clear(&template, &active, &[], 4.0),
+        flight_paths_clear(&template, &active, &[], 4.0, cat()),
         "empty room should have L-shaped path"
     );
 }
@@ -573,8 +583,10 @@ fn single_opening_always_passes() {
     let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX, frame: FrameStyle::Door }];
     // Even with a blocking prop in the middle
     let block = MeshPlacement {
-        scene: asset_catalog::CENTER_PROPS.iter()
-            .find(|p| p.blocks_flight).unwrap().scene,
+        scene: cat().const_scene(
+            asset_catalog::CENTER_PROPS.iter()
+                .find(|p| p.blocks_flight).unwrap().scene,
+        ),
         position: [6.0, 0.0, 6.0], // center of 3x3 room at origin
         rotation_x: 0.0,
         rotation_y: 0.0,
@@ -582,7 +594,7 @@ fn single_opening_always_passes() {
         collision: Collision::Static,
     };
     assert!(
-        flight_paths_clear(&template, &active, &[block], 4.0),
+        flight_paths_clear(&template, &active, &[block], 4.0, cat()),
         "single opening needs no paths"
     );
 }
@@ -594,15 +606,17 @@ fn blocking_prop_in_path_detected() {
     let template = room_3x3();
     let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX, frame: FrameStyle::Door }, Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX, frame: FrameStyle::Door }];
     // Block ALL cells in the middle column to ensure no path exists
-    let blocking_scene = asset_catalog::CENTER_PROPS.iter()
-        .find(|p| p.blocks_flight).unwrap().scene;
+    let blocking_scene = cat().const_scene(
+        asset_catalog::CENTER_PROPS.iter()
+            .find(|p| p.blocks_flight).unwrap().scene,
+    );
     let blocks = vec![
         MeshPlacement { scene: blocking_scene, position: [6.0, 0.0, 2.0], rotation_x: 0.0, rotation_y: 0.0, scale: 1.0, collision: Collision::Static },  // cell (1,0)
         MeshPlacement { scene: blocking_scene, position: [6.0, 0.0, 6.0], rotation_x: 0.0, rotation_y: 0.0, scale: 1.0, collision: Collision::Static },  // cell (1,1)
         MeshPlacement { scene: blocking_scene, position: [6.0, 0.0, 10.0], rotation_x: 0.0, rotation_y: 0.0, scale: 1.0, collision: Collision::Static }, // cell (1,2)
     ];
     assert!(
-        !flight_paths_clear(&template, &active, &blocks, 4.0),
+        !flight_paths_clear(&template, &active, &blocks, 4.0, cat()),
         "blocking all middle cells should block the path"
     );
 }
@@ -613,9 +627,9 @@ fn furnished_3x3_preserves_paths() {
     let cell_size = 4.0;
     let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX, frame: FrameStyle::Door }, Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX, frame: FrameStyle::Door }];
     for seed in 0..50 {
-        let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Normal);
+        let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Normal, cat());
         assert!(
-            flight_paths_clear(&template, &active, &props, cell_size),
+            flight_paths_clear(&template, &active, &props, cell_size, cat()),
             "seed {seed}: furnished 3x3 should preserve flight paths"
         );
     }
@@ -632,9 +646,9 @@ fn furnished_5x5_with_4_openings_preserves_paths() {
         Connector { offset: [2, 0, 4], facing: ConnectorFacing::PosZ, frame: FrameStyle::Door },
     ];
     for seed in 0..50 {
-        let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Normal);
+        let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Normal, cat());
         assert!(
-            flight_paths_clear(&template, &active, &props, cell_size),
+            flight_paths_clear(&template, &active, &props, cell_size, cat()),
             "seed {seed}: furnished 5x5 should preserve all flight paths"
         );
     }
@@ -651,8 +665,8 @@ fn dense_rooms_produce_more_props_than_sparse() {
     let mut dense_total = 0usize;
     let seeds = 20;
     for seed in 0..seeds {
-        sparse_total += furnish(&template, &active, [0.0, 0.0, 0.0], 4.0, seed, RoomDensity::Sparse).len();
-        dense_total += furnish(&template, &active, [0.0, 0.0, 0.0], 4.0, seed, RoomDensity::Dense).len();
+        sparse_total += furnish(&template, &active, [0.0, 0.0, 0.0], 4.0, seed, RoomDensity::Sparse, cat()).len();
+        dense_total += furnish(&template, &active, [0.0, 0.0, 0.0], 4.0, seed, RoomDensity::Dense, cat()).len();
     }
 
     assert!(
@@ -672,7 +686,7 @@ fn dense_room_fills_majority_of_eligible_cells() {
 
     let mut total_props = 0usize;
     for seed in 0..num_seeds {
-        total_props += furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed as u64, RoomDensity::Dense).len();
+        total_props += furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed as u64, RoomDensity::Dense, cat()).len();
     }
     let avg = total_props / num_seeds;
 
@@ -693,7 +707,7 @@ fn sparse_room_leaves_most_cells_empty() {
 
     let mut total_props = 0usize;
     for seed in 0..num_seeds {
-        total_props += furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed as u64, RoomDensity::Sparse).len();
+        total_props += furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed as u64, RoomDensity::Sparse, cat()).len();
     }
     let avg = total_props / num_seeds;
 
@@ -715,9 +729,9 @@ fn normal_density_between_sparse_and_dense() {
     let mut normal_total = 0;
     let mut dense_total = 0;
     for seed in 0..100 {
-        sparse_total += furnish(&template, &active, origin, cs, seed, RoomDensity::Sparse).len();
-        normal_total += furnish(&template, &active, origin, cs, seed, RoomDensity::Normal).len();
-        dense_total += furnish(&template, &active, origin, cs, seed, RoomDensity::Dense).len();
+        sparse_total += furnish(&template, &active, origin, cs, seed, RoomDensity::Sparse, cat()).len();
+        normal_total += furnish(&template, &active, origin, cs, seed, RoomDensity::Normal, cat()).len();
+        dense_total += furnish(&template, &active, origin, cs, seed, RoomDensity::Dense, cat()).len();
     }
     assert!(
         sparse_total < normal_total,
@@ -735,9 +749,9 @@ fn dense_furnished_room_preserves_flight_paths() {
     let cell_size = 4.0;
     let active = vec![Connector { offset: [0, 0, 1], facing: ConnectorFacing::NegX, frame: FrameStyle::Door }, Connector { offset: [2, 0, 1], facing: ConnectorFacing::PosX, frame: FrameStyle::Door }];
     for seed in 0..50 {
-        let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Dense);
+        let props = furnish(&template, &active, [0.0, 0.0, 0.0], cell_size, seed, RoomDensity::Dense, cat());
         assert!(
-            flight_paths_clear(&template, &active, &props, cell_size),
+            flight_paths_clear(&template, &active, &props, cell_size, cat()),
             "seed {seed}: dense 3x3 should preserve flight paths"
         );
     }
@@ -786,17 +800,17 @@ fn all_furnished_props_within_cell_bounds() {
         let max_z = origin[2] + template.extents[2] as f32 * cell_size;
 
         for seed in 0..20 {
-            let props = furnish(&template, &active, origin, cell_size, seed, RoomDensity::Normal);
+            let props = furnish(&template, &active, origin, cell_size, seed, RoomDensity::Normal, cat());
             for p in &props {
                 assert!(
                     p.position[0] >= origin[0] && p.position[0] <= max_x,
                     "seed {seed}, template {:?}: prop '{}' x={} outside [{}, {}]",
-                    template.extents, p.scene, p.position[0], origin[0], max_x
+                    template.extents, spath(p.scene), p.position[0], origin[0], max_x
                 );
                 assert!(
                     p.position[2] >= origin[2] && p.position[2] <= max_z,
                     "seed {seed}, template {:?}: prop '{}' z={} outside [{}, {}]",
-                    template.extents, p.scene, p.position[2], origin[2], max_z
+                    template.extents, spath(p.scene), p.position[2], origin[2], max_z
                 );
             }
         }
@@ -816,7 +830,7 @@ fn wall_adjacent_props_closer_to_wall_than_center() {
     let ez = template.extents[2] as f32;
 
     for seed in 0..20 {
-        let props = furnish(&template, &active, origin, cell_size, seed, RoomDensity::Normal);
+        let props = furnish(&template, &active, origin, cell_size, seed, RoomDensity::Normal, cat());
         for p in &props {
             if !wall_scenes.contains(&p.scene) {
                 continue;
@@ -842,7 +856,7 @@ fn wall_adjacent_props_closer_to_wall_than_center() {
             assert!(
                 dist_to_wall <= dist_to_center + 0.01,
                 "seed {seed}: wall-adjacent prop '{}' at {:?} is closer to center ({dist_to_center:.2}) than wall ({dist_to_wall:.2})",
-                p.scene, p.position
+                spath(p.scene), p.position
             );
         }
     }

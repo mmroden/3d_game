@@ -147,12 +147,22 @@ fn generate(seed: u64) -> Generated {
         let tile = rng.random_range(2.0..6.0f32);
         kits_toml.push_str(&format!(
             "[kits.kit_{k}]\nparadigm = \"{}\"\n\
-             install_dir = \"godot/addons/kit_{k}\"\n\n",
+             install_dir = \"godot/addons/kit_{k}\"\n{}\n",
             if cubic { "panel" } else { "layered" },
+            // Panel kits author the one policy knob; the census decides.
+            if cubic { "wall_coverage = 0.9\n" } else { "" },
         ));
         kit_grids_toml.push_str(&format!(
-            "[kits.kit_{k}]\ntile = {tile:.1}\nstory = {:.1}\n\n",
+            "[kits.kit_{k}]\ntile = {tile:.1}\nstory = {:.1}\n{}\n",
             if cubic { tile } else { tile + rng.random_range(0.5..2.0f32) },
+            // A panel kit's census: the baked filler trio its pools
+            // derive from (a kit without pooled variants is a link
+            // error — v1 retired 2026-07-19).
+            if cubic {
+                crate::roster::test_census_variants(tile)
+            } else {
+                String::new()
+            },
         ));
     }
 
@@ -228,13 +238,18 @@ fn generate(seed: u64) -> Generated {
 
 fn load_generated(g: &Generated) -> Result<super::Roster, String> {
     let planets: Vec<&str> = g.planet_tomls.iter().map(|s| s.as_str()).collect();
-    load_from(
-        &g.enemies_toml,
+    let catalog = crate::asset_catalog::AssetCatalog::load(
         &g.kits_toml,
         &g.kit_grids_toml,
         &g.models_toml,
+        crate::asset_catalog::ENVIRONMENTS_GENERATED_TOML,
+    )
+    .map_err(|e| e.join("\n"))?;
+    load_from(
+        &g.enemies_toml,
         &planets,
         super::EnvSources::generated_only(),
+        std::sync::Arc::new(catalog),
     )
 }
 

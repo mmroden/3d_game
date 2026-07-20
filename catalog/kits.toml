@@ -10,9 +10,19 @@
 paradigm = "layered"
 install_dir = "godot/addons/quaternius/modularscifimegakit"
 
+# Panel kits author ONE policy knob: wall_coverage, the minimum censused
+# face coverage for a piece to serve as a wall. Membership itself derives
+# from the probe's census (kits.generated.toml): square, cell-sized, and
+# covered to the bar — solid plates wall, truss frames and strips furnish.
 [kits.sf_panels_vol1]
 paradigm = "panel"
 install_dir = "godot/addons/walls"
+wall_coverage = 0.9
+
+[kits.sf_panels_vol3]
+paradigm = "panel"
+install_dir = "godot/addons/walls_vol3"
+wall_coverage = 0.9
 
 [kits.apartment]
 paradigm = "fixed"

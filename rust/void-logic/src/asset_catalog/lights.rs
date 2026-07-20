@@ -1,5 +1,10 @@
 // ── Light fixtures ──────────────────────────────────────────────────────
 
+/// Every fixture scene, for the catalog's load-time interning.
+pub(super) fn all_scenes() -> impl Iterator<Item = &'static str> {
+    ALL_LIGHTS.iter().map(|l| l.scene)
+}
+
 /// A light fixture mesh with its co-located light source parameters.
 /// The `light_offset` is relative to the fixture mesh origin, keeping the
 /// light source physically inside the fixture geometry.

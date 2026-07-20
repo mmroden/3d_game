@@ -53,8 +53,11 @@ impl Seed {
 pub mod salt {
     /// The planet-final boss's hull roll (`boss::roll_hull_reward`).
     pub const HULL: u64 = 0x0b05_5000_4001;
-    /// Panel-world face skins (`room_assembler::assemble_panels_from_grid`).
-    pub const PANEL: u64 = 0x9a6e_1c00_5eed_0002;
+    /// Panel-world course covering, assembler v2
+    /// (`room_assembler::assemble_role_pools_from_grid`).
+    pub const PANEL_COURSE: u64 = 0x9a6e_1c00_5eed_0003;
+    /// Per-room panel-kit pick (`level_assembly::spawn_list_full`).
+    pub const KIT_PICK: u64 = 0x9a6e_1c00_5eed_0004;
     /// Free-standing prop orientation (`cell::populate`).
     pub const PROP_ORIENT: u64 = 0x9e37_79b9_7f4a_7c15;
     /// Knuth multiplicative mix deriving per-room sub-seeds from the level
@@ -69,6 +72,25 @@ mod tests {
     #[test]
     fn value_roundtrips() {
         assert_eq!(Seed::new(42).value(), 42);
+    }
+
+    /// The registry's whole point: no two domains may consume the same
+    /// bit-stream. Hand-maintained: extend this list when adding a salt
+    /// to the registry.
+    #[test]
+    fn salts_are_distinct() {
+        let salts = [
+            ("HULL", salt::HULL),
+            ("PANEL_COURSE", salt::PANEL_COURSE),
+            ("KIT_PICK", salt::KIT_PICK),
+            ("PROP_ORIENT", salt::PROP_ORIENT),
+            ("ROOM_MIX", salt::ROOM_MIX),
+        ];
+        for (i, &(a_name, a)) in salts.iter().enumerate() {
+            for &(b_name, b) in &salts[i + 1..] {
+                assert_ne!(a, b, "salt {a_name} collides with {b_name}");
+            }
+        }
     }
 
     #[test]

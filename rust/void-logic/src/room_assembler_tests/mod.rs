@@ -9,6 +9,8 @@ mod panels;
 mod shell;
 mod theming;
 
+use crate::test_fixtures::{cat, spath};
+
 /// Assemble at the pinned test pitch. The production door is
 /// `assemble_from_grid` fed a grid built from the level's `Pitch`
 /// (level_assembly); tests build the grid the same way and may hold the
@@ -26,7 +28,7 @@ fn assemble(
         TILE_WIDTH,
         STORY_HEIGHT,
     );
-    crate::room_assembler::assemble_from_grid(&grid, template, active_connectors, wall_set)
+    crate::room_assembler::assemble_from_grid(&grid, template, active_connectors, wall_set, cat())
 }
 
 /// Convenience wrapper: assemble with default Astra wall set.
@@ -82,7 +84,7 @@ fn large_room() -> RoomTemplate {
 }
 
 fn count(placements: &[MeshPlacement], scene: &str) -> usize {
-    placements.iter().filter(|p| p.scene == scene).count()
+    placements.iter().filter(|p| spath(p.scene) == scene).count()
 }
 
 fn hub_6way() -> RoomTemplate {
@@ -118,8 +120,10 @@ fn room_3x3() -> RoomTemplate {
 }
 
 // Floor tiles may be either FLOOR (square) or FLOOR_CURVE (rounded corner).
-fn is_floor_scene(scene: &str) -> bool {
-    scene == FLOOR || scene == FLOOR_CURVE
+// Takes the ID — fixing the classifier here fixed every caller at once.
+fn is_floor_scene(scene: asset_catalog::SceneId) -> bool {
+    let path = spath(scene);
+    path == FLOOR || path == FLOOR_CURVE
 }
 
 /// The megakit grid, spelled out — tests may hold literals (the game
@@ -159,13 +163,13 @@ fn flat_skin_is_render_only_and_corner_curves_are_convex_solids() {
     let mut corner_pieces = 0;
     for p in &placements {
         // The Astra corner stack: WallAstra_Corner_Round_*, TopAstra_Curve_Round_*.
-        if p.scene.contains("_Round") {
+        if spath(p.scene).contains("_Round") {
             corner_pieces += 1;
             assert_eq!(
                 p.collision,
                 Collision::ConvexSolid,
                 "corner piece {} protrudes into the room and needs a solid hull, got {:?}",
-                p.scene,
+                spath(p.scene),
                 p.collision,
             );
         } else {
@@ -173,7 +177,7 @@ fn flat_skin_is_render_only_and_corner_curves_are_convex_solids() {
                 p.collision,
                 Collision::Skin,
                 "flat skin {} is render-only over the shell, got {:?}",
-                p.scene,
+                spath(p.scene),
                 p.collision,
             );
         }
