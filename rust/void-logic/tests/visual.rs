@@ -16,7 +16,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use void_logic::level_assembly::interior_probe_poses;
+use void_logic::level_assembly::{flythrough_poses, interior_probe_poses};
 use void_logic::level_spec::LevelSpec;
 use void_logic::seed::Seed;
 
@@ -123,6 +123,12 @@ fn build_graph(level: u32, run_seed: i64) -> (LevelSpec, void_logic::level_graph
 /// past ~12 m until the override disabled it (2026-07-18). Both
 /// signatures count; the threshold absorbs HUD outlines and dark trim.
 const MAX_VOID: f32 = 0.05;
+
+/// The cross-planet SMOKE bar: an artery vantage mostly showing escaped
+/// background is a broken level, but planets 1 and 3 legitimately sight
+/// out of the level (megakit windows, apartment panes) — renders-or-not,
+/// never sealed-or-not.
+const MAX_ESCAPED: f32 = 0.5;
 
 /// Fractions of the frame reading as void: (sentinel, black). Sentinel:
 /// red and blue high, green low — rough-metal reflections blur and
@@ -232,5 +238,60 @@ fn planet_two_interiors_show_no_void() {
         "{} interior vantage(s) see the void:\n{}",
         leaks.len(),
         leaks.join("\n")
+    );
+}
+
+/// Cross-planet SMOKE: the first level of planet 1 (layered megakit)
+/// and of planet 3 (fixed environment) boots, resolves every scene,
+/// and renders geometry along the flythrough artery. The containment
+/// contract stays planet 2's — these paradigms legitimately sight out
+/// of the level — so this asserts RENDERS: the rig advanced and no
+/// artery vantage is mostly escaped background (`MAX_ESCAPED`).
+#[test]
+fn other_planets_boot_and_render() {
+    let mut faults = Vec::new();
+    for planet in [1u32, 3] {
+        let level = *levels_of_planet(planet)
+            .first()
+            .expect("the grammar declares the planet");
+        let run_seed = 1i64;
+        let (spec, graph) = build_graph(level, run_seed);
+        let poses = flythrough_poses(&graph, spec.pitch);
+        assert!(!poses.is_empty(), "planet {planet}: artery poses derive");
+        let dir = frames_dir(level, run_seed);
+        let frames = capture(level, run_seed, &poses, true, &dir);
+
+        let bytes: Vec<Vec<u8>> = frames
+            .iter()
+            .map(|f| std::fs::read(f).expect("frame reads"))
+            .collect();
+        if let Some(i) = (1..bytes.len()).find(|&i| bytes[i] == bytes[i - 1]) {
+            faults.push(format!(
+                "planet {planet} level {level}: STUCK from frame {i} — identical \
+                 to its predecessor; the capture rig stalled ({})",
+                dir.display(),
+            ));
+            continue;
+        }
+        for (frame, pose) in frames.iter().zip(&poses) {
+            let (sentinel, _) = void_fractions(frame);
+            println!(
+                "visual: L{level} S{run_seed} {} sentinel={sentinel:.3} pose={pose:?}",
+                frame.file_name().unwrap().to_string_lossy(),
+            );
+            if sentinel > MAX_ESCAPED {
+                faults.push(format!(
+                    "planet {planet} level {level} pose {pose:?}: {:.0}% escaped \
+                     background — {}",
+                    sentinel * 100.0,
+                    frame.display(),
+                ));
+            }
+        }
+    }
+    assert!(
+        faults.is_empty(),
+        "cross-planet smoke faults:\n{}",
+        faults.join("\n")
     );
 }
