@@ -1,5 +1,5 @@
 use super::*;
-use crate::asset_catalog::{AssetCatalog, PanelSet, SceneId};
+use crate::asset_catalog::{AssetCatalog, SceneId};
 use crate::cell::CellGrid;
 
 /// A synthetic pool through the REAL door: a fixture catalog links a
@@ -43,26 +43,6 @@ fn test_catalog() -> &'static AssetCatalog {
     })
 }
 
-fn test_pool() -> &'static PanelSet {
-    test_catalog()
-        .kit("test_pool")
-        .expect("fixture kit links")
-        .1
-        .panel_pool
-        .as_ref()
-        .expect("panel fixture derives a pool")
-}
-
-/// The censused thickness of a placed plate.
-fn thick_of(scene: SceneId) -> f32 {
-    test_pool()
-        .plates
-        .iter()
-        .find(|p| p.scene == scene)
-        .expect("placement from the pool")
-        .thick
-}
-
 // ==========================================================================
 // Panel-world assembly (B11): planet 2+ rooms are cubic cells skinned by
 // ONE panel pool serving every face — floor/wall/ceiling are terrestrial
@@ -85,11 +65,6 @@ fn sealed_3x3x3() -> RoomTemplate {
         loot_spawns: vec![],
         extents: [3, 3, 3],
     }
-}
-
-fn panels(template: &RoomTemplate, active: &[Connector], seed: u64) -> Vec<MeshPlacement> {
-    let grid = cubic_grid(template, active);
-    assemble_panels_from_grid(&grid, test_pool(), seed)
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -208,120 +183,71 @@ fn v2_is_seed_deterministic_and_uses_the_width_family() {
     assert!(wide_used, "the 6 m wall plate never places across 24 seeds");
 }
 
-/// Face coverage: every sealed boundary face gets exactly one panel — no
-/// gaps, no doubles. A sealed 3×3×3 room has 9 faces per side × 6 sides.
+/// The censused thickness of a placed plate, from whichever role pool
+/// owns its scene.
+fn v2_thick_of(scene: SceneId) -> f32 {
+    let p = role_pools();
+    p.floor
+        .iter()
+        .chain(&p.ceiling)
+        .chain(&p.wall)
+        .find(|pl| pl.scene == scene)
+        .expect("placement from the role pools")
+        .thick
+}
+
+/// Every plate is SEATED on a face plane of the 9×9×9 m room volume:
+/// its BACK on the plane, its body half a censused thickness inward —
+/// centered plates leave a void slit at every corner (flythrough
+/// 2026-07-13); seated ones close it. The checks apply to the plate's
+/// NORMAL axis only: a wide plate's in-plane center legitimately lands
+/// on cell boundaries.
 #[test]
-fn every_sealed_face_gets_exactly_one_panel() {
-    let placements = panels(&sealed_3x3x3(), &[], 7);
-    assert_eq!(placements.len(), 54, "6 sides × 9 faces, one panel each");
-
-    // No two panels share a position (no doubled faces).
-    for (i, a) in placements.iter().enumerate() {
-        for b in placements.iter().skip(i + 1) {
-            let d = (a.position[0] - b.position[0]).abs()
-                + (a.position[1] - b.position[1]).abs()
-                + (a.position[2] - b.position[2]).abs();
-            assert!(d > 0.01, "two panels share a face at {:?}", a.position);
-        }
-    }
-
-    // Every panel is SEATED on a face plane of the 9×9×9 m room volume:
-    // its BACK on the plane, its body half a censused thickness inward —
-    // centered plates leave a void slit at every corner (flythrough
-    // 2026-07-13); seated ones close it.
-    for p in &placements {
-        let half = thick_of(p.scene) * 0.5;
-        let seated = p.position.iter().any(|c| {
-            let toward_interior = (c - half) / P;
-            let toward_exterior = (c + half) / P;
-            (toward_interior - toward_interior.round()).abs() < 1e-4
-                || (toward_exterior - toward_exterior.round()).abs() < 1e-4
-        });
+fn v2_plates_seat_their_backs_on_the_face_plane() {
+    let pools = role_pools();
+    let seated_on = |c: f32, half: f32| {
+        let toward_interior = (c - half) / P;
+        let toward_exterior = (c + half) / P;
+        (toward_interior - toward_interior.round()).abs() < 1e-4
+            || (toward_exterior - toward_exterior.round()).abs() < 1e-4
+    };
+    for p in &v2(&sealed_3x3x3(), &[], 7) {
+        let half = v2_thick_of(p.scene) * 0.5;
+        let horizontal = pools
+            .floor
+            .iter()
+            .chain(&pools.ceiling)
+            .any(|pl| pl.scene == p.scene);
+        // A wall's normal is whichever horizontal axis carries the seat.
+        let axis = if horizontal {
+            1
+        } else if seated_on(p.position[0], half) {
+            0
+        } else {
+            2
+        };
+        let c = p.position[axis];
         assert!(
-            seated,
-            "panel is not seated half a thickness off a face plane: {:?} ({})",
+            seated_on(c, half),
+            "plate is not seated half a thickness off its face plane: {:?} ({})",
             p.position,
             test_catalog().path(p.scene)
         );
-        let centered = p
-            .position
-            .iter()
-            .any(|c| (c / P - (c / P).round()).abs() < 1e-4);
         assert!(
-            !centered,
-            "panel still CENTERED on a face plane (the corner-slit bug): {:?}",
+            (c / P - (c / P).round()).abs() > 1e-4,
+            "plate still CENTERED on its face plane (the corner-slit bug): {:?}",
             p.position
         );
     }
 }
 
-/// Connector openings stay open — the doorway face gets no panel.
+/// Plates are render-only skin; the watertight cell shell owns the
+/// boundary plane's physics (playtest 2026-07-06: render triangles as
+/// collider = the art's holes).
 #[test]
-fn connector_openings_stay_open() {
-    let mut template = sealed_3x3x3();
-    let door = Connector {
-        offset: [0, 0, 1],
-        facing: ConnectorFacing::NegX,
-        frame: FrameStyle::Door,
-    };
-    template.connectors.push(door);
-    let placements = panels(&template, &[door], 7);
-    assert_eq!(placements.len(), 53, "the doorway face is skipped");
-    // The open face center: x = 0 plane, cell (0,0,1).
-    let hole = [0.0, P * 0.5, (1.0 + 0.5) * P];
-    for p in &placements {
-        let d = (p.position[0] - hole[0]).abs()
-            + (p.position[1] - hole[1]).abs()
-            + (p.position[2] - hole[2]).abs();
-        assert!(d > 0.01, "a panel seals the doorway at {:?}", p.position);
-    }
-}
-
-/// Panel choice is a pure function of the room seed.
-#[test]
-fn panel_choice_is_seed_deterministic() {
-    let a = panels(&sealed_3x3x3(), &[], 11);
-    let b = panels(&sealed_3x3x3(), &[], 11);
-    assert_eq!(a, b, "same seed, same skin");
-    let c = panels(&sealed_3x3x3(), &[], 12);
-    assert_ne!(a, c, "different seed, different skin");
-}
-
-/// The isotropy pin — the paradigm's whole point: every orientation draws
-/// from the SAME pool. No floor list, no ceiling list; variety shows up on
-/// every face direction, and nothing outside the pool ever appears.
-#[test]
-fn all_orientations_draw_from_the_one_pool() {
-    use std::collections::HashSet;
-    let mut down_scenes: HashSet<SceneId> = HashSet::new(); // faces with rot (0,0)
-    let mut up_scenes: HashSet<SceneId> = HashSet::new(); // rot (π,0)
-    let mut side_scenes: HashSet<SceneId> = HashSet::new(); // |rot_x| = π/2
-    for seed in 0..12 {
-        for p in panels(&sealed_3x3x3(), &[], seed) {
-            assert!(test_pool().plates.iter().any(|pl| pl.scene == p.scene),
-                "{} is not in the panel pool", test_catalog().path(p.scene));
-            if p.rotation_x.abs() < 1e-4 {
-                down_scenes.insert(p.scene);
-            } else if (p.rotation_x.abs() - std::f32::consts::PI).abs() < 1e-4 {
-                up_scenes.insert(p.scene);
-            } else {
-                side_scenes.insert(p.scene);
-            }
-        }
-    }
-    assert!(down_scenes.len() > 1, "the 'floor' direction shows pool variety");
-    assert!(up_scenes.len() > 1, "the 'ceiling' direction shows pool variety");
-    assert!(side_scenes.len() > 1, "the wall directions show pool variety");
-}
-
-/// Panels are structure: Static, into the fused room collider.
-#[test]
-fn panel_assembly_is_all_skin() {
-    // Panel plates ARE the boundary plane — render-only skin; the
-    // watertight cell shell owns that plane's physics (playtest
-    // 2026-07-06: render triangles as collider = the art's holes).
-    for p in panels(&sealed_3x3x3(), &[], 7) {
+fn v2_panel_assembly_is_all_skin() {
+    for p in v2(&sealed_3x3x3(), &[], 7) {
         assert_eq!(p.collision, Collision::Skin,
-            "panel {} must be Skin", test_catalog().path(p.scene));
+            "plate {} must be Skin", test_catalog().path(p.scene));
     }
 }

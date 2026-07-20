@@ -235,27 +235,6 @@ pub const DOOR: &str = megakit_platform!("Door_Frame_Square.gltf");
 
 // ── Panel sets (B11 cubic-cell panel worlds) ────────────────────────────
 
-/// A panel world's face pool: ONE list serving every cell face — floor,
-/// wall, ceiling are terrestrial words with no meaning here; a face is a
-/// face and rotation is the only difference (the 6DOF principle). Panels
-/// are flat plates spanning exactly one cell face, split from the source
-/// kit by `scripts/split-panels.py`; the pitch derives from the pool's
-/// measured extent (the probe, `make assets`) — never authored.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PanelSet {
-    pub id: String,
-    pub plates: Vec<PanelPlate>,
-}
-
-/// One wall plate: its scene and its censused thickness. The assembler
-/// seats each plate's BACK on the cell-face plane (half a thickness
-/// inward) — centered plates leave a void slit at every corner.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PanelPlate {
-    pub scene: super::catalog::SceneId,
-    pub thick: f32,
-}
-
 
 /// One baked library plate as pooled by ROLE (census v2): scene, censused
 /// thickness, and face extents — walls normalized to [width, height]
@@ -270,9 +249,9 @@ pub struct RolePlate {
 /// A panel kit's role-typed pools, derived by the linker from the baked
 /// variants — never authored. The constructor grabs floor pieces for -Y
 /// faces, ceiling pieces for +Y, wall pieces for XZ faces (yaw at
-/// placement), and layers decorations/add-ons colliderlessly. Replaces
-/// the one-pool-rotated-six-ways [`PanelSet`], whose native-pose axiom
-/// failed (2026-07-18); that type dies with the legacy assembler path.
+/// placement), and layers decorations/add-ons colliderlessly. (The
+/// one-pool-rotated-six-ways PanelSet it replaced died with v1: its
+/// native-pose axiom failed 2026-07-18.)
 #[derive(Debug, Clone, PartialEq)]
 pub struct RolePools {
     pub id: String,

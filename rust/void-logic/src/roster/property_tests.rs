@@ -155,17 +155,11 @@ fn generate(seed: u64) -> Generated {
         kit_grids_toml.push_str(&format!(
             "[kits.kit_{k}]\ntile = {tile:.1}\nstory = {:.1}\n{}\n",
             if cubic { tile } else { tile + rng.random_range(0.5..2.0f32) },
-            // A panel kit's census: one wall-worthy plate on the pitch and
-            // one truss the policy must exclude.
+            // A panel kit's census: the baked filler trio its pools
+            // derive from (a kit without pooled variants is a link
+            // error — v1 retired 2026-07-19).
             if cubic {
-                format!(
-                    "pieces = {{ plate_{k} = {{ face = [{tile:.1}, {tile:.1}], \
-                     thick = 0.2, axis = \"y\", coverage = 1.0, tris = 100, \
-                     textures = 3 }}, \
-                     truss_{k} = {{ face = [{tile:.1}, {tile:.1}], thick = 0.2, \
-                     axis = \"y\", coverage = {:.2}, tris = 100, textures = 3 }} }}\n",
-                    rng.random_range(0.1..0.5f32),
-                )
+                crate::roster::test_census_variants(tile)
             } else {
                 String::new()
             },

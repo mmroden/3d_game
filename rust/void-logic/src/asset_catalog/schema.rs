@@ -168,18 +168,6 @@ fn one() -> f32 {
 }
 
 impl GeneratedPieceRaw {
-    /// Does this piece qualify for a panel kit's WALL POOL? Square
-    /// (≤1%), cell-sized (within the probe's 5 cm snap of `tile`), and
-    /// covered to at least the kit's authored `wall_coverage` bar —
-    /// solid plates wall, truss frames and strips furnish. The one
-    /// membership filter: the linker derives pools with it and the
-    /// probe's contract tests audit against it.
-    pub fn qualifies_as_wall(&self, tile: f32, bar: f32) -> bool {
-        let square = (self.face[0] - self.face[1]) <= 0.01 * self.face[0];
-        let cell_sized = (self.face[0] - tile).abs() <= 0.05;
-        square && cell_sized && self.coverage >= bar
-    }
-
     /// Does this piece qualify for the v2 ROLE BAKE? Solid, with its
     /// SHORTER face extent on the module — the plate then serves as a
     /// course segment in any role (the free extent is the width the

@@ -598,7 +598,7 @@ mod tests {
                 install_dir = \"godot/addons/walls\"\nwall_coverage = 0.9\n";
             let grid = &format!(
                 "[kits.recipe_kit]\ntile = 3.0\nstory = 3.0\n{}",
-                crate::roster::TEST_CENSUS_ONE_PLATE,
+                crate::roster::test_census_variants(3.0),
             );
             let catalog = crate::asset_catalog::AssetCatalog::load(
                 kits,

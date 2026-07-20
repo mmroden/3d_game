@@ -14,14 +14,28 @@
 
 pub mod schema;
 
-/// One solid plate for fixture kit grids (append after tile/story): the
-/// minimum census a PANEL kit links with — its wall pool derives from
-/// pieces, and an empty pool is a link error by design. Inline table so
-/// header-renaming doctor tests carry it along.
+/// The minimum census a PANEL kit links with (append after tile/story):
+/// a baked filler variant in each surface role — pools derive from
+/// variants alone, and a kit without pooled variants is a link error by
+/// design (v1 retired 2026-07-19). Inline table so header-renaming
+/// doctor tests carry it along.
 #[cfg(test)]
-pub(crate) const TEST_CENSUS_ONE_PLATE: &str = "pieces = { plate = { \
-    face = [3.0, 3.0], thick = 0.2, axis = \"y\", coverage = 1.0, \
-    tris = 100, textures = 3 } }\n";
+pub(crate) fn test_census_variants(tile: f32) -> String {
+    let v = |stem: &str, role: &str, axis: &str, detail: &str| {
+        format!(
+            "{stem} = {{ sources = [\"plate\"], role = \"{role}\", \
+             face = [{tile:.1}, {tile:.1}], thick = 0.2, axis = \"{axis}\", \
+             detail = \"{detail}\", coverage = 1.0, stretch = 0.0, \
+             tris = 100, textures = 3 }}"
+        )
+    };
+    format!(
+        "variants = {{ {}, {}, {} }}\n",
+        v("plate_floor", "floor", "y", "pos_y"),
+        v("plate_ceiling", "ceiling", "y", "neg_y"),
+        v("plate_wall", "wall", "z", "pos_z"),
+    )
+}
 pub mod template;
 pub mod vocabulary;
 
@@ -544,7 +558,7 @@ impl Roster {
         let def = self.planet_for_level(level.max(1));
         def.kits
             .iter()
-            .filter(|&&id| self.catalog.kit_def(id).panel_pool.is_some())
+            .filter(|&&id| self.catalog.kit_def(id).role_pools.is_some())
             .copied()
             .collect()
     }
@@ -1694,13 +1708,14 @@ mod tests {
         load().expect("rosters/ must parse and link")
     }
 
-    /// The stand-in for the probe's derivation: grid + the one-plate
-    /// census a panel kit needs to pool (see [`TEST_CENSUS_ONE_PLATE`]).
-    /// Inline table: doctoring tests rename the kit HEADER and the census
-    /// must travel with it.
-    const TEMPLATE_GRID: &str = "[kits.template_kit]\ntile = 3.0\nstory = 3.0\n\
-        pieces = { plate = { face = [3.0, 3.0], thick = 0.2, axis = \"y\", \
-        coverage = 1.0, tris = 100, textures = 3 } }\n";
+    /// The stand-in for the probe's derivation: grid + the filler-trio
+    /// census a panel kit needs to pool (see [`test_census_variants`]).
+    fn template_grid() -> String {
+        format!(
+            "[kits.template_kit]\ntile = 3.0\nstory = 3.0\n{}",
+            test_census_variants(3.0)
+        )
+    }
 
     /// The template scaffold — every construct the grammar accepts, with its
     /// defaults — split into loadable sections. Linker-rule and mechanism
@@ -1712,7 +1727,7 @@ mod tests {
         let enemies = parts.next().expect("enemies section").to_string();
         let kits = parts.next().expect("kits section").to_string();
         let planet = parts.next().expect("planet section").to_string();
-        (enemies, kits, TEMPLATE_GRID.to_string(), planet)
+        (enemies, kits, template_grid(), planet)
     }
 
     use crate::asset_catalog::{
@@ -1946,20 +1961,19 @@ textures = 3
     }
 
     #[test]
-    fn a_migrating_census_derives_both_pools() {
-        // MIGRATION pin (dies with Transform v2's pieces retirement): a
-        // census carrying BOTH pieces and variants serves both consumers —
-        // the v1 assembler keeps its pool until phase 4 flips, while the
-        // role pools stand ready. Neither retires the other here; the
-        // RETIREMENT is a phase-4 act, not a linker inference.
+    fn a_pieces_census_beside_variants_changes_nothing() {
+        // The pieces census SURVIVES v1 (pitch derivation, bake
+        // qualification, the probe's bake contract) — but it links
+        // nothing anymore: a kit carrying both censuses derives exactly
+        // the pools its variants alone would.
         let grid = format!(
             "{FX_PANEL_GRID}\n{}",
             fx_variants_healthy().join("\n")
         );
-        let roster = load_panel_fixture(FX_PANEL_KIT, &grid).expect("migrating census links");
+        let roster = load_panel_fixture(FX_PANEL_KIT, &grid).expect("census links");
         let (_, kit) = roster.catalog.kit("fx_panels").unwrap();
-        assert!(kit.panel_pool.is_some(), "the v1 pool still derives from pieces");
-        assert!(kit.role_pools.is_some(), "role pools derive from variants");
+        let pools = kit.role_pools.as_ref().expect("role pools derive from variants");
+        assert_eq!(pools.wall.len(), 2, "pieces contribute no plates");
     }
 
     #[test]
@@ -2020,42 +2034,20 @@ textures = 3
     }
 
     #[test]
-    fn a_pieces_census_still_links_the_legacy_pool() {
-        // MIGRATION pin: until Transform v2 regenerates, shipped kits carry
-        // `pieces` and must keep linking through the v1 path.
-        let roster = load_panel_fixture(FX_PANEL_KIT, FX_PANEL_GRID).expect("legacy links");
-        let (_, kit) = roster.catalog.kit("fx_panels").unwrap();
-        assert!(kit.panel_pool.is_some(), "pieces census keeps the v1 pool");
-        assert!(kit.role_pools.is_none(), "no variants, no role pools");
-    }
-
-    #[test]
-    fn panel_wall_pool_derives_from_census_and_policy() {
-        let roster = load_panel_fixture(FX_PANEL_KIT, FX_PANEL_GRID)
-            .expect("the panel fixture links");
-        let kits = roster.panel_kits_for_level(1);
-        assert_eq!(kits.len(), 1, "one declared panel kit, one pool");
-        let pool = roster.catalog.kit_def(kits[0]).panel_pool.as_ref().unwrap();
-        assert_eq!(
-            pool.plates
-                .iter()
-                .map(|p| roster.catalog.path(p.scene))
-                .collect::<Vec<_>>(),
-            [
-                "res://addons/fx_walls/solid_a.glb",
-                "res://addons/fx_walls/solid_b.glb",
-            ],
-            "cell-sized solid squares pool; trusses, strips and small tiles don't"
-        );
+    fn a_panel_kit_without_baked_variants_is_a_link_error() {
+        // v1 is retired: a pieces-only census carries no kit. A panel
+        // kit links through its baked role pools alone, and the error
+        // names the healer.
+        let err = load_panel_fixture(FX_PANEL_KIT, FX_PANEL_GRID).unwrap_err();
         assert!(
-            pool.plates.iter().all(|p| (p.thick - 0.2).abs() < 1e-6),
-            "each plate carries its censused thickness"
+            err.contains("fx_panels") && err.contains("variants"),
+            "the error names the kit and the missing bake: {err}"
         );
     }
 
     #[test]
     fn a_panel_level_spec_carries_its_declared_pools() {
-        let roster = load_panel_fixture(FX_PANEL_KIT, FX_PANEL_GRID)
+        let roster = load_panel_fixture(FX_PANEL_KIT, &fx_variant_grid(&fx_variants_healthy()))
             .expect("the panel fixture links");
         let spec = crate::level_spec::LevelSpec::for_level(
             &roster,
@@ -2066,18 +2058,23 @@ textures = 3
         match &spec.paradigm {
             crate::level_spec::Paradigm::Panel(kits) => {
                 assert_eq!(kits.len(), 1, "one declared panel kit");
-                let pool =
-                    roster.catalog.kit_def(kits[0]).panel_pool.as_ref().unwrap();
+                let pools = roster
+                    .catalog
+                    .kit_def(kits[0])
+                    .role_pools
+                    .as_ref()
+                    .expect("the spec's kit ids resolve to derived role pools");
                 assert_eq!(
-                    pool.plates
+                    pools
+                        .wall
                         .iter()
                         .map(|p| roster.catalog.path(p.scene))
                         .collect::<Vec<_>>(),
                     [
-                        "res://addons/fx_walls/solid_a.glb",
-                        "res://addons/fx_walls/solid_b.glb",
+                        "res://addons/fx_walls/base_wall.glb",
+                        "res://addons/fx_walls/wide_wall.glb",
                     ],
-                    "the spec speaks the grammar's derived pool"
+                    "the spec speaks the grammar's derived pools"
                 );
             }
             other => panic!("a panel planet's spec is Panel, got {other:?}"),
@@ -2087,14 +2084,24 @@ textures = 3
     /// A second panel kit; its census tile is a fixture knob so agreement
     /// tests can doctor it.
     fn fx_panel_kit2(tile: f32) -> (String, String) {
+        let variant = |stem: &str, role: &str, axis: &str, detail: &str| {
+            format!(
+                "[kits.fx_panels2.variants.{stem}]\n\
+                 sources = [\"{stem}_src\"]\nrole = \"{role}\"\n\
+                 face = [{tile}, {tile}]\nthick = 0.2\naxis = \"{axis}\"\n\
+                 detail = \"{detail}\"\ncoverage = 1.0\nstretch = 0.0\n\
+                 tris = 100\ntextures = 3\n"
+            )
+        };
         (
             "[kits.fx_panels2]\nparadigm = \"panel\"\n\
              install_dir = \"godot/addons/fx_walls2\"\nwall_coverage = 0.9\n"
                 .to_string(),
             format!(
-                "[kits.fx_panels2]\ntile = {tile}\nstory = {tile}\n\
-                 pieces = {{ plate2 = {{ face = [{tile}, {tile}], thick = 0.2, \
-                 axis = \"y\", coverage = 1.0, tris = 100, textures = 3 }} }}\n"
+                "[kits.fx_panels2]\ntile = {tile}\nstory = {tile}\n\n{}{}{}",
+                variant("floor2", "floor", "y", "pos_y"),
+                variant("ceiling2", "ceiling", "y", "neg_y"),
+                variant("wall2", "wall", "z", "pos_z"),
             ),
         )
     }
@@ -2110,7 +2117,7 @@ textures = 3
         load_split(
             &enemies,
             &format!("{FX_PANEL_KIT}{kit2}"),
-            &format!("{FX_PANEL_GRID}{grid2}"),
+            &format!("{}\n{grid2}", fx_variant_grid(&fx_variants_healthy())),
             MODELS_TOML,
             &[FX_TWO_KIT_PLANET],
             EnvSources::generated_only(),
@@ -2143,7 +2150,8 @@ textures = 3
     fn a_panel_kit_must_declare_its_coverage_policy() {
         let kit = "[kits.fx_panels]\nparadigm = \"panel\"\n\
             install_dir = \"godot/addons/fx_walls\"\n";
-        let err = load_panel_fixture(kit, FX_PANEL_GRID).unwrap_err();
+        let err =
+            load_panel_fixture(kit, &fx_variant_grid(&fx_variants_healthy())).unwrap_err();
         assert!(
             err.contains("fx_panels") && err.contains("wall_coverage"),
             "the error names the kit and the missing policy: {err}"
@@ -2158,29 +2166,6 @@ textures = 3
         assert!(
             err.contains("wall_coverage") && err.contains("panel-kit knob"),
             "the error names the misplaced policy: {err}"
-        );
-    }
-
-    #[test]
-    fn an_empty_wall_pool_is_a_link_error() {
-        // Census with nothing but a truss: no piece reaches the policy.
-        let grid = r#"
-[kits.fx_panels]
-tile = 3.0
-story = 3.0
-
-[kits.fx_panels.pieces.truss_a]
-face = [3.0, 3.0]
-thick = 0.2
-axis = "y"
-coverage = 0.2
-tris = 100
-textures = 3
-"#;
-        let err = load_panel_fixture(FX_PANEL_KIT, grid).unwrap_err();
-        assert!(
-            err.contains("fx_panels") && err.contains("wall pool"),
-            "the error names the kit and the empty pool: {err}"
         );
     }
 
@@ -2656,7 +2641,7 @@ textures = 3
         let models = "[models]\nm0 = \"res://x/m0.glb\"\nm1 = \"res://x/m1.glb\"\n";
         let kits = "[kits.k]\nparadigm = \"panel\"\ninstall_dir = \"godot/addons/walls\"\n\
             wall_coverage = 0.9\n";
-        let grid = &format!("[kits.k]\ntile = 3.0\nstory = 3.0\n{TEST_CENSUS_ONE_PLATE}");
+        let grid = &format!("[kits.k]\ntile = 3.0\nstory = 3.0\n{}", test_census_variants(3.0));
         let planet = "planet = 1\nlevels = 1\nkits = [\"k\"]\nrooms = { base = 6, per_level = 2 }\n\n\
             [[level]]\nrelative = 1\nenemies = [\"fx_swarmer\", \"fx_shooter\"]\n";
         let roster = load_split(enemies, kits, grid, models, &[planet], EnvSources::generated_only()).unwrap();
@@ -2696,7 +2681,7 @@ textures = 3
         let enemies = parts.next().expect("enemies section");
         let kits = parts.next().expect("kits section");
         let planet = parts.next().expect("planet section");
-        let grid = TEMPLATE_GRID;
+        let grid = &template_grid();
 
         // Off by default: the template declares no miniboss.
         let roster = load_split(enemies, kits, grid, MODELS_TOML, &[planet], EnvSources::generated_only()).unwrap();
@@ -2883,7 +2868,7 @@ textures = 3
         let models = "[models]\nm0 = \"res://x/m0.glb\"\n";
         let kits = "[kits.k]\nparadigm = \"panel\"\ninstall_dir = \"godot/addons/walls\"\n\
             wall_coverage = 0.9\n";
-        let grid = &format!("[kits.k]\ntile = 3.0\nstory = 3.0\n{TEST_CENSUS_ONE_PLATE}");
+        let grid = &format!("[kits.k]\ntile = 3.0\nstory = 3.0\n{}", test_census_variants(3.0));
         let planet = "planet = 1\nlevels = 1\nkits = [\"k\"]\nrooms = { base = 6, per_level = 2 }\n\n\
             [[level]]\nrelative = 1\nenemies = [\"fx_shooter\"]\n";
         let roster = load_split(enemies, kits, grid, models, &[planet], EnvSources::generated_only()).unwrap();

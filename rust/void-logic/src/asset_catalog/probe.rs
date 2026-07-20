@@ -892,45 +892,6 @@ mod tests {
         );
     }
 
-    /// Wall-pool members must arrive in the assembler's NATIVE POSE —
-    /// thin along Y, the plate lying in XZ. The rotations that turn one
-    /// plate pool into all six cell faces are built on that axiom; a
-    /// plate authored thin along another axis places 90° off under them
-    /// (walls become shelves) and every room it skins is open to the
-    /// void. The conversion (scripts/split-panels.py) owns
-    /// normalization; this contract keeps the census honest about it.
-    #[test]
-    fn wall_pool_pieces_arrive_in_native_pose() {
-        let parsed: super::GeneratedKitsFile =
-            toml::from_str(&super::kit_grids()).expect("emitted kit grids parse");
-        let kits_file: super::KitsFile =
-            toml::from_str(super::super::KITS_TOML).expect("kits.toml parses");
-        let mut misposed = Vec::new();
-        for (key, kit) in kits_file.kits.iter() {
-            let Some(bar) = kit.wall_coverage else { continue };
-            let generated = parsed
-                .kits
-                .get(key)
-                .unwrap_or_else(|| panic!("panel kit '{key}' missing from grids"));
-            for (stem, piece) in &generated.pieces {
-                if piece.qualifies_as_wall(generated.tile, bar)
-                    && piece.axis != super::super::schema::ThinAxis::Y
-                {
-                    misposed.push(format!(
-                        "kit '{key}' piece '{stem}': thin along {:?}",
-                        piece.axis
-                    ));
-                }
-            }
-        }
-        assert!(
-            misposed.is_empty(),
-            "wall-pool pieces authored out of the native pose (normalize in \
-             scripts/split-panels.py, then `make assets`):\n{}",
-            misposed.join("\n")
-        );
-    }
-
     /// The relief measure: find the base slab (peak flat-area depth
     /// bin), then weigh geometry BEYOND it on each side. The heavier
     /// side is the artist's greeble — the measure reads the actual

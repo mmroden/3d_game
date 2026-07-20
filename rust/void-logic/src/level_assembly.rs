@@ -119,22 +119,11 @@ pub fn spawn_list_full(
             // carries KIT IDS (scheduling facts); the plates stay owned
             // by the catalog.
             let kit = catalog.kit_def(kits[(room_seed % kits.len() as u64) as usize]);
-            // Assembler v2 (role pools + course covering) the moment a
-            // kit's bake provides them; the v1 one-plate-per-face path
-            // carries kits the Transform hasn't served yet, and dies
-            // with the pieces census when every kit has crossed.
-            match kit.role_pools.as_ref() {
-                Some(pools) => {
-                    crate::room_assembler::assemble_role_pools_from_grid(&grid, pools, room_seed)
-                }
-                None => {
-                    let set = kit
-                        .panel_pool
-                        .as_ref()
-                        .expect("a panel kit has a v1 pool until its v2 bake lands");
-                    crate::room_assembler::assemble_panels_from_grid(&grid, set, room_seed)
-                }
-            }
+            let pools = kit
+                .role_pools
+                .as_ref()
+                .expect("a linked panel kit carries role pools — the catalog enforces it");
+            crate::room_assembler::assemble_role_pools_from_grid(&grid, pools, room_seed)
         } else {
             crate::room_assembler::assemble_from_grid(
                 &grid,
@@ -1336,19 +1325,19 @@ mod tests {
         let mut pool_scenes: std::collections::HashSet<crate::asset_catalog::SceneId> =
             std::collections::HashSet::new();
         for &id in &grammar.panel_kits_for_level(7) {
-            let kit = grammar.catalog.kit_def(id);
-            if let Some(p) = kit.panel_pool.as_ref() {
-                pool_scenes.extend(p.plates.iter().map(|pl| pl.scene));
-            }
-            if let Some(rp) = kit.role_pools.as_ref() {
-                pool_scenes.extend(
-                    rp.floor
-                        .iter()
-                        .chain(&rp.ceiling)
-                        .chain(&rp.wall)
-                        .map(|pl| pl.scene),
-                );
-            }
+            let rp = grammar
+                .catalog
+                .kit_def(id)
+                .role_pools
+                .as_ref()
+                .expect("a linked panel kit carries role pools");
+            pool_scenes.extend(
+                rp.floor
+                    .iter()
+                    .chain(&rp.ceiling)
+                    .chain(&rp.wall)
+                    .map(|pl| pl.scene),
+            );
         }
         let mut any_panel = false;
         for room in &rooms {
@@ -2227,12 +2216,6 @@ mod tests {
                     }
                 }
             }
-            if let Some(p) = kit.panel_pool.as_ref() {
-                pool_sizes.insert((kit.key.as_str(), "v1"), p.plates.len());
-                for pl in &p.plates {
-                    scene_pool.insert(pl.scene, (kit.key.as_str(), "v1"));
-                }
-            }
         }
         let mut rooms_by_kit: std::collections::BTreeMap<&str, usize> =
             std::collections::BTreeMap::new();
@@ -2287,23 +2270,19 @@ mod tests {
         let spec = spec_for(7);
         let pitch = spec.pitch;
         let grammar = crate::roster::roster();
-        // Plate AREA by scene, across BOTH pool generations: v1 plates
-        // are one cell face (pitch²); v2 role plates carry their face.
-        // The invariant is AREA — covered == sealed — which v1 satisfies
-        // as count×pitch² and v2 satisfies with wide plates.
+        // Plate AREA by scene: the invariant is AREA — covered == sealed
+        // — wide plates cover several faces at once.
         let mut plate_area: std::collections::HashMap<crate::asset_catalog::SceneId, f32> =
             std::collections::HashMap::new();
         for &id in &grammar.panel_kits_for_level(7) {
-            let kit = grammar.catalog.kit_def(id);
-            if let Some(p) = kit.panel_pool.as_ref() {
-                for pl in &p.plates {
-                    plate_area.insert(pl.scene, pitch.tile * pitch.tile);
-                }
-            }
-            if let Some(rp) = kit.role_pools.as_ref() {
-                for pl in rp.floor.iter().chain(&rp.ceiling).chain(&rp.wall) {
-                    plate_area.insert(pl.scene, pl.face[0] * pl.face[1]);
-                }
+            let rp = grammar
+                .catalog
+                .kit_def(id)
+                .role_pools
+                .as_ref()
+                .expect("a linked panel kit carries role pools");
+            for pl in rp.floor.iter().chain(&rp.ceiling).chain(&rp.wall) {
+                plate_area.insert(pl.scene, pl.face[0] * pl.face[1]);
             }
         }
         for seed in 0..5u64 {

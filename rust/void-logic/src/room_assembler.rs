@@ -170,65 +170,6 @@ fn corner_interior_offset(pair: (ConnectorFacing, ConnectorFacing)) -> [f32; 2] 
 
 // ── Assembly ─────────────────────────────────────────────────────────────
 
-/// Panel-world assembly (B11): skin every sealed cell face with one panel
-/// from the set's single pool — floors, walls, and ceilings are the same
-/// plates at different rotations (there are no floors in 6DOF). Openings
-/// (active connectors) stay bare. Deterministic per `room_seed`.
-pub fn assemble_panels_from_grid(
-    grid: &CellGrid,
-    panel_set: &asset_catalog::PanelSet,
-    room_seed: u64,
-) -> Vec<MeshPlacement> {
-    use rand::rngs::SmallRng;
-    use rand::{RngExt, SeedableRng};
-    use std::f32::consts::{FRAC_PI_2, PI};
-
-    // Salted stream (seed-hygiene standard): never the raw room seed.
-    let mut rng = SmallRng::seed_from_u64(room_seed ^ crate::seed::salt::PANEL);
-
-    // Cubic cells: the grid's tile IS the pitch (panel worlds have no
-    // distinguished axis; the linker derives it from the panel meshes).
-    let p = grid.tile;
-    let half = p * 0.5;
-    let mut out = Vec::new();
-    for cell in grid.cells() {
-        // world_center: XZ at the cell center, Y at the cell FLOOR.
-        let wc = cell.world_center;
-        for face in &cell.sealed_faces {
-            // Panel native pose: a plate in XZ, normal +Y. Rotations are
-            // Godot YXZ euler (Y then X); each face's normal points INTO
-            // the room so single-sided materials render inward. `inward`
-            // is that same normal as a world direction: each plate SEATS
-            // half its censused thickness along it, back on the face
-            // plane — centered plates leave a void slit at every corner
-            // (flythrough 2026-07-13).
-            let (offset, inward, rot_x, rot_y) = match face {
-                ConnectorFacing::NegY => ([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.0, 0.0),
-                ConnectorFacing::PosY => ([0.0, p, 0.0], [0.0, -1.0, 0.0], PI, 0.0),
-                ConnectorFacing::NegZ => ([0.0, half, -half], [0.0, 0.0, 1.0], FRAC_PI_2, 0.0),
-                ConnectorFacing::PosZ => ([0.0, half, half], [0.0, 0.0, -1.0], -FRAC_PI_2, 0.0),
-                ConnectorFacing::NegX => ([-half, half, 0.0], [1.0, 0.0, 0.0], FRAC_PI_2, FRAC_PI_2),
-                ConnectorFacing::PosX => ([half, half, 0.0], [-1.0, 0.0, 0.0], FRAC_PI_2, -FRAC_PI_2),
-            };
-            let plate = panel_set.plates[rng.random_range(0..panel_set.plates.len())];
-            let seat = plate.thick * 0.5;
-            out.push(MeshPlacement {
-                scene: plate.scene,
-                position: [
-                    wc[0] + offset[0] + inward[0] * seat,
-                    wc[1] + offset[1] + inward[1] * seat,
-                    wc[2] + offset[2] + inward[2] * seat,
-                ],
-                rotation_x: rot_x,
-                rotation_y: rot_y,
-                scale: 1.0,
-                collision: Collision::Skin,
-            });
-        }
-    }
-    out
-}
-
 /// Panel-world assembly v2 (phase 4): skin every sealed surface from the
 /// kit's ROLE POOLS — floors from the floor pool, ceilings from the
 /// ceiling pool, wall COURSES covered per-run by the wall pool's width

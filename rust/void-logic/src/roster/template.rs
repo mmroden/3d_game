@@ -216,12 +216,13 @@ mod tests {
         // The template links against the REAL model catalog: its example
         // enemies wear installed models, so the scaffold stays honest. Its
         // kit grid stands in for what the probe would derive.
-        let template_grid = "[kits.template_kit]\ntile = 3.0\nstory = 3.0\n\
-            pieces = { template_plate = { face = [3.0, 3.0], thick = 0.2, \
-            axis = \"y\", coverage = 1.0, tris = 100, textures = 3 } }\n";
+        let template_grid = format!(
+            "[kits.template_kit]\ntile = 3.0\nstory = 3.0\n{}",
+            crate::roster::test_census_variants(3.0)
+        );
         let catalog = crate::asset_catalog::AssetCatalog::load(
             kits,
-            template_grid,
+            &template_grid,
             crate::asset_catalog::MODELS_TOML,
             crate::asset_catalog::ENVIRONMENTS_GENERATED_TOML,
         )

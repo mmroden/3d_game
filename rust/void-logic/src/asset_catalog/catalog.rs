@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use super::schema::{self, KitParadigm};
-use super::{PanelSet, RolePools};
+use super::RolePools;
 
 /// Index of a kit in the catalog — the roster's planets store these
 /// after resolving their declared kit keys.
@@ -57,11 +57,8 @@ pub struct KitDef {
     /// know the roster's authored zone maps — the roster resolves this
     /// key at its own link (the one deliberate cross-boundary join).
     pub environment: Option<String>,
-    /// PANEL kits, census v1 (MIGRATION — dies with Transform v2): the
-    /// legacy one-pool wall set, owned, plates carrying interned ids.
-    pub panel_pool: Option<PanelSet>,
-    /// PANEL kits, census v2: role-typed pools from the baked variants.
-    /// Owned; plates carry interned ids.
+    /// PANEL kits: role-typed pools from the baked variants — the one
+    /// plate library. Owned; plates carry interned ids.
     pub role_pools: Option<RolePools>,
 }
 
@@ -218,7 +215,6 @@ impl AssetCatalog {
                         story: scale,
                         install_dir: raw.install_dir.clone(),
                         environment: raw.environment.clone(),
-                        panel_pool: None,
                         role_pools: None,
                     };
                 }
@@ -248,11 +244,10 @@ impl AssetCatalog {
                         }
                     }
                 };
-                // The kit's plate library — BOTH censuses serve during
-                // the migration: `pieces` derives the v1 pool the current
-                // assembler consumes, `variants` the role pools phase 4
-                // flips to. Pieces retirement is Transform v2's final
-                // act, never a linker inference.
+                // The kit's plate library: the baked variants and only
+                // them. The pieces census survives for the probe's own
+                // uses (pitch derivation, bake qualification) but links
+                // nothing — v1 retired 2026-07-19.
                 let role_pools = if grid.variants.is_empty() {
                     None
                 } else if raw.paradigm != KitParadigm::Panel {
@@ -272,60 +267,36 @@ impl AssetCatalog {
                         &mut errors,
                     )
                 };
-                let panel_pool = match (raw.paradigm, raw.wall_coverage) {
+                match (raw.paradigm, raw.wall_coverage) {
                     (KitParadigm::Panel, Some(bar))
                         if bar.is_finite() && (0.0..=1.0).contains(&bar) =>
                     {
-                        if grid.pieces.is_empty() {
-                            if role_pools.is_none() {
-                                errors.push(format!(
-                                    "kit '{key}': no census at all — neither \
-                                     pieces nor variants (run `make assets`)"
-                                ));
-                            }
-                            None
-                        } else {
-                            let res_dir = raw.install_dir.trim_start_matches("godot/");
-                            let plates: Vec<super::PanelPlate> = grid
-                                .pieces
-                                .iter()
-                                .filter(|(_, p)| p.qualifies_as_wall(grid.tile, bar))
-                                .map(|(stem, p)| super::PanelPlate {
-                                    scene: interner
-                                        .intern(&format!("res://{res_dir}/{stem}.glb")),
-                                    thick: p.thick,
-                                })
-                                .collect();
-                            if plates.is_empty() {
-                                errors.push(format!(
-                                    "kit '{key}': wall pool is empty — no square \
-                                     cell-sized piece reaches wall_coverage {bar}"
-                                ));
-                                None
-                            } else {
-                                Some(PanelSet { id: key.clone(), plates })
-                            }
+                        // The retirement contract: a panel kit links
+                        // through its baked role pools alone — a census
+                        // without pooled variants is a dead kit, loudly.
+                        if role_pools.is_none() {
+                            errors.push(format!(
+                                "kit '{key}': no pooled role variants — the \
+                                 Transform bakes them (`make assets`)"
+                            ));
                         }
                     }
                     (KitParadigm::Panel, Some(bar)) => {
                         errors.push(format!(
                             "kit '{key}': wall_coverage must be a fraction in 0..=1, got {bar}"
                         ));
-                        None
                     }
                     (KitParadigm::Panel, None) => {
                         errors.push(format!(
                             "kit '{key}': a panel kit must declare wall_coverage \
                              (the wall pool's minimum censused face coverage)"
                         ));
-                        None
                     }
                     (_, Some(_)) => {
                         errors.push(format!("kit '{key}': wall_coverage is a panel-kit knob"));
-                        None
                     }
-                    (_, None) => None,
-                };
+                    (_, None) => {}
+                }
                 KitDef {
                     key: key.clone(),
                     paradigm: raw.paradigm,
@@ -333,7 +304,6 @@ impl AssetCatalog {
                     story: grid.story,
                     install_dir: raw.install_dir.clone(),
                     environment: None,
-                    panel_pool,
                     role_pools,
                 }
             })
