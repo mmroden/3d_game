@@ -118,6 +118,9 @@ pub struct GameManager {
     shot_poses: Vec<[f32; 5]>,
     shot_index: usize,
     shot_timer: i32,
+    /// Two-phase save latch: set the frame the RENDER camera verifies at
+    /// the pose, so the save reads a texture that has drawn there.
+    shot_drawn_at_pose: bool,
 
     /// Edge detection for the F9/F10 level-hop cheat (held-state latch).
     debug_hop_held: (bool, bool),
@@ -151,6 +154,7 @@ impl INode for GameManager {
             shot_poses: Vec::new(),
             shot_index: 0,
             shot_timer: 0,
+            shot_drawn_at_pose: false,
             debug_hop_held: (false, false),
             fixed_seed: 0,
         }
@@ -2122,6 +2126,7 @@ impl GameManager {
             .collect();
         self.shot_index = 0;
         self.shot_timer = 0;
+        self.shot_drawn_at_pose = false;
         if let Some(pose) = self.shot_poses.first().copied() {
             self.park_at(pose);
         }
@@ -2131,6 +2136,11 @@ impl GameManager {
     /// culling and light state need a few frames to settle.
     const SHOT_SETTLE_FRAMES: i32 = 6;
 
+    /// Settle ceiling per pose: past this the shot saves UNVERIFIED with
+    /// a loud log — the harness's stuck-frame check turns the lie into a
+    /// named failure instead of the run hanging.
+    const SHOT_SETTLE_CEILING: i32 = 300;
+
     /// Advance the shot sequence: settle, save the frame (when a
     /// `--shot-dir=` is set), step to the next pose; quit after the last
     /// save so capture runs end themselves.
@@ -2139,29 +2149,55 @@ impl GameManager {
             return;
         }
         self.shot_timer += 1;
-        if self.shot_timer < Self::SHOT_SETTLE_FRAMES {
+        // Settle to one frame BEFORE the save so the verify-then-draw
+        // handshake keeps the advance cadence at exactly
+        // SHOT_SETTLE_FRAMES — the stepping contract GUT pins.
+        if self.shot_timer < Self::SHOT_SETTLE_FRAMES - 1 {
             return;
         }
-        // Save only when the RENDERED camera is verifiably at the pose:
-        // the eye cameras mirror the player camera's physics-interpolated
-        // transform, which goes stale across pause boundaries (the
-        // loading veil) — a frame saved then wears the previous pose's
-        // pixels (L12-S1, 2026-07-14). Waiting costs frames; saving a lie
-        // costs a run.
+        // Save only when the camera that RENDERS is verifiably at the
+        // pose — and has DRAWN there. The viewport draws through the view
+        // rig's eye camera, a per-frame MIRROR of Player/Camera3D that
+        // converges a frame behind its source and goes stale across pause
+        // boundaries (L12-S1 2026-07-14; L7-S1/L12-S2 2026-07-20 — the
+        // old guard read the SOURCE camera, and a lookup miss degraded it
+        // to a blind timer, so duplicates slipped through). Two-phase:
+        // verify the viewport's ACTIVE camera, then let one more frame
+        // draw before reading the texture (get_image() returns the last
+        // DRAWN frame). Waiting costs frames; saving a lie costs a run.
         let pose = self.shot_poses[self.shot_index];
-        let rendered_at = self
+        let parked = Vector3::new(pose[0], pose[1], pose[2]);
+        let cam_at = self
             .base()
-            .get_parent()
-            .and_then(|p| p.try_get_node_as::<godot::classes::Camera3D>(nodes::PLAYER_CAMERA))
-            .map(|mut c| c.get_global_transform_interpolated().origin);
-        if let Some(at) = rendered_at {
-            let parked = Vector3::new(pose[0], pose[1], pose[2]);
-            if (at - parked).length() > 1.0 {
-                return; // interpolation not yet snapped — keep settling
+            .get_viewport()
+            .and_then(|v| v.get_camera_3d())
+            .map(|c| c.get_global_position());
+        match cam_at {
+            // A camera renders and is NOT at the pose: keep settling,
+            // bounded — past the ceiling, save loudly and let the
+            // harness's stuck-frame check own the verdict.
+            Some(at) if (at - parked).length() > 1.0 => {
+                if self.shot_timer < Self::SHOT_SETTLE_CEILING {
+                    return;
+                }
+                godot_print!(
+                    "shot {}: settle ceiling — saving UNVERIFIED (render \
+                     camera astray); the stuck-frame check owns the verdict",
+                    self.shot_index
+                );
             }
+            // Verified — or nothing renders at all (the headless GUT
+            // stage), where no texture exists to lag: give this frame to
+            // the draw either way, save next frame.
+            _ if !self.shot_drawn_at_pose => {
+                self.shot_drawn_at_pose = true;
+                return;
+            }
+            _ => {}
         }
         self.save_shot_frame(self.shot_index);
         self.shot_timer = 0;
+        self.shot_drawn_at_pose = false;
         self.shot_index += 1;
         if let Some(pose) = self.shot_poses.get(self.shot_index).copied() {
             self.park_at(pose);
@@ -2177,6 +2213,13 @@ impl GameManager {
         if dir.is_empty() {
             return;
         }
+        // The texture is the last DRAWN frame — and macOS stops drawing
+        // occluded windows entirely (L12-S2 2026-07-20: process frames
+        // advanced, draws did not, and every save re-read one stale
+        // image; no amount of settling fixes a renderer that isn't
+        // rendering). Draw NOW, with the camera the settle handshake
+        // just verified, so the pixels are this pose's by construction.
+        godot::classes::RenderingServer::singleton().force_draw();
         let Some(viewport) = self.base().get_viewport() else { return };
         let Some(texture) = viewport.get_texture() else { return };
         let Some(image) = texture.get_image() else { return };
@@ -2272,6 +2315,7 @@ impl GameManager {
         // restart the settle clock.
         if let Some(pose) = self.shot_poses.get(self.shot_index).copied() {
             self.shot_timer = 0;
+            self.shot_drawn_at_pose = false;
             self.park_at(pose);
         }
     }
