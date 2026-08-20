@@ -337,6 +337,12 @@ impl LevelManager {
             // was blind (all 32 vantages, 2026-07-18). No fog in a
             // diagnostic that exists to make the background unmistakable.
             env.set_fog_enabled(false);
+            // No glow either: fixture bloom smears bright streaks across
+            // near geometry and moves with the vantage — it broke the
+            // cockpit pose-invariance contract on a perfectly rigid dash
+            // (2026-08-19). A capture measures geometry, not glare. The
+            // override is capture-process-lifetime, so nothing restores it.
+            env.set_glow_enabled(false);
             Some(void_logic::roster::AmbientDef { color: [1.0, 1.0, 1.0], energy: 1.0 })
         } else if let void_logic::level_spec::Paradigm::Fixed(e) = &spec.paradigm {
             e.ambient
@@ -698,8 +704,13 @@ impl LevelManager {
             // Light fixtures. Most are dead in an abandoned base, so an Off
             // fixture gets no light node at all (the mesh stays, dark) — that
             // absence is the real GPU saving. Hidden with their room when culled.
+            // Under the capture diagnostic (`--ambient=1`) NO fixture light
+            // spawns at all: the flood is the illumination, and per-pose
+            // direct-light modulation (and blinking) reads as drift in the
+            // rig's invariance contracts — fixture MESHES still place, since
+            // captures measure geometry, never glare (2026-08-19).
             for ls in &room.lights {
-                if ls.state == LightState::Off {
+                if self.ambient_override == 1 || ls.state == LightState::Off {
                     continue;
                 }
                 let energy = match ls.state {

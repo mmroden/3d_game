@@ -130,6 +130,27 @@ const MAX_VOID: f32 = 0.05;
 /// never sealed-or-not.
 const MAX_ESCAPED: f32 = 0.5;
 
+/// Mean absolute per-channel difference between two frames within the
+/// horizontal band [y0, y1) of frame height — how much that slice of the
+/// view changed between two vantages.
+fn band_diff(a: &Path, b: &Path, y0: f32, y1: f32) -> f32 {
+    let a = image::open(a).expect("frame opens").to_rgb8();
+    let b = image::open(b).expect("frame opens").to_rgb8();
+    assert_eq!(a.dimensions(), b.dimensions(), "frames share a resolution");
+    let (w, h) = a.dimensions();
+    let (row0, row1) = ((h as f32 * y0) as u32, (h as f32 * y1) as u32);
+    let mut sum = 0u64;
+    for y in row0..row1 {
+        for x in 0..w {
+            let (pa, pb) = (a.get_pixel(x, y), b.get_pixel(x, y));
+            for c in 0..3 {
+                sum += pa[c].abs_diff(pb[c]) as u64;
+            }
+        }
+    }
+    sum as f32 / ((row1 - row0) as u64 * w as u64 * 3) as f32
+}
+
 /// Fractions of the frame reading as void: (sentinel, black). Sentinel:
 /// red and blue high, green low — rough-metal reflections blur and
 /// desaturate the background, so only direct sightlines stay this pure.
@@ -148,16 +169,18 @@ fn void_fractions(path: &Path) -> (f32, f32) {
     (sentinel as f32 / n, black as f32 / n)
 }
 
-fn frames_dir(level: u32, run_seed: i64) -> PathBuf {
+fn frames_dir(level: u32, run_seed: i64, tag: &str) -> PathBuf {
     // LEVEL-scoped runs and failures are for humans: keep under out/.
-    // Full-suite runs use a scratch dir per level/seed.
+    // Full-suite runs use a scratch dir per level/seed. The tag keeps
+    // contracts that shoot the same level/seed out of each other's dirs
+    // (tests run concurrently; capture() clears stale frames on entry).
     let keep = std::env::var("KEEP_FRAMES").is_ok() || std::env::var("LEVEL").is_ok();
     let base = if keep {
         repo_root().join("out/visual")
     } else {
         std::env::temp_dir().join("void-visual")
     };
-    base.join(format!("L{level}-S{run_seed}"))
+    base.join(format!("L{level}-S{run_seed}{tag}"))
 }
 
 /// CONTAINMENT: from any interior vantage of a PLANET 2 level, a flat-lit
@@ -192,7 +215,7 @@ fn planet_two_interiors_show_no_void() {
         for &run_seed in &seeds {
             let (spec, graph) = build_graph(level, run_seed);
             let poses = interior_probe_poses(&graph, spec.pitch, 8);
-            let dir = frames_dir(level, run_seed);
+            let dir = frames_dir(level, run_seed, "");
             let frames = capture(level, run_seed, &poses, true, &dir);
 
             // Rig self-check: distinct poses must yield distinct frames.
@@ -258,7 +281,7 @@ fn other_planets_boot_and_render() {
         let (spec, graph) = build_graph(level, run_seed);
         let poses = flythrough_poses(&graph, spec.pitch);
         assert!(!poses.is_empty(), "planet {planet}: artery poses derive");
-        let dir = frames_dir(level, run_seed);
+        let dir = frames_dir(level, run_seed, "");
         let frames = capture(level, run_seed, &poses, true, &dir);
 
         let bytes: Vec<Vec<u8>> = frames
@@ -293,5 +316,64 @@ fn other_planets_boot_and_render() {
         faults.is_empty(),
         "cross-planet smoke faults:\n{}",
         faults.join("\n")
+    );
+}
+
+/// COCKPIT: first-person frames are framed by the shell. The cockpit is
+/// rigid to the camera, so across DISTINCT artery vantages the bottom
+/// band of the frame (the console) must stay near-invariant while the
+/// world band changes — that pose-invariance IS a rendered cockpit, and
+/// it derives from the shell's own definition: no color, no coordinate,
+/// no part name pinned. A missing or invisible shell fails the ratio
+/// (the bottom band would change like the world does).
+#[test]
+fn cockpit_console_is_pose_invariant_while_the_world_moves() {
+    let level = *levels_of_planet(2)
+        .first()
+        .expect("the grammar declares planet 2");
+    let run_seed = 1i64;
+    let (spec, graph) = build_graph(level, run_seed);
+    let poses = flythrough_poses(&graph, spec.pitch);
+    assert!(poses.len() >= 2, "cockpit contract needs two artery vantages");
+    let dir = frames_dir(level, run_seed, "-cockpit");
+    let frames = capture(level, run_seed, &poses, true, &dir);
+
+    // Same rig self-check as the other contracts: a stalled capture
+    // would satisfy any invariance claim vacuously.
+    let bytes: Vec<Vec<u8>> = frames
+        .iter()
+        .map(|f| std::fs::read(f).expect("frame reads"))
+        .collect();
+    assert!(
+        !(1..bytes.len()).any(|i| bytes[i] == bytes[i - 1]),
+        "capture rig stalled — adjacent frames identical ({})",
+        dir.display()
+    );
+
+    // Bottom sixth = console; the band above the vertical center = world
+    // through the canopy. Averaged over every adjacent pose pair.
+    let pairs = frames.len() - 1;
+    let (mut console, mut world) = (0.0f32, 0.0f32);
+    for i in 1..frames.len() {
+        console += band_diff(&frames[i - 1], &frames[i], 5.0 / 6.0, 1.0);
+        world += band_diff(&frames[i - 1], &frames[i], 0.25, 0.5);
+    }
+    console /= pairs as f32;
+    world /= pairs as f32;
+    println!("visual: cockpit L{level} S{run_seed} console-drift={console:.2} world-drift={world:.2}");
+    assert!(
+        world > 2.0 * console,
+        "the bottom band moves like the world — no cockpit is framing the \
+         view (console {console:.2} vs world {world:.2}, frames in {})",
+        dir.display()
+    );
+    // Absolute cap: glass-edge antialiasing wiggles a static console by a
+    // few counts; a band that drifts more than ~5% of channel range is
+    // not static furniture.
+    assert!(
+        console < 12.0,
+        "console band drifts {console:.2}/255 across poses — the shell is \
+         not rigid to the camera ({})",
+        dir.display()
     );
 }

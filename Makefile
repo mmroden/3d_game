@@ -1,4 +1,4 @@
-.PHONY: deps deps-rust deps-godot deps-gut require-rust check check-visual test-rust test-godot test-assets demo edit clean run build build-release assets assets-install assets-import assets-probe assets-materials
+.PHONY: deps deps-rust deps-godot deps-gut lsp-up require-rust check check-visual test-rust test-godot test-assets demo edit clean run build build-release assets assets-install assets-import assets-probe assets-materials
 
 # Project-local tool paths
 TOOLS_DIR := $(CURDIR)/tools
@@ -39,10 +39,8 @@ PYENV := tools/pyenv
 # the asset-pipeline python venv (system python; the brew one has a broken
 # ensurepip, 2026-07-12), the io_scene_max Blender extension (.max material
 # recovery, installed via Blender's own extension system), and the headless
-# Godot editor LSP that Serena's GDScript support dials (TCP 6008, dialed
-# ONCE at Serena startup — so it must be up first; pid -> out/godot-lsp.pid,
-# kill that to stop it).
-deps: deps-rust deps-godot deps-gut
+# Godot editor LSP (via lsp-up below — see that target's comment).
+deps: deps-rust deps-godot deps-gut lsp-up
 	@if [ -x "$(BLENDER)" ]; then \
 		echo "Blender already installed ($$($(BLENDER) --version 2>/dev/null | head -1))."; \
 	else \
@@ -63,6 +61,14 @@ deps: deps-rust deps-godot deps-gut
 		echo "==> Installing io_scene_max via Blender extensions..."; \
 		$(BLENDER) --online-mode --command extension install --sync --enable io_scene_max; \
 	fi
+	@echo "All dependencies ready."
+
+# The headless Godot editor LSP Serena's GDScript support dials (TCP 6008,
+# dialed ONCE at Serena MCP startup — so it must listen BEFORE Serena
+# boots). scripts/serena-launch.sh (the .mcp.json entry point) runs this
+# on every Serena start; `make deps` includes it for hand-run setups.
+# pid -> out/godot-lsp.pid; kill that to stop it.
+lsp-up:
 	@if lsof -nP -iTCP:6008 -sTCP:LISTEN >/dev/null 2>&1; then \
 		echo "Godot LSP already listening on 6008."; \
 	else \
@@ -75,7 +81,6 @@ deps: deps-rust deps-godot deps-gut
 		[ $$ok -eq 1 ] || { echo "ERROR: Godot LSP did not come up (see out/godot-lsp.log)"; exit 1; }; \
 		echo "Godot LSP up (pid $$(cat out/godot-lsp.pid))."; \
 	fi
-	@echo "All dependencies ready."
 
 # Bootstrap + update the Rust toolchain (network). Explicit only — kept out of
 # the build/run hot path so a flaky download can't break every command. The

@@ -32,6 +32,11 @@ pub struct ShipSpec {
     pub weapon: WeaponKind,
     pub organic_cost: Option<u32>,
     pub model_path: &'static str,
+    /// The first-person cockpit shell rendered around the camera in cockpit
+    /// view (the exterior `model_path` hull is hidden there). Extracted by
+    /// the asset pipeline from the hull's authored interior; every hull
+    /// points at the Vanguard shell until it grows its own.
+    pub cockpit_model_path: &'static str,
     /// Longest-edge fit target (meters).
     pub model_size: f32,
     /// Yaw correction for the model's imported front axis (radians) — the
@@ -64,6 +69,7 @@ impl ShipType {
             weapon: WeaponKind::HitscanLaser,
             organic_cost: None,
             model_path: "res://addons/ships/Spacecraft_1.glb",
+            cockpit_model_path: "res://addons/ships/vanguard_cockpit.glb",
             model_size: 2.0, model_yaw_offset: std::f32::consts::PI,
             supports_styles: true,
             display_name: "Vanguard",
@@ -77,6 +83,7 @@ handling, and three paint jobs the yard will still argue about.",
             weapon: WeaponKind::TrackingLaser,
             organic_cost: Some(3_000),
             model_path: "res://addons/ships/talon.glb",
+            cockpit_model_path: "res://addons/ships/vanguard_cockpit.glb",
             model_size: 2.0, model_yaw_offset: std::f32::consts::PI,
             supports_styles: false,
             display_name: "Talon",
@@ -90,6 +97,7 @@ Thin plating, wicked speed, and lances that bend after whatever you paint.",
             weapon: WeaponKind::SubdroneLauncher,
             organic_cost: Some(4_000),
             model_path: "res://addons/ships/hive.glb",
+            cockpit_model_path: "res://addons/ships/vanguard_cockpit.glb",
             model_size: 2.4, model_yaw_offset: std::f32::consts::PI,
             supports_styles: false,
             display_name: "Hive",
@@ -105,6 +113,7 @@ doesn't shoot back — it releases things that do, and grows them back.",
             // are long-arc purchases — "300 is wayyyy too cheap").
             organic_cost: Some(5_000),
             model_path: "res://addons/ships/reaver.glb",
+            cockpit_model_path: "res://addons/ships/vanguard_cockpit.glb",
             model_size: 2.2, model_yaw_offset: std::f32::consts::PI,
             supports_styles: false,
             display_name: "Reaver",
@@ -186,6 +195,11 @@ mod tests {
             assert!(spec.model_path.starts_with("res://addons/ships/"),
                 "{ship:?} model must be an installed ship asset, got {}", spec.model_path);
             assert!(spec.model_path.ends_with(".glb"), "{ship:?} model should be a glb");
+            assert!(spec.cockpit_model_path.starts_with("res://addons/ships/"),
+                "{ship:?} cockpit shell must be an installed ship asset, got {}",
+                spec.cockpit_model_path);
+            assert!(spec.cockpit_model_path.ends_with(".glb"),
+                "{ship:?} cockpit shell should be a glb");
             assert!(spec.model_size > 0.0, "{ship:?} needs a fit size");
         }
     }

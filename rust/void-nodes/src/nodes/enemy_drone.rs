@@ -1074,7 +1074,7 @@ impl EnemyDrone {
     /// player's slow every `slow_interval`. Each tag compounds (the ship's
     /// `SlowDebuff` multiplies by `slow_factor`), so a sustained latch ramps
     /// from a noticeable drag to a crawl; the ship plays the latch
-    /// sound/shake on the fresh grab. All four knobs are behaviour switches
+    /// sound on the fresh grab. All four knobs are behaviour switches
     /// on the def (rosters/enemies.toml).
     fn tick_swarm_slow(&mut self, delta: f32, my_pos: Vector3, player_pos: Vector3) {
         self.swarm_reapply_timer -= delta;

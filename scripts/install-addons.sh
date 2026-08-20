@@ -204,6 +204,7 @@ du -sh "$ADDON_DIR"
 # checkout outweighs keeping third-party binaries out of history.
 
 SHIPS_SRC="$ASSETS_DIR/cgtrader_ships"
+BLENDER="${BLENDER:-/Applications/Blender.app/Contents/MacOS/Blender}"
 
 if [ -d "$SHIPS_SRC" ]; then
     echo "  Installing player ship models..."
@@ -225,6 +226,17 @@ if [ -d "$SHIPS_SRC" ]; then
         # Flatten Texture_Base/Style_N → Spacecraft_1_styles/Style_N.
         cp -R "$SPACESHIP1_SRC/Texture_Base/"Style_* "$STYLES_DST/"
         echo "  Spaceship_1 color styles installed ($(ls -d "$STYLES_DST"/Style_* 2>/dev/null | wc -l | tr -d ' ') styles)."
+        # Cockpit shell: the hull's interior furniture (consoles, seat,
+        # canopy glass) extracted per the cockpit_plan.py rule with the
+        # pilot Eyepoint baked in — the first-person stereo view renders
+        # this at full detail around the camera. Audit: `make test-assets`.
+        if [ -x "$BLENDER" ]; then
+            "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/extract-cockpit.py" -- \
+                "$SPACESHIP1_SRC/Spacecraft_1.glb" "$SHIPS_DIR/vanguard_cockpit.glb" 2>&1 \
+                | grep -i "extract-cockpit:" || echo "  (cockpit: no extraction summary — check Blender output)"
+        else
+            echo "  WARNING: Blender not found at $BLENDER — run 'make deps'. Skipping cockpit shell."
+        fi
     fi
     # Purchasable hull roster (ship_upgrades/): installed under stable names —
     # the ShipType spec table (void-logic/src/ship_type.rs) is the single
@@ -254,7 +266,6 @@ fi
 # collapses each to a game-weight budget and writes a self-contained .glb.
 
 EVIL_MECHS_SRC="$SHIPS_SRC/evil_mechs"
-BLENDER="${BLENDER:-/Applications/Blender.app/Contents/MacOS/Blender}"
 DECIMATE_TARGET=2000
 
 if [ -d "$EVIL_MECHS_SRC" ]; then

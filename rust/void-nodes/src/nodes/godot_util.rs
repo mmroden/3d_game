@@ -232,16 +232,23 @@ pub fn spawn_fitted_model(
     Some(model)
 }
 
-/// Load the model at `path`, instance it under `parent` named "Model", and
-/// fit-scale it to `length` — with no facing applied. Enemies use this (their
-/// imported models keep their own orientation); the ship wraps it with a yaw.
-pub fn spawn_model_fitted(parent: &mut Gd<Node3D>, path: &str, length: f32) -> Option<Gd<Node3D>> {
+/// Load the scene at `path` and instance it under `parent` as `name` — the
+/// bare spawn every model path shares; fitting/facing layers on top.
+pub fn spawn_model(parent: &mut Gd<Node3D>, path: &str, name: &str) -> Option<Gd<Node3D>> {
     let scene = ResourceLoader::singleton().load(path)?;
     let packed = scene.try_cast::<PackedScene>().ok()?;
     let instance = packed.instantiate()?;
     let mut model: Gd<Node3D> = instance.cast();
-    model.set_name("Model");
+    model.set_name(name);
     parent.add_child(&model);
+    Some(model)
+}
+
+/// Load the model at `path`, instance it under `parent` named "Model", and
+/// fit-scale it to `length` — with no facing applied. Enemies use this (their
+/// imported models keep their own orientation); the ship wraps it with a yaw.
+pub fn spawn_model_fitted(parent: &mut Gd<Node3D>, path: &str, length: f32) -> Option<Gd<Node3D>> {
+    let mut model = spawn_model(parent, path, "Model")?;
     fit_model_to_length(&mut model, length);
     Some(model)
 }

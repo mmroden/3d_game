@@ -10,6 +10,7 @@ use super::constants::{actions, groups, methods, signals};
 use super::godot_util;
 use super::live_handle::{LiveOpt, LiveRef, LiveVec};
 
+use void_logic::cockpit;
 use void_logic::debuff::SlowDebuff;
 use void_logic::laser::LaserLevel;
 use void_logic::ship::{self, ShipColor};
@@ -43,17 +44,17 @@ const IMPACT_SOUND_COOLDOWN: f32 = 0.4;
 /// threat, so you can turn toward the shooter.
 const HIT_SFX_OFFSET: f32 = 2.0;
 
-/// Camera-shake burst when a grabber latches on: how long and how hard
-/// (Camera3D frustum-offset units).
-const SHAKE_DURATION: f32 = 0.5;
-const SHAKE_AMP: f32 = 0.25;
 
 /// Flight collider capsule, in world units (independent of the model's scale).
 /// Tighter than the visual hull so the ship slides through doorways.
 const SHIP_COLLIDER_RADIUS: f32 = 0.45;
 const SHIP_COLLIDER_HEIGHT: f32 = 1.1;
-/// Cockpit camera offset (local), looking forward.
-const COCKPIT_OFFSET: Vector3 = Vector3::new(0.0, 0.5, 0.0);
+/// Cockpit camera offset (local), looking forward. Kept near the capsule
+/// axis on purpose: the cockpit shell nests inside the collider's radial
+/// clearance around the camera (see `spawn_cockpit_shell`), and the
+/// camera's own radial offset spends that budget — 0.1 leaves 0.35 m of
+/// physics-guaranteed clear space for the shell.
+const COCKPIT_OFFSET: Vector3 = Vector3::new(0.0, 0.1, 0.0);
 /// Chase camera offset (local): behind (+Z) and above the ship — high enough
 /// to see where the nose points.
 const CHASE_OFFSET: Vector3 = Vector3::new(0.0, 2.4, 4.5);
@@ -89,10 +90,16 @@ pub struct ShipController {
     /// `integrate_forces`, then cleared. A dead or disengaged enemy stops
     /// pulling by simply not calling.
     tractor_accel: Vector3,
-    /// Cached player camera, jittered for the grab shake.
+    /// Cached player camera, repositioned when the view mode changes.
     camera: Option<LiveRef<Camera3D>>,
-    shake_timer: f32,
-    shake_phase: f32,
+    /// The first-person cockpit shell around the camera; the inverse of the
+    /// exterior hull: visible only in cockpit view.
+    cockpit_shell: Option<LiveRef<Node3D>>,
+    /// The depth-adaptive aim reticle under the camera (None when the
+    /// player has no camera, e.g. headless test stacks) and its eased
+    /// current depth along the aim axis.
+    reticle: Option<LiveRef<Node3D>>,
+    reticle_depth: f32,
     camera_mode: CameraMode,
     /// Throttle so a wall scrape doesn't machine-gun the impact clang.
     impact_cooldown: f32,
@@ -146,8 +153,9 @@ impl IRigidBody3D for ShipController {
             slow: SlowDebuff::new(),
             tractor_accel: Vector3::ZERO,
             camera: None,
-            shake_timer: 0.0,
-            shake_phase: 0.0,
+            cockpit_shell: None,
+            reticle: None,
+            reticle_depth: void_logic::stereo::RETICLE_FAR,
             camera_mode: CameraMode::Cockpit,
             impact_cooldown: 0.0,
             was_in_contact: false,
@@ -182,11 +190,13 @@ impl IRigidBody3D for ShipController {
         // no-infinite-spin invariant (angular_damp > 0).
         self.apply_envelope();
 
-        // Cache the camera for the grab shake (None-safe if absent).
+        // Cache the camera for view-mode placement (None-safe if absent).
         self.camera = self.base()
             .try_get_node_as::<Camera3D>("Camera3D")
             .map(|c| LiveRef::new(&c));
         self.spawn_ship_model();
+        self.spawn_cockpit_shell();
+        self.spawn_reticle();
         self.apply_camera_mode();
     }
 
@@ -235,26 +245,26 @@ impl IRigidBody3D for ShipController {
     /// only true in `physics_process` — so it lives here, not in
     /// `integrate_forces`.
     fn physics_process(&mut self, delta: f64) {
+        // The reticle is an aim instrument, not menu chrome: visible
+        // exactly while piloting is live.
+        let piloting = self.controls_enabled;
+        self.reticle.with(|reticle| reticle.set_visible(piloting));
         // No piloting on non-gameplay screens: skip view-toggle, weapons, and
         // power routing so the ship sits inert while menus drive the camera.
         if !self.controls_enabled {
             return;
         }
         if Input::singleton().is_action_just_pressed(actions::TOGGLE_VIEW) {
-            self.camera_mode = match self.camera_mode {
-                CameraMode::Cockpit => CameraMode::Chase,
-                CameraMode::Chase => CameraMode::Cockpit,
-            };
-            self.apply_camera_mode();
+            self.toggle_view();
         }
         self.handle_weapons_and_power(delta as f32);
+        self.tick_reticle(delta as f32);
         // Tick the movement slow; tell the HUD only when it switches on/off.
         if self.slow.tick(delta as f32) {
             let active = self.slow.is_active();
             self.base_mut()
                 .emit_signal(signals::PLAYER_SLOWED, &[Variant::from(active)]);
         }
-        self.tick_shake(delta as f32);
         self.impact_cooldown = (self.impact_cooldown - delta as f32).max(0.0);
     }
 }
@@ -289,10 +299,11 @@ impl ShipController {
     pub fn apply_slow(&mut self, factor: f32, duration: f32) {
         let was_active = self.slow.is_active();
         self.slow.apply(factor, duration);
-        // On a fresh grab: tell the HUD, kick the camera shake, and play the
-        // latch sound so the player feels the attachment land.
+        // On a fresh grab: tell the HUD and play the latch sound so the
+        // player feels the attachment land. Deliberately no camera shake —
+        // injected camera motion is a nausea vector, so escalation stays on
+        // tints and audio.
         if !was_active && self.slow.is_active() {
-            self.shake_timer = SHAKE_DURATION;
             let pos = self.base().get_global_position();
             if let Some(mut audio) = godot_util::find_audio_manager(self.base().get_tree()) {
                 audio.bind_mut().play_event_at(SfxEvent::SwarmerLatch, pos);
@@ -400,11 +411,172 @@ impl ShipController {
         }
     }
 
-    /// Place the camera for the current view mode, and show the ship model only
-    /// in chase view (in cockpit you're inside the hull, so it would block the view).
+    /// Height of the cockpit camera — and therefore of the reticle's aim
+    /// line — above the body origin. The GUT aim-geometry contracts derive
+    /// their staging from this instead of pinning the number.
+    #[func]
+    pub fn cockpit_eye_height(&self) -> f32 {
+        COCKPIT_OFFSET.y
+    }
+
+    /// Flip cockpit/chase view. The seam the TOGGLE_VIEW input drives and
+    /// the GUT shell contract exercises directly.
+    #[func]
+    pub fn toggle_view(&mut self) {
+        self.camera_mode = match self.camera_mode {
+            CameraMode::Cockpit => CameraMode::Chase,
+            CameraMode::Chase => CameraMode::Cockpit,
+        };
+        self.apply_camera_mode();
+    }
+
+    /// Spawn the first-person cockpit shell: the pipeline-extracted interior
+    /// (consoles, seat, canopy glass — `make assets`, audited by
+    /// `make test-assets`) scaled so its widest lateral reach lands on the
+    /// flight capsule's radial clearance around the camera, authored
+    /// eyepoint exactly on the camera. Nesting inside the collider means
+    /// physics itself guarantees no world geometry ever slips between the
+    /// pilot's eyes and the shell — the stereo comfort anchor. Shared
+    /// across hulls (the spec decides) and spawned once: hull swaps retire
+    /// only the exterior model.
+    fn spawn_cockpit_shell(&mut self) {
+        let spec = self.ship_type.spec();
+        let mut parent: Gd<Node3D> = self.base().clone().upcast();
+        let Some(mut shell) =
+            godot_util::spawn_model(&mut parent, spec.cockpit_model_path, "CockpitShell")
+        else {
+            return;
+        };
+        let (Some(aabb), Some(eye_node)) =
+            (godot_util::combined_mesh_aabb(&shell), shell.find_child("Eyepoint"))
+        else {
+            // No geometry or no baked eyepoint: a shell placed by guesswork
+            // would sit in the pilot's face — refuse it instead.
+            godot_error!(
+                "cockpit shell {} lacks meshes or its Eyepoint — dropping it",
+                spec.cockpit_model_path
+            );
+            shell.queue_free();
+            return;
+        };
+        // The interior faces wherever the exterior faces — same authored
+        // model, same correction — so the shell takes the SAME spec yaw the
+        // hull gets, and the origin math swings the eyepoint with it (the
+        // 2026-08-19 rig frames caught the seats facing the camera).
+        shell.rotate_y(spec.model_yaw_offset);
+        let eye = eye_node.cast::<Node3D>().get_position();
+        let clearance = SHIP_COLLIDER_RADIUS - COCKPIT_OFFSET.y;
+        let reach =
+            cockpit::lateral_reach(aabb.position.x, aabb.position.x + aabb.size.x, eye.x);
+        let scale = cockpit::shell_fit_scale(reach, clearance);
+        shell.set_scale(Vector3::splat(scale));
+        let (x, y, z) = cockpit::shell_origin(
+            (eye.x, eye.y, eye.z),
+            scale,
+            (COCKPIT_OFFSET.x, COCKPIT_OFFSET.y, COCKPIT_OFFSET.z),
+            spec.model_yaw_offset,
+        );
+        shell.set_position(Vector3::new(x, y, z));
+        self.cockpit_shell = Some(LiveRef::new(&shell));
+    }
+
+
+    /// Build the depth-adaptive reticle under the camera: a dot and four
+    /// ticks as unshaded world-space quads on the aim axis, echoing the
+    /// old HUD sight's proportions. Drawn over the world (depth test off)
+    /// but AT the aim ray's depth, so its stereo vergence always matches
+    /// whatever it sits on — the HUD's fixed-depth sight doubled against
+    /// nearer geometry (occlusion-vergence rivalry), and any single depth
+    /// can't fuse with targets at another (iron-sight doubling). Policy
+    /// constants and math live in void-logic's stereo module.
+    fn spawn_reticle(&mut self) {
+        use void_logic::stereo;
+        let mut root = Node3D::new_alloc();
+        root.set_name("Reticle");
+        let mut material = godot::classes::StandardMaterial3D::new_gd();
+        material.set_shading_mode(godot::classes::base_material_3d::ShadingMode::UNSHADED);
+        material.set_albedo(Color::from_rgba(0.5, 1.0, 0.6, 1.0));
+        material.set_flag(godot::classes::base_material_3d::Flags::DISABLE_DEPTH_TEST, true);
+        material.set_transparency(godot::classes::base_material_3d::Transparency::ALPHA);
+        material.set_render_priority(100);
+        // Dot + four ticks at unit half-extent; tick_reticle scales the
+        // root per frame so angular size stays constant with depth.
+        let pieces: [(Vector2, Vector3); 5] = [
+            (Vector2::new(0.23, 0.23), Vector3::ZERO),
+            (Vector2::new(0.54, 0.15), Vector3::new(-0.73, 0.0, 0.0)),
+            (Vector2::new(0.54, 0.15), Vector3::new(0.73, 0.0, 0.0)),
+            (Vector2::new(0.15, 0.54), Vector3::new(0.0, -0.73, 0.0)),
+            (Vector2::new(0.15, 0.54), Vector3::new(0.0, 0.73, 0.0)),
+        ];
+        for (size, position) in pieces {
+            let mut quad = godot::classes::QuadMesh::new_gd();
+            quad.set_size(size);
+            let mut piece = MeshInstance3D::new_alloc();
+            piece.set_mesh(&quad);
+            piece.set_material_override(&material);
+            piece.set_position(position);
+            root.add_child(&piece);
+        }
+        root.set_position(Vector3::new(0.0, 0.0, -stereo::RETICLE_FAR));
+        root.set_scale(Vector3::splat(stereo::reticle_half_extent(stereo::RETICLE_FAR)));
+        let attached = self.camera.with(|camera| {
+            camera.add_child(&root);
+            LiveRef::new(&root)
+        });
+        if attached.is_none() {
+            // No camera under this player (headless test stacks): no sight.
+            root.free();
+        }
+        self.reticle = attached;
+        self.reticle_depth = stereo::RETICLE_FAR;
+    }
+
+    /// One physics tick of the reticle: ray down the camera's aim axis,
+    /// ease the marker toward the clamped hit depth (the travel band and
+    /// tracking rate are void-logic stereo policy).
+    fn tick_reticle(&mut self, delta: f32) {
+        use void_logic::stereo;
+        if self.reticle.is_none() {
+            return;
+        }
+        let Some(Some((origin, forward))) = self.camera.with(|camera| {
+            camera.is_inside_tree().then(|| {
+                let t = camera.get_global_transform();
+                (t.origin, -t.basis.col_c())
+            })
+        }) else {
+            return;
+        };
+        let Some(world) = self.base().get_world_3d() else { return };
+        let Some(mut space) = world.get_direct_space_state() else { return };
+        let hit = PhysicsRayQueryParameters3D::create(
+            origin,
+            origin + forward * stereo::RETICLE_FAR,
+        )
+        .and_then(|mut query| {
+            query.set_exclude(&array![self.base().get_rid()]);
+            let result = space.intersect_ray(&query);
+            result
+                .get("position")
+                .map(|p| (p.to::<Vector3>() - origin).length())
+        });
+        let target = stereo::reticle_target_depth(hit);
+        self.reticle_depth = stereo::reticle_depth_step(self.reticle_depth, target, delta);
+        let depth = self.reticle_depth;
+        self.reticle.with(|reticle| {
+            reticle.set_position(Vector3::new(0.0, 0.0, -depth));
+            reticle.set_scale(Vector3::splat(stereo::reticle_half_extent(depth)));
+        });
+    }
+
+    /// Place the camera for the current view mode, and show exactly one of
+    /// the two ship bodies: the exterior hull in chase view, the cockpit
+    /// shell in cockpit view (inside the hull, the hull would block the
+    /// view; outside it, the shell would float in front of the camera).
     fn apply_camera_mode(&mut self) {
         let chase = self.camera_mode == CameraMode::Chase;
         self.ship_model.with(|model| model.set_visible(chase));
+        self.cockpit_shell.with(|shell| shell.set_visible(!chase));
         let transform = match self.camera_mode {
             CameraMode::Cockpit => Transform3D::new(Basis::IDENTITY, COCKPIT_OFFSET),
             CameraMode::Chase => {
@@ -416,29 +588,6 @@ impl ShipController {
         self.camera.with(|camera| camera.set_transform(transform));
     }
 
-    /// Jitter the camera with a decaying offset while the grab shake is active.
-    fn tick_shake(&mut self, delta: f32) {
-        if self.shake_timer <= 0.0 {
-            return;
-        }
-        // Advance the shake state first, then push the offsets to the camera —
-        // self can't be mutated while `camera.with` borrows it.
-        self.shake_timer = (self.shake_timer - delta).max(0.0);
-        self.shake_phase += delta;
-        let (h, v) = if self.shake_timer <= 0.0 {
-            (0.0, 0.0)
-        } else {
-            let amp = SHAKE_AMP * (self.shake_timer / SHAKE_DURATION);
-            (
-                (self.shake_phase * 91.0).sin() * amp,
-                (self.shake_phase * 123.0).cos() * amp,
-            )
-        };
-        self.camera.with(|camera| {
-            camera.set_h_offset(h);
-            camera.set_v_offset(v);
-        });
-    }
 
     /// Set linear/angular damping from the loadout's per-second
     /// `Retention` (`damp = -ln(retention)`). The engine's damping *is*
@@ -847,7 +996,10 @@ impl ShipController {
 
     fn fire_dual_lasers(&mut self, damage: f32) {
         let global_basis = self.base().get_global_transform().basis;
-        let center = self.base().get_global_position() + global_basis.col_b() * 0.5;
+        // The aim line IS the cockpit camera line: damage rides the ray the
+        // reticle actually sits on (one truth — a hardcoded height here once
+        // drifted from the camera offset).
+        let center = self.base().get_global_position() + global_basis * COCKPIT_OFFSET;
         let forward = -global_basis.col_c();
         let right = global_basis.col_a();
 
