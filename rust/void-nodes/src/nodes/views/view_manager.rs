@@ -55,6 +55,12 @@ pub struct ViewManager {
     current_mode: DisplayMode,
     /// Window size before entering SBS/fullscreen, so we can restore it.
     pre_sbs_window_size: Vector2i,
+    /// Dynamic stereo (the ship's stereo director drives convergence +
+    /// interaxial) — GameManager's option, received via the broadcast.
+    dynamic_stereo: bool,
+    /// The director's dials as polled this frame: (convergence distance,
+    /// eye separation). None in static mode — the exports above rule.
+    director_focus: Option<(f32, f32)>,
 }
 
 #[godot_api]
@@ -68,6 +74,8 @@ impl INode3D for ViewManager {
             ui_plane_distance: DEFAULT_UI_PLANE_DISTANCE,
             current_mode: DisplayMode::Mono,
             pre_sbs_window_size: Vector2i::new(0, 0),
+            dynamic_stereo: false,
+            director_focus: None,
         }
     }
 
@@ -81,6 +89,24 @@ impl INode3D for ViewManager {
     }
 
     fn process(&mut self, _delta: f64) {
+        // Dynamic stereo: poll the ship's stereo director for this frame's
+        // dials before the eyes sync. Static mode leaves None, so the
+        // exported tuning values rule (the A/B baseline).
+        self.director_focus = if self.dynamic_stereo {
+            self.base()
+                .get_parent()
+                .and_then(|p| {
+                    p.try_get_node_as::<crate::nodes::ship_controller::ShipController>(
+                        nodes::PLAYER,
+                    )
+                })
+                .map(|player| {
+                    let focus = player.bind().stereo_focus();
+                    (focus.x, focus.y)
+                })
+        } else {
+            None
+        };
         // The left eye renders in BOTH modes (mono = left eye fullscreen, SBS =
         // both eyes), so keep it tracking the player camera every frame. The 3D
         // UI plane only exists in SBS.
@@ -146,7 +172,8 @@ impl ViewManager {
 
     /// Called when GameManager emits options_changed.
     #[func]
-    pub fn on_options_changed(&mut self, sbs_enabled: bool, msaa_enabled: bool) {
+    pub fn on_options_changed(&mut self, sbs_enabled: bool, msaa_enabled: bool, dynamic_stereo: bool) {
+        self.dynamic_stereo = dynamic_stereo;
         let target = if sbs_enabled {
             DisplayMode::SideBySide
         } else {
@@ -298,10 +325,21 @@ impl ViewManager {
         } else {
             win.x as u32
         };
+        // Dynamic stereo: the director owns BOTH dials absolutely —
+        // depth_strength is the static mode's volume knob and must not
+        // double-scale the director's computed baseline.
+        let (eye_separation, depth_strength, convergence_distance) = match self.director_focus {
+            Some((convergence, interaxial)) => (interaxial, 1.0, convergence),
+            None => (
+                self.eye_separation,
+                self.depth_strength,
+                self.convergence_distance,
+            ),
+        };
         StereoConfig {
-            eye_separation: self.eye_separation,
-            depth_strength: self.depth_strength,
-            convergence_distance: self.convergence_distance,
+            eye_separation,
+            depth_strength,
+            convergence_distance,
             viewport_width: w,
             viewport_height: win.y as u32,
         }

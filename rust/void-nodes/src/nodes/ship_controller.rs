@@ -95,11 +95,11 @@ pub struct ShipController {
     /// The first-person cockpit shell around the camera; the inverse of the
     /// exterior hull: visible only in cockpit view.
     cockpit_shell: Option<LiveRef<Node3D>>,
-    /// The depth-adaptive aim reticle under the camera (None when the
-    /// player has no camera, e.g. headless test stacks) and its eased
-    /// current depth along the aim axis.
-    reticle: Option<LiveRef<Node3D>>,
-    reticle_depth: f32,
+    /// The stereo director (experiment v2): eases the screen plane onto
+    /// the threat ladder's subject and scales interaxial for constant
+    /// roundness. Ticked every physics frame; ViewManager polls the dials
+    /// when the dynamic-stereo option is on.
+    stereo_director: void_logic::director::StereoDirector,
     camera_mode: CameraMode,
     /// Throttle so a wall scrape doesn't machine-gun the impact clang.
     impact_cooldown: f32,
@@ -154,8 +154,7 @@ impl IRigidBody3D for ShipController {
             tractor_accel: Vector3::ZERO,
             camera: None,
             cockpit_shell: None,
-            reticle: None,
-            reticle_depth: void_logic::stereo::RETICLE_FAR,
+            stereo_director: void_logic::director::StereoDirector::default(),
             camera_mode: CameraMode::Cockpit,
             impact_cooldown: 0.0,
             was_in_contact: false,
@@ -196,7 +195,6 @@ impl IRigidBody3D for ShipController {
             .map(|c| LiveRef::new(&c));
         self.spawn_ship_model();
         self.spawn_cockpit_shell();
-        self.spawn_reticle();
         self.apply_camera_mode();
     }
 
@@ -245,20 +243,21 @@ impl IRigidBody3D for ShipController {
     /// only true in `physics_process` — so it lives here, not in
     /// `integrate_forces`.
     fn physics_process(&mut self, delta: f64) {
-        // The reticle is an aim instrument, not menu chrome: visible
-        // exactly while piloting is live.
-        let piloting = self.controls_enabled;
-        self.reticle.with(|reticle| reticle.set_visible(piloting));
         // No piloting on non-gameplay screens: skip view-toggle, weapons, and
         // power routing so the ship sits inert while menus drive the camera.
+        // The stereo director keeps ticking on an EMPTY stage there, easing
+        // the plane to its deep rest instead of freezing mid-fight.
         if !self.controls_enabled {
+            self.stereo_director
+                .tick(&void_logic::director::Candidates::default(), delta as f32);
             return;
         }
         if Input::singleton().is_action_just_pressed(actions::TOGGLE_VIEW) {
             self.toggle_view();
         }
         self.handle_weapons_and_power(delta as f32);
-        self.tick_reticle(delta as f32);
+        let candidates = self.stereo_candidates();
+        self.stereo_director.tick(&candidates, delta as f32);
         // Tick the movement slow; tell the HUD only when it switches on/off.
         if self.slow.tick(delta as f32) {
             let active = self.slow.is_active();
@@ -481,93 +480,103 @@ impl ShipController {
     }
 
 
-    /// Build the depth-adaptive reticle under the camera: a dot and four
-    /// ticks as unshaded world-space quads on the aim axis, echoing the
-    /// old HUD sight's proportions. Drawn over the world (depth test off)
-    /// but AT the aim ray's depth, so its stereo vergence always matches
-    /// whatever it sits on — the HUD's fixed-depth sight doubled against
-    /// nearer geometry (occlusion-vergence rivalry), and any single depth
-    /// can't fuse with targets at another (iron-sight doubling). Policy
-    /// constants and math live in void-logic's stereo module.
-    fn spawn_reticle(&mut self) {
-        use void_logic::stereo;
-        let mut root = Node3D::new_alloc();
-        root.set_name("Reticle");
-        let mut material = godot::classes::StandardMaterial3D::new_gd();
-        material.set_shading_mode(godot::classes::base_material_3d::ShadingMode::UNSHADED);
-        material.set_albedo(Color::from_rgba(0.5, 1.0, 0.6, 1.0));
-        material.set_flag(godot::classes::base_material_3d::Flags::DISABLE_DEPTH_TEST, true);
-        material.set_transparency(godot::classes::base_material_3d::Transparency::ALPHA);
-        material.set_render_priority(100);
-        // Dot + four ticks at unit half-extent; tick_reticle scales the
-        // root per frame so angular size stays constant with depth.
-        let pieces: [(Vector2, Vector3); 5] = [
-            (Vector2::new(0.23, 0.23), Vector3::ZERO),
-            (Vector2::new(0.54, 0.15), Vector3::new(-0.73, 0.0, 0.0)),
-            (Vector2::new(0.54, 0.15), Vector3::new(0.73, 0.0, 0.0)),
-            (Vector2::new(0.15, 0.54), Vector3::new(0.0, -0.73, 0.0)),
-            (Vector2::new(0.15, 0.54), Vector3::new(0.0, 0.73, 0.0)),
-        ];
-        for (size, position) in pieces {
-            let mut quad = godot::classes::QuadMesh::new_gd();
-            quad.set_size(size);
-            let mut piece = MeshInstance3D::new_alloc();
-            piece.set_mesh(&quad);
-            piece.set_material_override(&material);
-            piece.set_position(position);
-            root.add_child(&piece);
-        }
-        root.set_position(Vector3::new(0.0, 0.0, -stereo::RETICLE_FAR));
-        root.set_scale(Vector3::splat(stereo::reticle_half_extent(stereo::RETICLE_FAR)));
-        let attached = self.camera.with(|camera| {
-            camera.add_child(&root);
-            LiveRef::new(&root)
-        });
-        if attached.is_none() {
-            // No camera under this player (headless test stacks): no sight.
-            root.free();
-        }
-        self.reticle = attached;
-        self.reticle_depth = stereo::RETICLE_FAR;
+    /// The stereo director's current dials, polled by ViewManager each
+    /// frame while the dynamic-stereo option is on: x = convergence
+    /// distance, y = interaxial (eye separation) — both already eased,
+    /// clamped, and vergence-capped by the director.
+    #[func]
+    pub fn stereo_focus(&self) -> Vector2 {
+        Vector2::new(
+            self.stereo_director.convergence(),
+            self.stereo_director.interaxial(),
+        )
     }
 
-    /// One physics tick of the reticle: ray down the camera's aim axis,
-    /// ease the marker toward the clamped hit depth (the travel band and
-    /// tracking rate are void-logic stereo policy).
-    fn tick_reticle(&mut self, delta: f32) {
-        use void_logic::stereo;
-        if self.reticle.is_none() {
-            return;
-        }
-        let Some(Some((origin, forward))) = self.camera.with(|camera| {
-            camera.is_inside_tree().then(|| {
-                let t = camera.get_global_transform();
-                (t.origin, -t.basis.col_c())
-            })
-        }) else {
-            return;
+    /// Harvest the stereo director's stage: the nearest LOS-clear enemy
+    /// in the forward cone, the nearest floater (the FLOATERS group —
+    /// caches, the exit portal), and the aim ray's wall hit. Same groups
+    /// and cone math as the weapons' `acquire_lock`, with the director's
+    /// tighter angle; distances are ranges from the cockpit eye, the
+    /// space the director's clamps live in.
+    fn stereo_candidates(&mut self) -> void_logic::director::Candidates {
+        use void_logic::director::{Candidates, CONE_HALF_ANGLE_DEG};
+        use void_logic::stereo::CONVERGENCE_FAR;
+        let t = self.base().get_global_transform();
+        let origin = t.origin + t.basis * COCKPIT_OFFSET;
+        let forward = -t.basis.col_c();
+        let cone_cos = CONE_HALF_ANGLE_DEG.to_radians().cos();
+
+        let Some(world) = self.base().get_world_3d() else {
+            return Candidates::default();
         };
-        let Some(world) = self.base().get_world_3d() else { return };
-        let Some(mut space) = world.get_direct_space_state() else { return };
-        let hit = PhysicsRayQueryParameters3D::create(
+        let Some(mut space) = world.get_direct_space_state() else {
+            return Candidates::default();
+        };
+        let self_rid = self.base().get_rid();
+
+        // LOS: the eye-to-candidate segment must reach it unobstructed —
+        // a threat behind a wall must not pull the plane. An empty result
+        // is clear too (Area3D floaters don't stop rays).
+        let mut los_clear = |target: &Gd<Node3D>, position: Vector3| -> bool {
+            let Some(mut query) = PhysicsRayQueryParameters3D::create(origin, position) else {
+                return false;
+            };
+            query.set_exclude(&array![self_rid]);
+            let result = space.intersect_ray(&query);
+            if result.is_empty() {
+                return true;
+            }
+            result
+                .get("collider")
+                .map(|c| c.to::<Gd<Node>>().instance_id() == target.instance_id())
+                .unwrap_or(false)
+        };
+
+        let tree = self.base().get_tree();
+        let mut nearest_in_cone = |group: &str| -> Option<f32> {
+            let mut best: Option<f32> = None;
+            for node in tree.clone().get_nodes_in_group(group).iter_shared() {
+                let Ok(candidate) = node.try_cast::<Node3D>() else { continue };
+                if !candidate.is_visible_in_tree() {
+                    continue;
+                }
+                let position = candidate.get_global_position();
+                let to = position - origin;
+                let distance = to.length();
+                if distance <= f32::EPSILON || distance > CONVERGENCE_FAR {
+                    continue;
+                }
+                if forward.dot(to / distance) < cone_cos {
+                    continue;
+                }
+                if best.is_some_and(|b| b <= distance) {
+                    continue;
+                }
+                if los_clear(&candidate, position) {
+                    best = Some(distance);
+                }
+            }
+            best
+        };
+
+        let threat = nearest_in_cone(groups::ENEMIES);
+        let floater = nearest_in_cone(groups::FLOATERS);
+
+        let wall = PhysicsRayQueryParameters3D::create(
             origin,
-            origin + forward * stereo::RETICLE_FAR,
+            origin + forward * CONVERGENCE_FAR,
         )
         .and_then(|mut query| {
-            query.set_exclude(&array![self.base().get_rid()]);
+            query.set_exclude(&array![self_rid]);
             let result = space.intersect_ray(&query);
             result
                 .get("position")
                 .map(|p| (p.to::<Vector3>() - origin).length())
         });
-        let target = stereo::reticle_target_depth(hit);
-        self.reticle_depth = stereo::reticle_depth_step(self.reticle_depth, target, delta);
-        let depth = self.reticle_depth;
-        self.reticle.with(|reticle| {
-            reticle.set_position(Vector3::new(0.0, 0.0, -depth));
-            reticle.set_scale(Vector3::splat(stereo::reticle_half_extent(depth)));
-        });
+
+        Candidates { threat, floater, wall }
     }
+
 
     /// Place the camera for the current view mode, and show exactly one of
     /// the two ship bodies: the exterior hull in chase view, the cockpit

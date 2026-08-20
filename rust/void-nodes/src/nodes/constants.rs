@@ -22,6 +22,7 @@ pub mod signals {
     pub const CONTINUE_SELECTED: &str = "continue_selected";
     pub const SBS_TOGGLED: &str = "sbs_toggled";
     pub const MSAA_TOGGLED: &str = "msaa_toggled";
+    pub const DYNAMIC_STEREO_TOGGLED: &str = "dynamic_stereo_toggled";
     pub const EXIT_SELECTED: &str = "exit_selected";
     pub const RESUME_SELECTED: &str = "resume_selected";
     pub const QUIT_SELECTED: &str = "quit_selected";
@@ -53,6 +54,7 @@ pub mod methods {
     pub const ON_PORTAL_ENTERED: &str = "on_portal_entered";
     pub const ON_SBS_TOGGLED: &str = "on_sbs_toggled";
     pub const ON_MSAA_TOGGLED: &str = "on_msaa_toggled";
+    pub const ON_DYNAMIC_STEREO_TOGGLED: &str = "on_dynamic_stereo_toggled";
     pub const ON_OPTIONS_CHANGED: &str = "on_options_changed";
     pub const BROADCAST_OPTIONS: &str = "broadcast_options";
     pub const ON_RENDER_VIEWPORTS_CHANGED: &str = "on_render_viewports_changed";
@@ -200,6 +202,10 @@ pub mod groups {
     pub const BOLT_POOL: &str = "bolt_pool";
     pub const CLOUD_POOL: &str = "cloud_pool";
     pub const PLAYER_DRONES: &str = "player_drones";
+    /// Free-floating points of interest (caches, the exit portal): the
+    /// stereo director's mid rung — what the plane converges on when no
+    /// threat holds the cone.
+    pub const FLOATERS: &str = "floaters";
 }
 
 // ── Meta keys ─────────────────────────────────────────────────────────
@@ -294,6 +300,7 @@ mod tests {
             signals::CONTINUE_SELECTED,
             signals::SBS_TOGGLED,
             signals::MSAA_TOGGLED,
+            signals::DYNAMIC_STEREO_TOGGLED,
             signals::EXIT_SELECTED,
             signals::RESUME_SELECTED,
             signals::QUIT_SELECTED,
@@ -328,6 +335,7 @@ mod tests {
             methods::ON_PORTAL_ENTERED,
             methods::ON_SBS_TOGGLED,
             methods::ON_MSAA_TOGGLED,
+            methods::ON_DYNAMIC_STEREO_TOGGLED,
             methods::ON_OPTIONS_CHANGED,
             methods::BROADCAST_OPTIONS,
             methods::ON_RENDER_VIEWPORTS_CHANGED,
@@ -456,7 +464,8 @@ mod tests {
             signals::RETURN_PRESSED, signals::RESPAWN_PRESSED,
             signals::NEW_GAME_SELECTED,
             signals::CONTINUE_SELECTED, signals::SBS_TOGGLED,
-            signals::MSAA_TOGGLED, signals::EXIT_SELECTED,
+            signals::MSAA_TOGGLED, signals::DYNAMIC_STEREO_TOGGLED,
+            signals::EXIT_SELECTED,
             signals::RESUME_SELECTED, signals::QUIT_SELECTED,
             signals::BODY_ENTERED,
             signals::SIZE_CHANGED,
@@ -485,6 +494,7 @@ mod tests {
             methods::START_NEW_GAME, methods::CONTINUE_GAME,
             methods::ON_ENEMY_KILLED, methods::ON_PORTAL_ENTERED,
             methods::ON_SBS_TOGGLED, methods::ON_MSAA_TOGGLED,
+            methods::ON_DYNAMIC_STEREO_TOGGLED,
             methods::ON_OPTIONS_CHANGED, methods::ON_BODY_ENTERED,
             methods::BROADCAST_OPTIONS,
             methods::ON_RENDER_VIEWPORTS_CHANGED,

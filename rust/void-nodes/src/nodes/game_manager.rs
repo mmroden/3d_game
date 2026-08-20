@@ -307,7 +307,7 @@ impl GameManager {
     fn phase_changed(phase_name: GString);
 
     #[signal]
-    fn options_changed(sbs_enabled: bool, msaa_enabled: bool);
+    fn options_changed(sbs_enabled: bool, msaa_enabled: bool, dynamic_stereo: bool);
 
     /// Deferred from `ready()`: show the opening screen once every sibling node
     /// has finished its own `ready()`. See the call site for why it can't be
@@ -1070,8 +1070,11 @@ impl GameManager {
     fn broadcast_options(&mut self) {
         let sbs = self.game_options.sbs_enabled;
         let msaa = self.game_options.msaa_enabled;
-        self.base_mut()
-            .emit_signal(signals::OPTIONS_CHANGED, &[sbs.to_variant(), msaa.to_variant()]);
+        let dynamic = self.game_options.dynamic_stereo;
+        self.base_mut().emit_signal(
+            signals::OPTIONS_CHANGED,
+            &[sbs.to_variant(), msaa.to_variant(), dynamic.to_variant()],
+        );
     }
 
     /// The authoritative MSAA option (for tests / inspection).
@@ -1158,10 +1161,9 @@ impl GameManager {
     /// Called from main menu: toggle SBS stereo.
     #[func]
     pub fn on_sbs_toggled(&mut self) {
-        let sbs = self.game_options.toggle_sbs();
-        let msaa = self.game_options.msaa_enabled;
+        self.game_options.toggle_sbs();
         self.save_options();
-        self.base_mut().emit_signal(signals::OPTIONS_CHANGED, &[sbs.to_variant(), msaa.to_variant()]);
+        self.broadcast_options();
     }
 
     /// Called from main menu: toggle MSAA. Controller-only — flip the
@@ -1169,10 +1171,20 @@ impl GameManager {
     /// actual viewports.
     #[func]
     pub fn on_msaa_toggled(&mut self) {
-        let msaa = self.game_options.toggle_msaa();
-        let sbs = self.game_options.sbs_enabled;
+        self.game_options.toggle_msaa();
         self.save_options();
-        self.base_mut().emit_signal(signals::OPTIONS_CHANGED, &[sbs.to_variant(), msaa.to_variant()]);
+        self.broadcast_options();
+    }
+
+    /// Toggle the stereo director (experiment v2: convergence + interaxial
+    /// tracking the threat ladder). F4 in play, and the options menus —
+    /// same controller-only shape as the other display toggles, so the
+    /// in-glasses A/B against the static baseline is one keypress.
+    #[func]
+    pub fn on_dynamic_stereo_toggled(&mut self) {
+        self.game_options.toggle_dynamic_stereo();
+        self.save_options();
+        self.broadcast_options();
     }
 
     /// Called from pause menu: resume gameplay.
@@ -1811,6 +1823,11 @@ impl GameManager {
             .default(&self.game_options.msaa_enabled.to_variant())
             .done()
             .to();
+        self.game_options.dynamic_stereo = cfg
+            .get_value_ex(OPTIONS_SECTION, "dynamic_stereo")
+            .default(&self.game_options.dynamic_stereo.to_variant())
+            .done()
+            .to();
     }
 
     /// Persist the current options so they are remembered next launch.
@@ -1821,6 +1838,7 @@ impl GameManager {
             &[
                 ("sbs", self.game_options.sbs_enabled.to_variant()),
                 ("msaa", self.game_options.msaa_enabled.to_variant()),
+                ("dynamic_stereo", self.game_options.dynamic_stereo.to_variant()),
             ],
         );
     }
@@ -1868,6 +1886,8 @@ impl GameManager {
                 menu.connect(signals::SBS_TOGGLED, &sbs);
                 let msaa = self.base().callable(methods::ON_MSAA_TOGGLED);
                 menu.connect(signals::MSAA_TOGGLED, &msaa);
+                let dynamic = self.base().callable(methods::ON_DYNAMIC_STEREO_TOGGLED);
+                menu.connect(signals::DYNAMIC_STEREO_TOGGLED, &dynamic);
             }
         }
 
@@ -1885,6 +1905,8 @@ impl GameManager {
                 pause_ui.connect(signals::SBS_TOGGLED, &sbs);
                 let msaa = self.base().callable(methods::ON_MSAA_TOGGLED);
                 pause_ui.connect(signals::MSAA_TOGGLED, &msaa);
+                let dynamic = self.base().callable(methods::ON_DYNAMIC_STEREO_TOGGLED);
+                pause_ui.connect(signals::DYNAMIC_STEREO_TOGGLED, &dynamic);
             }
         }
 

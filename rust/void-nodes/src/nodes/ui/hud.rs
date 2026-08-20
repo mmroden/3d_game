@@ -162,7 +162,7 @@ impl HUD {
     /// React to GameManager's options broadcast: confine the HUD to the central
     /// band each eye sees in SBS, or full-bleed in mono.
     #[func]
-    fn on_options_changed(&mut self, sbs_enabled: bool, _msaa_enabled: bool) {
+    fn on_options_changed(&mut self, sbs_enabled: bool, _msaa_enabled: bool, _dynamic_stereo: bool) {
         self.apply_safe_area(sbs_enabled);
     }
 
@@ -718,11 +718,12 @@ impl HUD {
         safe_area.add_child(&valk_row);
         self.valkyrie_row = Some(LiveRef::new(&valk_row));
 
-        // The center targeting reticle no longer lives in the HUD: a
-        // fixed-depth sight on the UI plane doubles against nearer
-        // geometry in stereo (occlusion-vergence rivalry). It is
-        // world-space now, on the camera's aim axis at the aim ray's
-        // depth — see ShipController::spawn_reticle.
+        // No center reticle: the owner removed the sight outright
+        // (2026-08-19). A fixed-depth HUD sight doubles against nearer
+        // geometry in stereo, and the depth-adaptive world marker that
+        // briefly replaced it proved redundant once the stereo director
+        // began converging the screen plane on the aim subject — the
+        // plane itself is the "look here" signal.
 
         // === Damage tint (hidden until a hit lands; amber shield / red hull) ===
         // A deep full-screen tinge that fades over ~5s (playtest 2026-07-06).

@@ -86,7 +86,7 @@ impl ICanvasLayer for MainMenuUI {
             labels: LiveVec::new(),
             items_parent: None,
             in_options: false,
-            option_cursor: MenuCursor::new(3),
+            option_cursor: MenuCursor::new(4),
             option_labels: LiveVec::new(),
             options: GameOptions::default(),
         }
@@ -135,11 +135,16 @@ impl MainMenuUI {
     #[signal]
     fn msaa_toggled();
 
+
+    #[signal]
+    fn dynamic_stereo_toggled();
+
     /// Called by GameManager to update displayed option states.
     #[func]
-    pub fn set_option_states(&mut self, sbs_on: bool, msaa_on: bool) {
+    pub fn set_option_states(&mut self, sbs_on: bool, msaa_on: bool, dynamic_on: bool) {
         self.options.sbs_enabled = sbs_on;
         self.options.msaa_enabled = msaa_on;
+        self.options.dynamic_stereo = dynamic_on;
         if self.in_options {
             self.refresh_options();
         }
@@ -154,8 +159,8 @@ impl MainMenuUI {
 
     /// Called when GameManager emits options_changed signal.
     #[func]
-    pub fn on_options_changed(&mut self, sbs_enabled: bool, msaa_enabled: bool) {
-        self.set_option_states(sbs_enabled, msaa_enabled);
+    pub fn on_options_changed(&mut self, sbs_enabled: bool, msaa_enabled: bool, dynamic_stereo: bool) {
+        self.set_option_states(sbs_enabled, msaa_enabled, dynamic_stereo);
     }
 
     /// Pushed by GameManager whenever the menu is shown: whether a
@@ -358,6 +363,7 @@ impl MainMenuUI {
         let options = [
             format!("  SBS Stereo: {}", if self.options.sbs_enabled { "ON" } else { "OFF" }),
             format!("  MSAA: {}", if self.options.msaa_enabled { "ON" } else { "OFF" }),
+            format!("  Dynamic 3D: {}", if self.options.dynamic_stereo { "ON" } else { "OFF" }),
             "  Back".to_string(),
         ];
 
@@ -397,6 +403,9 @@ impl MainMenuUI {
                     self.base_mut().emit_signal(signals::MSAA_TOGGLED, &[]);
                 }
                 2 => {
+                    self.base_mut().emit_signal(signals::DYNAMIC_STEREO_TOGGLED, &[]);
+                }
+                3 => {
                     self.close_options();
                 }
                 _ => {}
@@ -410,6 +419,7 @@ impl MainMenuUI {
         let texts = [
             format!("SBS Stereo: {}", if self.options.sbs_enabled { "ON" } else { "OFF" }),
             format!("MSAA: {}", if self.options.msaa_enabled { "ON" } else { "OFF" }),
+            format!("Dynamic 3D: {}", if self.options.dynamic_stereo { "ON" } else { "OFF" }),
             "Back".to_string(),
         ];
 

@@ -108,47 +108,27 @@ pub fn ui_plane_position(cam_origin: [f32; 3], cam_forward: [f32; 3], distance: 
     ]
 }
 
-// --- The depth-adaptive reticle ---
+// --- The convergence travel band ---
 //
-// A fixed-depth sight fights the world: nearer geometry under it creates
-// occlusion-vergence rivalry (drawn on top, focused behind), and a sight
-// at any single depth can't binocularly fuse with targets at another (the
-// both-eyes-open iron-sight doubling). The cure is geometric: the reticle
-// is a small WORLD-SPACE marker on the camera's aim axis whose depth
-// tracks what the aim ray actually hits — vergence always matches the
-// surface it sits on, in both eyes, by construction.
+// The stereo director (see director.rs) parks the zero-parallax plane on
+// the scene's current subject. Its travel is bounded here: NEAR sits
+// safely past the cockpit shell (the capsule's radial clearance keeps
+// the shell inside ~0.45 m), so the plane never converges into the
+// pilot's own console; FAR is the deep rest when the stage is empty.
+// (These bounds outlived the removed depth-adaptive reticle, which
+// tracked the same band before the owner cut the visible sight,
+// 2026-08-19 — the plane itself is the "look here" signal now.)
 
-/// The reticle's travel band (meters). Near sits safely past the cockpit
-/// shell (the capsule's radial clearance keeps the shell inside ~0.45 m),
-/// so the sight never buries itself in the console; far is the deep rest
-/// where the eyes park when the aim line hits nothing.
-pub const RETICLE_NEAR: f32 = 1.2;
-pub const RETICLE_FAR: f32 = 10.0;
+pub const CONVERGENCE_NEAR: f32 = 1.2;
+pub const CONVERGENCE_FAR: f32 = 10.0;
 
-/// Exponential tracking rate (1/s) toward the aim depth: settles in about
-/// a fifth of a second — fast enough to ride a wall sweep, slow enough to
-/// swallow single-frame raycast jitter.
-pub const RETICLE_TRACK_RATE: f32 = 8.0;
-
-/// Half-extent of the reticle per meter of depth — constant ANGULAR size,
-/// the UI-plane rule again: depth is for vergence, never for size.
-pub const RETICLE_EXTENT_PER_METER: f32 = 0.03;
-
-/// Where the reticle wants to be: the aim ray's hit distance clamped into
-/// the travel band, or the deep rest when the ray escapes to nothing.
-pub fn reticle_target_depth(hit: Option<f32>) -> f32 {
-    hit.map_or(RETICLE_FAR, |d| d.clamp(RETICLE_NEAR, RETICLE_FAR))
-}
-
-/// One frame of exponential tracking from `current` toward `target`.
-/// Never overshoots; `dt = 0` is the identity.
-pub fn reticle_depth_step(current: f32, target: f32, dt: f32) -> f32 {
-    current + (target - current) * (1.0 - (-RETICLE_TRACK_RATE * dt).exp())
-}
-
-/// The reticle's world-space half-extent at `depth`.
-pub fn reticle_half_extent(depth: f32) -> f32 {
-    depth * RETICLE_EXTENT_PER_METER
+/// One frame of exponential approach from `current` toward `target` at
+/// `rate` (1/s). Never overshoots; `dt = 0` is the identity. The shared
+/// easing under every depth-affecting dial — the comfort literature's
+/// discomfort driver is the RATE of vergence change, so nothing that
+/// moves perceived depth moves in steps.
+pub fn exp_approach(current: f32, target: f32, rate: f32, dt: f32) -> f32 {
+    current + (target - current) * (1.0 - (-rate * dt).exp())
 }
 
 /// Rect `[x, y, w, h]` for the UI TextureRect overlay in the left eye container.
@@ -162,8 +142,6 @@ pub fn ui_overlay_rect_left(config: &StereoConfig) -> [f32; 4] {
 pub fn ui_overlay_rect_right(config: &StereoConfig) -> [f32; 4] {
     [0.0, 0.0, config.viewport_width as f32, config.viewport_height as f32]
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -344,59 +322,12 @@ mod tests {
         assert!((z - (-2.0)).abs() < 0.01);
     }
 
-    // --- depth-adaptive reticle ---
-
     #[test]
-    fn reticle_rests_deep_when_the_aim_ray_hits_nothing() {
-        assert_eq!(reticle_target_depth(None), RETICLE_FAR);
-    }
-
-    #[test]
-    fn reticle_sits_on_what_the_aim_ray_hits() {
-        assert_eq!(reticle_target_depth(Some(3.0)), 3.0);
-    }
-
-    #[test]
-    fn reticle_depth_clamps_to_its_travel_band() {
-        assert_eq!(reticle_target_depth(Some(0.2)), RETICLE_NEAR);
-        assert_eq!(reticle_target_depth(Some(400.0)), RETICLE_FAR);
-    }
-
-    #[test]
-    fn reticle_band_clears_the_cockpit_shell() {
+    fn convergence_band_clears_the_cockpit_shell() {
         // The shell nests inside the flight capsule (radius 0.45); the
-        // reticle must never bury itself in the console.
-        assert!(RETICLE_NEAR > 0.45);
-        assert!(RETICLE_FAR > RETICLE_NEAR);
-    }
-
-    #[test]
-    fn reticle_tracking_is_the_identity_at_dt_zero() {
-        assert_eq!(reticle_depth_step(7.0, 3.0, 0.0), 7.0);
-    }
-
-    #[test]
-    fn reticle_tracking_moves_toward_the_target_without_overshoot() {
-        let stepped = reticle_depth_step(10.0, 3.0, 0.05);
-        assert!(stepped < 10.0 && stepped > 3.0, "one step lands between: {stepped}");
-        let huge = reticle_depth_step(10.0, 3.0, 100.0);
-        assert!((huge - 3.0).abs() < 1e-3, "a huge dt saturates at the target: {huge}");
-    }
-
-    #[test]
-    fn reticle_tracking_converges() {
-        let mut depth = RETICLE_FAR;
-        for _ in 0..100 {
-            depth = reticle_depth_step(depth, 2.0, 1.0 / 60.0);
-        }
-        assert!((depth - 2.0).abs() < 0.05, "converged near the target: {depth}");
-    }
-
-    #[test]
-    fn reticle_extent_is_constant_angular_size() {
-        let near = reticle_half_extent(2.0);
-        let far = reticle_half_extent(8.0);
-        assert!((far - near * 4.0).abs() < 1e-6, "extent scales linearly with depth");
+        // converged plane must never bury itself in the pilot's console.
+        assert!(CONVERGENCE_NEAR > 0.45);
+        assert!(CONVERGENCE_FAR > CONVERGENCE_NEAR);
     }
 
     #[test]

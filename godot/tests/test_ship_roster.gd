@@ -145,24 +145,3 @@ func test_cockpit_shell_wraps_the_camera_and_flips_with_the_view():
 	await wait_process_frames(2)
 	assert_eq(player.find_children("CockpitShell", "", false, false).size(), 1,
 		"the shared shell survives a hull swap untouched")
-
-
-func test_reticle_rides_the_camera_axis():
-	var player := ShipController.new()
-	var cam := Camera3D.new()
-	cam.name = "Camera3D"
-	player.add_child(cam)
-	var shape := CollisionShape3D.new()
-	shape.name = "CollisionShape3D"
-	shape.shape = SphereShape3D.new()
-	player.add_child(shape)
-	add_child_autofree(player)
-	await wait_process_frames(1)
-
-	var reticle: Node3D = player.get_node_or_null("Camera3D/Reticle")
-	assert_not_null(reticle, "the depth-adaptive reticle spawns under the camera")
-	if reticle == null:
-		return
-	assert_lt(reticle.position.z, 0.0, "the reticle sits in front of the camera")
-	assert_almost_eq(reticle.position.x, 0.0, 0.001, "dead center on the aim axis")
-	assert_almost_eq(reticle.position.y, 0.0, 0.001, "dead center on the aim axis")

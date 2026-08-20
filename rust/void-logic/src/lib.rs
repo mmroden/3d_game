@@ -6,6 +6,7 @@ pub mod armament;
 pub mod cell;
 pub mod cockpit;
 pub mod coverer;
+pub mod director;
 pub mod fixed_layout;
 pub mod generator;
 pub mod room_theme;

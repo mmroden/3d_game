@@ -40,7 +40,7 @@ impl ICanvasLayer for PauseMenuUI {
             ],
             labels: LiveVec::new(),
             in_options: false,
-            option_cursor: MenuCursor::new(3),
+            option_cursor: MenuCursor::new(4),
             option_labels: LiveVec::new(),
             options: GameOptions::default(),
         }
@@ -88,10 +88,15 @@ impl PauseMenuUI {
     #[signal]
     fn msaa_toggled();
 
+
+    #[signal]
+    fn dynamic_stereo_toggled();
+
     #[func]
-    pub fn on_options_changed(&mut self, sbs_enabled: bool, msaa_enabled: bool) {
+    pub fn on_options_changed(&mut self, sbs_enabled: bool, msaa_enabled: bool, dynamic_stereo: bool) {
         self.options.sbs_enabled = sbs_enabled;
         self.options.msaa_enabled = msaa_enabled;
+        self.options.dynamic_stereo = dynamic_stereo;
         if self.in_options {
             self.refresh_options();
         }
@@ -215,6 +220,7 @@ impl PauseMenuUI {
         let options = [
             format!("  SBS Stereo: {}", if self.options.sbs_enabled { "ON" } else { "OFF" }),
             format!("  MSAA: {}", if self.options.msaa_enabled { "ON" } else { "OFF" }),
+            format!("  Dynamic 3D: {}", if self.options.dynamic_stereo { "ON" } else { "OFF" }),
             "  Back".to_string(),
         ];
 
@@ -254,6 +260,9 @@ impl PauseMenuUI {
                     self.base_mut().emit_signal(signals::MSAA_TOGGLED, &[]);
                 }
                 2 => {
+                    self.base_mut().emit_signal(signals::DYNAMIC_STEREO_TOGGLED, &[]);
+                }
+                3 => {
                     self.close_options();
                 }
                 _ => {}
@@ -267,6 +276,7 @@ impl PauseMenuUI {
         let texts = [
             format!("SBS Stereo: {}", if self.options.sbs_enabled { "ON" } else { "OFF" }),
             format!("MSAA: {}", if self.options.msaa_enabled { "ON" } else { "OFF" }),
+            format!("Dynamic 3D: {}", if self.options.dynamic_stereo { "ON" } else { "OFF" }),
             "Back".to_string(),
         ];
 
