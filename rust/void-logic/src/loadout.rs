@@ -24,7 +24,12 @@ impl Default for BaseStats {
             // feel at the historical 60 Hz tick (0.95^60).
             damping: Retention::decaying(0.046),
             max_health: Health::new(100.0),
-            fire_rate: 2.0,
+            // Cadence redesign (owner, 2026-08-20): 2/s felt like a metronome,
+            // not a laser. At 8/s the cooldown is imperceptible (the tap
+            // buffer bridges the rest); per-shot laser damage carries the
+            // inverse scale (laser::PER_SHOT_SCALE) so DPS is unchanged, and
+            // the FireRate shop stat is retired (shop::offers).
+            fire_rate: 8.0,
             projectile_speed: 50.0,
             projectile_damage: Damage::new(1.0),
         }

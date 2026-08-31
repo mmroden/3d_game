@@ -72,12 +72,19 @@ def test_keep_and_drop_partition_the_hull(parts, plan):
 
 
 def test_selection_is_exactly_volume_containment(parts, plan):
+    # The rule: keep = opaque AND fully inside the volume. A dropped part
+    # must fail at least one of the two (glass panes fail opacity even
+    # when they sit inside — see test_cockpit_keeps_no_glass).
     lo, hi = plan["volume"]
     table = by_name(parts)
     for name in plan["keep"]:
-        assert inside(lo, hi, table[name]), f"kept part {name} leaves the volume"
+        part = table[name]
+        assert not part["blend"], f"kept part {name} is glass"
+        assert inside(lo, hi, part), f"kept part {name} leaves the volume"
     for name in plan["drop"]:
-        assert not inside(lo, hi, table[name]), f"dropped part {name} fits the volume"
+        part = table[name]
+        assert part["blend"] or not inside(lo, hi, part), \
+            f"dropped part {name} is opaque and fits the volume"
 
 
 def test_volume_contains_the_canopy(parts, plan):
@@ -85,10 +92,15 @@ def test_volume_contains_the_canopy(parts, plan):
     assert inside(lo, hi, by_name(parts)[plan["canopy"]])
 
 
-def test_cockpit_keeps_glass_to_see_through(parts, plan):
+def test_cockpit_keeps_no_glass(parts, plan):
+    # The canopy PANES leave the shell entirely (owner, 2026-08-20): at
+    # neutral near-clear alpha they contributed nothing but specular —
+    # a cache's glow focused into a distracting flare on the pane. The
+    # canopy still ANCHORS the selection volume and eyepoint; its glass
+    # just doesn't ship. The floating-window frame is the opaque bows.
     table = by_name(parts)
-    assert any(table[n]["blend"] for n in plan["keep"]), \
-        "no transparent part kept — the canopy itself fell out of the volume"
+    assert not any(table[n]["blend"] for n in plan["keep"]), \
+        "a blend (glass) part survived the keep rule — panes must not ship"
 
 
 def test_cockpit_is_a_strict_subset_of_the_hull_geometry(parts, plan):
@@ -138,8 +150,10 @@ def test_shell_preserves_full_part_detail(parts, plan, shell_parts):
             f"{p['name']} lost geometry in extraction — the shell must not decimate"
 
 
-def test_shell_keeps_the_glass_blended(shell_parts):
-    assert any(p["blend"] for p in shell_parts)
+def test_shell_carries_no_blend_materials(shell_parts):
+    # The pane-free shell must not smuggle alpha-blend surfaces back in
+    # (see test_cockpit_keeps_no_glass for the why).
+    assert not any(p["blend"] for p in shell_parts)
 
 
 def test_shell_bakes_the_eyepoint_node(plan, shell_parts):
@@ -182,3 +196,6 @@ def test_shell_interior_is_matte(shell_parts):
             f"{name}: metal-roughness map survived — the shell must be matte"
         assert pbr.get("roughnessFactor", 1.0) >= ROUGHNESS_FLOOR - 1e-6, \
             f"{name}: roughness {pbr.get('roughnessFactor')} under the floor"
+
+
+

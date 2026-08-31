@@ -3,8 +3,8 @@
 The player hull GLBs are exterior flight models, but Spacecraft_1 (the
 Vanguard) also carries a fully furnished, human-scale cockpit interior:
 console/keyboard cluster, seat, side pods, and an alpha-blend canopy
-glass. The first-person stereo view wants exactly that furniture as a
-near-field shell around the camera — and nothing else of the hull.
+glass. The first-person stereo view wants that furniture as a near-field
+shell around the camera — and nothing else of the hull.
 
 This module is the extraction ORACLE: it parses the source .glb directly
 (no Blender) and derives WHICH parts are cockpit interior and WHERE the
@@ -14,11 +14,13 @@ pilot's eyepoint sits, from one geometric rule anchored on the canopy:
   * the cockpit volume is the canopy AABB inflated by fixed margins
     (sideways for consoles/frame, down for seat and floor dressing,
     along z for the instrument bulkhead and the aft deck);
-  * a part is cockpit interior iff its AABB lies fully inside that
-    volume — big fuselage/wing pieces always straddle the boundary and
-    fall out naturally, so no part-name list exists anywhere;
-  * the eyepoint sits on the canopy's x center, low in the glass and
-    forward near the dash, so the pilot sees their own cockpit.
+  * a part is cockpit interior iff it is OPAQUE and its AABB lies fully
+    inside that volume — big fuselage/wing pieces straddle the boundary
+    and fall out naturally, and the canopy PANES themselves never ship
+    (they anchor the rule; at neutral near-clear alpha they contributed
+    nothing but specular flares off cache glows — owner, 2026-08-20);
+  * the eyepoint sits on the canopy's x center, at owner-tuned height
+    and depth fractions, forward near the dash.
 
 scripts/extract-cockpit.py (Blender) APPLIES this plan; the pytest audit
 (scripts/tests/test_cockpit_extraction.py) holds both the plan and the
@@ -43,9 +45,10 @@ UP_MARGIN = 0.3
 Z_LO_MARGIN = 1.2
 Z_HI_MARGIN = 0.9
 # Eyepoint height as a fraction of the canopy AABB's height above its
-# floor: low in the glass, at seated eye level — high enough to see out,
-# low enough that the console rises into the bottom of the view.
-EYE_HEIGHT_FRAC = 0.45
+# floor. Owner sizing pass 2026-08-20: 0.45 filled the bottom quarter of
+# the view with console — "about 70% as much" wanted the eye a little
+# higher, so the console band thins while the bows stay in frame.
+EYE_HEIGHT_FRAC = 0.55
 # Eyepoint depth as a fraction from the canopy's forward (-z) edge toward
 # its aft edge: FORWARD of center, close over the dash. The dominant
 # framing term is dash proximity — rig frames showed mid-glass (0.5) and
@@ -53,11 +56,11 @@ EYE_HEIGHT_FRAC = 0.45
 # all below and ahead; only an eye near the instrument line has it fill
 # the bottom of the view with the canopy bows at the edges.
 EYE_AFT_FRAC = 0.40
-# Opaque interior materials are floored to at least this roughness (and
-# lose their metal-roughness maps) by the extraction: mirror-glossy
-# furniture centimeters from the eyes shimmers against every pose — a
+# Interior materials are floored to at least this roughness (and lose
+# their metal-roughness maps) by the extraction: mirror-glossy furniture
+# centimeters from the eyes shimmers against every pose — a
 # stereo-comfort defect the rig's pose-invariance contract caught
-# (2026-08-19). Canopy glass (alpha-blend) is exempt.
+# (2026-08-19).
 ROUGHNESS_FLOOR = 0.6
 
 GLB_MAGIC = 0x46546C67
@@ -217,7 +220,11 @@ def parse_glb(path):
 def plan_cockpit(parts):
     """Derive the extraction plan from a hull's parts (see module doc).
     Returns {canopy, volume: (lo, hi), keep, drop, eyepoint}; keep/drop
-    partition the input part names."""
+    partition the input part names. The canopy ANCHORS the volume and
+    eyepoint but its glass does not ship: blend (pane) parts are excluded
+    from keep — at neutral near-clear alpha they contributed nothing but
+    specular flares off cache glows (owner, 2026-08-20); the opaque bows
+    are the floating-window frame."""
     glass = [p for p in parts if p["blend"]]
     if not glass:
         raise ValueError("hull has no alpha-blended part to anchor the canopy rule")
@@ -233,11 +240,12 @@ def plan_cockpit(parts):
     hi = [cx + half_w, canopy["hi"][1] + UP_MARGIN, canopy["hi"][2] + Z_HI_MARGIN]
 
     keep = [p["name"] for p in parts
-            if all(lo[k] <= p["lo"][k] and p["hi"][k] <= hi[k] for k in range(3))]
+            if not p["blend"]
+            and all(lo[k] <= p["lo"][k] and p["hi"][k] <= hi[k] for k in range(3))]
     drop = [p["name"] for p in parts if p["name"] not in set(keep)]
 
-    # The pilot's eye: canopy x center, low in the glass, forward over the
-    # dash — the two fractions are the framing knobs (see their comments).
+    # The pilot's eye: canopy x center, at the tuned height fraction,
+    # forward over the dash — the two fractions are the framing knobs.
     height = canopy["hi"][1] - canopy["lo"][1]
     depth = canopy["hi"][2] - canopy["lo"][2]
     eyepoint = [cx,

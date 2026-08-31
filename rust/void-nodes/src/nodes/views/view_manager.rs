@@ -61,6 +61,11 @@ pub struct ViewManager {
     /// The director's dials as polled this frame: (convergence distance,
     /// eye separation). None in static mode — the exports above rule.
     director_focus: Option<(f32, f32)>,
+    /// Capture diagnostics (`--interaxial=` / `--convergence=`): the rig
+    /// commands exact stereo geometry for the disparity contracts — the
+    /// `--ambient` family. Both set => they beat every runtime source.
+    capture_interaxial: Option<f32>,
+    capture_convergence: Option<f32>,
 }
 
 #[godot_api]
@@ -76,10 +81,26 @@ impl INode3D for ViewManager {
             pre_sbs_window_size: Vector2i::new(0, 0),
             dynamic_stereo: false,
             director_focus: None,
+            capture_interaxial: None,
+            capture_convergence: None,
         }
     }
 
     fn ready(&mut self) {
+        // Capture knobs from the command line (the LevelManager pattern):
+        // the rig commands exact stereo geometry for disparity contracts.
+        for arg in godot::classes::Os::singleton().get_cmdline_user_args().to_vec() {
+            let arg = arg.to_string();
+            if let Some(v) = arg.strip_prefix("--interaxial=") {
+                if let Ok(s) = v.parse::<f32>() {
+                    self.capture_interaxial = Some(s);
+                }
+            } else if let Some(v) = arg.strip_prefix("--convergence=") {
+                if let Ok(d) = v.parse::<f32>() {
+                    self.capture_convergence = Some(d);
+                }
+            }
+        }
         self.setup_viewports();
         self.set_ui_viewport_once();
         self.connect_to_game_manager();
@@ -182,7 +203,15 @@ impl ViewManager {
 
         if target != self.current_mode {
             let sbs = target == DisplayMode::SideBySide;
-            self.resize_window(sbs);
+            // Play-path SBS goes fullscreen (the glasses want the whole
+            // panel); a CAPTURE run with commanded stereo geometry keeps
+            // the commanded --resolution instead — disparity contracts
+            // need pixel-deterministic frames, not the host's display
+            // size (a fullscreen capture ballooned to the physical
+            // screen, 2026-08-20).
+            if self.capture_interaxial.is_none() {
+                self.resize_window(sbs);
+            }
             self.current_mode = target;
             self.resize_viewports();
             // Rebuild the UI plane to the new per-eye aspect on the same frame
@@ -325,17 +354,23 @@ impl ViewManager {
         } else {
             win.x as u32
         };
-        // Dynamic stereo: the director owns BOTH dials absolutely —
-        // depth_strength is the static mode's volume knob and must not
-        // double-scale the director's computed baseline.
-        let (eye_separation, depth_strength, convergence_distance) = match self.director_focus {
-            Some((convergence, interaxial)) => (interaxial, 1.0, convergence),
-            None => (
-                self.eye_separation,
-                self.depth_strength,
-                self.convergence_distance,
-            ),
-        };
+        // Dial priority: capture diagnostics (the rig commanding exact
+        // geometry) beat the director, which beats the static exports.
+        // In both override modes the director/rig owns the dials
+        // absolutely — depth_strength is the static mode's volume knob
+        // and must not double-scale a computed baseline.
+        let (eye_separation, depth_strength, convergence_distance) =
+            match (self.capture_interaxial, self.capture_convergence) {
+                (Some(interaxial), Some(convergence)) => (interaxial, 1.0, convergence),
+                _ => match self.director_focus {
+                    Some((convergence, interaxial)) => (interaxial, 1.0, convergence),
+                    None => (
+                        self.eye_separation,
+                        self.depth_strength,
+                        self.convergence_distance,
+                    ),
+                },
+            };
         StereoConfig {
             eye_separation,
             depth_strength,
@@ -599,6 +634,17 @@ impl ViewManager {
         let camera_transform = camera.get_global_transform_interpolated();
         let config = self.stereo_config();
 
+        // Off-axis convergence needs FRUSTUM projection: Godot silently
+        // ignores `frustum_offset` on a PERSPECTIVE camera, which left
+        // convergence a dead knob until the disparity contracts measured
+        // the pixels (2026-08-20). The frustum equivalent of the source
+        // camera: size = near-plane height from its own FOV; the
+        // dimensionless stereo shift (per unit distance — the tested
+        // math in stereo.rs) scales by `near` to land in near-plane
+        // world units, Godot's frustum_offset convention.
+        let near = camera.get_near();
+        let frustum_size = 2.0 * near * (camera.get_fov().to_radians() / 2.0).tan();
+
         // Mono = a single centered eye: no horizontal separation, no frustum
         // skew. SBS splits the eyes apart with the configured stereo offsets.
         let mono = self.current_mode != DisplayMode::SideBySide;
@@ -611,29 +657,32 @@ impl ViewManager {
 
         let local_x = camera_transform.basis.col_a();
 
-        if let Some(left_cam) = self
-            .base()
-            .try_get_node_as::<Camera3D>(nodes::LEFT_CAMERA)
-        {
-            let mut cam = left_cam.clone();
+        let place_eye = |eye: Option<Gd<Camera3D>>, off: f32, frustum: f32| {
+            let Some(mut cam) = eye else { return };
             let mut t = camera_transform;
-            t.origin += local_x * l_off[0];
+            t.origin += local_x * off;
             cam.set_global_transform(t);
-            cam.set_frustum_offset(Vector2::new(l_frustum, 0.0));
-        }
+            if mono {
+                cam.set_projection(godot::classes::camera_3d::ProjectionType::PERSPECTIVE);
+            } else {
+                cam.set_projection(godot::classes::camera_3d::ProjectionType::FRUSTUM);
+                cam.set_size(frustum_size);
+                cam.set_frustum_offset(Vector2::new(frustum * near, 0.0));
+            }
+        };
 
+        place_eye(
+            self.base().try_get_node_as::<Camera3D>(nodes::LEFT_CAMERA),
+            l_off[0],
+            l_frustum,
+        );
         // The right eye only renders in SBS, but positioning it in mono is
         // harmless (its viewport is hidden) and keeps the code branch-free.
-        if let Some(right_cam) = self
-            .base()
-            .try_get_node_as::<Camera3D>(nodes::RIGHT_CAMERA)
-        {
-            let mut cam = right_cam.clone();
-            let mut t = camera_transform;
-            t.origin += local_x * r_off[0];
-            cam.set_global_transform(t);
-            cam.set_frustum_offset(Vector2::new(r_frustum, 0.0));
-        }
+        place_eye(
+            self.base().try_get_node_as::<Camera3D>(nodes::RIGHT_CAMERA),
+            r_off[0],
+            r_frustum,
+        );
     }
 
     fn apply_visibility(&mut self, sbs: bool) {

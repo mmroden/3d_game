@@ -579,7 +579,10 @@ mod tests {
     fn starts_with_red_laser() {
         let run = RunState::new(Seed::new(42));
         assert_eq!(run.laser_level, LaserLevel::Red);
-        assert_eq!(run.laser_damage(), Damage::new(1.0));
+        // The per-shot value derives from the laser policy (level x
+        // PER_SHOT_SCALE since the 8/s cadence redesign) — this pins the
+        // WIRING, the scale itself is laser.rs's contract.
+        assert_eq!(run.laser_damage(), Damage::new(LaserLevel::Red.damage()));
     }
 
     #[test]

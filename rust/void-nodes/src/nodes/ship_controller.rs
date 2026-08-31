@@ -431,14 +431,23 @@ impl ShipController {
 
     /// Spawn the first-person cockpit shell: the pipeline-extracted interior
     /// (consoles, seat, canopy glass — `make assets`, audited by
-    /// `make test-assets`) scaled so its widest lateral reach lands on the
-    /// flight capsule's radial clearance around the camera, authored
-    /// eyepoint exactly on the camera. Nesting inside the collider means
-    /// physics itself guarantees no world geometry ever slips between the
-    /// pilot's eyes and the shell — the stereo comfort anchor. Shared
-    /// across hulls (the spec decides) and spawned once: hull swaps retire
-    /// only the exterior model.
+    /// `make test-assets`) scaled so its widest lateral reach lands at
+    /// SHELL_REACH from the camera, authored eyepoint exactly on the
+    /// camera. Scaling is about the eyepoint, so this distance changes
+    /// STEREO comfort only — the mono view (framing, console band) is
+    /// angle-identical at any reach. Shared across hulls (the spec
+    /// decides) and spawned once: hull swaps retire only the exterior
+    /// model.
     fn spawn_cockpit_shell(&mut self) {
+        // Real-dash distance (owner, 2026-08-20, in glasses): the v1 rule
+        // nested the shell inside the collision capsule's clearance
+        // (0.35 m) so physics guaranteed nothing slipped between eye and
+        // shell — but 0.35 m is HALF a real cockpit's console distance,
+        // and its ~10.6 deg vergence at ortho separation crossed the
+        // pilot's eyes. Comfort outranks the no-clip guarantee: at 0.60 m
+        // (~6.2 deg, true VR-cockpit precedent) a wall being SCRAPED can
+        // clip the canopy edge, and that trade is accepted.
+        const SHELL_REACH: f32 = 0.60;
         let spec = self.ship_type.spec();
         let mut parent: Gd<Node3D> = self.base().clone().upcast();
         let Some(mut shell) =
@@ -464,10 +473,9 @@ impl ShipController {
         // 2026-08-19 rig frames caught the seats facing the camera).
         shell.rotate_y(spec.model_yaw_offset);
         let eye = eye_node.cast::<Node3D>().get_position();
-        let clearance = SHIP_COLLIDER_RADIUS - COCKPIT_OFFSET.y;
         let reach =
             cockpit::lateral_reach(aabb.position.x, aabb.position.x + aabb.size.x, eye.x);
-        let scale = cockpit::shell_fit_scale(reach, clearance);
+        let scale = cockpit::shell_fit_scale(reach, SHELL_REACH);
         shell.set_scale(Vector3::splat(scale));
         let (x, y, z) = cockpit::shell_origin(
             (eye.x, eye.y, eye.z),
@@ -694,10 +702,15 @@ impl ShipController {
                 .emit_signal(signals::POWER_MODE_CHANGED, &[Variant::from(mode_val)]);
         }
 
-        // Weapon.
+        // Weapon. A tap remembered by the buffer fires the instant the
+        // cooldown expires — even if the trigger is already back up;
+        // that is the buffer's whole point (owner playtest 2026-08-20:
+        // taps landing mid-cooldown were eaten).
         self.weapon.fire_rate = self.loadout.fire_rate() * self.power_mode.fire_rate_multiplier();
         self.weapon.damage = void_logic::newtypes::Damage::new(self.laser_level.damage());
-        self.weapon.tick(delta);
+        if let Some(damage) = self.weapon.tick(delta) {
+            self.fire_current_weapon(damage.as_f32());
+        }
         // The charge row fills whenever the cannon is armed; the punch
         // follows the equipped laser at fire time. Each bar completion
         // blips a step higher — the fill reads as a rising scale
@@ -725,24 +738,21 @@ impl ShipController {
             // so GameManager mediates.
             self.base_mut().emit_signal(signals::SHIELD_BURST_REQUESTED, &[]);
         }
+        if input.is_action_just_pressed(actions::FIRE) {
+            // Arm the tap buffer when the press lands mid-cooldown (a
+            // ready press is taken by the held path this same tick).
+            self.weapon.press();
+        }
         if input.is_action_pressed(actions::FIRE) {
             // The hull's weapon decides what the trigger does. Everything
             // shares the one cooldown state; the subdrone bay layers its
             // regen clock on top.
             match self.ship_type.spec().weapon {
-                WeaponKind::HitscanLaser => {
+                WeaponKind::HitscanLaser
+                | WeaponKind::TrackingLaser
+                | WeaponKind::ClusterMunition => {
                     if let FireResult::Fired { damage } = self.weapon.try_fire() {
-                        self.fire_dual_lasers(damage.as_f32());
-                    }
-                }
-                WeaponKind::TrackingLaser => {
-                    if let FireResult::Fired { damage } = self.weapon.try_fire() {
-                        self.fire_tracking(damage.as_f32());
-                    }
-                }
-                WeaponKind::ClusterMunition => {
-                    if let FireResult::Fired { damage } = self.weapon.try_fire() {
-                        self.fire_cluster(damage.as_f32());
+                        self.fire_current_weapon(damage.as_f32());
                     }
                 }
                 WeaponKind::SubdroneLauncher => {
@@ -767,6 +777,19 @@ impl ShipController {
                     self.fire_valkyrie(damage, bolts as usize);
                 }
             }
+        }
+    }
+
+    /// Route a shot that already cleared the cooldown (held-fire or a
+    /// matured tap-buffer) to the hull's cooldown weapon. The subdrone
+    /// bay is not one — its launches ride the regen clock, never the
+    /// weapon cooldown, so the buffer cannot reach it by construction.
+    fn fire_current_weapon(&mut self, damage: f32) {
+        match self.ship_type.spec().weapon {
+            WeaponKind::HitscanLaser => self.fire_dual_lasers(damage),
+            WeaponKind::TrackingLaser => self.fire_tracking(damage),
+            WeaponKind::ClusterMunition => self.fire_cluster(damage),
+            WeaponKind::SubdroneLauncher => {}
         }
     }
 

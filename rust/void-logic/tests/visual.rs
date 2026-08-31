@@ -50,6 +50,22 @@ fn levels_of_planet(planet: u32) -> Vec<u32> {
 /// paths in pose order. `ambient` floods flat white light (`--ambient=1`)
 /// so geometry is visible regardless of fixtures.
 fn capture(level: u32, run_seed: i64, poses: &[[f32; 5]], ambient: bool, dir: &Path) -> Vec<PathBuf> {
+    capture_ex(level, run_seed, poses, ambient, false, &[], dir)
+}
+
+/// The full capture door: `sbs` renders side-by-side stereo (each frame
+/// is a left|right pair at half width per eye), and `extra` passes
+/// additional capture-diagnostic flags (e.g. the stereo overrides
+/// `--convergence=`/`--interaxial=`).
+fn capture_ex(
+    level: u32,
+    run_seed: i64,
+    poses: &[[f32; 5]],
+    ambient: bool,
+    sbs: bool,
+    extra: &[String],
+    dir: &Path,
+) -> Vec<PathBuf> {
     assert!(!poses.is_empty(), "capture needs poses");
     std::fs::create_dir_all(dir).expect("capture dir");
     for stale in std::fs::read_dir(dir).expect("capture dir readable") {
@@ -69,8 +85,10 @@ fn capture(level: u32, run_seed: i64, poses: &[[f32; 5]], ambient: bool, dir: &P
         .args(["--resolution", "1144x828", "--"])
         .arg(format!("--level={level}"))
         .arg(format!("--seed={run_seed}"))
-        .args(["--sbs=0", "--populace=0", "--cull=0"])
+        .arg(if sbs { "--sbs=1" } else { "--sbs=0" })
+        .args(["--populace=0", "--cull=0"])
         .args(ambient.then_some("--ambient=1"))
+        .args(extra)
         .arg(format!("--shot={shot}"))
         .arg(format!("--shot-dir={}", dir.display()))
         // The engine's chatter is part of the run artifact: park/build/
@@ -376,4 +394,174 @@ fn cockpit_console_is_pose_invariant_while_the_world_moves() {
          not rigid to the camera ({})",
         dir.display()
     );
+}
+
+
+/// Horizontal disparity (right-eye x minus left-eye x, pixels) of the
+/// patch centered at `(x, y)` in the LEFT half of an SBS pair, found by
+/// SAD block-match along the same scanline band of the right half.
+/// `None` when the best match is no better than half the flat-offset
+/// cost — an untextured patch has no reliable disparity.
+fn patch_disparity(pair: &Path, x: u32, y: u32, half: u32, search: (i32, i32)) -> Option<f32> {
+    let img = image::open(pair).expect("pair opens").to_luma8();
+    let (w, h) = img.dimensions();
+    let eye_w = w / 2;
+    assert!(x >= half && x + half < eye_w && y >= half && y + half < h);
+    let sad_at = |dx: i32| -> Option<u64> {
+        let rx = x as i32 + dx;
+        if rx < half as i32 || (rx + half as i32) as u32 >= eye_w {
+            return None;
+        }
+        let mut sum = 0u64;
+        for py in (y - half)..=(y + half) {
+            for px in 0..=(2 * half) {
+                let lx = x - half + px;
+                let rxx = (rx - half as i32) as u32 + px + eye_w;
+                sum += img.get_pixel(lx, py)[0].abs_diff(img.get_pixel(rxx, py)[0]) as u64;
+            }
+        }
+        Some(sum)
+    };
+    let mut best: Option<(i32, u64)> = None;
+    for dx in search.0..=search.1 {
+        if let Some(sad) = sad_at(dx) {
+            if best.is_none_or(|(_, b)| sad < b) {
+                best = Some((dx, sad));
+            }
+        }
+    }
+    let (dx, sad) = best?;
+    // Confidence: the match must clearly beat the zero-offset cost —
+    // otherwise the patch is flat and every offset looks alike.
+    let flat = sad_at(0)?;
+    if dx != 0 && sad * 2 > flat {
+        return None;
+    }
+    Some(dx as f32)
+}
+
+#[test]
+fn stereo_pairs_obey_the_off_axis_geometry() {
+    let level = *levels_of_planet(2)
+        .first()
+        .expect("the grammar declares planet 2");
+    let run_seed = 1i64;
+    let (spec, graph) = build_graph(level, run_seed);
+    let poses = interior_probe_poses(&graph, spec.pitch, 8);
+    let pose = vec![poses[0]];
+    // Vertical FOV of the game camera (engine default; nothing overrides
+    // it). Focal length in pixels follows from the capture resolution.
+    const VFOV_DEG: f32 = 75.0;
+    const S_BASE: f32 = 0.065;
+
+    let shoot = |tag: &str, s: f32, convergence: f32| -> PathBuf {
+        let dir = frames_dir(level, run_seed, tag);
+        let extra = [
+            format!("--interaxial={s:.4}"),
+            format!("--convergence={convergence:.3}"),
+        ];
+        capture_ex(level, run_seed, &pose, true, true, &extra, &dir)
+            .pop()
+            .expect("one frame")
+    };
+
+    let r1 = shoot("-stereo-r1", S_BASE, 0.0);
+    let r2 = shoot("-stereo-r2", S_BASE * 2.0, 0.0);
+
+    let img = image::open(&r1).expect("pair opens").to_rgb8();
+    let (w, h) = img.dimensions();
+    assert_eq!(w, 1144, "SBS pair should span the full window");
+    let eye_w = w / 2;
+    let f_px = (h as f32 / 2.0) / (VFOV_DEG / 2.0).to_radians().tan();
+
+    // Candidate patches across the world band (the cockpit band below and
+    // the HUD above are excluded: near-shell disparity outranges the
+    // search window, and HUD pixels are screen-locked).
+    let half = 10u32;
+    let search = (-70i32, 10i32);
+    let mut measured: Vec<(u32, u32, f32, f32)> = Vec::new();
+    for fy in [0.34f32, 0.44, 0.54] {
+        for fx in [0.30f32, 0.50, 0.70] {
+            let (x, y) = ((eye_w as f32 * fx) as u32, (h as f32 * fy) as u32);
+            let (Some(d1), Some(d2)) = (
+                patch_disparity(&r1, x, y, half, search),
+                patch_disparity(&r2, x, y, half, search),
+            ) else {
+                continue;
+            };
+            // Parallel capture: finite depth reads as crossed (negative)
+            // disparity; a patch at ~zero is sky-distant — useless here.
+            if d1 > -3.0 {
+                continue;
+            }
+            measured.push((x, y, d1, d2));
+        }
+    }
+    assert!(
+        measured.len() >= 3,
+        "matcher sanity: only {} textured patches matched — the stereo \
+         contracts have nothing to measure ({})",
+        measured.len(),
+        r1.display()
+    );
+
+    // LINEARITY: doubling s doubles the disparity, patch by patch.
+    for &(x, y, d1, d2) in &measured {
+        let tolerance = (0.18 * (2.0 * d1).abs()).max(2.5);
+        assert!(
+            (d2 - 2.0 * d1).abs() <= tolerance,
+            "off-axis linearity broken at ({x},{y}): s doubled but \
+             disparity went {d1:.1} -> {d2:.1} (expected ~{:.1})",
+            2.0 * d1
+        );
+    }
+
+    // ZERO PARALLAX: converge at the strongest patch's inferred depth and
+    // that patch must land on the screen plane.
+    let &(bx, by, bd1, _) = measured
+        .iter()
+        .max_by(|a, b| a.2.abs().partial_cmp(&b.2.abs()).unwrap())
+        .unwrap();
+    let z_best = f_px * S_BASE / (-bd1);
+    let r3 = shoot("-stereo-r3", S_BASE, z_best);
+    let d3 = patch_disparity(&r3, bx, by, half, search)
+        .expect("the converged patch still matches");
+    assert!(
+        d3.abs() <= 2.5,
+        "zero-parallax broken: converged at inferred z={z_best:.2} but the \
+         subject patch still shows {d3:.1}px ({})",
+        r3.display()
+    );
+
+    // THE SPHERICALITY RULE, rendered: pick two patches at clearly
+    // different depths and give each THE SHIPPED RULE's own pair —
+    // `interaxial_for(z)` (sphericity constant, owner clamps and all)
+    // converged at z. Each subject must land at the screen plane: the
+    // sweep the director performs continuously, verified at its
+    // extremes with the very function that ships.
+    let mut by_depth: Vec<(u32, u32, f32)> = measured
+        .iter()
+        .map(|&(x, y, d1, _)| (x, y, f_px * S_BASE / (-d1)))
+        .collect();
+    by_depth.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
+    let (near, far) = (by_depth[0], by_depth[by_depth.len() - 1]);
+    assert!(
+        far.2 / near.2 >= 1.25,
+        "the vantage offers no depth spread ({:.2} vs {:.2}) — probe pose \
+         unfit for the sphericality sweep",
+        near.2,
+        far.2
+    );
+    for (label, (x, y, z)) in [("near", near), ("far", far)] {
+        let s_rule = void_logic::director::interaxial_for(z);
+        let pair = shoot(&format!("-stereo-rule-{label}"), s_rule, z);
+        let d = patch_disparity(&pair, x, y, half, search)
+            .expect("the rule-pair subject still matches");
+        assert!(
+            d.abs() <= 2.5,
+            "sphericality rule broken at {label} (z={z:.2}, s={s_rule:.4}): \
+             subject shows {d:.1}px off the screen plane ({})",
+            pair.display()
+        );
+    }
 }

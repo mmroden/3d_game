@@ -2,20 +2,20 @@
 //! the camera.
 //!
 //! The shell (extracted by the asset pipeline from the hull's authored
-//! interior) is a separate near-field model rendered only in cockpit view.
-//! It must nest INSIDE the flight capsule's radial clearance so physics
-//! itself guarantees no wall or enemy ever slips between the pilot's eyes
-//! and the shell — that guarantee is what makes the cockpit a stereo
-//! comfort anchor instead of a new occlusion-conflict source (a near frame
-//! whose occlusion and disparity always agree, and which owns the screen
-//! edges like a stereographer's floating window).
+//! interior) is a separate near-field model rendered only in cockpit
+//! view, scaled so its widest lateral reach (the canopy bows) lands at a
+//! target distance from the pilot's eyes. Scaling is ABOUT THE EYEPOINT,
+//! so the target distance changes stereo comfort only — the mono view is
+//! angle-identical at any reach (similar triangles): framing is tuned by
+//! the extraction oracle's eyepoint fractions, comfort by the reach.
 //!
-//! The fit is anchored on the LATERAL reach (the canopy bows): the widest
-//! sideways extent from the eyepoint lands exactly on the clearance, using
-//! the whole budget — a cockpit wants to be as large (= as far from the
-//! eyes) as the capsule allows. Below-eye furniture may overhang the
-//! capsule slightly; it sits against the hull's own belly and the rig
-//! frames judge whether that ever reads wrong.
+//! History: v1 nested the shell inside the flight capsule's radial
+//! clearance so physics guaranteed nothing slipped between eye and shell
+//! — geometrically elegant, but the resulting 0.35 m dash sat at HALF a
+//! real cockpit's console distance and crossed the pilot's eyes in
+//! glasses (owner, 2026-08-20). The reach target now lives with the
+//! spawn (real-dash distance); walls being scraped may clip the canopy
+//! edge, and comfort outranks that guarantee.
 
 /// Widest sideways (x) reach of a shell from its eyepoint, given the
 /// shell's x extent in native model units. The larger of the two sides:
@@ -24,13 +24,12 @@ pub fn lateral_reach(lo_x: f32, hi_x: f32, eye_x: f32) -> f32 {
     (eye_x - lo_x).max(hi_x - eye_x)
 }
 
-/// Uniform scale that lands a shell's lateral reach exactly on the radial
-/// clearance available around the camera (capsule radius minus the
-/// camera's own radial offset from the capsule axis). Scales down an
-/// oversized shell and up an undersized one — the clearance is a budget,
-/// and the whole budget is comfort.
-pub fn shell_fit_scale(reach: f32, clearance: f32) -> f32 {
-    clearance / reach.max(f32::EPSILON)
+/// Uniform scale that lands a shell's lateral reach exactly on the
+/// target distance from the eyes. Scales down an oversized shell and up
+/// an undersized one — the target is a budget, and the whole budget is
+/// comfort.
+pub fn shell_fit_scale(reach: f32, target: f32) -> f32 {
+    target / reach.max(f32::EPSILON)
 }
 
 /// Where the shell model's origin goes, in camera-parent space, so that
@@ -75,17 +74,17 @@ mod tests {
     }
 
     #[test]
-    fn fit_scale_lands_the_reach_exactly_on_the_clearance() {
-        for (reach, clearance) in [(0.665, 0.35), (2.0, 0.5), (0.1, 0.35)] {
-            let scale = shell_fit_scale(reach, clearance);
-            assert!((scale * reach - clearance).abs() < 1e-6);
+    fn fit_scale_lands_the_reach_exactly_on_the_target() {
+        for (reach, target) in [(0.665, 0.6), (2.0, 0.5), (0.1, 0.35)] {
+            let scale = shell_fit_scale(reach, target);
+            assert!((scale * reach - target).abs() < 1e-6);
         }
     }
 
     #[test]
     fn fit_scale_shrinks_oversized_and_grows_undersized_shells() {
-        assert!(shell_fit_scale(1.0, 0.35) < 1.0);
-        assert!(shell_fit_scale(0.1, 0.35) > 1.0);
+        assert!(shell_fit_scale(1.0, 0.6) < 1.0);
+        assert!(shell_fit_scale(0.1, 0.6) > 1.0);
     }
 
     #[test]

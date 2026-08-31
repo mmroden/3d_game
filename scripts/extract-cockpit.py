@@ -5,11 +5,12 @@
 
 APPLIES the plan derived by scripts/cockpit_plan.py (the pure-Python
 oracle; see its module doc for the rule): imports the hull, deletes every
-mesh part the plan drops, mattes the surviving opaque materials, links an
+mesh part the plan drops (canopy PANES included — the canopy anchors the
+plan but its glass never ships), mattes the surviving materials, links an
 "Eyepoint" empty at the planned pilot eye position, and re-exports a
 self-contained .glb with the surviving parts at FULL detail — the shell
-sits centimeters from the camera, so it is the one model that must never
-be decimated. Textures stay embedded at source resolution for the same
+sits close to the camera, so it is the one model that must never be
+decimated. Textures stay embedded at source resolution for the same
 reason.
 
 The pytest audit (`make test-assets`) holds the built shell to the plan;
@@ -70,16 +71,22 @@ if len(survivors) != len(keep):
         f"ship a partial shell"
     )
 
-# Near-field comfort: matte the opaque interior. Mirror-glossy furniture
-# centimeters from the eyes shimmers against every pose (the rig's
-# pose-invariance contract caught it, 2026-08-19) — so the roughness is
-# floored, the metal-roughness maps dropped, and metallic zeroed. Canopy
-# glass (alpha-blend) keeps its character; emissive screens their glow.
+# Matte the interior. Mirror-glossy furniture centimeters from the eyes
+# shimmers against every pose (the rig's pose-invariance contract caught
+# it, 2026-08-19), so the roughness is floored, the metal-roughness maps
+# dropped, and metallic zeroed. The plan ships NO blend materials (the
+# panes flared cache glows — owner, 2026-08-20), so every survivor takes
+# the matte pass; a blend survivor here is a plan violation.
 matted = 0
 materials = {slot.material
              for o in survivors for slot in o.material_slots if slot.material}
 for mat in materials:
-    if mat.blend_method == 'BLEND' or not mat.use_nodes:
+    if mat.blend_method == 'BLEND':
+        raise SystemExit(
+            f"extract-cockpit: blend material {mat.name!r} survived a plan "
+            f"that ships no glass — keep rule and artifact disagree"
+        )
+    if not mat.use_nodes:
         continue
     bsdf = next((n for n in mat.node_tree.nodes
                  if n.type == 'BSDF_PRINCIPLED'), None)
@@ -106,7 +113,7 @@ bpy.context.scene.collection.objects.link(eyepoint)
 bpy.ops.export_scene.gltf(filepath=out_path, export_format="GLB")
 
 print(
-    f"extract-cockpit: {len(survivors)} parts survive (canopy {plan['canopy']}), "
-    f"dropped {dropped}, matted {matted} materials, "
+    f"extract-cockpit: {len(survivors)} parts survive (canopy {plan['canopy']} "
+    f"anchors, panes dropped), dropped {dropped}, matted {matted} materials, "
     f"eyepoint ({gx:.3f}, {gy:.3f}, {gz:.3f}) -> {out_path}"
 )
