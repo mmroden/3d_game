@@ -283,50 +283,90 @@ fn planet_two_interiors_show_no_void() {
 }
 
 /// Cross-planet SMOKE: the first level of planet 1 (layered megakit)
-/// and of planet 3 (fixed environment) boots, resolves every scene,
-/// and renders geometry along the flythrough artery. The containment
-/// contract stays planet 2's — these paradigms legitimately sight out
-/// of the level — so this asserts RENDERS: the rig advanced and no
-/// artery vantage is mostly escaped background (`MAX_ESCAPED`).
+/// and of planet 3 (fixed environments) boots, resolves every scene,
+/// and renders geometry along the flythrough artery. A fixed planet
+/// DEALS its locations per run, so its first level is captured once per
+/// declared location — sweeping run seeds until every environment has
+/// been dealt (owner 2026-09-06: planet 3 shows two of four per run;
+/// a location that never boots must fail here, not on a player's run).
+/// The containment contract stays planet 2's — these paradigms
+/// legitimately sight out of the level — so this asserts RENDERS: the
+/// rig advanced and no artery vantage is mostly escaped background
+/// (`MAX_ESCAPED`).
 #[test]
 fn other_planets_boot_and_render() {
+    use void_logic::level_spec::Paradigm;
+    const SEED_SWEEP: i64 = 32;
+
     let mut faults = Vec::new();
+    let roster = void_logic::roster::roster();
     for planet in [1u32, 3] {
         let level = *levels_of_planet(planet)
             .first()
             .expect("the grammar declares the planet");
-        let run_seed = 1i64;
-        let (spec, graph) = build_graph(level, run_seed);
-        let poses = flythrough_poses(&graph, spec.pitch);
-        assert!(!poses.is_empty(), "planet {planet}: artery poses derive");
-        let dir = frames_dir(level, run_seed, "");
-        let frames = capture(level, run_seed, &poses, true, &dir);
-
-        let bytes: Vec<Vec<u8>> = frames
-            .iter()
-            .map(|f| std::fs::read(f).expect("frame reads"))
-            .collect();
-        if let Some(i) = (1..bytes.len()).find(|&i| bytes[i] == bytes[i - 1]) {
-            faults.push(format!(
-                "planet {planet} level {level}: STUCK from frame {i} — identical \
-                 to its predecessor; the capture rig stalled ({})",
-                dir.display(),
-            ));
-            continue;
-        }
-        for (frame, pose) in frames.iter().zip(&poses) {
-            let (sentinel, _) = void_fractions(frame);
-            println!(
-                "visual: L{level} S{run_seed} {} sentinel={sentinel:.3} pose={pose:?}",
-                frame.file_name().unwrap().to_string_lossy(),
+        // One run seed per distinct environment the level can deal (a
+        // generated planet deals nothing: one seed).
+        let wanted = roster.planet_for_level(level).kits.len();
+        let mut seen = std::collections::BTreeMap::new();
+        for run_seed in 1..=SEED_SWEEP {
+            let spec = LevelSpec::for_level(
+                roster,
+                Seed::from_i64(run_seed),
+                level,
+                &void_logic::unlocks::PermanentUnlocks::new(),
             );
-            if sentinel > MAX_ESCAPED {
+            let key = match &spec.paradigm {
+                Paradigm::Fixed(env) => env.key.clone(),
+                _ => String::new(),
+            };
+            seen.entry(key).or_insert(run_seed);
+            if seen.len() >= wanted {
+                break;
+            }
+        }
+        if seen.len() < wanted {
+            faults.push(format!(
+                "planet {planet} level {level}: only {} of {wanted} declared locations \
+                 dealt within {SEED_SWEEP} run seeds ({:?})",
+                seen.len(),
+                seen.keys().collect::<Vec<_>>(),
+            ));
+        }
+
+        for (key, &run_seed) in &seen {
+            let (spec, graph) = build_graph(level, run_seed);
+            let poses = flythrough_poses(&graph, spec.pitch);
+            assert!(!poses.is_empty(), "planet {planet}: artery poses derive");
+            let dir = frames_dir(level, run_seed, "");
+            let frames = capture(level, run_seed, &poses, true, &dir);
+
+            let bytes: Vec<Vec<u8>> = frames
+                .iter()
+                .map(|f| std::fs::read(f).expect("frame reads"))
+                .collect();
+            if let Some(i) = (1..bytes.len()).find(|&i| bytes[i] == bytes[i - 1]) {
                 faults.push(format!(
-                    "planet {planet} level {level} pose {pose:?}: {:.0}% escaped \
-                     background — {}",
-                    sentinel * 100.0,
-                    frame.display(),
+                    "planet {planet} level {level} seed {run_seed} ({key}): STUCK from \
+                     frame {i} — identical to its predecessor; the capture rig \
+                     stalled ({})",
+                    dir.display(),
                 ));
+                continue;
+            }
+            for (frame, pose) in frames.iter().zip(&poses) {
+                let (sentinel, _) = void_fractions(frame);
+                println!(
+                    "visual: L{level} S{run_seed} env={key} {} sentinel={sentinel:.3} pose={pose:?}",
+                    frame.file_name().unwrap().to_string_lossy(),
+                );
+                if sentinel > MAX_ESCAPED {
+                    faults.push(format!(
+                        "planet {planet} level {level} seed {run_seed} ({key}) pose \
+                         {pose:?}: {:.0}% escaped background — {}",
+                        sentinel * 100.0,
+                        frame.display(),
+                    ));
+                }
             }
         }
     }

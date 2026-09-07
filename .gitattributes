@@ -6,3 +6,9 @@ assets/apartment/*.max filter=lfs diff=lfs merge=lfs -text
 assets/apartment/*.fbx filter=lfs diff=lfs merge=lfs -text
 assets/apartment/*.zip filter=lfs diff=lfs merge=lfs -text
 assets/more_walls/*.glb filter=lfs diff=lfs merge=lfs -text
+# Planet-3 scene packs (2026-09-06): the OBJ and its texture zip, and the
+# texture archives, all sit past the limit; the model archives stay plain.
+assets/hill_house/*.obj filter=lfs diff=lfs merge=lfs -text
+assets/hill_house/*.zip filter=lfs diff=lfs merge=lfs -text
+assets/office_building/*_textures.rar filter=lfs diff=lfs merge=lfs -text
+assets/mountain_villa/Textures.rar filter=lfs diff=lfs merge=lfs -text

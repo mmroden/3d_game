@@ -176,6 +176,23 @@ def materials_are_textured():
     )
 
 
+# ---- static: strip the provider's animations before any transform bake ----
+# The game plays no provider animation, and an animated node exports its
+# keyed transform ON TOP of the fit the roster applies at spawn: the
+# apartment boss shipped five "Drone" clips whose 60 scale channels kept
+# it gigantic whatever enemies.toml said (owner 2026-09-06) — the same
+# failure the military hull had, fixed the same way (convert-hull.py).
+stripped = 0
+for o in bpy.context.scene.objects:
+    if o.animation_data is not None:
+        o.animation_data_clear()
+        stripped += 1
+for action in list(bpy.data.actions):
+    bpy.data.actions.remove(action)
+if stripped:
+    print(f"decimate: {stripped} animated objects made static")
+
+
 if ext == ".fbx":
     # The FBX importer leaves a +90° X rotation on every object (its Z-up→Y-up
     # conversion). Left as an object transform it survives the glTF round-trip and

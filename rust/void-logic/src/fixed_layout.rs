@@ -148,10 +148,10 @@ mod tests {
     fn fixture_env_and_pitch() -> (crate::roster::EnvironmentDef, Pitch) {
         let grammar = fixed_fixture_grammar();
         let env = grammar
-            .environment_for_level(1)
+            .environment_for_level(1, crate::seed::Seed::new(1))
             .expect("the fixture planet is fixed")
             .clone();
-        let pitch = grammar.pitch_for_level(1);
+        let pitch = grammar.pitch_for_level(1, crate::seed::Seed::new(1));
         (env, pitch)
     }
 

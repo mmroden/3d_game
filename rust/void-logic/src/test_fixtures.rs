@@ -87,9 +87,11 @@ mod tests {
     #[test]
     fn gut_fixed_level_anchors() {
         let grammar = super::fixed_fixture_grammar();
-        let env = grammar.environment_for_level(1).expect("level 1 is fixed");
+        let env = grammar
+            .environment_for_level(1, crate::seed::Seed::new(1))
+            .expect("level 1 is fixed");
         assert_eq!(env.zones.len(), 4, "GUT ZONES");
-        let pitch = grammar.pitch_for_level(1);
+        let pitch = grammar.pitch_for_level(1, crate::seed::Seed::new(1));
         assert_eq!((pitch.tile, pitch.story), (5.0, 5.0), "GUT SCALE");
         let start = &env.zones[env.start_zone];
         assert_eq!((start.key.as_str(), start.min, start.extents),

@@ -1,0 +1,65 @@
+# HAND-AUTHORED zones for the planet-3 mountain villa (a single-storey
+# house on a hilltop: a rectangular block with a wing set at 45 degrees
+# off its south-east corner). Coordinates are MODEL SPACE of the
+# installed glb (meters, Y-up: x east, y height, z south). Boxes sit on
+# the 1-meter authoring grid: integer min + integer extents,
+# min-inclusive, max-exclusive, mutually non-overlapping. The declared
+# kit scale multiplies everything at build time.
+#
+# DRAFT 2 (2026-09-06), read off the census sections and face audit
+# (out/census/mountain_villa.toml, mountain_villa_plan.png cut at 4.5 m
+# inside the zone band; the cross and long cuts: floor slab 3.06, roof
+# 4.85 on the plateau). Draft 1 was three slices of a bounding box
+# (x -4..8) and the audit read 11 of its 14 faces open — the boxes sat a
+# meter or more off every wall. The block is x -2.9..2.9 from its north
+# wall at z -8.2 to z -0.85 (a porch bay to z -10.6 on the east side);
+# the wing runs from (2.8, -4.4) to (-0.2, 3.4), about 3.5 m wide,
+# rotated, so two axis boxes cover it. Interior height 1.8 m (the
+# provider's units are still suspect; convert-environment.py
+# --unit-scale is the knob) and the glass exports opaque or is absent
+# (census: blend = 0). Owner reviews.
+#
+# enemy_spawns are model-space points inside their zone's box (the linker
+# rejects strays); the start zone stays enemy-free, and the boss zone
+# authors exactly ONE spawn — the arena anchor.
+
+[environment]
+key = "mountain_villa"
+model = "mountain_villa"
+window_energy_per_m2 = 4.0
+
+[ambient]
+energy = 0.9
+
+# The block's north half, entered from the porch.
+[[zone]]
+key = "lounge"
+box = { min = [-3, 3, -9], extents = [6, 2, 4] }
+start = true
+links = ["hall"]
+
+# The block's south half and the wing's north-west end.
+[[zone]]
+key = "hall"
+box = { min = [-3, 3, -5], extents = [6, 2, 4] }
+links = ["bedroom", "wing"]
+enemy_spawns = [[-1.0, 4.0, -3.0], [2.0, 4.0, -2.0]]
+loot_spawns = [[0.0, 3.6, -4.0]]
+
+# The wing's north-east corner, off the hall.
+[[zone]]
+key = "wing"
+box = { min = [3, 3, -5], extents = [3, 2, 4] }
+links = ["bedroom"]
+enemy_spawns = [[4.5, 4.0, -3.0]]
+
+# The wing's south-west end — the arena. Its east edge runs diagonally
+# from about x 3.7 at z -1 to x 1.9 at z 1, so an axis box overshoots
+# it on one side or falls short on the other; the audit read x 6 as
+# open past z -1, x 4 keeps the overshoot to the wing's own width.
+[[zone]]
+key = "bedroom"
+box = { min = [-2, 3, -1], extents = [6, 2, 5] }
+boss = true
+enemy_spawns = [[2.0, 4.0, 2.0]]
+loot_spawns = [[0.0, 3.6, 1.0]]

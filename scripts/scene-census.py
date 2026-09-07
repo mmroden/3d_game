@@ -1,0 +1,877 @@
+"""Scene census for `make assets` and `make census` (pure Python, no Blender).
+
+    python3 scripts/scene-census.py <key> <scene.glb> <out.toml> [oracle.json] [zones.toml]
+
+Written by install-addons.sh right after every environment conversion,
+one file per scene under out/census/: what the pipeline PRODUCED, in
+one stable, human-readable place — the scene's extents in model meters
+(the numbers zone authoring and the kit scale decision start from),
+its parts and triangles, its exported materials (alpha modes, textured
+or flat), any surviving animations, the largest parts with their AABBs,
+and the SOURCE file's own geometry census when the oracle carries one
+(the OBJ oracle's vertex counts and percentile extents — how the hill
+house's millimeter units and 175 km backdrop were told apart). Read
+this instead of parsing a .glb or an oracle by hand: the census is
+reproducible, an inline parse is not.
+
+Beside the TOML, RECON SECTIONS for zone authoring — the scene cut by a
+plane, drawn the way an architect's drawings read (owner 2026-09-06:
+zones drafted from bounding numbers walled off a hallway that exists
+and a ceiling that opens into the next floor; a vertex-density raster
+showed neither, a wall being four vertices):
+  <key>_plan_low.png   horizontal cut at sill height: counters, sofas,
+                       tables print as their footprints;
+  <key>_plan.png       horizontal cut between waist and lintel: walls
+                       are lines, doorways are gaps — THE floor plan;
+  <key>_plan_high.png  horizontal cut above the lintels: an opening
+                       still open here goes all the way up;
+  <key>_long_NN.png    vertical cuts along the body's long axis at its
+                       quarter points (NN = 25, 50, 75 percent across
+                       the short axis): floor, ceiling, mezzanines,
+                       the end walls' openings (y up);
+  <key>_cross_NN.png   the same across the short axis.
+The plan cuts sit inside the AUTHORED zone band (the zones' lowest
+floor to their highest ceiling) when a zone roster exists, so an
+edit to the boxes re-cuts where they claim the rooms are; without
+zones they sit inside the vertex cloud's 5th..95th percentile band.
+The frame covers the body plus the zone boxes plus a margin, and
+reaches as high as what stands on the footprint — an upper storey
+shows even when the ground floor holds nearly every vertex. Solid
+geometry draws neutral gray, glass blue, OVER the zone boxes (start
+green with its north edge tripled, boss red dotted, others yellow):
+a box edge that runs along a wall shows the wall, an edge across open
+floor shows its color — the difference between a box that follows
+the model and one that walls off a doorway. Every image's cut, axes,
+frame and cell are in the TOML's [[recon.section]] rows: pixel
+(i, j) is model (frame_lo[0] + i * cell, frame_lo[1] + j * cell) on
+the section's axes, rows counted from the top, or from the bottom
+when flip_v (the vertical sections draw y up).
+
+Bounds come from the accessors' declared min/max through the node
+transforms (cockpit_plan.parse_glb in bounds-only mode); the sections
+walk every triangle once (a four-million triangle scene takes under a
+minute).
+"""
+import json
+import math
+import os
+import struct
+import sys
+import zlib
+from array import array
+
+try:
+    import tomllib
+except ImportError:  # the audit venv (python 3.9) carries tomli
+    import tomli as tomllib
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cockpit_plan import (  # noqa: E402
+    BIN_CHUNK, GLB_MAGIC, JSON_CHUNK, _matmul, _trs_matrix, _xform, parse_glb,
+)
+
+LARGEST = 24  # parts listed individually, by AABB volume
+RECON_MAX_CELLS = 1600  # longest image side, pixels
+RECON_MIN_CELL = 0.025  # meters per pixel, floor
+# The recon frame: the body (5th..95th percentile of the vertex cloud)
+# joined with the authored zone boxes, plus this margin per axis —
+# enough to show what leads out of the body (a hallway, a stair)
+# without the backdrop shrinking the room to a smudge.
+FRAME_MARGIN_MIN = 2.0
+FRAME_MARGIN_FRAC = 0.5
+# Cut heights above the band's floor / below its ceiling (meters): the
+# low cut at sill height prints furniture, the plan cut sits between
+# waist and lintel where doorways are open, the high cut above lintels.
+PLAN_LOW_ABOVE_FLOOR = 0.6
+PLAN_ABOVE_FLOOR = 1.5
+PLAN_HIGH_BELOW_CEILING = 0.6
+# Vertical cuts at these points along the body (percent of its span).
+VERTICAL_CUT_PERCENTS = (25, 50, 75)
+# The vertical frame also reaches the lowest and highest vertex standing
+# this far around the body's footprint (plus a meter), capped at this
+# many body heights past the body's floor and ceiling — an upper storey
+# shows, a sky dome does not stretch the frame.
+FOOTPRINT_REACH = 2.0
+REACH_STOREYS = 3.0
+
+SOLID_COLOR = (210, 210, 210)
+GLASS_COLOR = (90, 150, 230)
+ZONE_COLOR = (240, 200, 60)
+START_COLOR = (80, 230, 100)
+BOSS_COLOR = (240, 80, 80)
+
+AXIS_NAMES = "xyz"
+# Accessor componentType -> array typecode (all little-endian, 4-byte
+# alignment is glTF's own rule).
+_ARRAY_CODE = {5120: "b", 5121: "B", 5122: "h", 5123: "H", 5125: "I", 5126: "f"}
+_NCOMP = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT4": 16}
+
+
+def glb_chunks(path):
+    with open(path, "rb") as f:
+        magic, _version, length = struct.unpack("<III", f.read(12))
+        if magic != GLB_MAGIC:
+            raise ValueError(f"{path} is not a .glb container")
+        chunks = {}
+        while f.tell() < length:
+            clen, ctype = struct.unpack("<II", f.read(8))
+            chunks[ctype] = f.read(clen)
+    return json.loads(chunks[JSON_CHUNK]), chunks[BIN_CHUNK]
+
+
+def toml_str(s):
+    return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def toml_vec(v):
+    return "[" + ", ".join(f"{x:.3f}" for x in v) + "]"
+
+
+def toml_strs(seq):
+    return "[" + ", ".join(toml_str(s) for s in seq) + "]"
+
+
+def toml_bool(b):
+    return "true" if b else "false"
+
+
+def volume(p):
+    return max(0.0, (p["hi"][0] - p["lo"][0])
+               * (p["hi"][1] - p["lo"][1])
+               * (p["hi"][2] - p["lo"][2]))
+
+
+# ---------------------------------------------------------------- mesh
+
+def _flat_accessor(gltf, binbuf, idx):
+    """Accessor `idx` as one flat array of its components (compact: a
+    ten-million-vertex scene stays in float32)."""
+    acc = gltf["accessors"][idx]
+    view = gltf["bufferViews"][acc["bufferView"]]
+    values = array(_ARRAY_CODE[acc["componentType"]])
+    ncomp = _NCOMP[acc["type"]]
+    tight = ncomp * values.itemsize
+    stride = view.get("byteStride") or tight
+    base = view.get("byteOffset", 0) + acc.get("byteOffset", 0)
+    count = acc["count"]
+    if stride == tight:
+        values.frombytes(binbuf[base:base + count * tight])
+    else:
+        fmt = "<" + values.typecode * ncomp
+        for i in range(count):
+            values.extend(struct.unpack_from(fmt, binbuf, base + i * stride))
+    if sys.byteorder != "little":
+        values.byteswap()
+    return values
+
+
+def _is_identity(m):
+    return all(abs(m[i][j] - (1.0 if i == j else 0.0)) < 1e-12
+               for i in range(4) for j in range(4))
+
+
+def _transform_flat(m, pos):
+    out = array("d")
+    for i in range(0, len(pos) - 2, 3):
+        out.extend(_xform(m, (pos[i], pos[i + 1], pos[i + 2])))
+    return out
+
+
+def load_mesh(gltf, binbuf):
+    """Every triangle primitive of the default scene as (positions,
+    indices, blend): positions a flat array of world-space coordinates
+    [x0, y0, z0, x1, ...] (glTF frame, node transforms applied),
+    indices a flat sequence of vertex ids, three per triangle."""
+    blend_mats = {
+        i for i, mat in enumerate(gltf.get("materials", []))
+        if mat.get("alphaMode") in ("BLEND", "MASK")
+    }
+    prims = []
+
+    def walk(node_idx, parent_m):
+        node = gltf["nodes"][node_idx]
+        m = _matmul(parent_m, _trs_matrix(node))
+        if "mesh" in node:
+            for prim in gltf["meshes"][node["mesh"]]["primitives"]:
+                if prim.get("mode", 4) != 4:
+                    continue  # points and lines never wall anything
+                pos = _flat_accessor(gltf, binbuf, prim["attributes"]["POSITION"])
+                if not _is_identity(m):
+                    pos = _transform_flat(m, pos)
+                if "indices" in prim:
+                    idx = _flat_accessor(gltf, binbuf, prim["indices"])
+                else:
+                    idx = range(len(pos) // 3)
+                prims.append((pos, idx, prim.get("material") in blend_mats))
+        for child in node.get("children", []):
+            walk(child, m)
+
+    identity = [[float(i == j) for j in range(4)] for i in range(4)]
+    for root in gltf["scenes"][gltf.get("scene", 0)]["nodes"]:
+        walk(root, identity)
+    return prims
+
+
+def percentile(values, q):
+    values = sorted(values)
+    return values[int(q * (len(values) - 1))]
+
+
+def body_percentiles(prims, q_lo=0.05, q_hi=0.95):
+    lo, hi, count = [], [], 0
+    for axis in range(3):
+        coords = []
+        for pos, _idx, _blend in prims:
+            coords.extend(pos[axis::3])
+        count = len(coords)
+        lo.append(percentile(coords, q_lo))
+        hi.append(percentile(coords, q_hi))
+    return lo, hi, count
+
+
+def vertical_reach(prims, body_lo, body_hi):
+    """The y range of what stands on the body's footprint: the lowest and
+    highest vertex whose (x, z) lie within FOOTPRINT_REACH of the body,
+    a meter beyond each — an archviz house's upper storey (a bare shell,
+    a few vertices next to the furnished ground floor) shows in the
+    sections, while a tree crown away from the house does not stretch
+    them. Capped at REACH_STOREYS storeys past the body's floor and
+    ceiling (a storey being the body's height, at least 3 m — a rug can
+    own every percentile), so a sky dome over the house cannot either.
+    None when nothing stands there."""
+    x0, x1 = body_lo[0] - FOOTPRINT_REACH, body_hi[0] + FOOTPRINT_REACH
+    z0, z1 = body_lo[2] - FOOTPRINT_REACH, body_hi[2] + FOOTPRINT_REACH
+    lo = hi = None
+    for pos, _idx, _blend in prims:
+        for i in range(0, len(pos) - 2, 3):
+            if x0 <= pos[i] <= x1 and z0 <= pos[i + 2] <= z1:
+                y = pos[i + 1]
+                if lo is None or y < lo:
+                    lo = y
+                if hi is None or y > hi:
+                    hi = y
+    if lo is None:
+        return None
+    storey = max(3.0, body_hi[1] - body_lo[1])
+    lo = max(lo, body_lo[1] - REACH_STOREYS * storey)
+    hi = min(hi, body_hi[1] + REACH_STOREYS * storey)
+    return lo - 1.0, hi + 1.0
+
+
+def zones_bounds(zones):
+    """The union AABB of the authored boxes, or None without zones."""
+    if not zones:
+        return None
+    lo = [min(z[1][k] for z in zones) for k in range(3)]
+    hi = [max(z[1][k] + z[2][k] for z in zones) for k in range(3)]
+    return lo, hi
+
+
+def frame_bounds(prims, body_lo, body_hi, zbox):
+    """The recon frame: the body joined with the zone boxes, plus a
+    margin per axis; vertically also as far as what stands on the
+    footprint reaches. Never clamped to the scene's extents — a margin
+    past the last vertex is black, and a box drafted past the geometry
+    must still draw where it was authored."""
+    core_lo = [min(body_lo[k], zbox[0][k]) if zbox else body_lo[k] for k in range(3)]
+    core_hi = [max(body_hi[k], zbox[1][k]) if zbox else body_hi[k] for k in range(3)]
+    margin = [max(FRAME_MARGIN_MIN, FRAME_MARGIN_FRAC * (core_hi[k] - core_lo[k]))
+              for k in range(3)]
+    frame_lo = [core_lo[k] - margin[k] for k in range(3)]
+    frame_hi = [core_hi[k] + margin[k] for k in range(3)]
+    reach = vertical_reach(prims, body_lo, body_hi)
+    if reach:
+        frame_lo[1] = min(frame_lo[1], reach[0])
+        frame_hi[1] = max(frame_hi[1], reach[1])
+    return frame_lo, frame_hi
+
+
+# ---------------------------------------------------------------- sections
+
+def _cross(pos, a, b, c, axis, level):
+    """The two points where the plane `axis = level` crosses triangle
+    (a, b, c) (flat-array offsets), given that it does."""
+    pts = []
+    corners = ((a, b), (b, c), (c, a))
+    for i, j in corners:
+        pi, pj = pos[i + axis], pos[j + axis]
+        if (pi < level) != (pj < level):
+            t = (level - pi) / (pj - pi)
+            pts.append((pos[i] + (pos[j] - pos[i]) * t,
+                        pos[i + 1] + (pos[j + 1] - pos[i + 1]) * t,
+                        pos[i + 2] + (pos[j + 2] - pos[i + 2]) * t))
+    return pts[0], pts[1]
+
+
+def cut_sections(prims, cuts):
+    """Cut every triangle with each plane in `cuts` ([(axis, level)]).
+    Returns one segment list per cut: (p, q, blend) with p and q the
+    crossing points as 3-tuples. A triangle crosses a plane when some
+    vertex lies below the level and some at or above it (the half-open
+    rule makes a vertex exactly on the plane count once)."""
+    out = [[] for _ in cuts]
+    by_axis = {}
+    for n, (axis, level) in enumerate(cuts):
+        by_axis.setdefault(axis, []).append((level, out[n]))
+    axes = list(by_axis.items())
+    for pos, idx, blend in prims:
+        for k in range(0, len(idx) - 2, 3):
+            a = idx[k] * 3
+            b = idx[k + 1] * 3
+            c = idx[k + 2] * 3
+            for axis, levels in axes:
+                pa = pos[a + axis]
+                pb = pos[b + axis]
+                pc = pos[c + axis]
+                lo = pa if pa < pb else pb
+                if pc < lo:
+                    lo = pc
+                hi = pa if pa > pb else pb
+                if pc > hi:
+                    hi = pc
+                for level, segs in levels:
+                    if lo < level <= hi:
+                        p, q = _cross(pos, a, b, c, axis, level)
+                        segs.append((p, q, blend))
+    return out
+
+
+def _clip(u0, v0, u1, v1, lo_u, lo_v, hi_u, hi_v):
+    """Liang-Barsky: the parameter range of segment (u0,v0)-(u1,v1)
+    inside the frame, or None."""
+    t0, t1 = 0.0, 1.0
+    du, dv = u1 - u0, v1 - v0
+    for p, q in ((-du, u0 - lo_u), (du, hi_u - u0), (-dv, v0 - lo_v), (dv, hi_v - v0)):
+        if p == 0:
+            if q < 0:
+                return None
+            continue
+        t = q / p
+        if p < 0:
+            if t > t1:
+                return None
+            if t > t0:
+                t0 = t
+        else:
+            if t < t0:
+                return None
+            if t < t1:
+                t1 = t
+    return t0, t1
+
+
+class Raster:
+    """An RGB image over a model-space frame on two axes; `flip_v`
+    draws increasing v upward (vertical sections, y up)."""
+
+    def __init__(self, lo, hi, axes, flip_v):
+        self.axes = axes
+        self.flip_v = flip_v
+        self.lo = (lo[axes[0]], lo[axes[1]])
+        self.hi = (hi[axes[0]], hi[axes[1]])
+        span_u = self.hi[0] - self.lo[0]
+        span_v = self.hi[1] - self.lo[1]
+        self.cell = max(RECON_MIN_CELL, max(span_u, span_v) / RECON_MAX_CELLS)
+        self.w = max(1, int(math.ceil(span_u / self.cell)) + 1)
+        self.h = max(1, int(math.ceil(span_v / self.cell)) + 1)
+        self.px = bytearray(self.w * self.h * 3)
+
+    def _index(self, i, j):
+        if self.flip_v:
+            j = self.h - 1 - j
+        return (j * self.w + i) * 3
+
+    def paint(self, i, j, color, over=True):
+        if 0 <= i < self.w and 0 <= j < self.h:
+            at = self._index(i, j)
+            if over or not any(self.px[at:at + 3]):
+                self.px[at:at + 3] = bytes(color)
+
+    def segment(self, p, q, color, over):
+        au, av = self.axes
+        u0, v0, u1, v1 = p[au], p[av], q[au], q[av]
+        span = _clip(u0, v0, u1, v1, self.lo[0], self.lo[1], self.hi[0], self.hi[1])
+        if span is None:
+            return
+        t0, t1 = span
+        du, dv = u1 - u0, v1 - v0
+        n = int(max(abs(du), abs(dv)) * (t1 - t0) / self.cell * 2) + 1
+        cell, lo_u, lo_v = self.cell, self.lo[0], self.lo[1]
+        for s in range(n + 1):
+            t = t0 + (t1 - t0) * s / n
+            self.paint(int((u0 + du * t - lo_u) / cell),
+                       int((v0 + dv * t - lo_v) / cell), color, over)
+
+    def box(self, u0, v0, u1, v1, color, dotted=False, triple_v0=False):
+        x0 = int((u0 - self.lo[0]) / self.cell)
+        x1 = int((u1 - self.lo[0]) / self.cell)
+        y0 = int((v0 - self.lo[1]) / self.cell)
+        y1 = int((v1 - self.lo[1]) / self.cell)
+        for x in range(max(0, x0), min(self.w, x1 + 1)):
+            if dotted and x % 4 >= 2:
+                continue
+            for y in (y0, y1):
+                self.paint(x, y, color)
+        for y in range(max(0, y0), min(self.h, y1 + 1)):
+            if dotted and y % 4 >= 2:
+                continue
+            for x in (x0, x1):
+                self.paint(x, y, color)
+        if triple_v0:
+            for d in range(1, 4):
+                for x in range(max(0, x0 + d), min(self.w, x1 - d + 1)):
+                    self.paint(x, y0 + d, color)
+
+    def write(self, path):
+        stride = self.w * 3
+        rows = [self.px[j * stride:(j + 1) * stride] for j in range(self.h)]
+        write_png(path, self.w, self.h, rows)
+
+
+def write_png(path, width, height, rows):
+    """8-bit RGB PNG from rows of bytes (3 per pixel), stdlib only."""
+    def chunk(tag, data):
+        body = tag + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+    raw = b"".join(b"\x00" + bytes(row) for row in rows)
+    png = b"\x89PNG\r\n\x1a\n"
+    png += chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+    png += chunk(b"IDAT", zlib.compress(raw, 6))
+    png += chunk(b"IEND", b"")
+    with open(path, "wb") as f:
+        f.write(png)
+
+
+def load_zones(zones_path):
+    if not zones_path or not os.path.isfile(zones_path):
+        return []
+    with open(zones_path, "rb") as f:
+        doc = tomllib.load(f)
+    zones = []
+    for z in doc.get("zone", []):
+        box = z["box"]
+        zones.append((z.get("key", "?"), box["min"], box["extents"],
+                      bool(z.get("start")), bool(z.get("boss"))))
+    return zones
+
+
+def draw_zones(raster, zones, axis, level):
+    """Zone boxes on a section: every box on a horizontal cut (they
+    are floor-to-ceiling volumes), only the boxes the plane passes
+    through on a vertical one."""
+    au, av = raster.axes
+    for _key, bmin, ext, start, boss in zones:
+        if axis != 1 and not (bmin[axis] <= level < bmin[axis] + ext[axis]):
+            continue
+        color = START_COLOR if start else BOSS_COLOR if boss else ZONE_COLOR
+        raster.box(bmin[au], bmin[av], bmin[au] + ext[au], bmin[av] + ext[av],
+                   color, dotted=boss, triple_v0=start and axis == 1)
+
+
+
+# ---------------------------------------------------------------- zone faces
+
+FACE_NAMES = {(0, -1): "-x", (0, 1): "+x", (1, -1): "-y", (1, 1): "+y",
+              (2, -1): "-z", (2, 1): "+z"}
+# Geometry within this of a walled face plane backs it (half a cell each
+# side would miss a 3.45 m ceiling under a 4 m box top; a meter reads
+# "the model has a surface here").
+FACE_TOLERANCE = 1.0
+FACE_GRID = 10  # sub-cells per unit face edge
+OPEN_CELL_BELOW = 0.5  # a unit face cell backed less than this is open
+OPEN_AT_LISTED = 12  # open cells named per zone face
+
+
+def unit_faces(zones):
+    """Every unit-cell face of the zone union that no other cell shares —
+    the faces the containment shell walls (level_assembly's rule) —
+    keyed (axis, plane, u, v): the plane's integer coordinate on `axis`
+    and the cell's integer coordinates on the other two axes in
+    ascending order; the value is (zone key, outward sign)."""
+    cells = {}
+    for key, bmin, ext, _start, _boss in zones:
+        for x in range(bmin[0], bmin[0] + ext[0]):
+            for y in range(bmin[1], bmin[1] + ext[1]):
+                for z in range(bmin[2], bmin[2] + ext[2]):
+                    cells[(x, y, z)] = key
+    faces = {}
+    for cell, key in cells.items():
+        for axis in range(3):
+            for sign in (-1, 1):
+                neighbour = list(cell)
+                neighbour[axis] += sign
+                if tuple(neighbour) in cells:
+                    continue
+                plane = cell[axis] + (1 if sign > 0 else 0)
+                u, v = [cell[k] for k in range(3) if k != axis]
+                faces[(axis, plane, u, v)] = (key, sign)
+    return faces
+
+
+def _covers(tri, px, py):
+    (x0, y0), (x1, y1), (x2, y2) = tri
+    d0 = (x1 - x0) * (py - y0) - (y1 - y0) * (px - x0)
+    d1 = (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1)
+    d2 = (x0 - x2) * (py - y2) - (y0 - y2) * (px - x2)
+    return (d0 >= 0 and d1 >= 0 and d2 >= 0) or (d0 <= 0 and d1 <= 0 and d2 <= 0)
+
+
+def _raster_face(bits, tri, u, v):
+    """Mark the FACE_GRID x FACE_GRID sub-cells of unit face cell (u, v)
+    whose centers the projected triangle covers."""
+    g = FACE_GRID
+    xs = [p[0] for p in tri]
+    ys = [p[1] for p in tri]
+    i0 = max(0, int(math.floor((min(xs) - u) * g)))
+    i1 = min(g - 1, int(math.floor((max(xs) - u) * g)))
+    j0 = max(0, int(math.floor((min(ys) - v) * g)))
+    j1 = min(g - 1, int(math.floor((max(ys) - v) * g)))
+    for i in range(i0, i1 + 1):
+        px = u + (i + 0.5) / g
+        for j in range(j0, j1 + 1):
+            if bits[j * g + i]:
+                continue
+            if _covers(tri, px, v + (j + 0.5) / g):
+                bits[j * g + i] = 1
+
+
+def face_coverage(prims, faces):
+    """For every walled unit face, the fraction of its area that model
+    geometry within FACE_TOLERANCE of its plane projects onto: a wall
+    along the face reads 1.0, a doorway or open floor 0.0, a triangle
+    edge-on to the face (a floor crossing a wall plane) nothing."""
+    by_plane = {}
+    for (axis, plane, u, v) in faces:
+        by_plane.setdefault((axis, plane), set()).add((u, v))
+    cover = {key: bytearray(FACE_GRID * FACE_GRID) for key in faces}
+    tol = FACE_TOLERANCE
+    for pos, idx, _blend in prims:
+        for k in range(0, len(idx) - 2, 3):
+            a = idx[k] * 3
+            b = idx[k + 1] * 3
+            c = idx[k + 2] * 3
+            for axis in range(3):
+                pa = pos[a + axis]
+                pb = pos[b + axis]
+                pc = pos[c + axis]
+                lo = pa if pa < pb else pb
+                if pc < lo:
+                    lo = pc
+                hi = pa if pa > pb else pb
+                if pc > hi:
+                    hi = pc
+                p0 = int(math.ceil(lo - tol))
+                p1 = int(math.floor(hi + tol))
+                if p1 < p0:
+                    continue
+                tri = None
+                for plane in range(p0, p1 + 1):
+                    cells_here = by_plane.get((axis, plane))
+                    if not cells_here:
+                        continue
+                    if tri is None:
+                        au, av = [k2 for k2 in range(3) if k2 != axis]
+                        tri = [(pos[i + au], pos[i + av]) for i in (a, b, c)]
+                        us = [p[0] for p in tri]
+                        vs = [p[1] for p in tri]
+                        u0, u1 = int(math.floor(min(us))), int(math.floor(max(us)))
+                        v0, v1 = int(math.floor(min(vs))), int(math.floor(max(vs)))
+                    for u in range(u0, u1 + 1):
+                        for v in range(v0, v1 + 1):
+                            if (u, v) in cells_here:
+                                _raster_face(cover[(axis, plane, u, v)], tri, u, v)
+    return cover
+
+
+def zone_face_rows(zones, faces, cover):
+    """One row per (zone, face direction): unit cells walled there, the
+    mean backed fraction, the open cells (backed under OPEN_CELL_BELOW)
+    with the first few named by their cell coordinates."""
+    groups = {}
+    for (axis, plane, u, v), (key, sign) in faces.items():
+        bits = cover[(axis, plane, u, v)]
+        backed = sum(bits) / len(bits)
+        cell = [0, 0, 0]
+        cell[axis] = plane - (1 if sign > 0 else 0)
+        others = [k for k in range(3) if k != axis]
+        cell[others[0]], cell[others[1]] = u, v
+        g = groups.setdefault((key, FACE_NAMES[(axis, sign)]), {"n": 0, "sum": 0.0, "open": []})
+        g["n"] += 1
+        g["sum"] += backed
+        if backed < OPEN_CELL_BELOW:
+            g["open"].append(cell)
+    order = {k: i for i, k in enumerate(z[0] for z in zones)}
+    rows = []
+    for (key, face), g in sorted(groups.items(), key=lambda kv: (order[kv[0][0]], kv[0][1])):
+        rows.append({
+            "zone": key, "face": face, "cells": g["n"],
+            "backed": g["sum"] / g["n"], "open_cells": len(g["open"]),
+            "open_at": sorted(g["open"])[:OPEN_AT_LISTED],
+        })
+    return rows
+
+
+def zone_faces(prims, zones):
+    """The containment audit: how much of every walled zone face the
+    model backs (owner 2026-09-06: "you need a mechanism for evaluating
+    void boxes" — a number per face, not an eye on a picture)."""
+    if not zones:
+        return []
+    faces = unit_faces(zones)
+    return zone_face_rows(zones, faces, face_coverage(prims, faces))
+
+
+def section_plan(body_lo, body_hi, band):
+    """The cuts: (name, axis, level, image axes, flip_v) — three plans
+    inside `band` (floor, ceiling), and vertical cuts at the body's
+    quarter points along each horizontal axis (a single center cut can
+    land inside a beam or a wall and show an empty ceiling where there
+    is a void; three never all do)."""
+    floor, ceiling = band
+    long_axis = 2 if (body_hi[2] - body_lo[2]) >= (body_hi[0] - body_lo[0]) else 0
+    short_axis = 2 - long_axis
+    cuts = [
+        ("plan_low", 1, floor + PLAN_LOW_ABOVE_FLOOR, (0, 2), False),
+        ("plan", 1, floor + PLAN_ABOVE_FLOOR, (0, 2), False),
+        ("plan_high", 1, ceiling - PLAN_HIGH_BELOW_CEILING, (0, 2), False),
+    ]
+    for family, axis, along in (("long", short_axis, long_axis), ("cross", long_axis, short_axis)):
+        for pct in VERTICAL_CUT_PERCENTS:
+            level = body_lo[axis] + (body_hi[axis] - body_lo[axis]) * pct / 100.0
+            cuts.append((f"{family}_{pct}", axis, level, (along, 1), True))
+    return cuts
+
+
+def recon(prims, frame_lo, frame_hi, body_lo, body_hi, band, zones, stem):
+    """Draw every section image; returns the [[recon.section]] rows."""
+    plan = section_plan(body_lo, body_hi, band)
+    segments = cut_sections(prims, [(axis, level) for _n, axis, level, _a, _f in plan])
+    rows = []
+    for (name, axis, level, axes, flip_v), segs in zip(plan, segments):
+        raster = Raster(frame_lo, frame_hi, axes, flip_v)
+        # Zones first, geometry over them: a box edge along a wall shows
+        # the wall; solid over glass: a wall behind a pane reads as a wall.
+        draw_zones(raster, zones, axis, level)
+        for p, q, blend in segs:
+            if blend:
+                raster.segment(p, q, GLASS_COLOR, over=True)
+        for p, q, blend in segs:
+            if not blend:
+                raster.segment(p, q, SOLID_COLOR, over=True)
+        image = f"{os.path.basename(stem)}_{name}.png"
+        raster.write(os.path.join(os.path.dirname(stem), image))
+        rows.append({
+            "name": name, "image": image, "axis": AXIS_NAMES[axis], "level": level,
+            "axes": [AXIS_NAMES[axes[0]], AXIS_NAMES[axes[1]]], "flip_v": flip_v,
+            "frame_lo": list(raster.lo), "frame_hi": list(raster.hi),
+            "cell": raster.cell, "size": [raster.w, raster.h], "segments": len(segs),
+        })
+    return rows
+
+
+def material_lines(rows, table):
+    lines = []
+    for r in rows:
+        lines += [
+            f"[[{table}]]",
+            f"name = {toml_str(r['name'])}",
+            f"alpha_mode = {toml_str(r['alpha_mode'])}",
+            f"double_sided = {toml_bool(r['double_sided'])}",
+            f"base_texture = {toml_bool(r['base_texture'])}",
+            f"metal_rough_texture = {toml_bool(r['metal_rough_texture'])}",
+            f"normal_texture = {toml_bool(r['normal_texture'])}",
+            f"roughness = {r['roughness']:.3f}",
+            f"metallic = {r['metallic']:.3f}",
+            f"emissive_strength = {r['emissive_strength']:.3f}",
+            "",
+        ]
+    return lines
+
+
+def main(key, glb_path, out_path, oracle_path=None, zones_path=None):
+    gltf, binbuf = glb_chunks(glb_path)
+    parts = parse_glb(glb_path, distinct_tris=False)
+    lo = [min(p["lo"][k] for p in parts) for k in range(3)]
+    hi = [max(p["hi"][k] for p in parts) for k in range(3)]
+    materials = gltf.get("materials", [])
+    textured = sum(1 for m in materials
+                   if "baseColorTexture" in m.get("pbrMetallicRoughness", {}))
+    blend = sum(1 for m in materials if m.get("alphaMode") in ("BLEND", "MASK"))
+    emissive = sum(1 for m in materials
+                   if m.get("extensions", {}).get("KHR_materials_emissive_strength"))
+    glass_parts = sum(1 for p in parts if p["blend"])
+
+    # ---- recon: the body percentiles and the authored boxes frame the
+    # sections (a scenery backdrop — the hill house's 175 m — would
+    # shrink the room to a smudge otherwise) ----
+    prims = load_mesh(gltf, binbuf)
+    body_lo, body_hi, vertex_count = body_percentiles(prims)
+    zones = load_zones(zones_path)
+    zbox = zones_bounds(zones)
+    frame_lo, frame_hi = frame_bounds(prims, body_lo, body_hi, zbox)
+    if zbox:
+        band, band_source = (zbox[0][1], zbox[1][1]), "zones"
+    else:
+        band, band_source = (body_lo[1], body_hi[1]), "body"
+    stem = os.path.splitext(os.path.abspath(out_path))[0]
+    os.makedirs(os.path.dirname(stem), exist_ok=True)
+    sections = recon(prims, frame_lo, frame_hi, body_lo, body_hi, band, zones, stem)
+    faces = zone_faces(prims, zones)
+
+    lines = [
+        "# GENERATED by scripts/scene-census.py (make assets / make census) — do not edit.",
+        "# What the pipeline produced for one scene: extents in model meters",
+        "# (glTF Y up), parts, materials, surviving animations, the largest",
+        "# parts by AABB volume, the source file's own geometry census when",
+        "# its oracle carries one, the recon sections beside this file (the",
+        "# scene cut by planes; see [[recon.section]]) and, with a zone",
+        "# roster, how much of every walled zone face the model backs",
+        "# ([[recon.zone_face]]).",
+        "",
+        f"key = {toml_str(key)}",
+        f"scene = {toml_str(glb_path)}",
+        f"size_mb = {os.path.getsize(glb_path) / 1e6:.1f}",
+        f"animations = {toml_strs(a.get('name', '?') for a in gltf.get('animations', []))}",
+        "",
+        "[extents]",
+        f"lo = {toml_vec(lo)}",
+        f"hi = {toml_vec(hi)}",
+        f"size = {toml_vec([hi[k] - lo[k] for k in range(3)])}",
+        "# 5th..95th percentile of the vertex cloud per axis: the body of",
+        "# the scene, backdrop and outliers aside.",
+        f"body_lo = {toml_vec(body_lo)}",
+        f"body_hi = {toml_vec(body_hi)}",
+        "",
+        "[geometry]",
+        f"parts = {len(parts)}",
+        f"glass_parts = {glass_parts}",
+        f"tris = {sum(p['tris'] for p in parts)}",
+        f"vertices = {vertex_count}",
+        "",
+        "[materials]",
+        f"count = {len(materials)}",
+        f"textured = {textured}",
+        f"flat = {len(materials) - textured}",
+        f"blend = {blend}",
+        f"emissive = {emissive}",
+        "",
+    ]
+
+    if oracle_path and os.path.isfile(oracle_path):
+        with open(oracle_path) as f:
+            oracle = json.load(f)
+        source = oracle.get("geometry")
+        units = oracle.get("units")
+        if source or units:
+            lines += ["# The SOURCE file as its oracle read it (raw units and axes,",
+                      "# before the converter's unit scale and axis mapping).",
+                      "[source]",
+                      f"file = {toml_str(oracle.get('source', '?'))}"]
+            if units:
+                for k, v in sorted(units.items()):
+                    lines.append(f"{k} = {v if isinstance(v, (int, float)) else toml_str(v)}")
+            if source:
+                for k in ("vertices", "faces", "objects", "groups"):
+                    if k in source:
+                        lines.append(f"{k} = {source[k]}")
+                for k in ("lo", "hi", "p05", "p95"):
+                    if k in source:
+                        lines.append(f"{k} = {toml_vec(source[k])}")
+            lines.append("")
+
+    lines += [
+        "[recon]",
+        "# Sections: the scene cut by a plane, solid gray and glass blue drawn",
+        "# over the authored zone boxes (start green, boss red dotted, others",
+        "# yellow). The plan cuts sit inside cut_band — the zones' floor..",
+        "# ceiling when a roster exists (cut_band_source = \"zones\"), else the",
+        "# vertex cloud's percentile band. Pixel (i, j) of a section image is",
+        "# model (frame_lo[0] + i * cell, frame_lo[1] + j * cell) on its",
+        "# `axes`, rows counted from the top — from the bottom when flip_v.",
+        f"cut_band = {toml_vec(band)}",
+        f"cut_band_source = {toml_str(band_source)}",
+        f"floor = {body_lo[1]:.3f}",
+        f"ceiling = {body_hi[1]:.3f}",
+        f"zones_drawn = {len(zones)}",
+        f"zone_keys = {toml_strs(z[0] for z in zones)}",
+        "",
+    ]
+    for s in sections:
+        lines += [
+            "[[recon.section]]",
+            f"name = {toml_str(s['name'])}",
+            f"image = {toml_str(s['image'])}",
+            f"axis = {toml_str(s['axis'])}",
+            f"level = {s['level']:.3f}",
+            f"axes = {toml_strs(s['axes'])}",
+            f"flip_v = {toml_bool(s['flip_v'])}",
+            f"frame_lo = {toml_vec(s['frame_lo'])}",
+            f"frame_hi = {toml_vec(s['frame_hi'])}",
+            f"cell = {s['cell']:.4f}",
+            f"size = [{s['size'][0]}, {s['size'][1]}]",
+            f"segments = {s['segments']}",
+            "",
+        ]
+    if faces:
+        lines += [
+            "# Zone faces: every unit-cell face of the zone union no other cell",
+            f"# shares — what the containment shell walls — and the fraction of",
+            f"# it that model geometry within {FACE_TOLERANCE:g} m of its plane covers.",
+            "# A face along a wall, floor, or roof reads near 1.0; a face across",
+            f"# a doorway or open floor reads low and its cells (backed under",
+            f"# {OPEN_CELL_BELOW:g}) are named in open_at, min-corner cell coordinates.",
+            "",
+        ]
+    for r in faces:
+        lines += [
+            "[[recon.zone_face]]",
+            f"zone = {toml_str(r['zone'])}",
+            f"face = {toml_str(r['face'])}",
+            f"cells = {r['cells']}",
+            f"backed = {r['backed']:.3f}",
+            f"open_cells = {r['open_cells']}",
+            "open_at = [" + ", ".join(f"[{c[0]}, {c[1]}, {c[2]}]" for c in r["open_at"]) + "]",
+            "",
+        ]
+
+    for p in sorted(parts, key=volume, reverse=True)[:LARGEST]:
+        lines += [
+            "[[largest_part]]",
+            f"name = {toml_str(p['name'])}",
+            f"tris = {p['tris']}",
+            f"blend = {toml_bool(p['blend'])}",
+            f"lo = {toml_vec(p['lo'])}",
+            f"hi = {toml_vec(p['hi'])}",
+            "",
+        ]
+    lines += material_lines([
+        {
+            "name": m.get("name", "?"),
+            "alpha_mode": m.get("alphaMode", "OPAQUE"),
+            "double_sided": m.get("doubleSided", False),
+            "base_texture": "baseColorTexture" in m.get("pbrMetallicRoughness", {}),
+            "metal_rough_texture": "metallicRoughnessTexture" in m.get("pbrMetallicRoughness", {}),
+            "normal_texture": "normalTexture" in m,
+            "roughness": m.get("pbrMetallicRoughness", {}).get("roughnessFactor", 1.0),
+            "metallic": m.get("pbrMetallicRoughness", {}).get("metallicFactor", 1.0),
+            "emissive_strength": (m.get("extensions", {})
+                                  .get("KHR_materials_emissive_strength", {})
+                                  .get("emissiveStrength", 1.0)),
+        }
+        for m in materials[:LARGEST]
+    ], "material")
+    with open(out_path, "w") as f:
+        f.write("\n".join(lines))
+    open_faces = sum(1 for r in faces if r["open_cells"])
+    print(
+        f"scene-census: {key} {len(parts)} parts, "
+        f"{sum(p['tris'] for p in parts)} tris, extents "
+        f"{toml_vec([hi[k] - lo[k] for k in range(3)])} m, "
+        f"{len(sections)} sections {os.path.basename(stem)}_*.png"
+        + (f", {len(faces)} zone faces ({open_faces} with open cells)" if faces else "")
+        + f" -> {out_path}"
+    )
+
+
+if __name__ == "__main__":
+    main(*sys.argv[1:6])

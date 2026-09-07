@@ -1,0 +1,145 @@
+# HAND-AUTHORED zones for the planet-3 hill house (an open-plan kitchen /
+# dining / living room with a stair hall along its west side, a bathroom
+# behind sliding glass doors at its south end, a double-height void over
+# the kitchen and a gallery storey above the west side). Coordinates
+# are MODEL SPACE of the installed glb (meters, Y-up: x east, y height,
+# z south). Boxes sit on the 1-meter authoring grid: integer min +
+# integer extents, min-inclusive, max-exclusive, mutually
+# non-overlapping. The declared kit scale multiplies everything at build
+# time; nothing here states world units.
+#
+# DRAFT 3 (2026-09-06), read off the census SECTIONS (out/census/
+# hill_house_plan*.png cut at sill, door and lintel height; the six
+# hill_house_long_NN / cross_NN vertical cuts). Draft 1 was three slices
+# of the main room from bounding numbers and walled off the stair hall
+# and the bathroom (owner: "boundaries that aren't the boundaries in the
+# model", "a hallway I can't go down"); draft 2 added the ground-floor
+# spaces but stopped every box at 4 m (owner: "there are two floors").
+# The containment shell hugs the zone union, so every space the model
+# opens onto needs a box:
+#   main room x 7.1..13.85 (west wall to the east glazing), z -22.45..
+#   -10.05, floor 0.17; the KITCHEN END (z north of -16) is double
+#   height — its roof slab sits at 6.1..6.75 with a parapet to 8.25 —
+#   while the living end keeps a 3.45 ceiling (dropped panel 3.2);
+#   the stair hall x 5.45..7.0 runs the full length; above it and the
+#   tall units a GALLERY (x 5.5..8.5, floor 4.0, ceiling 6.1) overlooks
+#   the void behind a glass balustrade at x 8.55 and continues south
+#   over the living room's west strip; the bathroom x 7.1..11.2,
+#   z -10.05..-7.05; the south-east vestibule x 11.2..13.15 steps out
+#   through a glass door at z -7.85 onto an open-air walkway (walls x
+#   10.7 / 13.3, no roof) running south to about z 4 — the hallway.
+# Ground boxes stop at 4 (the living end's ceiling, the void's floor
+# of the upper boxes); the void and gallery boxes stack on them at
+# y 4..7 so the shell closes at the roof, not at the ceiling. Kitchen
+# north (wall units at z -22.5, tall units along the west wall, island
+# beside them at x 8.5..9.7), dining table by the east glass mid-room,
+# sofa and TV wall at the south end. Owner reviews.
+#
+# enemy_spawns are model-space points inside their zone's box (the linker
+# rejects strays); the start zone stays enemy-free (room-0 rule), and the
+# boss zone authors exactly ONE spawn — the arena anchor the staged fight
+# rises from.
+
+[environment]
+key = "hill_house"
+model = "hill_house"
+window_energy_per_m2 = 4.0
+
+# The bounce stand-in for a daylit room with no derived panes (the scene
+# is one mesh, so no pane identifies itself) — see the apartment's.
+[ambient]
+energy = 0.9
+
+# ---- ground floor ----
+
+# South end: sofa, TV wall, the bathroom doors — the entry.
+[[zone]]
+key = "living"
+box = { min = [7, 0, -16], extents = [7, 4, 6] }
+start = true
+# gallery_south sits on this box's ceiling face: the link keeps the
+# upstairs corridor at one hop so the kitchen stays the farthest zone
+# (the linker's boss rule) and never pops in from the living room.
+links = ["dining", "bath", "stair", "vestibule", "gallery_south"]
+
+# Behind the sliding glass doors in the south wall.
+[[zone]]
+key = "bath"
+box = { min = [7, 0, -10], extents = [5, 4, 3] }
+enemy_spawns = [[9.0, 1.6, -8.5]]
+loot_spawns = [[10.5, 1.0, -8.0]]
+
+# The south-east corner steps up into a vestibule whose glass door at
+# z -7.85 opens on the walkway.
+[[zone]]
+key = "vestibule"
+box = { min = [12, 0, -10], extents = [2, 4, 3] }
+links = ["hall"]
+enemy_spawns = [[13.0, 1.6, -8.5]]
+
+# The open-air walkway south of the house (walls x 10.7 / 13.3, its
+# west side opening onto the garden past z 0): the shell roofs it.
+[[zone]]
+key = "hall"
+box = { min = [10, 0, -7], extents = [4, 4, 11] }
+enemy_spawns = [[12.0, 1.6, -4.0], [12.0, 1.8, 1.0]]
+loot_spawns = [[12.0, 1.0, -2.0]]
+
+# Mid-room under the void's south edge: the dining table by the east
+# glazing, the island's stools.
+[[zone]]
+key = "dining"
+box = { min = [7, 0, -19], extents = [7, 4, 3] }
+links = ["kitchen", "void"]
+enemy_spawns = [[9.0, 1.6, -17.5], [12.0, 1.8, -17.0]]
+loot_spawns = [[10.5, 1.0, -18.0]]
+
+# The stair hall along the west wall, the length of the house; its
+# flights climb to the gallery.
+[[zone]]
+key = "stair"
+box = { min = [5, 0, -23], extents = [2, 4, 16] }
+links = ["kitchen", "gallery"]
+enemy_spawns = [[6.0, 1.6, -15.0]]
+
+# North end: wall units, tall cabinets, the island — the arena, open to
+# the roof above.
+[[zone]]
+key = "kitchen"
+box = { min = [7, 0, -23], extents = [7, 4, 4] }
+boss = true
+links = ["void"]
+enemy_spawns = [[10.5, 1.6, -20.5]]
+loot_spawns = [[12.5, 1.0, -21.5]]
+
+# ---- upper storey ----
+
+# The double-height air over the kitchen and dining, up to the roof
+# slab at 6.1: the gallery's glass balustrade looks into it.
+[[zone]]
+key = "void"
+box = { min = [7, 4, -23], extents = [7, 3, 7] }
+links = ["gallery"]
+enemy_spawns = [[10.0, 5.2, -20.0], [12.0, 5.5, -17.5]]
+
+# The gallery: over the stair hall (x 5..7) as far as the living room's
+# south wall. The face audit (out/census/hill_house.toml
+# [[recon.zone_face]]) tried it three meters longer: every face of the
+# extension read open — the upper storey ends here, over the bathroom
+# is roof.
+[[zone]]
+key = "gallery"
+box = { min = [5, 4, -23], extents = [2, 3, 13] }
+links = ["gallery_south"]
+enemy_spawns = [[6.0, 5.2, -14.0]]
+loot_spawns = [[6.0, 4.6, -20.0]]
+
+# Its continuation south over the living room's west strip (x 7..9,
+# floor 4.0, ceiling 6.1), a corridor upstairs. Its south end at z -10
+# reads 18% backed in the face audit (a railing or a low wall, not a
+# solid end); the box extended past it read open on every side — the
+# corridor stops here.
+[[zone]]
+key = "gallery_south"
+box = { min = [7, 4, -16], extents = [2, 3, 6] }
+enemy_spawns = [[8.0, 5.2, -12.0]]

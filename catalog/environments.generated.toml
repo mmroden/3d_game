@@ -6,3 +6,6 @@
 
 [environments]
 apartment = "res://addons/environments/apartment.glb"
+hill_house = "res://addons/environments/hill_house.glb"
+mountain_villa = "res://addons/environments/mountain_villa.glb"
+office_building = "res://addons/environments/office_building.glb"

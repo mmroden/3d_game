@@ -382,6 +382,15 @@ impl EnemyDrone {
         self.def().behavior.bolt_speed > 0.0
     }
 
+
+    /// The def's fit size (world meters, longest edge) — what the model
+    /// is scaled to in ready(); the shell contract test_enemy_fit.gd
+    /// measures the rendered body against it for every declared def.
+    #[func]
+    pub fn def_size(&self) -> f32 {
+        self.def().size
+    }
+
     /// Set the enemy key before the node enters the tree, so `ready()` builds
     /// the right stats, model, and collider. The scene is generic; spawners
     /// stamp the key here (the Godot boundary crosses the string).

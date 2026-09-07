@@ -16,11 +16,19 @@ JSON artifact (generated, gitignored — reproducible from the committed FBX):
   - container edges (RaySwitchMtl directMtl / LayeredMtl baseMtl / ...):
     3ds Max container materials whose sub-materials Blender's FBX importer
     NEVER instantiates — the source of the blank-grey floor/cabinets,
-  - whether the material is assigned to any model.
+  - whether the material is assigned to any model,
+  - which texture files the FBX EMBEDS (Video elements carrying Content
+    bytes): they ship inside the file, with no loose copy, and count as
+    shipped inventory exactly like the archive's files,
+  - the file's declared UNITS and axes (GlobalSettings: UnitScaleFactor,
+    OriginalUnitScaleFactor, up/front/coord axes) — what Blender's
+    importer scales by, and the first thing to read when a scene comes
+    out 1.4 m tall (the mountain villa, 2026-09-06).
 
 scripts/material_plan.py turns this into per-material plans (pure Python,
-unit-tested by `make test-assets`); scripts/apartment.py applies the plans
-in Blender. This extractor is the ONLY place the FBX gets parsed.
+unit-tested by `make test-assets`); scripts/convert-environment.py and
+scripts/convert-hull.py apply the plans in Blender. This extractor is the
+ONLY place the FBX gets parsed (mtl_materials.py is its OBJ/MTL twin).
 """
 import json
 import os
@@ -65,16 +73,37 @@ CONTAINER_PREFIXES = [
     ("3dsMax|RaySwitchMtlPb|", "RaySwitchMtl"),
     ("3dsMax|LayeredMtlPb|", "LayeredMtl"),
 ]
+# GlobalSettings properties worth reporting (numbers as authored).
+UNIT_PROPS = {
+    "UnitScaleFactor": "unit_scale_factor",
+    "OriginalUnitScaleFactor": "original_unit_scale_factor",
+    "UpAxis": "up_axis", "UpAxisSign": "up_axis_sign",
+    "FrontAxis": "front_axis", "FrontAxisSign": "front_axis_sign",
+    "CoordAxis": "coord_axis", "CoordAxisSign": "coord_axis_sign",
+}
 
 elem_root, _ = parse_fbx.parse(in_path)
 objects_elem = next(e for e in elem_root.elems if e.id == b"Objects")
 connections_elem = next(e for e in elem_root.elems if e.id == b"Connections")
+
+# ---- units and axes, as the file declares them ----
+units = {}
+settings_elem = next((e for e in elem_root.elems if e.id == b"GlobalSettings"), None)
+if settings_elem is not None:
+    props70 = next((c for c in settings_elem.elems if c.id == b"Properties70"), None)
+    for p in (props70.elems if props70 is not None else []):
+        key = p.props[0].decode("utf-8", "replace")
+        if key in UNIT_PROPS:
+            vals = [x for x in p.props[4:] if isinstance(x, (int, float))]
+            if vals:
+                units[UNIT_PROPS[key]] = vals[0]
 
 textures = {}   # uid -> texture element name
 materials = {}  # uid -> material name
 models = set()  # model uids
 mesh_models = set()  # models that carry geometry — only these can SHOW a material
 videos = {}     # uid -> file basename (with extension)
+embedded = set()  # basenames whose Video element carries the file's bytes
 mat_records = {}  # uid -> record under construction
 geo_slots = {}  # geometry uid -> per-polygon material slot indices (or [0])
 
@@ -103,6 +132,10 @@ for e in objects_elem.elems:
         if raw:
             basename = raw.decode("utf-8", "replace").replace("\\", "/").rsplit("/", 1)[-1]
             videos[e.props[0]] = basename
+            content = next((c.props[0] for c in e.elems
+                            if c.id == b"Content" and c.props), b"")
+            if isinstance(content, (bytes, bytearray)) and len(content) > 0:
+                embedded.add(basename)
     elif e.id == b"Material":
         name = fbx_name(e.props[1])
         materials[e.props[0]] = name
@@ -232,6 +265,8 @@ for uid, rec in mat_records.items():
 out = {
     "source": os.path.basename(in_path),
     "materials": by_name,
+    "embedded_textures": sorted(embedded),
+    "units": units,
     "name_collisions": sorted(set(collisions)),
     "unresolved_texture_links": unresolved_links,
 }
@@ -243,6 +278,8 @@ n_textured = sum(1 for r in by_name.values() if r["channels"])
 print(
     f"extract-fbx-materials: {len(by_name)} materials "
     f"({n_textured} with texture links, {n_container} containers, "
+    f"{len(embedded)} embedded textures, "
     f"{len(set(collisions))} name collisions, "
-    f"{unresolved_links} unresolvable texture links) -> {out_path}"
+    f"{unresolved_links} unresolvable texture links; "
+    f"unit scale {units.get('unit_scale_factor', '?')}) -> {out_path}"
 )

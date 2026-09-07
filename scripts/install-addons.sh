@@ -8,8 +8,43 @@ set -euo pipefail
 
 ASSETS_DIR="${1:?Usage: install-addons.sh <assets-dir> <godot-dir>}"
 GODOT_DIR="${2:?Usage: install-addons.sh <assets-dir> <godot-dir>}"
-TRES_ONLY="${3:-}"   # pass --tres-only to re-copy just .tres files (fix Godot path rewrites)
+MODE="${3:-}"
+TRES_ONLY="$MODE"    # --tres-only: re-copy just .tres files (fix Godot path rewrites)
+# --census-only (make census): no Blender, nothing converted — every
+# stale census re-reads its installed product against the current
+# rosters (the zone-authoring loop's door). The cheap copy stanzas still
+# run; they are idempotent.
+CENSUS_ONLY=""
+[ "$MODE" = "--census-only" ] && CENSUS_ONLY=1
 ADDON_DIR="$GODOT_DIR/addons/quaternius"
+SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
+OUT_DIR="$(cd "$SCRIPTS_DIR/.." && pwd)/out"
+
+# ---------- Freshness ----------
+# Door 1 is idempotent (re-runs converge) and, since 2026-09-06, also
+# incremental: every Blender-heavy stanza asks `stale` first and runs only
+# when an output is missing or older than one of its inputs. Inputs are
+# the provider files AND the scripts the stanza invokes, so editing a
+# converter rebuilds exactly what it converts; editing THIS script does
+# not (FORCE=1 rebuilds everything). Cheap copy stanzas stay
+# unconditional. Owner 2026-09-06: adding one hull meant sitting through
+# the apartment and the panel splits — and the new scenes will be run
+# many times while the audit names what each one lacks.
+stale() {  # <output>... -- <input>...   (returns 0 = work needed)
+    [ -n "${FORCE:-}" ] && return 0
+    local outputs=() f in out
+    while [ $# -gt 0 ] && [ "$1" != "--" ]; do outputs+=("$1"); shift; done
+    [ $# -gt 0 ] && shift
+    [ ${#outputs[@]} -gt 0 ] || return 0
+    for f in "${outputs[@]}"; do [ -e "$f" ] || return 0; done
+    for in in "$@"; do
+        [ -n "$in" ] && [ -e "$in" ] || continue
+        for out in "${outputs[@]}"; do
+            [ "$in" -nt "$out" ] && return 0
+        done
+    done
+    return 1
+}
 
 # ---------- Quaternius Modular Sci-Fi MegaKit ----------
 
@@ -206,6 +241,87 @@ du -sh "$ADDON_DIR"
 SHIPS_SRC="$ASSETS_DIR/cgtrader_ships"
 BLENDER="${BLENDER:-/Applications/Blender.app/Contents/MacOS/Blender}"
 
+# Provider archives extract once into unpacked/ beside their sources (the
+# raw .rar/.zip stay tracked and untouched; unpacked/ is gitignored).
+extract_archive() {  # <archive> <dest-dir> — idempotent (dest exists = done)
+    local archive="$1" dest="$2"
+    [ -d "$dest" ] && return 0
+    mkdir -p "$dest"
+    # bsdtar first: the macOS system one reads these .rar files; 7z builds
+    # often lack the rar codec. A failed extraction removes dest so the next
+    # run retries instead of trusting a half-extracted directory.
+    if ! bsdtar -xf "$archive" -C "$dest" 2>/dev/null \
+        && ! 7z x -y -o"$dest" "$archive" >/dev/null 2>&1; then
+        rm -rf "$dest"
+        echo "  ERROR: could not extract $archive (bsdtar and 7z both failed)"
+        return 1
+    fi
+}
+
+# The textures archives wrap their maps in a folder (or don't) — resolve to
+# whichever directory actually holds the images. (The material-plan
+# conversions resolve the same way in Python: material_plan.texture_dir.)
+tex_root() {  # <unpacked-dir>
+    local dir
+    dir="$(find "$1" -mindepth 1 -maxdepth 1 -type d | head -1)"
+    if [ -n "$dir" ]; then echo "$dir"; else echo "$1"; fi
+}
+
+# Cockpit shell: a hull's interior furniture (consoles, seat, canopy
+# bows) extracted per the cockpit_plan.py rule with the pilot Eyepoint
+# baked in — the first-person stereo view renders it at full detail
+# around the camera. One door for every hull; audit: `make test-assets`.
+extract_cockpit() {  # <hull.glb> <shell.glb>
+    local census="$OUT_DIR/census/$(basename "$2" .glb).toml"
+    if [ -z "$CENSUS_ONLY" ]; then
+        if [ ! -x "$BLENDER" ]; then
+            echo "  WARNING: Blender not found at $BLENDER — run 'make deps'. Skipping cockpit shell $(basename "$2")."
+            return 0
+        fi
+        if stale "$2" -- "$1" "$SCRIPTS_DIR/extract-cockpit.py" "$SCRIPTS_DIR/cockpit_plan.py"; then
+            "$BLENDER" --background --python-exit-code 1 --python "$SCRIPTS_DIR/extract-cockpit.py" -- \
+                "$1" "$2" 2>&1 \
+                | grep -i "extract-cockpit:" || echo "  ($(basename "$2"): no extraction summary — check Blender output)"
+        else
+            echo "  $(basename "$2") is fresh."
+        fi
+    fi
+    # The census of what got built (out/census/<shell>.toml): the
+    # reproducible reading of the hull, the plan, and the shell — read
+    # that, never an ad-hoc parse of the .glb.
+    if [ -f "$2" ] && stale "$census" -- "$1" "$2" "$SCRIPTS_DIR/hull-census.py" "$SCRIPTS_DIR/cockpit_plan.py"; then
+        python3 "$SCRIPTS_DIR/hull-census.py" "$1" "$2" "$census" \
+            | grep -i "hull-census:" || echo "  ($(basename "$2"): no census — check hull-census.py output)"
+    fi
+}
+
+# decimate_model <label> <src> <out.glb> <target_tris> <tex_dir> [base_color_file]
+# The one door for every decimated model (enemy mechs, spheres, drones,
+# the jump gate): freshness-gated on the source, its texture folder, and
+# decimate.py itself.
+decimate_model() {
+    local label="$1" src="$2" out="$3" target="$4" tex="$5" base="${6:-}"
+    local census="$OUT_DIR/census/$(basename "$out" .glb).toml"
+    if [ -z "$CENSUS_ONLY" ]; then
+        if stale "$out" -- "$src" "$tex" "$SCRIPTS_DIR/decimate.py"; then
+            "$BLENDER" --background --python-exit-code 1 --python "$SCRIPTS_DIR/decimate.py" -- \
+                "$src" "$out" "$target" "$tex" ${base:+"$base"} 2>&1 \
+                | grep -i "decimate:" || echo "  ($label: no decimation summary — check Blender output)"
+        else
+            echo "  $label is fresh."
+        fi
+    fi
+    # The census of the decimated product (out/census/<model>.toml):
+    # parts, extents, materials, surviving ANIMATIONS — the apartment
+    # boss shipped five provider clips whose scale channels overrode the
+    # roster's size fit (2026-09-06); read this, never `strings` on a .glb.
+    if [ -f "$out" ] && stale "$census" -- "$out" "$SCRIPTS_DIR/scene-census.py" "$SCRIPTS_DIR/cockpit_plan.py"; then
+        mkdir -p "$OUT_DIR/census"
+        python3 "$SCRIPTS_DIR/scene-census.py" "$(basename "$out" .glb)" "$out" "$census" \
+            | grep -i "scene-census:" || echo "  ($label: no census — check scene-census.py output)"
+    fi
+}
+
 if [ -d "$SHIPS_SRC" ]; then
     echo "  Installing player ship models..."
     SHIPS_DIR="$GODOT_DIR/addons/ships"
@@ -226,16 +342,43 @@ if [ -d "$SHIPS_SRC" ]; then
         # Flatten Texture_Base/Style_N → Spacecraft_1_styles/Style_N.
         cp -R "$SPACESHIP1_SRC/Texture_Base/"Style_* "$STYLES_DST/"
         echo "  Spaceship_1 color styles installed ($(ls -d "$STYLES_DST"/Style_* 2>/dev/null | wc -l | tr -d ' ') styles)."
-        # Cockpit shell: the hull's interior furniture (consoles, seat,
-        # canopy glass) extracted per the cockpit_plan.py rule with the
-        # pilot Eyepoint baked in — the first-person stereo view renders
-        # this at full detail around the camera. Audit: `make test-assets`.
-        if [ -x "$BLENDER" ]; then
-            "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/extract-cockpit.py" -- \
-                "$SPACESHIP1_SRC/Spacecraft_1.glb" "$SHIPS_DIR/vanguard_cockpit.glb" 2>&1 \
-                | grep -i "extract-cockpit:" || echo "  (cockpit: no extraction summary — check Blender output)"
+        extract_cockpit "$SPACESHIP1_SRC/Spacecraft_1.glb" "$SHIPS_DIR/vanguard_cockpit.glb"
+    fi
+    # Military ship (provider FBX + a .rar of loose maps; the diffuse and
+    # cockpit textures are EMBEDDED in the FBX): converted through the
+    # same material-plan doors as the apartment — oracle
+    # (extract-fbx-materials.py) -> plan (material_plan.py) -> apply
+    # (convert-hull.py) — into a roster-frame hull, then its furnished
+    # interior extracted as a second cockpit shell. Facing: the provider
+    # modeled the nose along -Z (front landing gear forward; probed
+    # 2026-09-06), the roster frame is nose +Z — a half turn.
+    MILITARY_SRC="$SHIPS_SRC/military_ship"
+    if [ -d "$MILITARY_SRC" ]; then
+        if [ -z "$CENSUS_ONLY" ] && [ ! -x "$BLENDER" ]; then
+            echo "  WARNING: Blender not found at $BLENDER — run 'make deps'. Skipping military ship."
         else
-            echo "  WARNING: Blender not found at $BLENDER — run 'make deps'. Skipping cockpit shell."
+            fbx="$(find "$MILITARY_SRC" -maxdepth 1 -iname "MilitaryShip_StockFlight*.fbx" | head -1)"
+            tex_rar="$(find "$MILITARY_SRC" -maxdepth 1 -iname "Textures*.rar" | head -1)"
+            if [ -n "$fbx" ]; then
+                [ -z "$tex_rar" ] || [ -n "$CENSUS_ONLY" ] || extract_archive "$tex_rar" "$MILITARY_SRC/unpacked/textures"
+                if [ -n "$CENSUS_ONLY" ]; then
+                    :
+                elif stale "$SHIPS_DIR/military_ship.glb" "$MILITARY_SRC/fbx_materials.json" -- \
+                        "$fbx" "$tex_rar" "$SCRIPTS_DIR/extract-fbx-materials.py" \
+                        "$SCRIPTS_DIR/convert-hull.py" "$SCRIPTS_DIR/plan_apply.py" \
+                        "$SCRIPTS_DIR/material_plan.py"; then
+                    "$BLENDER" --background --python-exit-code 1 --python "$SCRIPTS_DIR/extract-fbx-materials.py" -- \
+                        "$fbx" "$MILITARY_SRC/fbx_materials.json" 2>&1 \
+                        | grep -i "extract-fbx-materials:" || echo "  (military ship: no oracle summary — check Blender output)"
+                    "$BLENDER" --background --python-exit-code 1 --python "$SCRIPTS_DIR/convert-hull.py" -- \
+                        "$fbx" "$SHIPS_DIR/military_ship.glb" "$MILITARY_SRC/unpacked/textures" \
+                        "$MILITARY_SRC/fbx_materials.json" 180 2>&1 \
+                        | grep -i "convert-hull:" || echo "  (military ship: no conversion summary — check Blender output)"
+                else
+                    echo "  military_ship.glb is fresh."
+                fi
+                extract_cockpit "$SHIPS_DIR/military_ship.glb" "$SHIPS_DIR/military_ship_cockpit.glb"
+            fi
         fi
     fi
     # Purchasable hull roster (ship_upgrades/): installed under stable names —
@@ -283,9 +426,7 @@ if [ -d "$EVIL_MECHS_SRC" ]; then
             # The mech's PBR maps ship loose in a sibling "(Textures)" folder the
             # FBX doesn't reference; pass it so decimate.py rebuilds the material.
             tex="$(find "$EVIL_MECHS_SRC" -maxdepth 1 -type d -iname "*Evil_mech_${n}*Textures*" | head -1)"
-            "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/decimate.py" -- \
-                "$src" "$ENEMIES_DIR/evil_mech_${n}.glb" "$DECIMATE_TARGET" "$tex" 2>&1 \
-                | grep -i "decimate:" || echo "  (mech ${n}: no decimation summary — check Blender output)"
+            decimate_model "mech ${n}" "$src" "$ENEMIES_DIR/evil_mech_${n}.glb" "$DECIMATE_TARGET" "$tex"
         done
         chmod -R u+w "$ENEMIES_DIR"
         echo "  Enemy mech models installed ($(ls "$ENEMIES_DIR"/*.glb 2>/dev/null | wc -l | tr -d ' ') mechs)."
@@ -311,16 +452,12 @@ if [ -d "$SPHERES_SRC" ]; then
             src="$(find "$SPHERES_SRC" -maxdepth 1 -iname "*Sphere_ship_${n}*.fbx" | head -1)"
             [ -n "$src" ] || continue
             tex="$(find "$SPHERES_SRC" -maxdepth 1 -type d -iname "*Sphere_ship_${n}*Textures*" | head -1)"
-            "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/decimate.py" -- \
-                "$src" "$ENEMIES_DIR/sphere_ship_${n}.glb" "$DECIMATE_TARGET" "$tex" 2>&1 \
-                | grep -i "decimate:" || echo "  (sphere ${n}: no decimation summary — check Blender output)"
+            decimate_model "sphere ${n}" "$src" "$ENEMIES_DIR/sphere_ship_${n}.glb" "$DECIMATE_TARGET" "$tex"
         done
         src="$(find "$SPHERES_SRC" -maxdepth 1 -iname "*Alien_troop_01*.fbx" | head -1)"
         if [ -n "$src" ]; then
             tex="$(find "$SPHERES_SRC" -maxdepth 1 -type d -iname "*Alien_troop_01*Textures*" | head -1)"
-            "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/decimate.py" -- \
-                "$src" "$ENEMIES_DIR/alien_troop_01.glb" "$DECIMATE_TARGET" "$tex" 2>&1 \
-                | grep -i "decimate:" || echo "  (alien troop: no decimation summary — check Blender output)"
+            decimate_model "alien troop" "$src" "$ENEMIES_DIR/alien_troop_01.glb" "$DECIMATE_TARGET" "$tex"
         fi
         chmod -R u+w "$ENEMIES_DIR"
         echo "  Sphere enemy models installed."
@@ -339,29 +476,6 @@ fi
 
 GREY_SPHERES_SRC="$SHIPS_SRC/grey_spheres"
 
-extract_archive() {  # <archive> <dest-dir> — idempotent (dest exists = done)
-    local archive="$1" dest="$2"
-    [ -d "$dest" ] && return 0
-    mkdir -p "$dest"
-    # bsdtar first: the macOS system one reads these .rar files; 7z builds
-    # often lack the rar codec. A failed extraction removes dest so the next
-    # run retries instead of trusting a half-extracted directory.
-    if ! bsdtar -xf "$archive" -C "$dest" 2>/dev/null \
-        && ! 7z x -y -o"$dest" "$archive" >/dev/null 2>&1; then
-        rm -rf "$dest"
-        echo "  ERROR: could not extract $archive (bsdtar and 7z both failed)"
-        return 1
-    fi
-}
-
-# The textures archives wrap their maps in a folder (or don't) — resolve to
-# whichever directory actually holds the images.
-tex_root() {  # <unpacked-dir>
-    local dir
-    dir="$(find "$1" -mindepth 1 -maxdepth 1 -type d | head -1)"
-    if [ -n "$dir" ]; then echo "$dir"; else echo "$1"; fi
-}
-
 if [ -d "$GREY_SPHERES_SRC" ]; then
     ENEMIES_DIR="$GODOT_DIR/addons/enemies"
     mkdir -p "$ENEMIES_DIR"
@@ -378,30 +492,24 @@ if [ -d "$GREY_SPHERES_SRC" ]; then
             [ -z "$tex_rar" ] || extract_archive "$tex_rar" "$UNPACKED/sphere_drone_${n}_tex"
             src="$(find "$UNPACKED/sphere_drone_${n}_obj" -iname "*.obj" | head -1)"
             [ -n "$src" ] || continue
-            "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/decimate.py" -- \
-                "$src" "$ENEMIES_DIR/sphere_drone_${n}.glb" "$DECIMATE_TARGET" \
-                "$(tex_root "$UNPACKED/sphere_drone_${n}_tex")" 2>&1 \
-                | grep -i "decimate:" || echo "  (sphere drone ${n}: no decimation summary — check Blender output)"
+            decimate_model "sphere drone ${n}" "$src" "$ENEMIES_DIR/sphere_drone_${n}.glb" \
+                "$DECIMATE_TARGET" "$(tex_root "$UNPACKED/sphere_drone_${n}_tex")"
         done
 
         src="$(find "$GREY_SPHERES_SRC" -maxdepth 1 -iname "*apartment_boss*.fbx" | head -1)"
         if [ -n "$src" ]; then
             tex_rar="$(find "$GREY_SPHERES_SRC" -maxdepth 1 -iname "*apartment_boss*Textures*.rar" | head -1)"
             [ -z "$tex_rar" ] || extract_archive "$tex_rar" "$UNPACKED/apartment_boss_tex"
-            "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/decimate.py" -- \
-                "$src" "$ENEMIES_DIR/apartment_boss.glb" "$DECIMATE_TARGET" \
-                "$(tex_root "$UNPACKED/apartment_boss_tex")" "Base Rusted.png" 2>&1 \
-                | grep -i "decimate:" || echo "  (apartment boss: no decimation summary — check Blender output)"
+            decimate_model "apartment boss" "$src" "$ENEMIES_DIR/apartment_boss.glb" \
+                "$DECIMATE_TARGET" "$(tex_root "$UNPACKED/apartment_boss_tex")" "Base Rusted.png"
         fi
 
         src="$(find "$GREY_SPHERES_SRC" -maxdepth 1 -iname "*UMSFD_02*.glb" | head -1)"
         if [ -n "$src" ]; then
             tex_rar="$(find "$GREY_SPHERES_SRC" -maxdepth 1 -iname "*UMSFD_02*Textures*.rar" | head -1)"
             [ -z "$tex_rar" ] || extract_archive "$tex_rar" "$UNPACKED/umsfd_02_tex"
-            "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/decimate.py" -- \
-                "$src" "$ENEMIES_DIR/umsfd_02.glb" "$DECIMATE_TARGET" \
-                "$(tex_root "$UNPACKED/umsfd_02_tex")" 2>&1 \
-                | grep -i "decimate:" || echo "  (umsfd_02: no decimation summary — check Blender output)"
+            decimate_model "umsfd_02" "$src" "$ENEMIES_DIR/umsfd_02.glb" \
+                "$DECIMATE_TARGET" "$(tex_root "$UNPACKED/umsfd_02_tex")"
         fi
         chmod -R u+w "$ENEMIES_DIR"
         echo "  Grey-sphere drone models installed."
@@ -410,72 +518,184 @@ else
     echo "  grey_spheres not found, skipping planet-3 drones."
 fi
 
-# ========== Planet-3 apartment environment (CGTrader archviz FBX -> glB) ==========
-# The fixed level geometry for levels 13-15: one archviz apartment exported
-# from 3ds Max/Corona whose texture references arrive broken (empty filename
-# fields). apartment.py parses the FBX's own connection table to rewire the
-# maps from the textures zip, keeps full geometry (a single environment
-# instance — no decimation), caps textures, and writes one .glb. The probe
-# catalogs addons/environments/ into catalog/environments.generated.toml.
+# ========== Planet-3 fixed environments (archviz scenes -> one glB each) ==========
+# One door for every fixed-level scene. A pack is a folder under assets/
+# holding what the provider shipped — the model (FBX, or OBJ + MTL), the
+# texture archives (.rar/.zip), a .max source when there is one — and
+# nothing else authored. The stanza extracts the archives beside the
+# sources (unpacked/, gitignored), runs the oracle the model's format
+# calls for (extract-fbx-materials.py / mtl_materials.py, plus
+# extract-max-materials.py when a .max ships), converts through
+# convert-environment.py (material_plan.py policy, plan_apply.py
+# mechanism, scene cache beside the pack), and installs
+# godot/addons/environments/<key>.glb. The probe catalogs it; kits.toml
+# (scale) and rosters/environments/<key>.toml (zones) make it a level.
+# Windows derive into rosters/windows/<key>.toml only once that roster
+# exists — the level grammar consumes them by environment key. Adding a
+# scene = a folder + one convert_environment line (+ its kit + zones).
+ENVIRONMENTS_DIR="$GODOT_DIR/addons/environments"
+ENV_TEX_CAP=2048
 
-APARTMENT_SRC="$ASSETS_DIR/apartment"
-APARTMENT_FBX="$(find "$APARTMENT_SRC" -maxdepth 1 -iname "*apartment*.fbx" 2>/dev/null | head -1)"
-APARTMENT_MAX="$(find "$APARTMENT_SRC" -maxdepth 1 -iname "*apartment*.max" 2>/dev/null | head -1)"
-APARTMENT_TEX_ZIP="$(find "$APARTMENT_SRC" -maxdepth 1 -iname "*textures*.zip" 2>/dev/null | head -1)"
-APARTMENT_TEX_CAP=2048
-APARTMENT_MAT_TABLE="$APARTMENT_SRC/max_materials.json"
-
-if [ -n "$APARTMENT_FBX" ] && [ -n "$APARTMENT_TEX_ZIP" ]; then
-    # LFS pointer stub instead of the real file = the clone skipped LFS.
-    if head -c 12 "$APARTMENT_FBX" | grep -q "^version http"; then
-        echo "  ERROR: $APARTMENT_FBX is a git-lfs pointer stub."
+lfs_guard() {  # <file> — a git-lfs pointer stub means the clone skipped LFS
+    if head -c 12 "$1" | grep -q "^version http"; then
+        echo "  ERROR: $1 is a git-lfs pointer stub."
         echo "  Run 'make deps' (installs git-lfs) then 'git lfs pull'."
         exit 1
     fi
-    ENVIRONMENTS_DIR="$GODOT_DIR/addons/environments"
-    mkdir -p "$ENVIRONMENTS_DIR"
+}
+
+# convert_environment <key> <pack_dir> [model file name] [converter options...]
+# The model is the first .fbx (else .obj) found in the pack or its
+# extracted archives; a pack that ships several names its pick. Every
+# archive at the pack's top level is a provider input (extracted, and a
+# freshness input); what a seller ships for HUMANS — render galleries,
+# manuals — lives under <pack>/reference/, which the door never reads
+# (the hill house's 830 MB render zip would otherwise unpack a gigabyte
+# of PSDs into the texture inventory and reconvert the scene). Any
+# further arguments go to convert-environment.py verbatim — the per-pack
+# provider facts (--unit-scale, --obj-up/--obj-forward, --keep=box),
+# each recorded here with its provenance. They are freshness inputs
+# through a stamp file beside the pack: change one and only that pack
+# reconverts.
+convert_environment() {
+    local key="$1" pack="$2" pick="${3:-}"
+    shift 3 2>/dev/null || shift $#
+    local stamp="$pack/convert.opts"
+    if [ ! -f "$stamp" ] || [ "$(cat "$stamp")" != "$*" ]; then
+        printf '%s' "$*" > "$stamp"
+    fi
+    if [ ! -d "$pack" ]; then
+        echo "  $key pack not found at $pack, skipping."
+        return
+    fi
     if [ ! -x "$BLENDER" ]; then
-        echo "  WARNING: Blender not found at $BLENDER — run 'make deps'. Skipping apartment."
+        echo "  WARNING: Blender not found at $BLENDER — run 'make deps'. Skipping $key."
+        return
+    fi
+    mkdir -p "$ENVIRONMENTS_DIR"
+    local unpacked="$pack/unpacked" a model oracle max_src max_table="" mtl out windows=""
+    for a in "$pack"/*.rar "$pack"/*.zip; do
+        [ -f "$a" ] || continue
+        [ -n "$CENSUS_ONLY" ] && continue
+        lfs_guard "$a"
+        extract_archive "$a" "$unpacked/$(basename "${a%.*}")"
+    done
+    if [ -n "$pick" ]; then
+        model="$(find "$pack" -maxdepth 3 -name "$pick" -not -path '*/.*' | head -1)"
     else
-        # The .max scene is the authoring truth for materials (the FBX
-        # export destroyed most Corona bindings). Extract its material
-        # table once per .max change; the material plan merges it over the
-        # FBX-derived recovery.
-        if [ -n "$APARTMENT_MAX" ] && { [ ! -f "$APARTMENT_MAT_TABLE" ] || [ "$APARTMENT_MAX" -nt "$APARTMENT_MAT_TABLE" ]; }; then
-            echo "  Extracting material table from .max source..."
+        model="$(find "$pack" -maxdepth 3 -iname '*.fbx' -not -path '*/.*' | sort | head -1)"
+        [ -n "$model" ] || model="$(find "$pack" -maxdepth 3 -iname '*.obj' -not -path '*/.*' | sort | head -1)"
+    fi
+    if [ -z "$model" ] || [ ! -f "$model" ]; then
+        echo "  ERROR: $key: no model (.fbx / .obj${pick:+ / $pick}) under $pack"
+        exit 1
+    fi
+    lfs_guard "$model"
+    # The material oracle the model's format calls for, once per change.
+    case "$(echo "${model##*.}" | tr '[:upper:]' '[:lower:]')" in
+        obj)
+            mtl="${model%.*}.mtl"
+            [ -f "$mtl" ] || mtl="$(find "$(dirname "$model")" -maxdepth 1 -iname '*.mtl' | head -1)"
+            oracle="$pack/mtl_materials.json"
+            if [ -z "$CENSUS_ONLY" ] && stale "$oracle" -- "$model" "$mtl" "$SCRIPTS_DIR/mtl_materials.py"; then
+                echo "  Extracting $key material oracle from the MTL..."
+                python3 "$SCRIPTS_DIR/mtl_materials.py" "$model" "$mtl" "$oracle" \
+                    | grep -i "mtl-materials:" || echo "  (mtl-materials: no summary — check output)"
+            fi ;;
+        *)
+            oracle="$pack/fbx_materials.json"
+            if [ -z "$CENSUS_ONLY" ] && stale "$oracle" -- "$model" "$SCRIPTS_DIR/extract-fbx-materials.py"; then
+                echo "  Extracting $key material oracle from FBX connection tables..."
+                "$BLENDER" --background --python-exit-code 1 \
+                    --python "$SCRIPTS_DIR/extract-fbx-materials.py" -- "$model" "$oracle" 2>&1 \
+                    | grep -i "extract-fbx-materials:" || echo "  (extract-fbx-materials: no summary — check Blender output)"
+            fi ;;
+    esac
+    # A .max source is the authoring truth for Corona materials (the FBX
+    # export destroys most of their bindings); its table merges over the
+    # oracle in the plan.
+    max_src="$(find "$pack" -maxdepth 3 -iname '*.max' -not -path '*/.*' | head -1)"
+    if [ -n "$max_src" ]; then
+        max_table="$pack/max_materials.json"
+        if [ -z "$CENSUS_ONLY" ] && stale "$max_table" -- "$max_src" "$SCRIPTS_DIR/extract-max-materials.py"; then
+            echo "  Extracting $key material table from the .max source..."
             "$BLENDER" --background --python-exit-code 1 \
-                --python "$(dirname "$0")/extract-max-materials.py" -- \
-                "$APARTMENT_MAX" "$APARTMENT_MAT_TABLE" 2>&1 \
+                --python "$SCRIPTS_DIR/extract-max-materials.py" -- "$max_src" "$max_table" 2>&1 \
                 | grep -i "extract-max:" || echo "  (extract-max: no summary — check Blender output)"
         fi
-        # The FBX material oracle: classes, all texture-channel links,
-        # container (RaySwitch/Layered) edges, transparency/emission props.
-        # The ONE place the FBX connection tables get parsed; material_plan.py
-        # turns it into per-material plans, `make test-assets` audits it.
-        APARTMENT_FBX_TABLE="$APARTMENT_SRC/fbx_materials.json"
-        if [ ! -f "$APARTMENT_FBX_TABLE" ] || [ "$APARTMENT_FBX" -nt "$APARTMENT_FBX_TABLE" ]; then
-            echo "  Extracting material oracle from FBX connection tables..."
-            "$BLENDER" --background --python-exit-code 1 \
-                --python "$(dirname "$0")/extract-fbx-materials.py" -- \
-                "$APARTMENT_FBX" "$APARTMENT_FBX_TABLE" 2>&1 \
-                | grep -i "extract-fbx-materials:" || echo "  (extract-fbx-materials: no summary — check Blender output)"
-        fi
-        echo "  Converting apartment environment (full detail, ${APARTMENT_TEX_CAP}px textures)..."
-        "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/apartment.py" -- \
-            "$APARTMENT_FBX" "$ENVIRONMENTS_DIR/apartment.glb" \
-            "$APARTMENT_TEX_ZIP" "$APARTMENT_TEX_CAP" "$APARTMENT_MAT_TABLE" \
-            "rosters/windows/apartment.toml" "$APARTMENT_FBX_TABLE" 2>&1 \
-            | grep -i "apartment:" || echo "  (apartment: no summary — check Blender output)"
-        if [ ! -f "$ENVIRONMENTS_DIR/apartment.glb" ]; then
-            echo "  ERROR: apartment conversion produced no glb"
-            exit 1
-        fi
-        chmod -R u+w "$ENVIRONMENTS_DIR"
-        echo "  Apartment environment installed."
     fi
-else
-    echo "  apartment FBX/textures not found, skipping planet-3 environment."
-fi
+    out="$ENVIRONMENTS_DIR/$key.glb"
+    [ -f "rosters/environments/$key.toml" ] && windows="rosters/windows/$key.toml"
+    if [ -n "$CENSUS_ONLY" ]; then
+        :  # census-only: the installed product is what there is
+    elif stale "$out" ${windows:+"$windows"} -- "$model" "$oracle" ${max_table:+"$max_table"} "$stamp" \
+            "$pack"/*.rar "$pack"/*.zip "$SCRIPTS_DIR/convert-environment.py" \
+            "$SCRIPTS_DIR/plan_apply.py" "$SCRIPTS_DIR/material_plan.py"; then
+        echo "  Converting $key (full detail, ${ENV_TEX_CAP}px textures; log: out/convert-$key.log)..."
+        # Full Blender output to a log — a failed conversion's traceback
+        # is a run artifact, not noise (the office building died silently
+        # behind a summary grep, 2026-09-06).
+        mkdir -p "$OUT_DIR"
+        "$BLENDER" --background --python-exit-code 1 --python "$SCRIPTS_DIR/convert-environment.py" -- \
+            "$model" "$out" "$unpacked" "$oracle" --tex-cap "$ENV_TEX_CAP" \
+            --cache "$pack/scene_cache.blend" --report "$pack/conversion.json" \
+            ${max_table:+--max "$max_table"} ${windows:+--windows "$windows"} \
+            "$@" \
+            > "$OUT_DIR/convert-$key.log" 2>&1 \
+            || {
+                # A failed conversion must not leave the previous product
+                # standing as if current (run 9 blessed a stale office
+                # building that way, 2026-09-06).
+                grep -i "convert-environment:" "$OUT_DIR/convert-$key.log" || true
+                echo "  ERROR: $key conversion failed (see out/convert-$key.log)"
+                rm -f "$out"
+                exit 1
+            }
+        grep -i "convert-environment:" "$OUT_DIR/convert-$key.log" || true
+    else
+        echo "  $key.glb is fresh."
+    fi
+    if [ ! -f "$out" ]; then
+        echo "  ERROR: $key conversion produced no glb"
+        exit 1
+    fi
+    # The census of what got built (out/census/<key>.toml + the recon
+    # sections <key>_plan{,_low,_high}.png / <key>_{long,cross}.png: the
+    # scene cut by planes, with the authored zone boxes drawn over the
+    # walls): the reproducible reading zone authoring and the kit-scale
+    # decision start from. Re-censuses when the zone roster changes, so
+    # a box edit shows against the walls.
+    local census="$OUT_DIR/census/$key.toml" zones="rosters/environments/$key.toml"
+    if stale "$census" -- "$out" "$oracle" "$zones" "$SCRIPTS_DIR/scene-census.py" "$SCRIPTS_DIR/cockpit_plan.py"; then
+        mkdir -p "$OUT_DIR/census"
+        python3 "$SCRIPTS_DIR/scene-census.py" "$key" "$out" "$census" "$oracle" "$zones" \
+            | grep -i "scene-census:" || echo "  ($key: no census — check scene-census.py output)"
+    fi
+    chmod -R u+w "$ENVIRONMENTS_DIR"
+    echo "  $key environment installed."
+}
+
+convert_environment "apartment" "$ASSETS_DIR/apartment" ""
+# SketchUp's OBJ is millimeters and Z up (oracle census 2026-09-06: the
+# room body spans ~6 x 12.5 x 2.8 m once scaled — x 7.6..13.6, y
+# 0.5..3.3, z -22.3..-9.8 in the census frame — inside the provider's
+# 175 m scenery backdrop). The backdrop STAYS: it is the view through
+# the glass walls (owner 2026-09-06: clipped, the outside was black).
+convert_environment "hill_house" "$ASSETS_DIR/hill_house" "" \
+    --unit-scale 0.001 --obj-up Z --obj-forward NEGATIVE_Y
+# The office pack lays its four color schemes in a row along z, 100 m
+# apart (census 2026-09-06: plain at z 25..75, Blue at -75..-25, "2" at
+# -175..-125, "2Violet" at 125..175). One building is the level: the
+# plain scheme. Pick another by moving the box (that pack reconverts).
+convert_environment "office_building" "$ASSETS_DIR/office_building" "" "--keep=-45,-1,0,25,50,100"
+# The villa's FBX archive ships two exports; the single-UV one is the
+# game mesh (one UV set per vertex, what the glTF wants). Its file
+# declares inches (census: unit_scale_factor 2.54) but the geometry
+# reads as decimeters — at 0.1 m per unit the house is 4.7 m tall on a
+# 20 x 16 m footprint (the listing's villa); at the declared inch it is
+# a 1.2 m dollhouse. 0.1 / 0.0254 on top of the declared conversion.
+convert_environment "mountain_villa" "$ASSETS_DIR/mountain_villa" "FBX Single UV.fbx" \
+    --unit-scale 3.937
 
 # ========== Panel-world kits (CGTrader parts kits -> per-piece glB) ==========
 # B11 cubic-cell panel worlds: each "Sci-Fi Parts Kit" pack carries its
@@ -491,6 +711,7 @@ WALLS_SRC="$ASSETS_DIR/more_walls"
 # split_panel_kit <label> <source> <install_dir>
 split_panel_kit() {
     local label="$1" src="$2" dest="$3"
+    [ -z "$CENSUS_ONLY" ] || return 0  # panels are censused by the probe (Door 3)
     if [ -z "$src" ] || [ ! -f "$src" ]; then
         echo "  $label source not found, skipping."
         return
@@ -499,6 +720,10 @@ split_panel_kit() {
         echo "  ERROR: $src is a git-lfs pointer stub."
         echo "  Run 'make deps' (installs git-lfs) then 'git lfs pull'."
         exit 1
+    fi
+    if ! stale "$OUT_DIR/split-$label.log" "$dest" -- "$src" "$SCRIPTS_DIR/split-panels.py"; then
+        echo "  $label pieces are fresh ($(ls "$dest" | wc -l | tr -d ' ')); see out/split-$label.log."
+        return
     fi
     echo "  Splitting $label panels (target 800 tris each)..."
     mkdir -p "$dest"
@@ -544,11 +769,8 @@ if [ -f "$JUMP_GATE_SRC" ]; then
     if [ ! -x "$BLENDER" ]; then
         echo "  WARNING: Blender not found at $BLENDER — run 'make deps'. Skipping jump gate."
     else
-        echo "  Converting jump gate (target ${JUMP_GATE_TARGET} tris)..."
-        "$BLENDER" --background --python-exit-code 1 --python "$(dirname "$0")/decimate.py" -- \
-            "$JUMP_GATE_SRC" "$PROPS_DIR/jump_gate.glb" "$JUMP_GATE_TARGET" \
-            "$(dirname "$JUMP_GATE_SRC")" 2>&1 \
-            | grep -i "decimate:" || echo "  (jump gate: no decimation summary — check Blender output)"
+        decimate_model "jump gate" "$JUMP_GATE_SRC" "$PROPS_DIR/jump_gate.glb" \
+            "$JUMP_GATE_TARGET" "$(dirname "$JUMP_GATE_SRC")"
         chmod -R u+w "$PROPS_DIR"
         echo "  Jump gate installed."
     fi

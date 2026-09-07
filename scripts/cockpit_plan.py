@@ -1,12 +1,14 @@
 """Pure-Python plan for the cockpit-shell extraction (`make assets`).
 
-The player hull GLBs are exterior flight models, but Spacecraft_1 (the
-Vanguard) also carries a fully furnished, human-scale cockpit interior:
-console/keyboard cluster, seat, side pods, and an alpha-blend canopy
-glass. The first-person stereo view wants that furniture as a near-field
-shell around the camera — and nothing else of the hull.
+The player hull GLBs are exterior flight models, and some carry a fully
+furnished, human-scale cockpit interior — the Vanguard (Spacecraft_1:
+console/keyboard cluster, seat, side pods, alpha-blend canopy glass) and
+the military ship (a single interior part under a framed canopy,
+converted from the provider's FBX by scripts/convert-hull.py). The
+first-person stereo view wants that furniture as a near-field shell
+around the camera — and nothing else of the hull.
 
-This module is the extraction ORACLE: it parses the source .glb directly
+This module is the extraction ORACLE: it parses a hull .glb directly
 (no Blender) and derives WHICH parts are cockpit interior and WHERE the
 pilot's eyepoint sits, from one geometric rule anchored on the canopy:
 
@@ -20,12 +22,18 @@ pilot's eyepoint sits, from one geometric rule anchored on the canopy:
     (they anchor the rule; at neutral near-clear alpha they contributed
     nothing but specular flares off cache glows — owner, 2026-08-20);
   * the eyepoint sits on the canopy's x center, at owner-tuned height
-    and depth fractions, forward near the dash.
+    and depth fractions, aft-biased over the seat.
 
 scripts/extract-cockpit.py (Blender) APPLIES this plan; the pytest audit
 (scripts/tests/test_cockpit_extraction.py) holds both the plan and the
-built artifact to the rule. Coordinates throughout are glTF world space
-(Y up; the cockpit faces -Z, same as a Godot camera).
+built artifact to the rule, for every hull.
+
+Coordinates throughout are the ROSTER FRAME the installed hull GLBs
+share: glTF world space, Y up, meters, nose along +Z (the cgtrader
+convention; ShipSpec's model_yaw_offset = PI turns every hull — and its
+shell — to Godot's -Z forward at runtime). So aft is MIN z here, and
+a converted hull must be brought into this frame by the pipeline
+(convert-hull.py's facing argument) before the rule reads it.
 """
 import json
 import struct
@@ -35,13 +43,19 @@ import struct
 # narrower than the console deck under it; 1.9x reaches the instrument
 # bulkhead's full width without swallowing the wing roots.
 LATERAL_INFLATE = 1.9
-# Below the canopy: seat base and console floor sit ~0.6-0.9 canopy
-# heights under the glass line.
-DOWN_MARGIN = 0.9
+# Below the canopy (meters): the seat pan and floor dressing of a seated
+# pilot sit under the glass line. The Vanguard's furniture reaches 0.62 m
+# down and nothing exterior of it sits within a meter more (no opaque
+# part of that hull is captured by ANY deeper margin — measured
+# 2026-09-06); the military ship's one-piece interior reaches 0.96 m,
+# and 0.9 left it out — an empty canopy frame shipped as the shell. 1.2
+# takes the whole interior with a hand's clearance and stays well above
+# its landing gear (2.5 m down).
+DOWN_MARGIN = 1.2
 # Above: a sliver for the spine/roof trim directly over the glass.
 UP_MARGIN = 0.3
 # Along z: the instrument bulkhead sits forward of the glass (toward the
-# nose, -z for this cockpit), the aft deck behind the seat (+z).
+# nose, +z in the roster frame), the aft deck behind the seat (-z).
 Z_LO_MARGIN = 1.2
 Z_HI_MARGIN = 0.9
 # Eyepoint height as a fraction of the canopy AABB's height above its
@@ -49,13 +63,19 @@ Z_HI_MARGIN = 0.9
 # the view with console — "about 70% as much" wanted the eye a little
 # higher, so the console band thins while the bows stay in frame.
 EYE_HEIGHT_FRAC = 0.55
-# Eyepoint depth as a fraction from the canopy's forward (-z) edge toward
-# its aft edge: FORWARD of center, close over the dash. The dominant
-# framing term is dash proximity — rig frames showed mid-glass (0.5) and
-# aft (0.65) eyes both see mostly-open canopy, because the furniture is
-# all below and ahead; only an eye near the instrument line has it fill
-# the bottom of the view with the canopy bows at the edges.
+# Eyepoint depth as a fraction from the canopy's AFT (min z) edge toward
+# its forward edge: over the seat, aft of the glass's center. The
+# dominant framing term is dash proximity — rig frames showed mid-glass
+# (0.5) and forward (0.65) eyes both see mostly-open canopy, because the
+# furniture is all below and ahead; only an eye seated back behind the
+# instrument line has it fill the bottom of the view with the canopy
+# bows at the edges.
 EYE_AFT_FRAC = 0.40
+# A shell must be FURNISHED: something kept reaches at least this far
+# under the canopy sill (the seat pan of a seated pilot, whose sill sits
+# at about shoulder height), or the "cockpit" is the bare canopy frame.
+# The audit's floor on what DOWN_MARGIN must reach.
+SEAT_DEPTH_UNDER_SILL = 0.5
 # Interior materials are floored to at least this roughness (and lose
 # their metal-roughness maps) by the extraction: mirror-glossy furniture
 # centimeters from the eyes shimmers against every pose — a
@@ -121,7 +141,7 @@ def _accessor_values(gltf, binbuf, idx):
             for i in range(acc["count"])]
 
 
-def parse_glb(path):
+def parse_glb(path, distinct_tris=True):
     """Read a .glb and return its mesh-bearing parts as a list of dicts:
     {name, tris, distinct_solid_tris, blend, lo, hi} with world-space
     AABBs (glTF Y-up coordinates), one entry per mesh-bearing node (a
@@ -130,7 +150,11 @@ def parse_glb(path):
     triangles (deduplicated by rounded vertex positions) — the geometry a
     round-trip through an exporter must preserve exactly: exact-duplicate
     faces and zero-area degenerates render nothing and exporters
-    legitimately weld them away, while `tris` is the raw authored count."""
+    legitimately weld them away, while `tris` is the raw authored count.
+    `distinct_tris=False` skips that vertex walk (AABBs come from the
+    accessors' declared bounds alone) — the environment census reads
+    ten-million-triangle scenes that way; `distinct_solid_tris` is then
+    None."""
     with open(path, "rb") as f:
         magic, _version, length = struct.unpack("<III", f.read(12))
         if magic != GLB_MAGIC:
@@ -155,6 +179,8 @@ def parse_glb(path):
         """The prim's DISTINCT area-bearing triangles in world space, as
         sorted rounded vertex triples (order- and winding-insensitive;
         rounding absorbs float32 round-trip noise)."""
+        if not distinct_tris:
+            return set()
         pts = [_xform(world, p)
                for p in _accessor_values(gltf, binbuf, prim["attributes"]["POSITION"])]
         if "indices" in prim:
@@ -213,7 +239,8 @@ def parse_glb(path):
     for root in gltf["scenes"][gltf.get("scene", 0)]["nodes"]:
         walk(root, identity)
     for part in parts:
-        part["distinct_solid_tris"] = len(part.pop("_tri_set"))
+        tri_set = part.pop("_tri_set")
+        part["distinct_solid_tris"] = len(tri_set) if distinct_tris else None
     return parts
 
 
@@ -245,7 +272,7 @@ def plan_cockpit(parts):
     drop = [p["name"] for p in parts if p["name"] not in set(keep)]
 
     # The pilot's eye: canopy x center, at the tuned height fraction,
-    # forward over the dash — the two fractions are the framing knobs.
+    # aft over the seat — the two fractions are the framing knobs.
     height = canopy["hi"][1] - canopy["lo"][1]
     depth = canopy["hi"][2] - canopy["lo"][2]
     eyepoint = [cx,

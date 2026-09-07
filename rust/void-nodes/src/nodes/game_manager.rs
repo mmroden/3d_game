@@ -1016,7 +1016,10 @@ impl GameManager {
                 level_map::map_projection(
                     lm.graph(),
                     self.level_spec.as_ref().map(|s| s.pitch).unwrap_or_else(
-                        || void_logic::planet::Pitch::for_level(self.run_state.current_level),
+                        || void_logic::planet::Pitch::for_level(
+                            self.run_state.current_level,
+                            self.run_state.run_seed,
+                        ),
                     ),
                 ),
             )

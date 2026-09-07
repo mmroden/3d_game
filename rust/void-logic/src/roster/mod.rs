@@ -538,12 +538,17 @@ impl Roster {
         self.locate(level).0
     }
 
-    /// A level's world-space quantization — the tile/story of its planet's
-    /// declared kit (measured by the make-assets probe). Nobody authors a
-    /// cell dimension anywhere else.
-    pub fn pitch_for_level(&self, level: u32) -> crate::planet::Pitch {
-        let def = self.planet_for_level(level.max(1));
-        let kit = self.catalog.kit_def(def.kits[0]);
+    /// A level's world-space quantization — the tile/story of the kit it
+    /// builds with (measured by the make-assets probe for generated kits;
+    /// a fixed kit's declared scale). Nobody authors a cell dimension
+    /// anywhere else. On a fixed planet the kit is the run's deal for
+    /// that level (see `environment_for_level`), hence the run seed.
+    pub fn pitch_for_level(
+        &self,
+        level: u32,
+        run_seed: crate::seed::Seed,
+    ) -> crate::planet::Pitch {
+        let kit = self.catalog.kit_def(self.kit_for_level(level, run_seed));
         crate::planet::Pitch { tile: kit.tile, story: kit.story }
     }
 
@@ -612,14 +617,43 @@ impl Roster {
         def.boss_slots.iter().find(|s| s.at_relative == relative)
     }
 
-    /// The fixed environment a level builds, when its planet's declared kit
-    /// is fixed-paradigm (planet 3's apartment). `None` = generated level.
-    pub fn environment_for_level(&self, level: u32) -> Option<&EnvironmentDef> {
-        let def = self.planet_for_level(level.max(1));
-        let kit = self.catalog.kit_def(def.kits[0]);
-        kit.environment()
+    /// The fixed environment a level builds, when its planet's declared kits
+    /// are fixed-paradigm (planet 3's locations). `None` = generated level.
+    /// A fixed planet deals its kits per RUN — `levels` distinct ones from
+    /// the run seed's planet stream, one per level — so which location a
+    /// level shows is the run's, never the file's.
+    pub fn environment_for_level(
+        &self,
+        level: u32,
+        run_seed: crate::seed::Seed,
+    ) -> Option<&EnvironmentDef> {
+        let kit = self.kit_for_level(level, run_seed);
+        self.catalog
+            .kit_def(kit)
+            .environment()
             .and_then(|k| self.kit_environments.get(k))
             .map(|&i| &self.environments[i])
+    }
+
+    /// The kit a level builds with: a generated planet's first declared kit
+    /// (its paradigm and grid — the mix across rooms is the sweep's), or,
+    /// on a fixed planet, the environment this run dealt to the level.
+    fn kit_for_level(&self, level: u32, run_seed: crate::seed::Seed) -> KitId {
+        let (def, relative, planet) = self.locate(level.max(1));
+        let first = self.catalog.kit_def(def.kits[0]);
+        if !matches!(first.kind, KitKind::Fixed { .. }) || def.kits.len() == 1 {
+            return def.kits[0];
+        }
+        // The deal: a seeded permutation of the planet's kits; level
+        // `relative` takes its slot, so levels within the kit count see
+        // distinct environments. A planet with more levels than kits
+        // wraps and repeats the deal in order.
+        use rand::seq::SliceRandom;
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(run_seed.for_planet(planet).value());
+        let mut order: Vec<usize> = (0..def.kits.len()).collect();
+        order.shuffle(&mut rng);
+        def.kits[order[(relative - 1) as usize % order.len()]]
     }
 }
 
@@ -1584,14 +1618,30 @@ fn link(
         }
 
         // Room growth: a GENERATED planet declares it; a FIXED planet's
-        // room count is its environment's authored zone count — the file
+        // room count is its environments' authored zone counts — the file
         // must not also state one (one truth).
         let first_kit = f.kits.first().and_then(|k| catalog.kit(k)).map(|(_, kd)| kd);
         if first_kit.is_some_and(|kd| matches!(kd.kind, KitKind::Fixed { .. })) {
-            if f.kits.len() > 1 {
+            // A fixed planet's kits are its locations, every one fixed (a
+            // generated kit has no environment to deal). Each run deals
+            // them in a seeded order, one per level — distinct while the
+            // kits last, then wrapping (owner 2026-09-06: planet 3 shows
+            // two of its four locations per run).
+            let generated: Vec<&str> = f
+                .kits
+                .iter()
+                .filter(|k| {
+                    catalog
+                        .kit(k)
+                        .is_some_and(|(_, kd)| !matches!(kd.kind, KitKind::Fixed { .. }))
+                })
+                .map(|k| k.as_str())
+                .collect();
+            if !generated.is_empty() {
                 errors.push(format!(
-                    "{at}: a fixed planet declares exactly one kit — its \
-                     environment is the whole level"
+                    "{at}: a fixed planet must not mix generated kits into its \
+                     locations ({}) — every kit it deals is an environment",
+                    generated.join(", ")
                 ));
             }
             // v1 fixed levels have no connector seal, so the miniboss
@@ -2176,12 +2226,14 @@ textures = 3
     fn a_valid_fixed_fixture_links() {
         let roster =
             load_fixed(FX_ENV, FX_FIXED_KIT, FX_FIXED_PLANET).expect("the fixed fixture links");
-        let env = roster.environment_for_level(1).expect("level 1 is fixed");
+        let env = roster
+            .environment_for_level(1, crate::seed::Seed::new(1))
+            .expect("level 1 is fixed");
         assert_eq!(env.key, "fx_house_env");
         assert_eq!(env.zones.len(), 3);
         assert_eq!(env.zones[env.start_zone].key, "porch");
         assert_eq!(env.zones[env.boss_zone].key, "den");
-        let pitch = roster.pitch_for_level(1);
+        let pitch = roster.pitch_for_level(1, crate::seed::Seed::new(1));
         assert_eq!((pitch.tile, pitch.story), (5.0, 5.0), "pitch IS the declared scale");
         let planet = roster.planet_for_level(1);
         assert_eq!(
@@ -2191,11 +2243,128 @@ textures = 3
         );
     }
 
+
+    // ── Per-run environment draw: a fixed planet declares SEVERAL fixed
+    //    kits and each run deals `levels` distinct ones, one per level
+    //    (owner 2026-09-06: planet 3 presents two of its four locations at
+    //    random until planet 4). ──
+
+    /// A second valid environment, distinct key, same installed model.
+    const FX_ENV2: &str = r#"
+[environment]
+key = "fx_house_env2"
+model = "apartment"
+
+[[zone]]
+key = "yard"
+box = { min = [0, 0, 0], extents = [2, 2, 2] }
+start = true
+links = ["shed"]
+
+[[zone]]
+key = "shed"
+box = { min = [2, 0, 0], extents = [2, 2, 2] }
+boss = true
+enemy_spawns = [[3.0, 1.0, 1.0]]
+"#;
+
+    /// Two fixed kits at DIFFERENT scales, so the drawn kit is visible
+    /// through the pitch as well as through the environment key.
+    const FX_TWO_FIXED_KITS: &str = "[kits.fx_house]\nparadigm = \"fixed\"\n\
+        install_dir = \"godot/addons/environments\"\nscale = 5.0\n\
+        environment = \"fx_house_env\"\n\
+        [kits.fx_house2]\nparadigm = \"fixed\"\n\
+        install_dir = \"godot/addons/environments\"\nscale = 2.0\n\
+        environment = \"fx_house_env2\"\n";
+
+    /// A two-level fixed planet over both kits: each run deals both, in
+    /// some order.
+    const FX_TWO_KIT_FIXED_PLANET: &str = "planet = 1\nlevels = 2\n\
+        kits = [\"fx_house\", \"fx_house2\"]\n\
+        [[level]]\nrelative = 1\nenemies = [\"template_enemy\"]\n\
+        [[level]]\nrelative = 2\nenemies = [\"template_enemy\"]\n\
+        [[boss_slot]]\nat = { relative = 1 }\nboss = \"template_boss\"\n\
+        escorts = { enemy = \"template_minion\", trigger = \"on_engage\", count = 2 }\n\
+        track = 1\nreward = \"consolation_pile\"\n\
+        [[boss_slot]]\nat = { relative = 2 }\nboss = \"template_boss\"\n\
+        escorts = { enemy = \"template_minion\", trigger = \"on_engage\", count = 2 }\n\
+        track = 2\nreward = \"consolation_pile\"\n";
+
+    fn load_two_kit_fixed(planet: &str) -> Result<Roster, String> {
+        let (enemies, _, _, _) = template_parts();
+        load_split(
+            &enemies,
+            FX_TWO_FIXED_KITS,
+            "[kits]\n",
+            MODELS_TOML,
+            &[planet],
+            EnvSources { authored: &[FX_ENV, FX_ENV2], windows: &[] },
+        )
+    }
+
+    #[test]
+    fn a_fixed_planet_deals_distinct_environments_per_level_from_the_run_seed() {
+        let roster = load_two_kit_fixed(FX_TWO_KIT_FIXED_PLANET)
+            .expect("a multi-kit fixed planet links");
+        let mut firsts = std::collections::BTreeSet::new();
+        for seed in 1..=16u64 {
+            let seed = crate::seed::Seed::new(seed);
+            let first = roster.environment_for_level(1, seed).expect("level 1 is fixed");
+            let second = roster.environment_for_level(2, seed).expect("level 2 is fixed");
+            assert_ne!(
+                first.key, second.key,
+                "seed {}: the two levels draw two different environments",
+                seed.value()
+            );
+            for env in [first, second] {
+                assert!(
+                    ["fx_house_env", "fx_house_env2"].contains(&env.key.as_str()),
+                    "an environment outside the planet's kits: {}",
+                    env.key
+                );
+            }
+            // The pitch follows the drawn kit, not the first declared one.
+            let expected_scale = if first.key == "fx_house_env" { 5.0 } else { 2.0 };
+            let pitch = roster.pitch_for_level(1, seed);
+            assert_eq!(
+                (pitch.tile, pitch.story),
+                (expected_scale, expected_scale),
+                "seed {}: level 1's pitch is its drawn kit's scale",
+                seed.value()
+            );
+            firsts.insert(first.key.clone());
+        }
+        assert_eq!(
+            firsts.len(),
+            2,
+            "across runs, either environment can open the planet: {firsts:?}"
+        );
+    }
+
+    #[test]
+    fn a_fixed_planet_with_fewer_kits_than_levels_repeats_its_deal() {
+        // One kit, two levels (the GUT fixture's shape, and planet 3's
+        // before it grew its locations): the deal wraps, so both levels
+        // build the one environment — no link error.
+        let doctored = FX_TWO_KIT_FIXED_PLANET.replace(
+            "kits = [\"fx_house\", \"fx_house2\"]",
+            "kits = [\"fx_house\"]",
+        );
+        let roster = load_two_kit_fixed(&doctored).expect("a one-kit two-level fixed planet links");
+        let seed = crate::seed::Seed::new(3);
+        let first = roster.environment_for_level(1, seed).expect("level 1 is fixed");
+        let second = roster.environment_for_level(2, seed).expect("level 2 is fixed");
+        assert_eq!(first.key, "fx_house_env");
+        assert_eq!(second.key, "fx_house_env");
+    }
+
     #[test]
     fn an_authored_sun_links_and_a_bad_one_is_a_link_error() {
         let roster = load_fixed(FX_ENV, FX_FIXED_KIT, FX_FIXED_PLANET)
             .expect("the fixed fixture links");
-        let env = roster.environment_for_level(1).expect("level 1 is fixed");
+        let env = roster
+            .environment_for_level(1, crate::seed::Seed::new(1))
+            .expect("level 1 is fixed");
         assert_eq!(env.sun, None, "the inline fixture authors no sun");
         let with_sun = FX_ENV.replace(
             "model = \"apartment\"",
@@ -2204,7 +2373,7 @@ textures = 3
         let roster = load_fixed(&with_sun, FX_FIXED_KIT, FX_FIXED_PLANET)
             .expect("a sunlit fixture links");
         let sun = roster
-            .environment_for_level(1)
+            .environment_for_level(1, crate::seed::Seed::new(1))
             .and_then(|e| e.sun)
             .expect("the authored sun links");
         assert_eq!(
@@ -2225,7 +2394,7 @@ textures = 3
         let roster = load_fixed(&with_ambient, FX_FIXED_KIT, FX_FIXED_PLANET)
             .expect("an ambient fixture links");
         let ambient = roster
-            .environment_for_level(1)
+            .environment_for_level(1, crate::seed::Seed::new(1))
             .and_then(|e| e.ambient)
             .expect("the authored ambient links");
         assert_eq!((ambient.energy, ambient.color), (0.8, [1.0, 0.95, 0.9]));
@@ -2243,7 +2412,9 @@ textures = 3
         );
         let roster = load_fixed(&with_window, FX_FIXED_KIT, FX_FIXED_PLANET)
             .expect("a windowed fixture links");
-        let env = roster.environment_for_level(1).expect("level 1 is fixed");
+        let env = roster
+            .environment_for_level(1, crate::seed::Seed::new(1))
+            .expect("level 1 is fixed");
         assert_eq!(env.windows.len(), 1);
         assert_eq!(env.windows[0].inward, [-1.0, 0.0, 0.0], "neg_x shines west");
         let doctored = with_window.replace("energy = 3.0", "energy = 0.0");
@@ -2431,23 +2602,28 @@ textures = 3
     }
 
     #[test]
-    fn a_fixed_planet_with_more_than_one_kit_is_a_link_error() {
+    fn a_fixed_planet_mixing_fixed_and_generated_kits_is_a_link_error() {
+        // A fixed planet's kits are its environments, drawn per run; a
+        // generated kit among them has no environment to draw.
         let (enemies, kits, grid, _) = template_parts();
         let two_kits = format!("{FX_FIXED_KIT}{kits}");
         let doctored = FX_FIXED_PLANET
             .replace("kits = [\"fx_house\"]", "kits = [\"fx_house\", \"template_kit\"]");
-        let err = load_split(
+        let result = load_split(
             &enemies,
             &two_kits,
             &grid,
             MODELS_TOML,
             &[&doctored],
             EnvSources { authored: &[FX_ENV], windows: &[] },
-        )
-        .unwrap_err();
+        );
+        let err = match result {
+            Ok(_) => String::new(),
+            Err(e) => e,
+        };
         assert!(
-            err.contains("one kit") || err.contains("exactly one"),
-            "names the single-kit rule: {err}"
+            err.contains("mix"),
+            "names the no-mixing rule (fixed and generated kits on one planet): {err:?}"
         );
     }
 

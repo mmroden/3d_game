@@ -1,17 +1,18 @@
-"""Recover the apartment's material->texture wiring from the .max source,
-run via Blender:
+"""Recover a scene's material->texture wiring from its .max source, run
+via Blender:
 
     blender --background --python-exit-code 1 \
         --python scripts/extract-max-materials.py -- <in.max> <out.json>
 
-The provider's FBX export destroyed most Corona material bindings (FBX has
-no representation for them); the .max scene is the authoring truth. The
-io_scene_max extension (installed by `make deps` through Blender's
-extension system) parses the scene INCLUDING Corona materials. Its mesh/UV
-import is documented as unreliable, so this script uses it purely as a
-MATERIAL ORACLE: import, walk the node trees, dump one JSON table of
-material name -> per-channel texture basenames + base color. apartment.py
-merges the table over its own FBX-derived recovery (the .max wins).
+An archviz provider's FBX export destroys most Corona material bindings
+(FBX has no representation for them); the .max scene is the authoring
+truth. The io_scene_max extension (installed by `make deps` through
+Blender's extension system) parses the scene INCLUDING Corona materials.
+Its mesh/UV import is documented as unreliable, so this script uses it
+purely as a MATERIAL ORACLE: import, walk the node trees, dump one JSON
+table of material name -> per-channel texture basenames + base color.
+material_plan.py merges the table over the FBX-derived recovery (the
+.max wins) for convert-environment.py.
 """
 import json
 import os

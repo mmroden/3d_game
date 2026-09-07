@@ -1,17 +1,22 @@
 """Asset-pipeline conservation audit (`make test-assets`).
 
-The provider's .max/.fbx files are the AUTHORING TRUTH; these tests hold
-the material plan (scripts/material_plan.py) and the built .glb to it.
+The provider's .max/.fbx/.obj files are the AUTHORING TRUTH; these
+tests hold the material plan (scripts/material_plan.py) and the built
+.glb to it, for every pack the pipeline converts through the plan doors
+(PACKS below: the planet-3 environments and the military-ship hull).
 Every expectation is DERIVED from the generated extracts — the oracle —
-never pinned to counts, so a new provider pack (classroom, ...) rides the
-same audit: its first run NAMES what the new format breaks instead of a
-playtest revealing it.
+never pinned to counts, so a new provider pack rides the same audit by
+adding one row: its first run NAMES what the new format breaks instead
+of a playtest revealing it.
+
+A pack may carry an explicit WAIVER for what its provider never shipped
+(`unshipped`): the audit then reports the hole as an expected failure
+with the reason, never as silence.
 
 Extracts and glb are produced by `make assets`; tests skip (loudly) when
 an artifact is absent rather than fail on a half-built tree.
 """
 import json
-import os
 import re
 import struct
 import sys
@@ -21,7 +26,67 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 APARTMENT = ROOT / "assets" / "apartment"
-GLB = ROOT / "godot" / "addons" / "environments" / "apartment.glb"
+MILITARY_SHIP = ROOT / "assets" / "cgtrader_ships" / "military_ship"
+HILL_HOUSE = ROOT / "assets" / "hill_house"
+OFFICE_BUILDING = ROOT / "assets" / "office_building"
+MOUNTAIN_VILLA = ROOT / "assets" / "mountain_villa"
+ENVIRONMENTS = ROOT / "godot" / "addons" / "environments"
+
+# pack -> the pipeline's artifacts for it: the material oracle (FBX
+# connection tables or MTL statements, one shape), the .max material
+# table (None for packs that ship no .max), the root the archives
+# extract under (walked recursively), the built .glb, the converter's
+# report of what a keep box dropped (None for packs converted whole),
+# and the provider-hole waiver (None when everything declared shipped).
+PACKS = {
+    "apartment": {
+        "oracle": APARTMENT / "fbx_materials.json",
+        "max": APARTMENT / "max_materials.json",
+        "textures": APARTMENT / "unpacked",
+        "glb": ENVIRONMENTS / "apartment.glb",
+        "report": APARTMENT / "conversion.json",
+        "unshipped": None,
+    },
+    "hill_house": {
+        "oracle": HILL_HOUSE / "mtl_materials.json",
+        "max": None,
+        "textures": HILL_HOUSE / "unpacked",
+        "glb": ENVIRONMENTS / "hill_house.glb",
+        "report": HILL_HOUSE / "conversion.json",
+        # SketchUp wrote one texture file name per material (ID_Decor_10.jpg,
+        # ...) but the provider shipped the SOURCE maps only; those
+        # materials fall to their authored Kd, the map's average color.
+        "unshipped": {"files": "all",
+                      "reason": "SketchUp per-material texture names; provider ships source maps only"},
+    },
+    "office_building": {
+        "oracle": OFFICE_BUILDING / "fbx_materials.json",
+        "max": None,
+        "textures": OFFICE_BUILDING / "unpacked",
+        "glb": ENVIRONMENTS / "office_building.glb",
+        "report": OFFICE_BUILDING / "conversion.json",
+        "unshipped": None,
+    },
+    "mountain_villa": {
+        "oracle": MOUNTAIN_VILLA / "fbx_materials.json",
+        "max": MOUNTAIN_VILLA / "max_materials.json",
+        "textures": MOUNTAIN_VILLA / "unpacked",
+        "glb": ENVIRONMENTS / "mountain_villa.glb",
+        "report": MOUNTAIN_VILLA / "conversion.json",
+        # One material references a downloaded photo the author never
+        # packed; it falls to its declared color.
+        "unshipped": {"files": ["74522314_600483210776012_1527579838368448512_n.jpg"],
+                      "reason": "provider never packed the Croncreet material's photo"},
+    },
+    "military_ship": {
+        "oracle": MILITARY_SHIP / "fbx_materials.json",
+        "max": None,
+        "textures": MILITARY_SHIP / "unpacked",
+        "glb": ROOT / "godot" / "addons" / "ships" / "military_ship.glb",
+        "report": None,
+        "unshipped": None,
+    },
+}
 
 sys.path.insert(0, str(ROOT / "scripts"))
 import material_plan  # noqa: E402
@@ -30,15 +95,18 @@ from material_plan import (  # noqa: E402
     DIFFUSE_CHANNELS,
     EMISSION_CAP,
     GLOSS_CHANNELS,
+    NORMAL_CHANNELS,
     OPACITY_CHANNELS,
     ROUGHNESS_CHANNELS,
     SELFILLUM_CHANNELS,
     build_plans,
     explain_texture_usage,
+    find_in_inventory,
+    shipped_inventory,
 )
 
 
-# ---- fixtures: the generated oracle artifacts ----
+# ---- fixtures: the generated oracle artifacts, per pack ----
 
 def _load_or_skip(path, hint):
     if not path.exists():
@@ -47,28 +115,48 @@ def _load_or_skip(path, hint):
         return json.load(f)
 
 
-@pytest.fixture(scope="session")
-def fbx():
-    return _load_or_skip(APARTMENT / "fbx_materials.json", "make assets")
+@pytest.fixture(scope="session", params=sorted(PACKS))
+def pack(request):
+    return PACKS[request.param]
 
 
 @pytest.fixture(scope="session")
-def max_table():
-    raw = _load_or_skip(APARTMENT / "max_materials.json", "make assets")
+def fbx(pack):
+    """The pack's material oracle (FBX connection tables or MTL statements
+    — one shape), named for its first source."""
+    return _load_or_skip(pack["oracle"], "make assets")
+
+
+@pytest.fixture(scope="session")
+def max_table(pack):
+    if pack["max"] is None:
+        return {}
+    raw = _load_or_skip(pack["max"], "make assets")
     return material_plan.normalize_max_table(raw)
 
 
 @pytest.fixture(scope="session")
-def inventory():
-    tex_dir = APARTMENT / "textures"
-    if not tex_dir.is_dir():
-        pytest.skip(f"{tex_dir} missing — run `make assets` first")
-    return {f for f in os.listdir(tex_dir) if not f.startswith(".")}
+def inventory(pack, fbx):
+    tex_root = pack["textures"]
+    if not tex_root.is_dir():
+        pytest.skip(f"{tex_root} missing — run `make assets` first")
+    return shipped_inventory(fbx, tex_root)
 
 
 @pytest.fixture(scope="session")
 def plans(fbx, max_table, inventory):
     return build_plans(fbx, max_table, inventory)
+
+
+@pytest.fixture(scope="session")
+def report(pack):
+    """The converter's account of what its keep box dropped, when the
+    pack has one; an empty account otherwise."""
+    path = pack["report"]
+    if path is None or not path.exists():
+        return {"dropped_materials": []}
+    with open(path) as f:
+        return json.load(f)
 
 
 # ---- the spec for 3ds Max container materials: what camera rays see ----
@@ -87,19 +175,13 @@ def camera_facing(fbx, name, _depth=0):
     return name
 
 
-def in_inventory(basename, inventory):
-    lower = {f.lower(): f for f in inventory}
-    if basename.lower() in lower:
-        return lower[basename.lower()]
-    stems = {os.path.splitext(f)[0].lower(): f for f in inventory}
-    return stems.get(os.path.splitext(basename)[0].lower())
-
-
 def channel_file(rec, channel_set, inventory):
-    """The record's shipped file on any of the given channels, or None."""
+    """The record's shipped file on any of the given channels, or None —
+    resolved by the plan's own lookup, so the audit and the plan agree
+    on what "shipped" means."""
     for chan, basename in rec["channels"].items():
         if chan in channel_set:
-            hit = in_inventory(basename, inventory)
+            hit = find_in_inventory(basename, inventory)
             if hit:
                 return hit
     return None
@@ -139,7 +221,7 @@ def test_containers_resolve_to_their_camera_facing_submaterial(
 
 def test_declared_diffuse_is_never_dropped(fbx, plans, inventory):
     """Every assigned material whose (resolved) record declares a diffuse
-    map that shipped in the zip must plan exactly that texture."""
+    map that shipped must plan exactly that texture."""
     dropped = []
     for name in assigned(fbx):
         rec = fbx["materials"][camera_facing(fbx, name)]
@@ -147,6 +229,42 @@ def test_declared_diffuse_is_never_dropped(fbx, plans, inventory):
         if f and plans[name]["base_color"].get("texture") != f:
             dropped.append((name, f, plans[name]["base_color"]))
     assert not dropped, f"declared diffuse maps dropped: {dropped}"
+
+
+def test_declared_texture_references_resolve_to_shipped_files(pack, fbx, inventory):
+    """The gray-scene hole the plan cannot see: a material file that names
+    a texture the pack never shipped falls through to its flat color and
+    the plan calls that "declared". Every declared reference on a live
+    channel of an assigned material must resolve to a shipped file — or
+    be a NAMED waiver (PACKS `unshipped`), reported as an expected
+    failure with its reason and the SOURCE IMAGES the holes collapse to
+    (a SketchUp scene clones one material thousands of times; the
+    reader wants "ceramic_bianco x5500", not 5500 names), never silence."""
+    waiver = pack["unshipped"] or {}
+    waived = set(waiver.get("files") or []) if waiver.get("files") != "all" else None
+    missing = {}
+    for name in assigned(fbx):
+        rec = fbx["materials"][camera_facing(fbx, name)]
+        for chan, basename in rec["channels"].items():
+            if any(m in chan for m in material_plan.WAIVED_CHANNEL_MARKERS):
+                continue
+            if waived is not None and basename in waived:
+                continue
+            if find_in_inventory(basename, inventory) is None:
+                missing.setdefault(basename, []).append(name)
+    if missing and waived is None:
+        by_source = {}
+        for basename, names in missing.items():
+            stem = material_plan.clone_stem(basename)
+            by_source[stem] = by_source.get(stem, 0) + len(names)
+        top = ", ".join(f"{stem} x{n}" for stem, n in
+                        sorted(by_source.items(), key=lambda kv: (-kv[1], kv[0]))[:8])
+        pytest.xfail(f"{len(missing)} declared textures never shipped, "
+                     f"{len(by_source)} source images ({top}) — "
+                     f"waived: {waiver.get('reason')}")
+    assert not missing, (
+        f"{len(missing)} declared textures never shipped (first 10): "
+        f"{ {k: v[:2] for k, v in sorted(missing.items())[:10]} }")
 
 
 def test_bump_maps_become_normal_plans(fbx, plans, inventory):
@@ -164,10 +282,27 @@ def test_bump_maps_become_normal_plans(fbx, plans, inventory):
     assert not dropped, f"bump/relief maps dropped: {dropped}"
 
 
+def test_declared_normal_maps_wire_as_normal_maps(fbx, plans, inventory):
+    """A tangent-space normal map the model file declares (a Blender
+    export's NormalMap channel) ships as a normal map — never waived,
+    never mistaken for a height bump to be re-derived."""
+    bad = []
+    for name in assigned(fbx):
+        rec = fbx["materials"][camera_facing(fbx, name)]
+        f = channel_file(rec, NORMAL_CHANNELS, inventory)
+        if not f:
+            continue
+        normal = plans[name].get("normal")
+        if normal is None or (normal.get("texture") == f and normal.get("kind") != "normal"):
+            bad.append((name, f, normal))
+    assert not bad, f"declared normal maps dropped or misread: {bad}"
+
+
 def test_bump_derived_normals_carry_the_authored_strength(fbx, plans, inventory):
     """Corona renders bump = levelBump x mapamount (typically well under
-    1.0); a converted normal map without the authored strength shouts on
-    every wall. The plan must carry it, clamped to the sane range."""
+    1.0), MTL carries -bm; a converted normal map without the authored
+    strength shouts on every wall. The plan must carry it, clamped to
+    the sane range."""
     bad = []
     for name in assigned(fbx):
         rec = fbx["materials"][camera_facing(fbx, name)]
@@ -315,9 +450,9 @@ def test_no_plan_exceeds_the_emission_cap(plans):
 
 
 def test_scalar_alpha_is_declared_transparency_never_invention(fbx, plans):
-    """A plan may carry partial alpha ONLY as the exporter's declared
-    1 - TransparencyFactor of the resolved record (the value Corona's own
-    exporter computed from the refraction stack)."""
+    """A plan may carry partial alpha ONLY as the declared
+    1 - TransparencyFactor of the resolved record (the value the model's
+    exporter computed from its refraction stack, or an MTL's d)."""
     bad = []
     for name, plan in plans.items():
         alpha = plan.get("alpha")
@@ -334,10 +469,40 @@ def test_scalar_alpha_is_declared_transparency_never_invention(fbx, plans):
 def test_no_assigned_material_defaults_silently(fbx, plans):
     """The white-surface bug class: every assigned material must source
     its base color from SOMETHING declared (a texture, the .max table, a
-    Corona color, the std diffuse) — never a silent importer default."""
+    Corona color, the declared diffuse) — never a silent importer default."""
     silent = [n for n in assigned(fbx)
               if plans[n]["base_color"].get("source", "default") == "default"]
     assert not silent, f"materials shipping importer defaults: {silent}"
+
+
+def test_embedded_textures_count_as_shipped(fbx, inventory):
+    """A map the provider packed INSIDE the FBX (the military ship's
+    diffuse and cockpit textures ship that way — no loose file at all)
+    is as shipped as one in the archive: it is in the inventory, so the
+    plan can name it and the fate report can account for it. Left out,
+    every material wearing one plans a flat color and ships gray."""
+    embedded = set(fbx.get("embedded_textures", []))
+    assert embedded <= inventory, (
+        f"embedded textures missing from the inventory: "
+        f"{sorted(embedded - inventory)}")
+
+
+def test_shipped_inventory_unions_loose_and_embedded(tmp_path):
+    """The inventory door itself: image files anywhere under the
+    extracted archives (wrapper folders, several archives) plus the
+    oracle's embedded_textures, by basename; non-images and dotfiles
+    are not textures."""
+    wrapped = tmp_path / "Textures.rar" / "Textures"
+    wrapped.mkdir(parents=True)
+    (wrapped / "Loose.png").write_bytes(b"")
+    (wrapped / ".DS_Store").write_bytes(b"")
+    (wrapped / "Loose.png.meta").write_bytes(b"")
+    other = tmp_path / "part_2"
+    other.mkdir()
+    (other / "Other.jpg").write_bytes(b"")
+    fbx = {"materials": {}, "embedded_textures": ["Packed.png", "Loose.png"]}
+    assert shipped_inventory(fbx, tmp_path) == {"Loose.png", "Other.jpg", "Packed.png"}
+    assert shipped_inventory({"materials": {}}, tmp_path / "absent") == set()
 
 
 def test_every_shipped_texture_has_a_named_fate(fbx, plans, inventory):
@@ -359,17 +524,18 @@ def test_every_shipped_texture_has_a_named_fate(fbx, plans, inventory):
 # ---- glb-level contracts: what actually shipped ----
 
 @pytest.fixture(scope="session")
-def glb():
-    if not GLB.exists():
-        pytest.skip(f"{GLB} missing — run `make assets` first")
-    with open(GLB, "rb") as f:
+def glb(pack):
+    path = pack["glb"]
+    if not path.exists():
+        pytest.skip(f"{path} missing — run `make assets` first")
+    with open(path, "rb") as f:
         f.seek(12)
         length, _ = struct.unpack("<II", f.read(8))
         return json.loads(f.read(length))
 
 
 def glb_base_name(name):
-    """Blender dedup suffixes (.001) don't exist in the FBX name table."""
+    """Blender dedup suffixes (.001) don't exist in the source's name table."""
     return re.sub(r"\.\d{3}$", "", name)
 
 
@@ -391,8 +557,9 @@ def test_glb_has_no_single_sided_materials(glb):
 
 
 def test_glb_emission_respects_the_cap(glb):
-    # Window panes glow by design (apartment.py PANE_EMISSION); everything
-    # else obeys the plan cap. The looser of the two bounds all of it.
+    # Window panes glow by design (convert-environment.py PANE_EMISSION);
+    # everything else obeys the plan cap. The looser of the two bounds
+    # all of it.
     ceiling = max(EMISSION_CAP, 1.5) + 1e-3
     hot = []
     for m in glb.get("materials", []):
@@ -404,9 +571,55 @@ def test_glb_emission_respects_the_cap(glb):
     assert not hot, f"materials past the emission ceiling (white shapes): {hot}"
 
 
-def test_glb_carries_every_assigned_material(glb, fbx, plans):
-    """Container flattening must not LOSE materials: every assigned FBX
-    material lands in the glb (under its own name; Blender may dedup)."""
+def test_glb_carries_every_assigned_material(glb, fbx, plans, report):
+    """Conversion must not LOSE materials: every assigned material lands
+    in the glb (under its own name; Blender may dedup) — except those the
+    converter reports it dropped on purpose with the objects outside the
+    keep box. The failure names each lost material's face statistics
+    (the oracle's count and largest triangle) so a sliver the importer
+    pruned is told apart from a surface that vanished."""
     shipped = {glb_base_name(m.get("name", "")) for m in glb.get("materials", [])}
-    lost = sorted(n for n in assigned(fbx) if n not in shipped)
-    assert not lost, f"assigned materials absent from the glb: {lost}"
+    dropped = set(report.get("dropped_materials", []))
+    lost = sorted(n for n in assigned(fbx) if n not in shipped and n not in dropped)
+    stats = fbx.get("face_stats", {})
+    detail = {n: stats.get(n) for n in lost[:8]}
+    assert not lost, (
+        f"{len(lost)} assigned materials absent from the glb: {lost[:12]} "
+        f"(face stats: {detail})")
+
+
+def test_glb_ships_no_animations(glb):
+    """Converted packs are STATIC: the game plays no provider animation
+    (landing gear, canopy hinges), and an animated node exports its keyed
+    transform ON TOP of the baked mesh — the military ship's gear and
+    canopy frame shipped as centimeter-sized boxes at the wrong place
+    (2026-09-06) until the conversion stripped the actions."""
+    animated = [a.get("name") for a in glb.get("animations", [])]
+    assert not animated, f"provider animations survived the conversion: {animated}"
+
+
+
+# ---- the decimate door's products: every installed enemy model ----
+
+ENEMY_MODELS = ROOT / "godot" / "addons" / "enemies"
+
+
+@pytest.fixture(scope="session",
+                params=sorted(p.name for p in ENEMY_MODELS.glob("*.glb")) or ["(none)"])
+def enemy_glb(request):
+    path = ENEMY_MODELS / request.param
+    if not path.is_file():
+        pytest.skip(f"no decimated enemy models under {ENEMY_MODELS} — run `make assets` first")
+    with open(path, "rb") as f:
+        f.seek(12)
+        length, _ = struct.unpack("<II", f.read(8))
+        return json.loads(f.read(length))
+
+
+def test_decimated_models_ship_no_animations(enemy_glb):
+    """The decimate door's products are STATIC like the converted packs:
+    the apartment boss shipped five provider "Drone" clips whose 60 scale
+    channels re-applied over the roster's size fit at spawn — the boss
+    stayed gigantic whatever enemies.toml said (owner 2026-09-06)."""
+    animated = [a.get("name") for a in enemy_glb.get("animations", [])]
+    assert not animated, f"provider animations survived decimation: {animated}"

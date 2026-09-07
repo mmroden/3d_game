@@ -203,6 +203,16 @@ check-visual: build-release deps-godot
 			> $(CURDIR)/out/visual/last-run.log 2>&1; \
 		code=$$?; cat $(CURDIR)/out/visual/last-run.log; exit $$code
 
+# The zone-authoring loop's door: re-read every installed scene and model
+# into out/census/ (TOML + section images) against the CURRENT rosters —
+# no Blender, nothing converted, seconds. Edit rosters/environments/
+# <key>.toml, run this, read out/census/<key>_plan.png and the
+# <key>_long_NN / _cross_NN cuts (owner 2026-09-06: a census run outside
+# the door is not reproducible; this is the door).
+census:
+	@echo "==> Censusing installed scenes and models against the rosters..."
+	@./scripts/install-addons.sh $(ASSETS_DIR) $(GODOT_DIR) --census-only
+
 # Re-copies sanitized .tres materials from asset packs and re-applies
 # local material patches (no reimport).
 assets-materials:

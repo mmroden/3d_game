@@ -1,0 +1,47 @@
+# HAND-AUTHORED zones for the planet-3 office building (the plain color
+# scheme, one of the four the pack ships). Coordinates are MODEL SPACE of
+# the installed glb (meters, Y-up: x east, y height, z south). Boxes sit
+# on the 1-meter authoring grid: integer min + integer extents,
+# min-inclusive, max-exclusive, mutually non-overlapping. The declared
+# kit scale multiplies everything at build time.
+#
+# DRAFT 2 (2026-09-06), read off the census sections (out/census/
+# office_building_plan.png at door height: the footprint x -15.6..15.6,
+# z 25.4..74.6 with its core and restroom blocks; the long sections: the
+# ground floor is a double-height lobby, floor slab 0.5, first-floor
+# slab at 6.9, storeys of ~3.6 above). The GROUND FLOOR only, three
+# slices along z under its 6.9 m ceiling: the lobby starts, the core
+# fields the enemies, the rear stages the boss. Upper floors wait on
+# vertical zone links. Owner reviews.
+#
+# enemy_spawns are model-space points inside their zone's box (the linker
+# rejects strays); the start zone stays enemy-free, and the boss zone
+# authors exactly ONE spawn — the arena anchor.
+
+[environment]
+key = "office_building"
+model = "office_building"
+window_energy_per_m2 = 4.0
+
+[ambient]
+energy = 0.9
+
+[[zone]]
+key = "lobby"
+box = { min = [-16, 0, 25], extents = [32, 7, 17] }
+start = true
+links = ["core"]
+
+[[zone]]
+key = "core"
+box = { min = [-16, 0, 42], extents = [32, 7, 16] }
+links = ["rear"]
+enemy_spawns = [[-8.0, 2.0, 46.0], [8.0, 2.0, 50.0], [0.0, 2.0, 55.0]]
+loot_spawns = [[-4.0, 1.0, 48.0]]
+
+[[zone]]
+key = "rear"
+box = { min = [-16, 0, 58], extents = [32, 7, 17] }
+boss = true
+enemy_spawns = [[0.0, 2.0, 66.0]]
+loot_spawns = [[6.0, 1.0, 62.0]]

@@ -1173,7 +1173,9 @@ impl LevelManager {
         self.spec
             .as_ref()
             .map(|s| s.pitch)
-            .unwrap_or_else(|| void_logic::planet::Pitch::for_level(1))
+            // This node holds no run seed; the fallback is for a level whose
+            // pitch does not depend on the run.
+            .unwrap_or_else(|| void_logic::planet::Pitch::for_level(1, Seed::new(0)))
     }
 
     /// Show only the player's current room and its portal-neighbors;

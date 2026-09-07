@@ -2,6 +2,10 @@ use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
 
+/// Separates the planet stream from the level stream (see
+/// [`Seed::for_planet`]); any fixed non-zero constant does.
+const PLANET_STREAM_SALT: u64 = 0x5EED_9A7E_7B1A_0C3D;
+
 /// Identifies the random stream for a run or a level.
 ///
 /// Owns every conversion at the Godot boundary (Variant carries only
@@ -37,6 +41,20 @@ impl Seed {
         let mut stream = SmallRng::seed_from_u64(self.0);
         let mut derived = self.0;
         for _ in 0..=level {
+            derived = stream.random();
+        }
+        Self(derived)
+    }
+
+
+    /// Derive the seed for a PLANET's per-run decisions (which of its
+    /// environments each level deals) from this run seed: the `planet`-th
+    /// draw from a stream seeded apart from the level stream, so a
+    /// planet's deal never lines up with any level's layout seed.
+    pub fn for_planet(self, planet: u32) -> Self {
+        let mut stream = SmallRng::seed_from_u64(self.0 ^ PLANET_STREAM_SALT);
+        let mut derived = self.0;
+        for _ in 0..=planet {
             derived = stream.random();
         }
         Self(derived)
