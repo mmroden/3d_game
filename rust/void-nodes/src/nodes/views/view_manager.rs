@@ -163,7 +163,10 @@ impl ViewManager {
 
     /// Log the physical display geometry (playtest 2026-07-06: mirrored
     /// vs extended xReal monitors run very different resolutions and the
-    /// UI misfits silently — the log names the setup a report came from).
+    /// UI misfits silently — the log names the setup a report came from),
+    /// and the GPU's texture-side limit (owner 2026-09-06: the scene
+    /// texture cap claims to sit under it — the number that proves it is
+    /// the device's own, printed where every run can read it).
     fn log_display_geometry(&self, context: &str) {
         let ds = DisplayServer::singleton();
         let screen = ds.screen_get_size();
@@ -174,9 +177,17 @@ impl ViewManager {
         // panel). Print the scale so the log decodes itself.
         let scale = ds.screen_get_scale();
         let config = self.stereo_config();
+        let texture_side = godot::classes::RenderingServer::singleton()
+            .get_rendering_device()
+            .map(|device| {
+                device
+                    .limit_get(godot::classes::rendering_device::Limit::MAX_TEXTURE_SIZE_2D)
+                    .to_string()
+            })
+            .unwrap_or_else(|| "n/a (no rendering device)".to_string());
         godot_print!(
             "Display [{context}]: screen {}x{} px (scale {:.1} = {:.0}x{:.0} pt), \
-             window {}x{} ({:?}), mode {}, per-eye {}x{}",
+             window {}x{} ({:?}), mode {}, per-eye {}x{}, GPU max texture side {}",
             screen.x,
             screen.y,
             scale,
@@ -188,6 +199,7 @@ impl ViewManager {
             self.current_mode.label(),
             config.viewport_width,
             config.viewport_height,
+            texture_side,
         );
     }
 

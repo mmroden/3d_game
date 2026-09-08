@@ -1,5 +1,12 @@
 # Voice Test — register samples for redlining
 
+> **2026-08-30 — superseded.** The cast is two voices, both performed by Mark:
+> CONTROL (the man in the chair) and the Other (voices.md). The PLR samples are
+> retired, and "Dawn Six" was an invented name — retired with them; the player's
+> callsign is a `[CALLSIGN]` placeholder for Mark to fill. The handler samples
+> below also presume telemetry-only blindness; Control now sees the Player's
+> feed. Current register draft: [02_run_one.md](02_run_one.md).
+
 Purpose: lock how each voice *sounds* before mass drafting. These lines are
 disposable — mark up freely. Rules they follow: [script_guide.md](../script_guide.md).
 Some presume open-question recommendations (Q2-B voiced Player, Q3-B late

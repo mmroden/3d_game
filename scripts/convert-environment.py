@@ -1,10 +1,10 @@
 """Headless fixed-environment conversion for `make assets`, run via Blender.
 
-    blender --background --python scripts/convert-environment.py -- \
-        <model> <out.glb> <tex_root> <oracle.json> \
-        [--max max_materials.json] [--windows out.toml] \
-        [--cache scene_cache.blend] [--tex-cap N] [--report conversion.json] \
-        [--unit-scale S] [--obj-up Y|Z] [--obj-forward AXIS] \
+    blender --background --python scripts/convert-environment.py -- \\
+        <model> <out.glb> <tex_root> <manifest.json> \\
+        [--max max_materials.json] [--windows out.toml] \\
+        [--cache scene_cache.blend] [--tex-cap N] [--report conversion.json] \\
+        [--unit-scale S] [--obj-up Y|Z] [--obj-forward AXIS] \\
         [--keep lo_x,lo_y,lo_z,hi_x,hi_y,hi_z]
 
 One door for every planet-3 scene (the apartment, the hill house, the
@@ -13,19 +13,19 @@ Max/Corona or Blender, or OBJ + MTL from SketchUp — becomes one
 self-contained .glb at provider scale in meters. This script is
 MECHANISM only: the material POLICY lives in scripts/material_plan.py
 (pure Python, audited by `make test-assets`), computed from the model's
-material oracle (extract-fbx-materials.py or mtl_materials.py — one
+material manifest (extract-fbx-materials.py or mtl_materials.py — one
 JSON shape) and, when the pack ships a .max, its material table
 (extract-max-materials.py); scripts/plan_apply.py wires the plans
 (shared with the hull conversion). Here we import the scene by format,
 apply the plans, derive the window panes, cap textures, and export.
 
 Per-pack provider facts, recorded by the install script with their
-provenance (the census names them):
+provenance (the metrics name them):
   --unit-scale   the factor that makes the file's units meters (the hill
                  house's OBJ is millimeters: 0.001);
   --obj-up / --obj-forward   an OBJ's authored axes (SketchUp's is Z up;
                  the importer assumes Y up and lays the room on its side);
-  --keep         a box in the glTF frame (Y up, meters — the census's):
+  --keep         a box in the glTF frame (Y up, meters — the metrics'):
                  faces whose center falls outside are clipped, objects
                  left empty are dropped. Selects one scene when the
                  provider laid several side by side (the office's four
@@ -73,7 +73,7 @@ parser = argparse.ArgumentParser(prog="convert-environment.py")
 parser.add_argument("model")
 parser.add_argument("out")
 parser.add_argument("tex_root")
-parser.add_argument("oracle")
+parser.add_argument("manifest")
 parser.add_argument("--max", dest="max_table", default=None)
 parser.add_argument("--windows", default=None)
 parser.add_argument("--cache", default=None)
@@ -92,20 +92,20 @@ PANE_EMISSION = 1.5  # glass glow strength (look knob; blinds silhouette)
 MIN_WIRED = 0.80  # fraction of textured plans that must actually wire
 
 # ---- the material plans: policy computed OUTSIDE Blender ----
-if not os.path.isfile(args.oracle):
+if not os.path.isfile(args.manifest):
     raise SystemExit(
-        f"convert-environment: material oracle {args.oracle} missing — "
-        "install-addons.sh runs the oracle first; check the pipeline order.")
-with open(args.oracle) as f:
-    oracle = json.load(f)
+        f"convert-environment: material manifest {args.manifest} missing — "
+        "install-addons.sh extracts the manifest first; check the pipeline order.")
+with open(args.manifest) as f:
+    manifest = json.load(f)
 max_table = {}
 if args.max_table and os.path.isfile(args.max_table):
     with open(args.max_table) as f:
         max_table = normalize_max_table(json.load(f))
 
-inventory = shipped_inventory(oracle, tex_root)
-plans = build_plans(oracle, max_table, inventory)
-assigned = {n for n, r in oracle["materials"].items() if r["assigned"]}
+inventory = shipped_inventory(manifest, tex_root)
+plans = build_plans(manifest, max_table, inventory)
+assigned = {n for n, r in manifest["materials"].items() if r["assigned"]}
 glass_mats = {n for n in assigned if plans[n]["classification"] == "glass"}
 n_textured_planned = sum(
     1 for n in assigned if "texture" in plans[n]["base_color"])
@@ -118,7 +118,7 @@ print(
 )
 # What the relaxed name matching decided, pair by pair — a run artifact
 # for review, never a silent substitution.
-relaxed = loose_matches(oracle, inventory)
+relaxed = loose_matches(manifest, inventory)
 print(f"convert-environment: {len(relaxed)} texture references matched by relaxed name")
 for name, chan, declared, shipped in relaxed:
     print(f"convert-environment:   {name} {chan}: {declared} -> {shipped}")
@@ -224,7 +224,7 @@ def materials_in_use(objects):
 
 
 # ---- --keep: clip to the pick box. The box speaks the glTF frame (Y up,
-# the census's); Blender's world is Z up with glTF (x, y, z) =
+# the metrics'); Blender's world is Z up with glTF (x, y, z) =
 # Blender (x, z, -y). Objects wholly outside go, objects straddling the
 # box lose the faces whose center is outside, objects left empty go ----
 report = {"kept_objects": len(meshes), "dropped_objects": 0, "clipped_faces": 0,
@@ -411,6 +411,10 @@ for o in meshes:
     total += len(o.data.loop_triangles)
 
 print(f"convert-environment: exporting {total} tris (no decimation)...", flush=True)
-bpy.ops.export_scene.gltf(filepath=out_path, export_format="GLB", export_apply=True)
+# No vertex colors: no plan reads them, and the exporter warns per mesh
+# about an active color layer its material never uses (the apartment's
+# four, 2026-09-07).
+bpy.ops.export_scene.gltf(filepath=out_path, export_format="GLB", export_apply=True,
+                          export_vertex_color="NONE")
 size_mb = os.path.getsize(out_path) / 1e6
 print(f"convert-environment: {total} tris, {wired} textured materials -> {out_path} ({size_mb:.0f} MB)")

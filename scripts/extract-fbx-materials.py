@@ -1,7 +1,7 @@
-"""FBX material oracle for `make assets`, run via Blender (parse only, no
-scene import — seconds, not minutes).
+"""FBX material manifest extractor for `make assets`, run via Blender (parse
+only, no scene import — seconds, not minutes).
 
-    blender --background --python scripts/extract-fbx-materials.py -- \
+    blender --background --python scripts/extract-fbx-materials.py -- \\
         <in.fbx> <out.json>
 
 Dumps the COMPLETE material truth from the FBX connection tables into one

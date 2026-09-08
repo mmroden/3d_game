@@ -60,9 +60,10 @@ Hard rules at every tier:
 ### The Handler — comms discipline, eroding
 
 - Astronaut/ATC register: procedure words (*copy, say again, stand by,
-  good copy*), callsign discipline ("Dawn Six"). The tutorial is not a
-  tutorial voice — it is mission control running diagnostics, and the
-  diagnostics happen to teach the controls.
+  good copy*), callsign discipline (`[CALLSIGN]` — Mark fills it; invented
+  callsigns were an overreach). The tutorial is not a tutorial voice — it
+  is a control tower running a sortie, and the sortie happens to teach the
+  controls.
 - **The lag is a writing rule, not just audio:** the handler never reacts in
   real time. Every handler line is retrospective — responding to what the
   player did three seconds ago. Never write the handler interjecting into a
@@ -73,17 +74,18 @@ Hard rules at every tier:
   they are the handler's milestones.
 - The handler is the only voice permitted humor, and only the gallows-lite
   kind that people in control rooms actually use.
-- The handler cannot see or hear the simulation (voices.md audibility
-  matrix). They react only to telemetry and to what the Player tells them.
-  Dramatic irony lives here; never violate it for convenience.
+- Control sees what the Player sees and hears nothing back (Mark,
+  2026-08-30; voices.md). He reacts to what he watches and never gets an
+  answer — every line is half a conversation. Dramatic irony lives in the
+  missing half; never violate it for convenience.
 
-### The Player — the surrogate
+### The Player — talks, but is never heard (2026-08-30)
 
-- Says only what the person holding the controller could plausibly be
-  thinking at that moment. Questions over statements. Zero exposition, ever.
-- Sparse. Silence is always available and often correct.
-- Speaks only on the handler channel (voices.md). Talking into a 3-second
-  lag makes short monologue natural — use it.
+- The Player keys the mic and calls base; the Other swallows the path
+  (voices.md). In the mix the Player is unvoiced — the audience hears the
+  consequences of the Player speaking, never the speech.
+- Write around the silence: Control's non-answers and the Other's learned
+  vocabulary are where the Player's side of the conversation shows up.
 
 ## Line format
 

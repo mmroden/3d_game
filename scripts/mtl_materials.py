@@ -1,9 +1,10 @@
-"""OBJ/MTL material oracle for `make assets` (pure Python, no Blender).
+"""OBJ/MTL material manifest extractor for `make assets` (pure Python, no
+Blender).
 
     python3 scripts/mtl_materials.py <in.obj> <in.mtl> <out.json>
 
 The Wavefront twin of extract-fbx-materials.py, for packs that ship no
-FBX (the hill house is a SketchUp OBJ export). Emits the SAME oracle
+FBX (the hill house is a SketchUp OBJ export). Emits the SAME manifest
 shape the material plan and the audit consume, so an MTL pack rides the
 plan doors unchanged:
 
@@ -19,12 +20,12 @@ plan doors unchanged:
     vertices (one per side material) and Blender's mesh validation keeps
     one, so the second material loses its only face; a `usemtl` with
     only such faces, or none, is an authored leftover the audit must not
-    demand (the FBX oracle and the cockpit reader draw the same line),
+    demand (the FBX manifest and the cockpit reader draw the same line),
   - `face_stats` = per material: faces, distinct solid faces, and the
     largest triangle's cross-product magnitude (2x area, file units) —
     what says whether a material the glb lacks was ever visible,
   - `embedded_textures` = [] (OBJ embeds nothing),
-  - `geometry` = the raw file's census: vertex/face/object/group counts,
+  - `geometry` = the raw file's counts: vertex/face/object/group counts,
     the vertex AABB, and 5th/95th-percentile extents per axis — a room
     tells itself apart from the backdrop around it (the hill house's one
     mesh spans a 175 km AABB).
@@ -81,7 +82,7 @@ def _texture_statement(tokens):
 
 
 def parse_mtl(text):
-    """Material name -> oracle record, from MTL text."""
+    """Material name -> manifest record, from MTL text."""
     materials = {}
     rec = None
     for raw in text.splitlines():
@@ -163,7 +164,7 @@ def _largest_cross(idx, verts):
 
 def _scan_obj(obj_path):
     """One line scan of the OBJ (hundreds of MB): per-material face
-    statistics (from which `assigned` derives) and the geometry census.
+    statistics (from which `assigned` derives) and the geometry counts.
     Vertices are kept for the face-area test and the percentile extents;
     each face's vertex set is remembered (hashed) so a later polygon over
     the same vertices counts as a duplicate, not a distinct face."""
@@ -227,12 +228,12 @@ def assigned_in_obj(obj_path):
 
 
 def obj_geometry(obj_path):
-    """The raw file's geometry census (see module doc)."""
+    """The raw file's geometry counts (see module doc)."""
     return _scan_obj(obj_path)[1]
 
 
 def extract(obj_path, mtl_path):
-    """The oracle table for one OBJ/MTL pair."""
+    """The manifest table for one OBJ/MTL pair."""
     with open(mtl_path, encoding="utf-8", errors="replace") as f:
         materials = parse_mtl(f.read())
     stats, geometry = _scan_obj(obj_path)

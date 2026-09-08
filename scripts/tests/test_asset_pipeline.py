@@ -4,10 +4,10 @@ The provider's .max/.fbx/.obj files are the AUTHORING TRUTH; these
 tests hold the material plan (scripts/material_plan.py) and the built
 .glb to it, for every pack the pipeline converts through the plan doors
 (PACKS below: the planet-3 environments and the military-ship hull).
-Every expectation is DERIVED from the generated extracts — the oracle —
-never pinned to counts, so a new provider pack rides the same audit by
-adding one row: its first run NAMES what the new format breaks instead
-of a playtest revealing it.
+Every expectation is DERIVED from the generated extracts — the material
+manifest — never pinned to counts, so a new provider pack rides the same
+audit by adding one row: its first run NAMES what the new format breaks
+instead of a playtest revealing it.
 
 A pack may carry an explicit WAIVER for what its provider never shipped
 (`unshipped`): the audit then reports the hole as an expected failure
@@ -32,7 +32,7 @@ OFFICE_BUILDING = ROOT / "assets" / "office_building"
 MOUNTAIN_VILLA = ROOT / "assets" / "mountain_villa"
 ENVIRONMENTS = ROOT / "godot" / "addons" / "environments"
 
-# pack -> the pipeline's artifacts for it: the material oracle (FBX
+# pack -> the pipeline's artifacts for it: the material manifest (FBX
 # connection tables or MTL statements, one shape), the .max material
 # table (None for packs that ship no .max), the root the archives
 # extract under (walked recursively), the built .glb, the converter's
@@ -40,7 +40,7 @@ ENVIRONMENTS = ROOT / "godot" / "addons" / "environments"
 # and the provider-hole waiver (None when everything declared shipped).
 PACKS = {
     "apartment": {
-        "oracle": APARTMENT / "fbx_materials.json",
+        "manifest": APARTMENT / "fbx_materials.json",
         "max": APARTMENT / "max_materials.json",
         "textures": APARTMENT / "unpacked",
         "glb": ENVIRONMENTS / "apartment.glb",
@@ -48,7 +48,7 @@ PACKS = {
         "unshipped": None,
     },
     "hill_house": {
-        "oracle": HILL_HOUSE / "mtl_materials.json",
+        "manifest": HILL_HOUSE / "mtl_materials.json",
         "max": None,
         "textures": HILL_HOUSE / "unpacked",
         "glb": ENVIRONMENTS / "hill_house.glb",
@@ -60,7 +60,7 @@ PACKS = {
                       "reason": "SketchUp per-material texture names; provider ships source maps only"},
     },
     "office_building": {
-        "oracle": OFFICE_BUILDING / "fbx_materials.json",
+        "manifest": OFFICE_BUILDING / "fbx_materials.json",
         "max": None,
         "textures": OFFICE_BUILDING / "unpacked",
         "glb": ENVIRONMENTS / "office_building.glb",
@@ -68,7 +68,7 @@ PACKS = {
         "unshipped": None,
     },
     "mountain_villa": {
-        "oracle": MOUNTAIN_VILLA / "fbx_materials.json",
+        "manifest": MOUNTAIN_VILLA / "fbx_materials.json",
         "max": MOUNTAIN_VILLA / "max_materials.json",
         "textures": MOUNTAIN_VILLA / "unpacked",
         "glb": ENVIRONMENTS / "mountain_villa.glb",
@@ -79,7 +79,7 @@ PACKS = {
                       "reason": "provider never packed the Croncreet material's photo"},
     },
     "military_ship": {
-        "oracle": MILITARY_SHIP / "fbx_materials.json",
+        "manifest": MILITARY_SHIP / "fbx_materials.json",
         "max": None,
         "textures": MILITARY_SHIP / "unpacked",
         "glb": ROOT / "godot" / "addons" / "ships" / "military_ship.glb",
@@ -106,7 +106,7 @@ from material_plan import (  # noqa: E402
 )
 
 
-# ---- fixtures: the generated oracle artifacts, per pack ----
+# ---- fixtures: the generated manifest artifacts, per pack ----
 
 def _load_or_skip(path, hint):
     if not path.exists():
@@ -122,9 +122,9 @@ def pack(request):
 
 @pytest.fixture(scope="session")
 def fbx(pack):
-    """The pack's material oracle (FBX connection tables or MTL statements
-    — one shape), named for its first source."""
-    return _load_or_skip(pack["oracle"], "make assets")
+    """The pack's material manifest (FBX connection tables or MTL
+    statements — one shape), named for its first source."""
+    return _load_or_skip(pack["manifest"], "make assets")
 
 
 @pytest.fixture(scope="session")
@@ -490,7 +490,7 @@ def test_embedded_textures_count_as_shipped(fbx, inventory):
 def test_shipped_inventory_unions_loose_and_embedded(tmp_path):
     """The inventory door itself: image files anywhere under the
     extracted archives (wrapper folders, several archives) plus the
-    oracle's embedded_textures, by basename; non-images and dotfiles
+    manifest's embedded_textures, by basename; non-images and dotfiles
     are not textures."""
     wrapped = tmp_path / "Textures.rar" / "Textures"
     wrapped.mkdir(parents=True)
@@ -571,21 +571,134 @@ def test_glb_emission_respects_the_cap(glb):
     assert not hot, f"materials past the emission ceiling (white shapes): {hot}"
 
 
+def test_plan_key_is_the_exported_content_only():
+    """Two plans that export the same glTF material are one class,
+    whatever their provenance: the `source` notes ("mtl:map_Kd",
+    "fbx:DiffuseColor"), the resolution chain and an emission's authored
+    strength never reach the glb, so dedup merges across them — the
+    apartment lost four classes to that on the first optimized run
+    (2026-09-07). Content that does export keeps classes apart."""
+    a = {"classification": "textured",
+         "base_color": {"texture": "Wall.png", "source": "fbx:DiffuseColor"},
+         "roughness": {"value": 0.5, "source": "max:reflectGlossiness"},
+         "emission": {"color": [1, 1, 1], "strength": 1.0, "authored_strength": 1000.0},
+         "resolved_from": ["Container", "Wall"]}
+    b = {"classification": "textured",
+         "base_color": {"texture": "Wall.png", "source": "mtl:map_Kd"},
+         "roughness": {"value": 0.5, "source": "fbx:Shininess"},
+         "emission": {"color": [1, 1, 1], "strength": 1.0, "authored_strength": 2.0}}
+    c = dict(a, roughness={"value": 0.7, "source": "max:reflectGlossiness"})
+    assert plan_key(a) == plan_key(b), "provenance is not content"
+    assert plan_key(a) != plan_key(c), "a different roughness is a different material"
+
+
+def plan_key(plan):
+    """A plan's exported content: two source materials with equal keys
+    export as identical glTF materials, and the door's optimizer
+    (glTF-Transform dedup) merges them under one surviving name —
+    SketchUp's thousands of clones are one material. Provenance never
+    reaches the glb and is left out: the `source` notes, the resolution
+    chain, an emission's authored strength."""
+    def content(value):
+        if isinstance(value, dict):
+            return {k: content(v) for k, v in value.items()
+                    if k not in ("source", "resolved_from", "authored_strength")}
+        return value
+    return json.dumps(content(plan), sort_keys=True)
+
+
+def plan_classes(fbx, plans, report):
+    """Assigned source materials grouped by plan content, the converter's
+    deliberate drops (objects outside the keep box) left out:
+    {plan key: [names]}. Conservation is judged per class."""
+    dropped = set(report.get("dropped_materials", []))
+    classes = {}
+    for name in assigned(fbx):
+        if name in dropped or name not in plans:
+            continue
+        classes.setdefault(plan_key(plans[name]), []).append(name)
+    return classes
+
+
 def test_glb_carries_every_assigned_material(glb, fbx, plans, report):
-    """Conversion must not LOSE materials: every assigned material lands
-    in the glb (under its own name; Blender may dedup) — except those the
-    converter reports it dropped on purpose with the objects outside the
-    keep box. The failure names each lost material's face statistics
-    (the oracle's count and largest triangle) so a sliver the importer
+    """Conversion must not LOSE materials. The door merges source
+    materials whose plans are identical (glTF-Transform's dedup keeps one
+    name per content class), so the contract is per class: at least one
+    of its names lands in the glb — except classes the converter reports
+    it dropped on purpose with the objects outside the keep box. The
+    failure names each lost class's members and face statistics (the
+    manifest's count and largest triangle) so a sliver the importer
     pruned is told apart from a surface that vanished."""
     shipped = {glb_base_name(m.get("name", "")) for m in glb.get("materials", [])}
-    dropped = set(report.get("dropped_materials", []))
-    lost = sorted(n for n in assigned(fbx) if n not in shipped and n not in dropped)
     stats = fbx.get("face_stats", {})
-    detail = {n: stats.get(n) for n in lost[:8]}
+    lost = sorted((names for names in plan_classes(fbx, plans, report).values()
+                   if not any(n in shipped for n in names)), key=lambda names: names[0])
+    detail = {names[0]: stats.get(names[0]) for names in lost[:8]}
     assert not lost, (
-        f"{len(lost)} assigned materials absent from the glb: {lost[:12]} "
-        f"(face stats: {detail})")
+        f"{len(lost)} material classes absent from the glb ({sum(map(len, lost))} source "
+        f"materials): {[names[:3] for names in lost[:12]]} (face stats: {detail})")
+
+
+def glb_triangles_by_material(glb):
+    """Triangles each material index carries in the glb's primitives."""
+    counts = {}
+    for mesh in glb.get("meshes", []):
+        for prim in mesh.get("primitives", []):
+            if prim.get("mode", 4) != 4:
+                continue
+            acc = prim.get("indices", prim["attributes"]["POSITION"])
+            n = glb["accessors"][acc]["count"] // 3
+            counts[prim.get("material")] = counts.get(prim.get("material"), 0) + n
+    return counts
+
+
+def test_every_assigned_material_keeps_its_faces(glb, fbx, plans, report):
+    """A material name surviving is not the surface surviving: every
+    class of assigned materials (equal plans merge under one name) with
+    solid faces at the source must carry at least as many triangles in
+    the glb as its members had distinct solid faces (a quad is two;
+    nothing lawful makes fewer) — owner 2026-09-06: the hill house lost
+    lamp chains and seat cushions, small parts whose names came through.
+    Packs whose manifest counts faces (the MTL manifest's face_stats)
+    are held to it; the others have no source count."""
+    stats = fbx.get("face_stats")
+    if not stats:
+        pytest.skip("the material manifest carries no per-material face counts")
+    tris = glb_triangles_by_material(glb)
+    by_name = {}
+    for index, mat in enumerate(glb.get("materials", [])):
+        name = glb_base_name(mat.get("name", ""))
+        by_name[name] = by_name.get(name, 0) + tris.get(index, 0)
+    short = []
+    for names in plan_classes(fbx, plans, report).values():
+        faces = sum(stats.get(n, {}).get("distinct_solid_faces", 0) for n in names)
+        carried = sum(by_name.get(n, 0) for n in names)
+        if faces > 0 and carried < faces:
+            label = names[0] + (f" (+{len(names) - 1} merged)" if len(names) > 1 else "")
+            short.append((label, faces, carried))
+    short.sort(key=lambda t: t[2] / t[1])
+    lost_faces = sum(f - c for _n, f, c in short)
+    assert not short, (
+        f"{len(short)} material classes carry fewer triangles than their source "
+        f"faces ({lost_faces} faces short in all; sparsest first as "
+        f"(class, source faces, glb tris)): {short[:12]}")
+
+
+def test_no_assigned_material_ships_invisible(glb, fbx):
+    """A surface that shipped but renders nothing — blended or masked at
+    an alpha under 0.05 — is a hole with a name. Every such material
+    is listed; none is expected (a pack that wants one waives it)."""
+    tris = glb_triangles_by_material(glb)
+    invisible = []
+    for index, mat in enumerate(glb.get("materials", [])):
+        if not tris.get(index) or mat.get("alphaMode") not in ("BLEND", "MASK"):
+            continue
+        factor = mat.get("pbrMetallicRoughness", {}).get("baseColorFactor")
+        alpha = float(factor[3]) if factor and len(factor) > 3 else 1.0
+        if alpha < 0.05:
+            invisible.append((mat.get("name"), mat.get("alphaMode"), round(alpha, 3), tris[index]))
+    assert not invisible, (
+        f"{len(invisible)} materials ship invisible (name, mode, alpha, tris): {invisible[:10]}")
 
 
 def test_glb_ships_no_animations(glb):
@@ -596,7 +709,6 @@ def test_glb_ships_no_animations(glb):
     (2026-09-06) until the conversion stripped the actions."""
     animated = [a.get("name") for a in glb.get("animations", [])]
     assert not animated, f"provider animations survived the conversion: {animated}"
-
 
 
 # ---- the decimate door's products: every installed enemy model ----
@@ -623,3 +735,235 @@ def test_decimated_models_ship_no_animations(enemy_glb):
     stayed gigantic whatever enemies.toml said (owner 2026-09-06)."""
     animated = [a.get("name") for a in enemy_glb.get("animations", [])]
     assert not animated, f"provider animations survived decimation: {animated}"
+
+
+# ---- texel density: the scene metrics against the floor ----
+
+# Texels per WORLD meter a fixed environment's textured surfaces must lay
+# down (owner 2026-09-06: "could we enforce something like 500 texels/
+# meter as a minimum?" — contract first, the retile after). The
+# apartment's median is about 1000 and reads well; the office's 216 is
+# where the eye starts to notice; the villa's 20..40 is blocks.
+MIN_WORLD_TEXELS_PER_M = 500.0
+
+
+# Share of a textured surface's area inside the zone union (the metrics'
+# in_zones) for the floor to reach it: the player walks the zones, so a
+# backdrop hill or a tree card past them is out of the rule by geometry
+# — one rule for every scene, never a waiver naming a level (owner
+# 2026-09-07: "genericise your import methodologies and apply all of the
+# tricks on all of the levels").
+PLAYABLE_SHARE = 0.5
+
+CATALOG_KITS = ROOT / "catalog" / "kits.toml"
+METRICS_DIR = ROOT / "out" / "metrics"
+
+try:
+    import tomllib
+except ImportError:  # the audit venv (python 3.9) carries tomli
+    import tomli as tomllib
+
+
+@pytest.fixture(scope="session")
+def metrics(pack):
+    """The scene metrics `make metrics` (or `make assets`) wrote for this
+    pack's product — the reproducible reading of what shipped. None for
+    a pack that is not a scene (a hull has its own metrics)."""
+    key = pack["glb"].stem
+    if kit_scale(key) is None:
+        return None
+    path = METRICS_DIR / f"{key}.toml"
+    if not path.exists():
+        pytest.skip(f"{path} missing — run `make metrics` first")
+    with open(path, "rb") as f:
+        return tomllib.load(f)
+
+
+def kit_scale(environment_key):
+    """World units per model meter the catalog declares for the fixed kit
+    joined to this environment; None when no kit joins it (a hull)."""
+    with open(CATALOG_KITS, "rb") as f:
+        kits = tomllib.load(f)["kits"]
+    for kit in kits.values():
+        if kit.get("paradigm") == "fixed" and kit.get("environment") == environment_key:
+            return float(kit["scale"])
+    return None
+
+
+def test_textured_surfaces_meet_the_texel_density_floor(pack, metrics):
+    """Every textured surface the player walks past lays down at least
+    MIN_WORLD_TEXELS_PER_M once the kit scale is applied — the metrics'
+    texels per MODEL meter (map size x mapping over surface area)
+    divided by the catalog's scale, since one model meter stretches to
+    `scale` world meters. The rule reaches the surfaces inside the zone
+    union (in_zones >= PLAYABLE_SHARE; a scene without a roster is all
+    in scope), the same rule for every scene: a backdrop hill or a tree
+    card past the rooms is out by geometry, never by a waiver naming a
+    level (owner 2026-09-07). The median must clear the floor and every
+    surface under it is listed."""
+    key = pack["glb"].stem
+    scale = kit_scale(key)
+    if scale is None:
+        pytest.skip(f"{key}: no fixed kit joins it — a hull, not a scene")
+    rows = [r for r in metrics.get("density", [])
+            if r.get("in_zones", 1.0) >= PLAYABLE_SHARE]
+    assert rows, f"{key}: the metrics list no textured surfaces inside the zones"
+    world = sorted(r["texels_per_m"] / scale for r in rows)
+    median = world[len(world) // 2]
+    sparse = sorted((r["texels_per_m"] / scale, r["name"]) for r in rows
+                    if r["texels_per_m"] / scale < MIN_WORLD_TEXELS_PER_M)
+    listing = ", ".join(f"{name} {d:.0f}" for d, name in sparse[:10])
+    assert median >= MIN_WORLD_TEXELS_PER_M, (
+        f"{key}: median {median:.0f} texels per world meter (kit scale {scale:g}) "
+        f"over {len(rows)} surfaces in the zones is under the "
+        f"{MIN_WORLD_TEXELS_PER_M:.0f} floor — the mapping spends its maps too "
+        f"thinly; sparsest: {listing}")
+    assert not sparse, (
+        f"{key}: {len(sparse)} of {len(rows)} textured surfaces in the zones under "
+        f"{MIN_WORLD_TEXELS_PER_M:.0f} texels per world meter: {listing}")
+
+
+# Surfaces one Godot mesh keeps: RenderingServer.MAX_MESH_SURFACES.
+# Past it the importer drops every further surface with an error
+# ('Condition "surfaces.size() == RenderingServer::MAX_MESH_SURFACES" is
+# true.' — 22,630 of them in out/assets-run29-import.log, two passes over
+# the hill house's 11,571 single-mesh materials). One glTF primitive is
+# one surface; the converter exports one primitive per material a mesh
+# uses, so a mesh's surfaces are the materials it carries.
+GODOT_MAX_MESH_SURFACES = 256
+
+
+def test_no_scene_mesh_exceeds_godots_surface_cap(pack, metrics):
+    """Every mesh a scene ships carries at most GODOT_MAX_MESH_SURFACES
+    surfaces, so every material reaches the level (owner 2026-09-07:
+    "materials not making the transition, not textures" — the hill
+    house's seats, chains and table tops sat past the cap)."""
+    key = pack["glb"].stem
+    if metrics is None:
+        pytest.skip(f"{key}: a hull, not a scene")
+    geometry = metrics["geometry"]
+    assert geometry["surfaces_max_per_mesh"] <= GODOT_MAX_MESH_SURFACES, (
+        f"{key}: a mesh ships {geometry['surfaces_max_per_mesh']} surfaces "
+        f"({geometry['surfaces']} over {geometry['parts']} parts); Godot keeps "
+        f"{GODOT_MAX_MESH_SURFACES} per mesh and drops the rest — "
+        f"{geometry['surfaces_max_per_mesh'] - GODOT_MAX_MESH_SURFACES} materials "
+        f"never reach the level (metrics: {metrics['materials']['clone_stems']} "
+        f"distinct names once clone suffixes are stripped)")
+
+
+# ---- door logs: every ERROR and WARNING a step printed, condensed by
+# scripts/log-histogram.py into out/metrics/log_<step>.toml (a histogram
+# of message x source x asset, and a tally per asset). A door that exits
+# 0 while printing errors has still failed its product: Godot dropped
+# 11,315 hill house surfaces past its per-mesh cap with 22,630 ERROR
+# lines and exit status 0 (owner 2026-09-07: "build a histogram of
+# errors ... 22k errors of this type from this file, that could be a
+# thing to investigate first"). Both contracts are red until the doors
+# print nothing — the reds are the work list, most frequent first.
+
+# Engine noise the contracts do not hold the doors to — messages the
+# engine prints about itself at exit, with no product behind them. Each
+# entry is a message prefix (after the histogram's folding) and the
+# reason; the histogram still records every occurrence, so the count is
+# never hidden, only excused here by name. Nothing about a level or a
+# pack is ever listed (owner 2026-09-07: no waivers naming levels).
+ENGINE_NOISE = {
+    "ObjectDB instances leaked at exit":
+        "Godot's headless --import leaks editor objects at exit on every run "
+        "(one per pass); nothing of ours allocates them",
+}
+
+
+# Blender's glTF exporter warns whenever one metallic-roughness map feeds
+# both the Metallic and Roughness sockets (its __gather_sampler sees two
+# sockets, the same image node behind each, and warns "the resulting
+# glTF sampler will behave like the first shader node tex image") — the
+# standard glTF PBR wiring every imported kit material has. Nothing in
+# our doors can change it short of dropping a channel.
+ENGINE_NOISE["More than one shader node tex image used for a texture"] = (
+    "Blender's glTF exporter, metallic and roughness sockets sharing one image "
+    "node (io_scene_gltf2 texture.py __gather_sampler); the export is correct")
+
+
+# Blender's FBX importer reports every material->texture link it cannot
+# resolve in a provider's FBX (the cgtrader mechs and sphere ships ship
+# their Substance maps loose, unreferenced by the file: six links per
+# model). The decimate door then rebuilds the material from those loose
+# maps by design (decimate.py build_material), so the link was never
+# going to be used.
+ENGINE_NOISE["material link b'"] = (
+    "Blender's FBX importer on a provider file whose texture links point at "
+    "unshipped paths; decimate.py rebuilds the material from the loose maps")
+
+
+# Third-party tools' own complaints about a provider file, scoped to the
+# door log they appear in — never a bare message that could excuse one
+# of ours elsewhere: (message prefix, log/asset prefix) -> reason.
+TOOL_NOISE = {
+    ("list index out of range", "max-"):
+        "Blender's io_scene_max extension parsing 3ds Max nodes it does not "
+        "model (the apartment's CoronaPhysicalMtl entries, 177 of them); its "
+        "documented use here is the material table alone, which it still writes",
+}
+
+
+TOOL_NOISE[("bpy_struct: item.attr = val: Object.parent ID type does not support assignment to itself", "max-")] = (
+    "the same extension trying to parent a 3ds Max node to itself (the villa's "
+    "'mountain house' group); the object tree is not what the table reads")
+
+
+TOOL_NOISE[("unpack requires a buffer of", "max-")] = (
+    "the same extension reading a 3ds Max chunk shorter than its struct "
+    "(eight ZJ-1xx nodes of the apartment); the material table is unaffected")
+
+
+def engine_noise(row):
+    if any(row["message"].startswith(prefix) for prefix in ENGINE_NOISE):
+        return True
+    return any(row["message"].startswith(m) and row["asset"].startswith(a)
+               for m, a in TOOL_NOISE)
+
+
+def door_log_histograms():
+    return sorted(METRICS_DIR.glob("log_*.toml"))
+
+
+def door_log_id(path):
+    return path.stem[len("log_"):] if path else "no-door-logs"
+
+
+def load_door_log(path):
+    if path is None:
+        pytest.skip("no door log histogram yet — run make assets (or make metrics)")
+    with open(path, "rb") as f:
+        return tomllib.load(f)
+
+
+def door_log_listing(rows):
+    return "; ".join(f"{r['count']} x {r['message'][:90]} [{r['asset']}]" for r in rows[:6])
+
+
+@pytest.mark.parametrize("path", door_log_histograms() or [None], ids=door_log_id)
+
+def test_a_door_prints_no_errors(path):
+    doc = load_door_log(path)
+    summary = doc["summary"]
+    rows = [r for r in doc.get("error", []) if not engine_noise(r)]
+    excused = sum(r["count"] for r in doc.get("error", []) if engine_noise(r))
+    assert not rows, (
+        f"{summary['step']}: {sum(r['count'] for r in rows)} errors ({len(rows)} distinct"
+        f"{f', {excused} tool-noise occurrences excused' if excused else ''}) "
+        f"over {', '.join(summary['logs'])}: {door_log_listing(rows)}")
+
+
+@pytest.mark.parametrize("path", door_log_histograms() or [None], ids=door_log_id)
+
+def test_a_door_prints_no_warnings(path):
+    doc = load_door_log(path)
+    summary = doc["summary"]
+    rows = [r for r in doc.get("warning", []) if not engine_noise(r)]
+    excused = sum(r["count"] for r in doc.get("warning", []) if engine_noise(r))
+    assert not rows, (
+        f"{summary['step']}: {sum(r['count'] for r in rows)} warnings ({len(rows)} distinct"
+        f"{f', {excused} engine-noise occurrences excused' if excused else ''}) "
+        f"over {', '.join(summary['logs'])}: {door_log_listing(rows)}")

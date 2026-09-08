@@ -1,21 +1,21 @@
-"""Scene census for `make assets` and `make census` (pure Python, no Blender).
+"""Scene metrics for `make assets` and `make metrics` (pure Python, no Blender).
 
-    python3 scripts/scene-census.py <key> <scene.glb> <out.toml> [oracle.json] [zones.toml]
+    python3 scripts/scene-metrics.py <key> <scene.glb> <out.toml> [manifest.json] [zones.toml]
 
 Written by install-addons.sh right after every environment conversion,
-one file per scene under out/census/: what the pipeline PRODUCED, in
+one file per scene under out/metrics/: what the pipeline PRODUCED, in
 one stable, human-readable place — the scene's extents in model meters
 (the numbers zone authoring and the kit scale decision start from),
 its parts and triangles, its exported materials (alpha modes, textured
 or flat), any surviving animations, the largest parts with their AABBs,
-and the SOURCE file's own geometry census when the oracle carries one
-(the OBJ oracle's vertex counts and percentile extents — how the hill
-house's millimeter units and 175 km backdrop were told apart). Read
-this instead of parsing a .glb or an oracle by hand: the census is
-reproducible, an inline parse is not.
+and the SOURCE file's own geometry counts when the material manifest
+carries them (the OBJ manifest's vertex counts and percentile extents —
+how the hill house's millimeter units and 175 km backdrop were told
+apart). Read this instead of parsing a .glb or a manifest by hand: the
+metrics are reproducible, an inline parse is not.
 
-Beside the TOML, RECON SECTIONS for zone authoring — the scene cut by a
-plane, drawn the way an architect's drawings read (owner 2026-09-06:
+Beside the TOML, SECTION DRAWINGS for zone authoring — the scene cut by
+a plane, drawn the way an architect's drawings read (owner 2026-09-06:
 zones drafted from bounding numbers walled off a hallway that exists
 and a ceiling that opens into the next floor; a vertex-density raster
 showed neither, a wall being four vertices):
@@ -42,10 +42,10 @@ green with its north edge tripled, boss red dotted, others yellow):
 a box edge that runs along a wall shows the wall, an edge across open
 floor shows its color — the difference between a box that follows
 the model and one that walls off a doorway. Every image's cut, axes,
-frame and cell are in the TOML's [[recon.section]] rows: pixel
-(i, j) is model (frame_lo[0] + i * cell, frame_lo[1] + j * cell) on
-the section's axes, rows counted from the top, or from the bottom
-when flip_v (the vertical sections draw y up).
+frame and cell are in the TOML's [[section]] rows: pixel (i, j) is
+model (frame_lo[0] + i * cell, frame_lo[1] + j * cell) on the
+section's axes, rows counted from the top, or from the bottom when
+flip_v (the vertical sections draw y up).
 
 Bounds come from the accessors' declared min/max through the node
 transforms (cockpit_plan.parse_glb in bounds-only mode); the sections
@@ -71,9 +71,9 @@ from cockpit_plan import (  # noqa: E402
 )
 
 LARGEST = 24  # parts listed individually, by AABB volume
-RECON_MAX_CELLS = 1600  # longest image side, pixels
-RECON_MIN_CELL = 0.025  # meters per pixel, floor
-# The recon frame: the body (5th..95th percentile of the vertex cloud)
+SECTION_MAX_CELLS = 1600  # longest image side, pixels
+SECTION_MIN_CELL = 0.025  # meters per pixel, floor
+# The section frame: the body (5th..95th percentile of the vertex cloud)
 # joined with the authored zone boxes, plus this margin per axis —
 # enough to show what leads out of the body (a hallway, a stair)
 # without the backdrop shrinking the room to a smudge.
@@ -179,9 +179,11 @@ def _transform_flat(m, pos):
 
 def load_mesh(gltf, binbuf):
     """Every triangle primitive of the default scene as (positions,
-    indices, blend): positions a flat array of world-space coordinates
-    [x0, y0, z0, x1, ...] (glTF frame, node transforms applied),
-    indices a flat sequence of vertex ids, three per triangle."""
+    indices, blend, uvs, material): positions a flat array of world-
+    space coordinates [x0, y0, z0, x1, ...] (glTF frame, node transforms
+    applied), indices a flat sequence of vertex ids, three per triangle,
+    uvs the flat TEXCOORD_0 array [u0, v0, u1, ...] or None, material
+    the primitive's material index or None."""
     blend_mats = {
         i for i, mat in enumerate(gltf.get("materials", []))
         if mat.get("alphaMode") in ("BLEND", "MASK")
@@ -202,7 +204,11 @@ def load_mesh(gltf, binbuf):
                     idx = _flat_accessor(gltf, binbuf, prim["indices"])
                 else:
                     idx = range(len(pos) // 3)
-                prims.append((pos, idx, prim.get("material") in blend_mats))
+                uv = None
+                if "TEXCOORD_0" in prim["attributes"]:
+                    uv = _flat_accessor(gltf, binbuf, prim["attributes"]["TEXCOORD_0"])
+                material = prim.get("material")
+                prims.append((pos, idx, material in blend_mats, uv, material))
         for child in node.get("children", []):
             walk(child, m)
 
@@ -221,7 +227,7 @@ def body_percentiles(prims, q_lo=0.05, q_hi=0.95):
     lo, hi, count = [], [], 0
     for axis in range(3):
         coords = []
-        for pos, _idx, _blend in prims:
+        for pos, *_rest in prims:
             coords.extend(pos[axis::3])
         count = len(coords)
         lo.append(percentile(coords, q_lo))
@@ -242,7 +248,7 @@ def vertical_reach(prims, body_lo, body_hi):
     x0, x1 = body_lo[0] - FOOTPRINT_REACH, body_hi[0] + FOOTPRINT_REACH
     z0, z1 = body_lo[2] - FOOTPRINT_REACH, body_hi[2] + FOOTPRINT_REACH
     lo = hi = None
-    for pos, _idx, _blend in prims:
+    for pos, *_rest in prims:
         for i in range(0, len(pos) - 2, 3):
             if x0 <= pos[i] <= x1 and z0 <= pos[i + 2] <= z1:
                 y = pos[i + 1]
@@ -268,7 +274,7 @@ def zones_bounds(zones):
 
 
 def frame_bounds(prims, body_lo, body_hi, zbox):
-    """The recon frame: the body joined with the zone boxes, plus a
+    """The section frame: the body joined with the zone boxes, plus a
     margin per axis; vertically also as far as what stands on the
     footprint reaches. Never clamped to the scene's extents — a margin
     past the last vertex is black, and a box drafted past the geometry
@@ -314,7 +320,7 @@ def cut_sections(prims, cuts):
     for n, (axis, level) in enumerate(cuts):
         by_axis.setdefault(axis, []).append((level, out[n]))
     axes = list(by_axis.items())
-    for pos, idx, blend in prims:
+    for pos, idx, blend, *_rest in prims:
         for k in range(0, len(idx) - 2, 3):
             a = idx[k] * 3
             b = idx[k + 1] * 3
@@ -371,7 +377,7 @@ class Raster:
         self.hi = (hi[axes[0]], hi[axes[1]])
         span_u = self.hi[0] - self.lo[0]
         span_v = self.hi[1] - self.lo[1]
-        self.cell = max(RECON_MIN_CELL, max(span_u, span_v) / RECON_MAX_CELLS)
+        self.cell = max(SECTION_MIN_CELL, max(span_u, span_v) / SECTION_MAX_CELLS)
         self.w = max(1, int(math.ceil(span_u / self.cell)) + 1)
         self.h = max(1, int(math.ceil(span_v / self.cell)) + 1)
         self.px = bytearray(self.w * self.h * 3)
@@ -545,7 +551,7 @@ def face_coverage(prims, faces):
         by_plane.setdefault((axis, plane), set()).add((u, v))
     cover = {key: bytearray(FACE_GRID * FACE_GRID) for key in faces}
     tol = FACE_TOLERANCE
-    for pos, idx, _blend in prims:
+    for pos, idx, _blend, *_rest in prims:
         for k in range(0, len(idx) - 2, 3):
             a = idx[k] * 3
             b = idx[k + 1] * 3
@@ -642,8 +648,8 @@ def section_plan(body_lo, body_hi, band):
     return cuts
 
 
-def recon(prims, frame_lo, frame_hi, body_lo, body_hi, band, zones, stem):
-    """Draw every section image; returns the [[recon.section]] rows."""
+def draw_sections(prims, frame_lo, frame_hi, body_lo, body_hi, band, zones, stem):
+    """Draw every section image; returns the [[section]] rows."""
     plan = section_plan(body_lo, body_hi, band)
     segments = cut_sections(prims, [(axis, level) for _n, axis, level, _a, _f in plan])
     rows = []
@@ -683,12 +689,355 @@ def material_lines(rows, table):
             f"roughness = {r['roughness']:.3f}",
             f"metallic = {r['metallic']:.3f}",
             f"emissive_strength = {r['emissive_strength']:.3f}",
+        ]
+        if "alpha" in r:
+            lines.append(f"alpha = {r['alpha']:.3f}")
+        if "tris" in r:
+            lines.append(f"tris = {r['tris']}")
+        if r.get("texels_per_m") is not None:
+            lines.append(f"texels_per_m = {r['texels_per_m']:.1f}")
+        lines.append("")
+    return lines
+
+
+def triangles_by_material(gltf):
+    """Triangles each material index carries across the default scene's
+    primitives (a material with none is a name in the file, not a
+    surface in the level)."""
+    counts = {}
+    for mesh in gltf.get("meshes", []):
+        for prim in mesh.get("primitives", []):
+            if prim.get("mode", 4) != 4:
+                continue
+            acc = prim.get("indices", prim["attributes"]["POSITION"])
+            n = gltf["accessors"][acc]["count"] // 3
+            counts[prim.get("material")] = counts.get(prim.get("material"), 0) + n
+    return counts
+
+
+
+INVISIBLE_ALPHA = 0.05  # a blended surface under this alpha renders nothing
+
+
+def material_alpha(mat):
+    """The material's base color alpha (1.0 when the file says nothing)."""
+    factor = mat.get("pbrMetallicRoughness", {}).get("baseColorFactor")
+    return float(factor[3]) if factor and len(factor) > 3 else 1.0
+
+
+def invisible_rows(materials, tris_by_material):
+    """Materials that carry faces yet render nothing: blended or masked
+    with a base alpha under INVISIBLE_ALPHA (owner 2026-09-06: lamp
+    chains and seat cushions missing from the hill house — a surface
+    that shipped and cannot be seen is told apart here from one that
+    never shipped)."""
+    rows = []
+    for index, mat in enumerate(materials):
+        tris = tris_by_material.get(index, 0)
+        if not tris or mat.get("alphaMode") not in ("BLEND", "MASK"):
+            continue
+        alpha = material_alpha(mat)
+        if alpha < INVISIBLE_ALPHA:
+            rows.append({"name": mat.get("name", "?"), "tris": tris, "alpha": alpha,
+                         "alpha_mode": mat.get("alphaMode")})
+    return rows
+
+
+def invisible_lines(rows):
+    lines = []
+    for r in rows:
+        lines += [
+            "[[invisible]]",
+            f"name = {toml_str(r['name'])}",
+            f"alpha_mode = {toml_str(r['alpha_mode'])}",
+            f"alpha = {r['alpha']:.3f}",
+            f"tris = {r['tris']}",
             "",
         ]
     return lines
 
 
-def main(key, glb_path, out_path, oracle_path=None, zones_path=None):
+
+def texel_density(prims, gltf, image_sizes):
+    """Texels per MODEL meter each textured material lays on its
+    surfaces: the square root of (base-color texture pixels x UV area)
+    over world area, summed over the material's triangles. A 4096 map
+    stretched once across a 10 m wall is 400 texels/m; tiled ten times
+    it is 4000. This is the number "low pixel textures" (owner
+    2026-09-06) resolves to — the map's size and its mapping together
+    — divided by the kit scale for texels per world meter.
+    `image_sizes` maps image index -> (width, height). Returns
+    {material index: texels per meter} for materials with a base color
+    texture, UVs, and area."""
+    image_of = {}
+    textures = gltf.get("textures", [])
+    for i, mat in enumerate(gltf.get("materials", [])):
+        base = mat.get("pbrMetallicRoughness", {}).get("baseColorTexture")
+        if base is not None and base["index"] < len(textures):
+            image_of[i] = textures[base["index"]].get("source")
+    world = {}
+    uv_area = {}
+    for pos, idx, _blend, uv, material in prims:
+        if uv is None or material not in image_of:
+            continue
+        w_sum = world.get(material, 0.0)
+        u_sum = uv_area.get(material, 0.0)
+        for k in range(0, len(idx) - 2, 3):
+            a, b, c = idx[k], idx[k + 1], idx[k + 2]
+            a3, b3, c3 = a * 3, b * 3, c * 3
+            ux, uy, uz = pos[b3] - pos[a3], pos[b3 + 1] - pos[a3 + 1], pos[b3 + 2] - pos[a3 + 2]
+            vx, vy, vz = pos[c3] - pos[a3], pos[c3 + 1] - pos[a3 + 1], pos[c3 + 2] - pos[a3 + 2]
+            cx, cy, cz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+            w_sum += math.sqrt(cx * cx + cy * cy + cz * cz) * 0.5
+            a2, b2, c2 = a * 2, b * 2, c * 2
+            du1, dv1 = uv[b2] - uv[a2], uv[b2 + 1] - uv[a2 + 1]
+            du2, dv2 = uv[c2] - uv[a2], uv[c2 + 1] - uv[a2 + 1]
+            u_sum += abs(du1 * dv2 - du2 * dv1) * 0.5
+        world[material] = w_sum
+        uv_area[material] = u_sum
+    density = {}
+    for material, image in image_of.items():
+        size = image_sizes.get(image)
+        if size and world.get(material, 0.0) > 0.0:
+            density[material] = math.sqrt(size[0] * size[1] * uv_area[material] / world[material])
+    return density
+
+
+def zone_share(prims, zones):
+    """Per material, the share of its surface area whose triangles sit
+    inside the authored zone union (a triangle counts where its centroid
+    lies): 1.0 for a wall the player walks past, 0.0 for a backdrop hill
+    past every box. The audit's texel-density floor reaches the surfaces
+    whose share is high — a rule about where the player goes, the same
+    for every scene, in place of waivers naming levels (owner
+    2026-09-07). Empty without zones. Returns {material index: share}."""
+    if not zones:
+        return {}
+    boxes = [(mn, [mn[k] + ex[k] for k in range(3)]) for _key, mn, ex, _start, _boss in zones]
+    total, inside = {}, {}
+    for pos, idx, _blend, _uv, material in prims:
+        t_sum = total.get(material, 0.0)
+        i_sum = inside.get(material, 0.0)
+        for k in range(0, len(idx) - 2, 3):
+            a3, b3, c3 = idx[k] * 3, idx[k + 1] * 3, idx[k + 2] * 3
+            ux, uy, uz = pos[b3] - pos[a3], pos[b3 + 1] - pos[a3 + 1], pos[b3 + 2] - pos[a3 + 2]
+            vx, vy, vz = pos[c3] - pos[a3], pos[c3 + 1] - pos[a3 + 1], pos[c3 + 2] - pos[a3 + 2]
+            cx, cy, cz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+            area = math.sqrt(cx * cx + cy * cy + cz * cz) * 0.5
+            t_sum += area
+            gx = (pos[a3] + pos[b3] + pos[c3]) / 3.0
+            gy = (pos[a3 + 1] + pos[b3 + 1] + pos[c3 + 1]) / 3.0
+            gz = (pos[a3 + 2] + pos[b3 + 2] + pos[c3 + 2]) / 3.0
+            for lo, hi in boxes:
+                if lo[0] <= gx < hi[0] and lo[1] <= gy < hi[1] and lo[2] <= gz < hi[2]:
+                    i_sum += area
+                    break
+        total[material] = t_sum
+        inside[material] = i_sum
+    return {m: inside[m] / total[m] for m in total if total[m] > 0.0}
+
+
+
+# ---------------------------------------------------------------- textures
+
+def image_size(data):
+    """(width, height) from a PNG or JPEG header, or None. JPEG: walk the
+    marker segments to the first frame header (SOF), skipping fill bytes
+    (0xFF runs — the hill house's tile maps carry them and read as size
+    0 until 2026-09-07) and stopping at the scan (SOS)."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
+        return struct.unpack(">II", data[16:24])
+    if data[:2] == b"\xff\xd8":
+        pos = 2
+        while pos + 9 < len(data):
+            if data[pos] != 0xFF:
+                pos += 1
+                continue
+            marker = data[pos + 1]
+            if marker == 0xFF:
+                pos += 1  # fill byte: the next 0xFF starts the marker
+                continue
+            if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+                pos += 2
+                continue
+            if marker == 0xDA:
+                return None  # scan data before any frame header
+            length = struct.unpack(">H", data[pos + 2:pos + 4])[0]
+            if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                          0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                height, width = struct.unpack(">HH", data[pos + 5:pos + 9])
+                return width, height
+            pos += 2 + length
+    return None
+
+
+def source_images(manifest_path):
+    """The shipped source images beside a material manifest (the pack's
+    extracted archives), by name — what the converter capped from."""
+    if not manifest_path:
+        return {}
+    unpacked = os.path.join(os.path.dirname(os.path.abspath(manifest_path)), "unpacked")
+    if not os.path.isdir(unpacked):
+        return {}
+    from material_plan import texture_files
+    return texture_files(unpacked)
+
+
+def texture_rows(gltf, binbuf, manifest_path=None):
+    """One row per image the scene ships: its name, format, shipped
+    pixel size and bytes, the sampler filter its textures use (nearest
+    reads as pixels however large the map), and — when the pack's
+    extracted archives are beside the manifest — the source image's
+    size, so a low-resolution surface can be told apart from a capped
+    one (owner 2026-09-06: "are you decimating textures? things look
+    very very low res")."""
+    sources = source_images(manifest_path)
+    from material_plan import find_in_inventory
+    filters = {}
+    for tex in gltf.get("textures", []):
+        sampler = gltf.get("samplers", [{}])[tex["sampler"]] if "sampler" in tex else {}
+        mag = sampler.get("magFilter", 9729)
+        filters.setdefault(tex.get("source"), "nearest" if mag == 9728 else "linear")
+    rows = []
+    for index, image in enumerate(gltf.get("images", [])):
+        name = image.get("name") or image.get("uri") or "?"
+        shipped = None
+        nbytes = 0
+        if "bufferView" in image:
+            view = gltf["bufferViews"][image["bufferView"]]
+            start = view.get("byteOffset", 0)
+            data = binbuf[start:start + view["byteLength"]]
+            nbytes = len(data)
+            shipped = image_size(data)
+        source = None
+        if sources:
+            hit = find_in_inventory(name if "." in name else name + ".png", sources) \
+                or find_in_inventory(name if "." in name else name + ".jpg", sources)
+            if hit:
+                with open(sources[hit], "rb") as f:
+                    source = image_size(f.read(65536))
+        rows.append({
+            "name": name, "mime": image.get("mimeType", "?"), "bytes": nbytes,
+            "width": shipped[0] if shipped else 0, "height": shipped[1] if shipped else 0,
+            "source_width": source[0] if source else 0,
+            "source_height": source[1] if source else 0,
+            "filter": filters.get(index, "unused"),
+        })
+    return rows
+
+
+def texture_lines(rows):
+    lines = []
+    if rows:
+        widest = max(max(r["width"], r["height"]) for r in rows)
+        capped = sum(1 for r in rows if r["source_width"]
+                     and max(r["source_width"], r["source_height"]) > max(r["width"], r["height"]))
+        shipped_px = sum(r["width"] * r["height"] for r in rows)
+        source_px = sum((r["source_width"] * r["source_height"]) or (r["width"] * r["height"])
+                        for r in rows)
+        nearest = sum(1 for r in rows if r["filter"] == "nearest")
+        lines += [
+            "[textures]",
+            "# Every image the scene ships (the converter caps each at its",
+            "# --tex-cap on the longest side and packs it); source_* is the",
+            "# shipped file's size when the pack's archives sit beside the",
+            "# manifest, 0 when unknown. capped = images smaller than their source;",
+            "# the megapixel totals are the VRAM story (about 1 byte per pixel",
+            "# once Godot compresses them, with mipmaps a third more); nearest =",
+            "# images sampled without filtering, which read as pixels at any size.",
+            f"count = {len(rows)}",
+            f"longest_side = {widest}",
+            f"capped = {capped}",
+            f"nearest = {nearest}",
+            f"shipped_megapixels = {shipped_px / 1e6:.1f}",
+            f"source_megapixels = {source_px / 1e6:.1f}",
+            f"megabytes = {sum(r['bytes'] for r in rows) / 1e6:.1f}",
+            "",
+        ]
+    for r in rows:
+        lines += [
+            "[[texture]]",
+            f"name = {toml_str(r['name'])}",
+            f"mime = {toml_str(r['mime'])}",
+            f"size = [{r['width']}, {r['height']}]",
+            f"source_size = [{r['source_width']}, {r['source_height']}]",
+            f"filter = {toml_str(r['filter'])}",
+            f"kb = {r['bytes'] // 1024}",
+            "",
+        ]
+    return lines
+
+
+
+def density_lines(materials, tris_by_material, density, share):
+    """One row per textured surface with area — EVERY such material,
+    not the first LARGEST: the audit's texel-density floor reads this
+    table, and a scene's sparse surface is as likely its 3000th
+    material as its first. With a zone roster each row carries
+    in_zones, the share of its area inside the zone union (zone_share),
+    the geometry the floor's reach is read from."""
+    lines = []
+    if density:
+        lines += [
+            "# Every textured material with faces: the triangles it carries,",
+            "# the texels per model meter its map lays down (the audit holds",
+            "# these to a floor per world meter) and, with a roster, in_zones:",
+            "# the share of its area inside the zone union — where the floor",
+            "# reaches, by geometry.",
+            "",
+        ]
+    for index in sorted(density, key=lambda i: density[i]):
+        lines += [
+            "[[density]]",
+            f"name = {toml_str(materials[index].get('name', '?'))}",
+            f"tris = {tris_by_material.get(index, 0)}",
+            f"texels_per_m = {density[index]:.1f}",
+        ]
+        if index in share:
+            lines.append(f"in_zones = {share[index]:.3f}")
+        lines.append("")
+    return lines
+
+
+
+def flat_lines(materials, tris_by_material):
+    """One row per material with faces and NO base color texture — what
+    a surface falls back to when its map never shipped (the hill house's
+    chair fabric, chains and ceramic tops, owner 2026-09-07: "materials
+    not making the transition"): its mode, alpha and base color, so a
+    surface that vanished can be read as it shipped."""
+    rows = []
+    for index, mat in enumerate(materials):
+        tris = tris_by_material.get(index, 0)
+        pbr = mat.get("pbrMetallicRoughness", {})
+        if not tris or "baseColorTexture" in pbr:
+            continue
+        color = pbr.get("baseColorFactor", [1.0, 1.0, 1.0, 1.0])
+        rows.append((mat.get("name", "?"), tris, mat.get("alphaMode", "OPAQUE"),
+                     mat.get("doubleSided", False), color))
+    lines = []
+    if rows:
+        lines += [
+            "# Every material with faces and no base color texture: what it",
+            "# renders as (mode, alpha, base color), most triangles first.",
+            "",
+        ]
+    for name, tris, mode, two_sided, color in sorted(rows, key=lambda r: -r[1]):
+        lines += [
+            "[[flat]]",
+            f"name = {toml_str(name)}",
+            f"tris = {tris}",
+            f"alpha_mode = {toml_str(mode)}",
+            f"double_sided = {toml_bool(two_sided)}",
+            f"base_color = {toml_vec(color[:3])}",
+            f"alpha = {float(color[3]) if len(color) > 3 else 1.0:.3f}",
+            "",
+        ]
+    return lines
+
+
+def main(key, glb_path, out_path, manifest_path=None, zones_path=None):
+    from material_plan import clone_stem
     gltf, binbuf = glb_chunks(glb_path)
     parts = parse_glb(glb_path, distinct_tris=False)
     lo = [min(p["lo"][k] for p in parts) for k in range(3)]
@@ -699,14 +1048,24 @@ def main(key, glb_path, out_path, oracle_path=None, zones_path=None):
     blend = sum(1 for m in materials if m.get("alphaMode") in ("BLEND", "MASK"))
     emissive = sum(1 for m in materials
                    if m.get("extensions", {}).get("KHR_materials_emissive_strength"))
+    clone_stems = len({clone_stem(m.get("name", "?")) for m in materials})
     glass_parts = sum(1 for p in parts if p["blend"])
+    surfaces_per_mesh = [len(m.get("primitives", [])) for m in gltf.get("meshes", [])]
+    tris_by_material = triangles_by_material(gltf)
+    unused = sum(1 for i in range(len(materials)) if not tris_by_material.get(i))
+    invisible = invisible_rows(materials, tris_by_material)
+    textures = texture_rows(gltf, binbuf, manifest_path)
+    image_sizes = {i: (t["width"], t["height"]) for i, t in enumerate(textures)
+                   if t["width"] and t["height"]}
 
-    # ---- recon: the body percentiles and the authored boxes frame the
-    # sections (a scenery backdrop — the hill house's 175 m — would
-    # shrink the room to a smudge otherwise) ----
+    # ---- sections: the body percentiles and the authored boxes frame the
+    # cuts (a scenery backdrop — the hill house's 175 m — would shrink
+    # the room to a smudge otherwise) ----
     prims = load_mesh(gltf, binbuf)
+    density = texel_density(prims, gltf, image_sizes)
     body_lo, body_hi, vertex_count = body_percentiles(prims)
     zones = load_zones(zones_path)
+    share = zone_share(prims, zones)
     zbox = zones_bounds(zones)
     frame_lo, frame_hi = frame_bounds(prims, body_lo, body_hi, zbox)
     if zbox:
@@ -715,18 +1074,20 @@ def main(key, glb_path, out_path, oracle_path=None, zones_path=None):
         band, band_source = (body_lo[1], body_hi[1]), "body"
     stem = os.path.splitext(os.path.abspath(out_path))[0]
     os.makedirs(os.path.dirname(stem), exist_ok=True)
-    sections = recon(prims, frame_lo, frame_hi, body_lo, body_hi, band, zones, stem)
+    sections = draw_sections(prims, frame_lo, frame_hi, body_lo, body_hi, band, zones, stem)
     faces = zone_faces(prims, zones)
 
     lines = [
-        "# GENERATED by scripts/scene-census.py (make assets / make census) — do not edit.",
+        "# GENERATED by scripts/scene-metrics.py (make assets / make metrics) — do not edit.",
         "# What the pipeline produced for one scene: extents in model meters",
-        "# (glTF Y up), parts, materials, surviving animations, the largest",
-        "# parts by AABB volume, the source file's own geometry census when",
-        "# its oracle carries one, the recon sections beside this file (the",
-        "# scene cut by planes; see [[recon.section]]) and, with a zone",
-        "# roster, how much of every walled zone face the model backs",
-        "# ([[recon.zone_face]]).",
+        "# (glTF Y up), parts, materials (with the triangles each carries and",
+        "# the texels per meter its map lays down), the textures it ships",
+        "# (shipped size against source size), surviving animations, the",
+        "# largest parts by AABB volume, the source file's own geometry counts",
+        "# when its material manifest carries them, the section drawings",
+        "# beside this file (the scene cut by planes; see [[section]]) and,",
+        "# with a zone roster, how much of every walled zone face the model",
+        "# backs ([[zone_face]]).",
         "",
         f"key = {toml_str(key)}",
         f"scene = {toml_str(glb_path)}",
@@ -743,30 +1104,60 @@ def main(key, glb_path, out_path, oracle_path=None, zones_path=None):
         f"body_hi = {toml_vec(body_hi)}",
         "",
         "[geometry]",
+        "# surfaces = glTF primitives, one per material a mesh carries — what",
+        "# Godot draws. It keeps RenderingServer.MAX_MESH_SURFACES (256) per",
+        "# mesh and drops the rest at import; surfaces_max_per_mesh is the",
+        "# number to hold under it.",
         f"parts = {len(parts)}",
+        f"surfaces = {sum(surfaces_per_mesh)}",
+        f"surfaces_max_per_mesh = {max(surfaces_per_mesh, default=0)}",
         f"glass_parts = {glass_parts}",
         f"tris = {sum(p['tris'] for p in parts)}",
         f"vertices = {vertex_count}",
         "",
         "[materials]",
+        "# unused = materials the file names that no triangle carries (a",
+        "# pane that never shipped is a name here and a hole in the level);",
+        "# invisible = materials with faces that render nothing (blended or",
+        f"# masked under alpha {INVISIBLE_ALPHA:g}; listed in [[invisible]]).",
+        "# clone_stems = distinct names once the source exporter's clone",
+        "# suffix is stripped (material_plan.clone_stem): the ceiling on what",
+        "# merging clones would leave.",
+        "# texels_per_m_* = over the textured materials, texels per MODEL",
+        "# meter from map size x mapping (divide by the kit scale for world",
+        "# meters): a 4096 map laid once across a 10 m wall is 400.",
         f"count = {len(materials)}",
         f"textured = {textured}",
         f"flat = {len(materials) - textured}",
         f"blend = {blend}",
         f"emissive = {emissive}",
-        "",
+        f"unused = {unused}",
+        f"invisible = {len(invisible)}",
+        f"clone_stems = {clone_stems}",
     ]
+    if density:
+        ordered = sorted(density.values())
+        lines += [
+            f"texels_per_m_min = {ordered[0]:.1f}",
+            f"texels_per_m_median = {ordered[len(ordered) // 2]:.1f}",
+            f"texels_per_m_max = {ordered[-1]:.1f}",
+        ]
+    lines.append("")
+    lines += invisible_lines(invisible)
+    lines += texture_lines(textures)
+    lines += density_lines(materials, tris_by_material, density, share)
+    lines += flat_lines(materials, tris_by_material)
 
-    if oracle_path and os.path.isfile(oracle_path):
-        with open(oracle_path) as f:
-            oracle = json.load(f)
-        source = oracle.get("geometry")
-        units = oracle.get("units")
+    if manifest_path and os.path.isfile(manifest_path):
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+        source = manifest.get("geometry")
+        units = manifest.get("units")
         if source or units:
-            lines += ["# The SOURCE file as its oracle read it (raw units and axes,",
-                      "# before the converter's unit scale and axis mapping).",
+            lines += ["# The SOURCE file as its material manifest read it (raw units and",
+                      "# axes, before the converter's unit scale and axis mapping).",
                       "[source]",
-                      f"file = {toml_str(oracle.get('source', '?'))}"]
+                      f"file = {toml_str(manifest.get('source', '?'))}"]
             if units:
                 for k, v in sorted(units.items()):
                     lines.append(f"{k} = {v if isinstance(v, (int, float)) else toml_str(v)}")
@@ -780,14 +1171,15 @@ def main(key, glb_path, out_path, oracle_path=None, zones_path=None):
             lines.append("")
 
     lines += [
-        "[recon]",
-        "# Sections: the scene cut by a plane, solid gray and glass blue drawn",
-        "# over the authored zone boxes (start green, boss red dotted, others",
-        "# yellow). The plan cuts sit inside cut_band — the zones' floor..",
-        "# ceiling when a roster exists (cut_band_source = \"zones\"), else the",
-        "# vertex cloud's percentile band. Pixel (i, j) of a section image is",
-        "# model (frame_lo[0] + i * cell, frame_lo[1] + j * cell) on its",
-        "# `axes`, rows counted from the top — from the bottom when flip_v.",
+        "[sections]",
+        "# Section drawings: the scene cut by a plane, solid gray and glass",
+        "# blue drawn over the authored zone boxes (start green, boss red",
+        "# dotted, others yellow). The plan cuts sit inside cut_band — the",
+        "# zones' floor..ceiling when a roster exists (cut_band_source =",
+        "# \"zones\"), else the vertex cloud's percentile band. Pixel (i, j) of",
+        "# a section image is model (frame_lo[0] + i * cell, frame_lo[1] +",
+        "# j * cell) on its `axes`, rows counted from the top — from the",
+        "# bottom when flip_v.",
         f"cut_band = {toml_vec(band)}",
         f"cut_band_source = {toml_str(band_source)}",
         f"floor = {body_lo[1]:.3f}",
@@ -798,7 +1190,7 @@ def main(key, glb_path, out_path, oracle_path=None, zones_path=None):
     ]
     for s in sections:
         lines += [
-            "[[recon.section]]",
+            "[[section]]",
             f"name = {toml_str(s['name'])}",
             f"image = {toml_str(s['image'])}",
             f"axis = {toml_str(s['axis'])}",
@@ -824,7 +1216,7 @@ def main(key, glb_path, out_path, oracle_path=None, zones_path=None):
         ]
     for r in faces:
         lines += [
-            "[[recon.zone_face]]",
+            "[[zone_face]]",
             f"zone = {toml_str(r['zone'])}",
             f"face = {toml_str(r['face'])}",
             f"cells = {r['cells']}",
@@ -857,17 +1249,25 @@ def main(key, glb_path, out_path, oracle_path=None, zones_path=None):
             "emissive_strength": (m.get("extensions", {})
                                   .get("KHR_materials_emissive_strength", {})
                                   .get("emissiveStrength", 1.0)),
+            "alpha": material_alpha(m),
+            "tris": tris_by_material.get(i, 0),
+            "texels_per_m": density.get(i),
         }
-        for m in materials[:LARGEST]
+        for i, m in enumerate(materials[:LARGEST])
     ], "material")
     with open(out_path, "w") as f:
         f.write("\n".join(lines))
     open_faces = sum(1 for r in faces if r["open_cells"])
+    widest = max((max(t["width"], t["height"]) for t in textures), default=0)
     print(
-        f"scene-census: {key} {len(parts)} parts, "
+        f"scene-metrics: {key} {len(parts)} parts, "
+        f"{sum(surfaces_per_mesh)} surfaces (most in one mesh {max(surfaces_per_mesh, default=0)}), "
         f"{sum(p['tris'] for p in parts)} tris, extents "
         f"{toml_vec([hi[k] - lo[k] for k in range(3)])} m, "
-        f"{len(sections)} sections {os.path.basename(stem)}_*.png"
+        f"{len(textures)} textures (longest side {widest}), "
+        f"{unused} unused / {len(invisible)} invisible materials, "
+        + (f"texels/m {min(density.values()):.0f}..{max(density.values()):.0f}, " if density else "")
+        + f"{len(sections)} sections {os.path.basename(stem)}_*.png"
         + (f", {len(faces)} zone faces ({open_faces} with open cells)" if faces else "")
         + f" -> {out_path}"
     )

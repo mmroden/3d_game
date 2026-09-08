@@ -8,7 +8,7 @@ converted from the provider's FBX by scripts/convert-hull.py). The
 first-person stereo view wants that furniture as a near-field shell
 around the camera — and nothing else of the hull.
 
-This module is the extraction ORACLE: it parses a hull .glb directly
+This module is the extraction READER: it parses a hull .glb directly
 (no Blender) and derives WHICH parts are cockpit interior and WHERE the
 pilot's eyepoint sits, from one geometric rule anchored on the canopy:
 
@@ -152,7 +152,7 @@ def parse_glb(path, distinct_tris=True):
     faces and zero-area degenerates render nothing and exporters
     legitimately weld them away, while `tris` is the raw authored count.
     `distinct_tris=False` skips that vertex walk (AABBs come from the
-    accessors' declared bounds alone) — the environment census reads
+    accessors' declared bounds alone) — the scene metrics read
     ten-million-triangle scenes that way; `distinct_solid_tris` is then
     None."""
     with open(path, "rb") as f:

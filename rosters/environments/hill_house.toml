@@ -8,7 +8,7 @@
 # non-overlapping. The declared kit scale multiplies everything at build
 # time; nothing here states world units.
 #
-# DRAFT 3 (2026-09-06), read off the census SECTIONS (out/census/
+# DRAFT 3 (2026-09-06), read off the SECTIONS (out/metrics/
 # hill_house_plan*.png cut at sill, door and lintel height; the six
 # hill_house_long_NN / cross_NN vertical cuts). Draft 1 was three slices
 # of the main room from bounding numbers and walled off the stair hall
@@ -123,8 +123,8 @@ links = ["gallery"]
 enemy_spawns = [[10.0, 5.2, -20.0], [12.0, 5.5, -17.5]]
 
 # The gallery: over the stair hall (x 5..7) as far as the living room's
-# south wall. The face audit (out/census/hill_house.toml
-# [[recon.zone_face]]) tried it three meters longer: every face of the
+# south wall. The face audit (out/metrics/hill_house.toml
+# [[zone_face]]) tried it three meters longer: every face of the
 # extension read open — the upper storey ends here, over the bathroom
 # is roof.
 [[zone]]

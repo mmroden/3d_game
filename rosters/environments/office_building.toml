@@ -5,7 +5,7 @@
 # min-inclusive, max-exclusive, mutually non-overlapping. The declared
 # kit scale multiplies everything at build time.
 #
-# DRAFT 2 (2026-09-06), read off the census sections (out/census/
+# DRAFT 2 (2026-09-06), read off the sections (out/metrics/
 # office_building_plan.png at door height: the footprint x -15.6..15.6,
 # z 25.4..74.6 with its core and restroom blocks; the long sections: the
 # ground floor is a double-height lobby, floor slab 0.5, first-floor

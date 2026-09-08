@@ -1,9 +1,14 @@
 # Plot Bible — Void Scavenger
 
-Single source of truth for narrative design. Rules here are **locked**: script lines,
-level content, and future design discussions are written against them. Anything not
-yet locked lives in [plot_open_questions.md](plot_open_questions.md); when a question
-is resolved, its answer moves here and the question is deleted. Voice cast, channels,
+> **STATUS (2026-08-30):** The "locked" framing below is **rescinded** — Mark's
+> review: this document was full of unratified assumptions presented as canon,
+> invented names, and plot steered onto rails he didn't choose. Entries stamped
+> "(Mark, …)" are his design; everything else is Claude proposal awaiting his
+> redline. Build nothing new on the unstamped parts without his word. Companion
+> docs (voices.md, plot_open_questions.md, script_guide.md) inherit this status.
+
+Single source of truth for narrative design *once ratified*. Anything unsettled
+lives in [plot_open_questions.md](plot_open_questions.md). Voice cast, channels,
 and script format live in [voices.md](voices.md).
 
 ## Premise
@@ -91,8 +96,8 @@ total is superseded and that doc needs amending when Phase 6 is built).
 |----|-------------|------------------------|
 | 1 | Broken sci-fi geometry, floating furniture, drone enemies | The Other's native cognition, crudely furnished with unparsed human artifacts |
 | 2 | New cell geometry (3m cubic cells), environment-matched enemies | The Other's cognition, calibrating — first fruits of synchronization |
-| 3 | A gigantic distorted childhood house | The Player's memory, rendered by a mind that has never known gravity or childhood |
-| 4 | Sci-fi ship interior | Proposed (Q4): the *Other's* memory — the war, the launch bays, the trajectory plot. The confession, walked rather than narrated |
+| 3 | Prosaic human surroundings — apartments, schools, libraries (Mark, 2026-08-30) | Why these exist out here is Mark's to reveal; Control's befuddlement peaks in this chapter |
+| 4 | An actual asteroid surface; drones protecting the last meteor launcher still aimed at Earth (Mark, 2026-08-30) | The endgame board; how it relates to the simulation chapters is Mark's call |
 
 Chapter gating model (frontier vs. full ladder) is open (Q1).
 

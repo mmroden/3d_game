@@ -1,12 +1,12 @@
 """Headless mesh conversion for `make assets`, run via Blender.
 
-    blender --background --python scripts/decimate.py -- \
+    blender --background --python scripts/decimate.py -- \\
         <in> <out.glb> <target_tris> <tex_dir> [base_color_file]
 
 Imports a source mesh, ensures it carries PBR material(s), collapses geometry to
-roughly <target_tris> triangles, downscales every texture, and writes a
-self-contained .glb with the maps embedded. Accepted inputs: .fbx, .obj,
-.glb/.gltf.
+roughly <target_tris> triangles, caps every texture at TEX_CAP on its longest
+side, and writes a self-contained .glb with the maps embedded. Accepted
+inputs: .fbx, .obj, .glb/.gltf.
 
 Materials: when the importer already wires textures (an OBJ whose .mtl
 references its maps, a .glb with embedded textures), they are kept as-is.
@@ -20,7 +20,8 @@ nothing to rebuild from. [base_color_file] disambiguates packs that ship
 multiple base coats (the apartment boss's "Base Plain"/"Base Rusted").
 
 FBX additionally gets the importer's +90° X rotation baked out so the model
-sits upright in Godot.
+sits upright in Godot. Static: the provider's animations are stripped before
+any transform bake (see below).
 """
 import os
 import re
@@ -28,13 +29,19 @@ import sys
 
 import bpy
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from plan_apply import cap_and_pack_images  # noqa: E402
+
 argv = sys.argv[sys.argv.index("--") + 1:]
 in_path, out_path, target_tris, tex_dir = argv[0], argv[1], int(argv[2]), argv[3]
 base_color_file = argv[4] if len(argv) > 4 else None
 
-# Map size every texture is downscaled to before embedding (square). 1k is
-# plenty for these props and keeps the .glb and VRAM modest.
-TEX_SIZE = 1024
+# Longest-side cap for the props' maps, aspect-true (the old 1024 SQUARE
+# scale squashed every non-square map). A prop is a couple of meters seen
+# across a room, so 4k is beyond what it can show; the scenes carry no
+# cap at all (install-addons.sh ENV_TEX_CAP — owner 2026-09-06: "why are
+# we being precious with these resources?").
+TEX_CAP = 4096
 
 # Channel classification for loose texture maps, evaluated in order against
 # the normalized (lowercase, separators stripped) file stem; first suffix
@@ -115,7 +122,7 @@ def classify_channels():
 
 def load_map(filename, non_color=False):
     """Load a loose texture from <tex_dir> for the material rebuild.
-    Downscaling/packing happens once for every image in the shared pass
+    Capping/packing happens once for every image in the shared pass
     below."""
     img = bpy.data.images.load(os.path.join(tex_dir, filename))
     if non_color:
@@ -177,11 +184,11 @@ def materials_are_textured():
 
 
 # ---- static: strip the provider's animations before any transform bake ----
-# The game plays no provider animation, and an animated node exports its
-# keyed transform ON TOP of the fit the roster applies at spawn: the
-# apartment boss shipped five "Drone" clips whose 60 scale channels kept
-# it gigantic whatever enemies.toml said (owner 2026-09-06) — the same
-# failure the military hull had, fixed the same way (convert-hull.py).
+# The game plays no provider animation; an animated node's keyed transform
+# is one more thing the product would carry that the roster did not ask
+# for (the military hull's gear and canopy shipped as centimeter boxes at
+# the wrong place until convert-hull.py stripped its actions, 2026-09-06).
+# The audit holds every decimated model to it.
 stripped = 0
 for o in bpy.context.scene.objects:
     if o.animation_data is not None:
@@ -209,15 +216,10 @@ if ext == ".fbx":
 if not materials_are_textured() and tex_dir not in ("", "-") and os.path.isdir(tex_dir):
     build_material()
 
-# Downscale + pack every imported texture so the glTF exporter embeds the small
-# version, not the multi-thousand-pixel originals. Covers rebuilt maps, the OBJ
-# importer's auto-loaded MTL textures, and glb-embedded images alike.
-for img in bpy.data.images:
-    if img.source != "FILE":
-        continue
-    if max(img.size) > TEX_SIZE:
-        img.scale(TEX_SIZE, TEX_SIZE)
-    img.pack()
+# Cap (aspect-true) + pack every imported texture so the glTF exporter embeds
+# it — rebuilt maps, the OBJ importer's auto-loaded MTL textures, and
+# glb-embedded images alike. One capping door for scenes and props.
+cap_and_pack_images(TEX_CAP)
 
 # Current triangle total (loop_triangles resolves quads/ngons to tris).
 total = 0
@@ -240,6 +242,11 @@ else:
     summary = f"{total} tris kept (no decimation)"
 
 # export_apply bakes the decimate modifier; GLB embeds the packed textures.
-bpy.ops.export_scene.gltf(filepath=out_path, export_format="GLB", export_apply=True)
+# No vertex colors: no material reads them, and the exporter warns per
+# mesh about an active color layer its material never uses.
+bpy.ops.export_scene.gltf(
+    filepath=out_path, export_format="GLB", export_apply=True,
+    export_animations=False, export_vertex_color="NONE",
+)
 
 print(f"decimate: {summary} -> {out_path}")

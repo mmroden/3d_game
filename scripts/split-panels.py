@@ -1,6 +1,6 @@
 """Split a multi-panel kit into per-panel game-weight .glb files.
 
-    blender --background --python scripts/split-panels.py -- \
+    blender --background --python scripts/split-panels.py -- \\
         <kit.glb|kit.blend> <out_dir> <target_tris>
 
 The cgtrader "Sci-Fi Parts Kit" packs carry all pieces as sibling mesh
@@ -85,6 +85,23 @@ for obj in meshes:
         obj.data = obj.data.copy()
     obj.data.transform(obj.matrix_world)
     obj.matrix_world = mathutils.Matrix.Identity(4)
+
+# Export settings shared by every panel and role variant. The kits carry
+# a vertex-color layer no material reads, and the exporter warns about it
+# per file ("The active Vertex Color will not be exported", 57 times per
+# split, 2026-09-07) — nothing uses it, so it is left out by name.
+EXPORT_OPTIONS = dict(use_selection=True, export_format="GLB", export_vertex_color="NONE")
+
+
+def export_selected(obj, out_path):
+    """One piece to one .glb. The mesh is validated first: vol03 ships a
+    piece the exporter would otherwise flag as "not valid, and may be
+    exported wrongly" — validation drops the malformed loops instead of
+    shipping them."""
+    obj.data.validate()
+    bpy.ops.object.select_all(action="DESELECT")
+    obj.select_set(True)
+    bpy.ops.export_scene.gltf(filepath=out_path, **EXPORT_OPTIONS)
 
 
 def plate_face(obj):
@@ -232,14 +249,7 @@ for obj in sorted(meshes, key=lambda o: o.name):
         bpy.ops.object.modifier_apply(modifier=mod.name)
 
     out_path = os.path.join(out_dir, f"{_stem(obj)}.glb")
-
-    bpy.ops.object.select_all(action="DESELECT")
-    obj.select_set(True)
-    bpy.ops.export_scene.gltf(
-        filepath=out_path,
-        use_selection=True,
-        export_format="GLB",
-    )
+    export_selected(obj, out_path)
     remaining = sum(len(p.vertices) - 2 for p in obj.data.polygons)
     print(f"panel: {obj.name!r} {tris} -> ~{remaining} tris -> {out_path}")
 
@@ -362,13 +372,7 @@ else:
             rot = mathutils.Matrix.Rotation(angle, 4, "X")
             obj.data.transform(rot)
             out_path = os.path.join(out_dir, f"{stem}_{role}.glb")
-            bpy.ops.object.select_all(action="DESELECT")
-            obj.select_set(True)
-            bpy.ops.export_scene.gltf(
-                filepath=out_path,
-                use_selection=True,
-                export_format="GLB",
-            )
+            export_selected(obj, out_path)
             obj.data.transform(rot.inverted())
             srcs = ", ".join(f'"{s}"' for s in sources)
             manifest.append(

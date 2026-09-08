@@ -9,6 +9,15 @@
             "command": "jq -e '(.tool_input.file_path // .tool_input.relative_path // .tool_input.paths_include_glob // \"\") | test(\"\\\\.(rs|py|gd|cpp|cc|hpp|h)$\")' >/dev/null && { echo \"Code files: symbol tools only (replace_symbol_body / insert_*_symbol / rename_symbol / safe_delete_symbol; new files: create_text_file).\" >&2; exit 2; } || exit 0"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -e '(.tool_input.command // \"\") | test(\"(^|[;&|(`]|\\\\$\\\\()\\\\s*(\\\\S*/)?(python[0-9.]*|uv|uvx|pip[0-9]*)(\\\\s|$)|[Bb]lender\\\\S*\\\\s[^;&|]*--python\")' >/dev/null && { echo \"Direct python/uv/pip/Blender-python runs are off (owner 2026-09-07): go through make targets (make test-assets TESTS=<path>, make census, make assets); inspections become census tools with TOML output.\" >&2; exit 2; } || exit 0"
+          }
+        ]
       }
     ]
   }

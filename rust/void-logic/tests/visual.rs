@@ -114,8 +114,15 @@ fn capture_ex(
     frames
 }
 
-/// The level the shell would build for `--level=N --seed=S`, structure
-/// only — the same doors, the same seed algebra as a capture run.
+/// The level the shell would build for `--level=N --seed=S` — the same
+/// doors, the same seed algebra as a capture run. Generated planets:
+/// structure-only, exactly what a `--populace=0` capture builds (the
+/// boss arena rides populace; a probe posed in a room the capture never
+/// built sees the void). Fixed environments: the FULL graph — populace
+/// never moves a zone, and structure-only there is the menu-backdrop
+/// contract (the start zone alone), which left every planet-3 vantage
+/// in the first room (owner 2026-09-06: "add some different display
+/// angles for the three new rooms").
 fn build_graph(level: u32, run_seed: i64) -> (LevelSpec, void_logic::level_graph::LevelGraph) {
     let seed = Seed::from_i64(run_seed);
     let spec = LevelSpec::for_level(
@@ -124,7 +131,8 @@ fn build_graph(level: u32, run_seed: i64) -> (LevelSpec, void_logic::level_graph
         level,
         &void_logic::unlocks::PermanentUnlocks::new(),
     );
-    let graph = void_logic::generator::generate_for_spec(&spec, seed.for_level(level), true)
+    let fixed = matches!(spec.paradigm, void_logic::level_spec::Paradigm::Fixed(_));
+    let graph = void_logic::generator::generate_for_spec(&spec, seed.for_level(level), !fixed)
         .expect("level generates");
     (spec, graph)
 }
@@ -147,6 +155,16 @@ const MAX_VOID: f32 = 0.05;
 /// out of the level (megakit windows, apartment panes) — renders-or-not,
 /// never sealed-or-not.
 const MAX_ESCAPED: f32 = 0.5;
+
+/// The FIXED-environment bar: a fixed scene is a real place with no sky
+/// behind it (fixed levels author no backdrop beyond the seller's), so
+/// any sightline that escapes the level renders the sentinel — a hole
+/// in the art or a missing pane, not a view. One percent of a frame is
+/// a block some 90 x 90 px at the rig's size: a hole you could fly a
+/// sightline through, never HUD trim (owner 2026-09-06: the villa's
+/// doorway showed "pretty large blocks of sights to infinity" at 3.3%
+/// of the frame, under every bar the rig then had).
+const MAX_FIXED_ESCAPED: f32 = 0.01;
 
 /// Mean absolute per-channel difference between two frames within the
 /// horizontal band [y0, y1) of frame height — how much that slice of the
@@ -171,8 +189,10 @@ fn band_diff(a: &Path, b: &Path, y0: f32, y1: f32) -> f32 {
 
 /// Fractions of the frame reading as void: (sentinel, black). Sentinel:
 /// red and blue high, green low — rough-metal reflections blur and
-/// desaturate the background, so only direct sightlines stay this pure.
-/// Black: every channel near zero, which no flood-lit panel renders.
+/// desaturate the background, so only direct sightlines stay this pure
+/// (planet 2's contract needs exactly that: its metallic plates mirror
+/// the sentinel as pink, and a mirrored sky is not an escape). Black:
+/// every channel near zero, which no flood-lit panel renders.
 fn void_fractions(path: &Path) -> (f32, f32) {
     let img = image::open(path).expect("frame opens").to_rgb8();
     let (mut sentinel, mut black) = (0u32, 0u32);
@@ -185,6 +205,24 @@ fn void_fractions(path: &Path) -> (f32, f32) {
     }
     let n = (img.width() * img.height()) as f32;
     (sentinel as f32 / n, black as f32 / n)
+}
+
+/// Fraction of the frame reading as the sentinel on a direct sightline
+/// OR through a pane: red and blue high, green well below both. A glazed
+/// wall with nothing behind it tints the magenta toward pink, and the
+/// hill house's east glazing read 0.000 on the pure test (2026-09-06).
+/// For FIXED environments only — archviz ships no mirror-metal plates,
+/// so a pink reading there is void, not a reflection.
+fn tinted_void_fraction(path: &Path) -> f32 {
+    let img = image::open(path).expect("frame opens").to_rgb8();
+    let mut sentinel = 0u32;
+    for px in img.pixels() {
+        let (r, g, b) = (px[0] as u32, px[1] as u32, px[2] as u32);
+        if r >= 150 && b >= 150 && g * 100 <= r.min(b) * 65 {
+            sentinel += 1;
+        }
+    }
+    sentinel as f32 / (img.width() * img.height()) as f32
 }
 
 fn frames_dir(level: u32, run_seed: i64, tag: &str) -> PathBuf {
@@ -289,14 +327,21 @@ fn planet_two_interiors_show_no_void() {
 /// declared location — sweeping run seeds until every environment has
 /// been dealt (owner 2026-09-06: planet 3 shows two of four per run;
 /// a location that never boots must fail here, not on a player's run).
-/// The containment contract stays planet 2's — these paradigms
-/// legitimately sight out of the level — so this asserts RENDERS: the
-/// rig advanced and no artery vantage is mostly escaped background
-/// (`MAX_ESCAPED`).
+/// A fixed environment is also vantaged from INSIDE its zones — up to
+/// `FIXED_PROBE_BUDGET` interior probes spread across the authored
+/// boxes, each facing its zone's center (owner 2026-09-06: "different
+/// display angles for the three new rooms"; the one artery frame hid a
+/// chair with no seat behind a kitchen island). Planet 1 keeps the
+/// smoke bar (`MAX_ESCAPED` on the pure sentinel: its megakit windows
+/// legitimately sight out); a fixed environment is held to
+/// `MAX_FIXED_ESCAPED` on the TINTED sentinel on every frame — a
+/// vantage that sees the void, bare or through a pane, is broken
+/// containment, whatever the pixel count.
 #[test]
 fn other_planets_boot_and_render() {
     use void_logic::level_spec::Paradigm;
     const SEED_SWEEP: i64 = 32;
+    const FIXED_PROBE_BUDGET: usize = 8;
 
     let mut faults = Vec::new();
     let roster = void_logic::roster::roster();
@@ -335,8 +380,13 @@ fn other_planets_boot_and_render() {
 
         for (key, &run_seed) in &seen {
             let (spec, graph) = build_graph(level, run_seed);
-            let poses = flythrough_poses(&graph, spec.pitch);
+            let fixed = matches!(spec.paradigm, Paradigm::Fixed(_));
+            let bar = if fixed { MAX_FIXED_ESCAPED } else { MAX_ESCAPED };
+            let mut poses = flythrough_poses(&graph, spec.pitch);
             assert!(!poses.is_empty(), "planet {planet}: artery poses derive");
+            if fixed {
+                poses.extend(interior_probe_poses(&graph, spec.pitch, FIXED_PROBE_BUDGET));
+            }
             let dir = frames_dir(level, run_seed, "");
             let frames = capture(level, run_seed, &poses, true, &dir);
 
@@ -354,16 +404,27 @@ fn other_planets_boot_and_render() {
                 continue;
             }
             for (frame, pose) in frames.iter().zip(&poses) {
-                let (sentinel, _) = void_fractions(frame);
+                let sentinel = if fixed {
+                    tinted_void_fraction(frame)
+                } else {
+                    void_fractions(frame).0
+                };
                 println!(
-                    "visual: L{level} S{run_seed} env={key} {} sentinel={sentinel:.3} pose={pose:?}",
+                    "visual: L{level} S{run_seed} env={key} {} sentinel={sentinel:.3} \
+                     bar={bar:.2} pose={pose:?}",
                     frame.file_name().unwrap().to_string_lossy(),
                 );
-                if sentinel > MAX_ESCAPED {
+                if sentinel > bar {
                     faults.push(format!(
                         "planet {planet} level {level} seed {run_seed} ({key}) pose \
-                         {pose:?}: {:.0}% escaped background — {}",
+                         {pose:?}: {:.1}% escaped background ({}) — {}",
                         sentinel * 100.0,
+                        if fixed {
+                            "a fixed environment shows the sentinel through a hole: \
+                             missing panes or no backdrop behind an opening"
+                        } else {
+                            "mostly escaped background"
+                        },
                         frame.display(),
                     ));
                 }

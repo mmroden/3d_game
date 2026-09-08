@@ -1,10 +1,10 @@
 """Headless cockpit-shell extraction for `make assets`, run via Blender.
 
-    blender --background --python scripts/extract-cockpit.py -- \
+    blender --background --python scripts/extract-cockpit.py -- \\
         <hull.glb> <out.glb>
 
 APPLIES the plan derived by scripts/cockpit_plan.py (the pure-Python
-oracle; see its module doc for the rule): imports the hull, deletes every
+reader; see its module doc for the rule): imports the hull, deletes every
 mesh part the plan drops (canopy PANES included — the canopy anchors the
 plan but its glass never ships), mattes the surviving materials, links an
 "Eyepoint" empty at the planned pilot eye position, and re-exports a

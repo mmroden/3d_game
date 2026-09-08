@@ -35,7 +35,7 @@ environment = "apartment"
 
 # Planet 3's other locations (2026-09-06): planet_3.toml deals two of its
 # four per run. Each scene ships in model meters (convert-environment.py
-# fixes provider units; out/census/<key>.toml has the extents) and the
+# fixes provider units; out/metrics/<key>.toml has the extents) and the
 # scale below is the owner's look knob — DRAFTS pending a look in-game:
 # 5.0 matches the apartment's gigantic-home read for the two houses; the
 # office is a whole building (66 x 30 x 60 m at 1x), so it starts lower.

@@ -6,8 +6,8 @@
 # min-inclusive, max-exclusive, mutually non-overlapping. The declared
 # kit scale multiplies everything at build time.
 #
-# DRAFT 2 (2026-09-06), read off the census sections and face audit
-# (out/census/mountain_villa.toml, mountain_villa_plan.png cut at 4.5 m
+# DRAFT 2 (2026-09-06), read off the sections and face audit
+# (out/metrics/mountain_villa.toml, mountain_villa_plan.png cut at 4.5 m
 # inside the zone band; the cross and long cuts: floor slab 3.06, roof
 # 4.85 on the plateau). Draft 1 was three slices of a bounding box
 # (x -4..8) and the audit read 11 of its 14 faces open — the boxes sat a
@@ -17,7 +17,7 @@
 # rotated, so two axis boxes cover it. Interior height 1.8 m (the
 # provider's units are still suspect; convert-environment.py
 # --unit-scale is the knob) and the glass exports opaque or is absent
-# (census: blend = 0). Owner reviews.
+# (metrics: blend = 0). Owner reviews.
 #
 # enemy_spawns are model-space points inside their zone's box (the linker
 # rejects strays); the start zone stays enemy-free, and the boss zone

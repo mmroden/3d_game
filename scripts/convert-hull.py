@@ -1,12 +1,12 @@
 """Headless player-hull conversion for `make assets`, run via Blender.
 
-    blender --background --python scripts/convert-hull.py -- \
+    blender --background --python scripts/convert-hull.py -- \\
         <in.fbx> <out.glb> <tex_dir> <fbx_materials.json> <facing_deg> [tex_cap]
 
 Converts a provider hull FBX into the self-contained .glb the ship roster
 installs (godot/addons/ships/<hull>.glb) and the cockpit extraction
 (extract-cockpit.py) reads. MECHANISM only: the material policy is
-scripts/material_plan.py, computed from the FBX material oracle
+scripts/material_plan.py, computed from the FBX material manifest
 (extract-fbx-materials.py) exactly as for the apartment, and wired by
 scripts/plan_apply.py. Here: import, plan, apply, put the hull in the
 roster frame, cap + pack textures, export.
@@ -128,9 +128,11 @@ for o in meshes:
     o.data.calc_loop_triangles()
     total += len(o.data.loop_triangles)
 
+# No vertex colors: no plan reads them, and the exporter warns per mesh
+# about an active color layer its material never uses.
 bpy.ops.export_scene.gltf(
     filepath=out_path, export_format="GLB", export_apply=True,
-    export_animations=False,
+    export_animations=False, export_vertex_color="NONE",
 )
 size_mb = os.path.getsize(out_path) / 1e6
 print(

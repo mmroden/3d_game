@@ -2,7 +2,7 @@
 (the planet-3 environments, the converted player hulls), pure Python —
 no Blender.
 
-Input: a material oracle (extract-fbx-materials.py for FBX,
+Input: a material manifest (extract-fbx-materials.py for FBX,
 mtl_materials.py for OBJ/MTL — the same JSON shape), the .max material
 table when the pack ships one (extract-max-materials.py), and the
 shipped texture inventory. Output: one plan per material name saying
@@ -22,7 +22,7 @@ scripts/tests/test_asset_pipeline.py audits them (`make test-assets`).
 # One look knob, owner-retunable.
 EMISSION_CAP = 3.0
 
-# Channel names, canonicalized across the oracles: Corona's (3ds Max
+# Channel names, canonicalized across the manifests: Corona's (3ds Max
 # exports), the standard FBX set (Blender exports carry their maps
 # there), and Wavefront MTL statements. Anything not mapped here and not
 # WAIVED is an unknown channel — the audit flags it, never drops it
@@ -102,7 +102,7 @@ def texture_files(root):
 def shipped_inventory(fbx, tex_root):
     """Every texture the provider shipped, by basename: the image files
     under the extracted archives (see texture_files) plus the maps packed
-    INSIDE the model file (the oracle's embedded_textures) — a packed
+    INSIDE the model file (the manifest's embedded_textures) — a packed
     diffuse is as shipped as a loose one, and a plan that cannot name it
     ships a gray hull (the military ship, 2026-09-06)."""
     import os
@@ -229,8 +229,8 @@ def _camera_facing(materials, name):
 def _plan_for(rec, tbl, inventory):
     props = rec["props"]
     plan = {}
-    # Provenance prefix for what the MODEL FILE declared: the oracle that
-    # read it (an MTL statement is not an FBX connection).
+    # Provenance prefix for what the MODEL FILE declared: the manifest
+    # that read it (an MTL statement is not an FBX connection).
     decl = "mtl" if rec["class"] == "mtl" else "fbx"
 
     # ---- transparency stack: the exporter's TransparencyFactor is the

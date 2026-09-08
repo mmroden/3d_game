@@ -10,12 +10,12 @@ ASSETS_DIR="${1:?Usage: install-addons.sh <assets-dir> <godot-dir>}"
 GODOT_DIR="${2:?Usage: install-addons.sh <assets-dir> <godot-dir>}"
 MODE="${3:-}"
 TRES_ONLY="$MODE"    # --tres-only: re-copy just .tres files (fix Godot path rewrites)
-# --census-only (make census): no Blender, nothing converted — every
-# stale census re-reads its installed product against the current
+# --metrics-only (make metrics): no Blender, nothing converted — every
+# stale metrics re-reads its installed product against the current
 # rosters (the zone-authoring loop's door). The cheap copy stanzas still
 # run; they are idempotent.
-CENSUS_ONLY=""
-[ "$MODE" = "--census-only" ] && CENSUS_ONLY=1
+METRICS_ONLY=""
+[ "$MODE" = "--metrics-only" ] && METRICS_ONLY=1
 ADDON_DIR="$GODOT_DIR/addons/quaternius"
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT_DIR="$(cd "$SCRIPTS_DIR/.." && pwd)/out"
@@ -272,26 +272,29 @@ tex_root() {  # <unpacked-dir>
 # baked in — the first-person stereo view renders it at full detail
 # around the camera. One door for every hull; audit: `make test-assets`.
 extract_cockpit() {  # <hull.glb> <shell.glb>
-    local census="$OUT_DIR/census/$(basename "$2" .glb).toml"
-    if [ -z "$CENSUS_ONLY" ]; then
+    local metrics="$OUT_DIR/metrics/$(basename "$2" .glb).toml"
+    if [ -z "$METRICS_ONLY" ]; then
         if [ ! -x "$BLENDER" ]; then
             echo "  WARNING: Blender not found at $BLENDER — run 'make deps'. Skipping cockpit shell $(basename "$2")."
             return 0
         fi
         if stale "$2" -- "$1" "$SCRIPTS_DIR/extract-cockpit.py" "$SCRIPTS_DIR/cockpit_plan.py"; then
+            mkdir -p "$OUT_DIR"
             "$BLENDER" --background --python-exit-code 1 --python "$SCRIPTS_DIR/extract-cockpit.py" -- \
-                "$1" "$2" 2>&1 \
-                | grep -i "extract-cockpit:" || echo "  ($(basename "$2"): no extraction summary — check Blender output)"
+                "$1" "$2" > "$OUT_DIR/cockpit-$(basename "$2" .glb).log" 2>&1 \
+                || echo "  ERROR: $(basename "$2") extraction failed (see out/cockpit-$(basename "$2" .glb).log)"
+            grep -i "extract-cockpit:" "$OUT_DIR/cockpit-$(basename "$2" .glb).log" \
+                || echo "  ($(basename "$2"): no extraction summary — see out/cockpit-$(basename "$2" .glb).log)"
         else
             echo "  $(basename "$2") is fresh."
         fi
     fi
-    # The census of what got built (out/census/<shell>.toml): the
+    # The metrics of what got built (out/metrics/<shell>.toml): the
     # reproducible reading of the hull, the plan, and the shell — read
     # that, never an ad-hoc parse of the .glb.
-    if [ -f "$2" ] && stale "$census" -- "$1" "$2" "$SCRIPTS_DIR/hull-census.py" "$SCRIPTS_DIR/cockpit_plan.py"; then
-        python3 "$SCRIPTS_DIR/hull-census.py" "$1" "$2" "$census" \
-            | grep -i "hull-census:" || echo "  ($(basename "$2"): no census — check hull-census.py output)"
+    if [ -f "$2" ] && stale "$metrics" -- "$1" "$2" "$SCRIPTS_DIR/hull-metrics.py" "$SCRIPTS_DIR/cockpit_plan.py"; then
+        python3 "$SCRIPTS_DIR/hull-metrics.py" "$1" "$2" "$metrics" \
+            | grep -i "hull-metrics:" || echo "  ($(basename "$2"): no metrics — check hull-metrics.py output)"
     fi
 }
 
@@ -299,26 +302,52 @@ extract_cockpit() {  # <hull.glb> <shell.glb>
 # The one door for every decimated model (enemy mechs, spheres, drones,
 # the jump gate): freshness-gated on the source, its texture folder, and
 # decimate.py itself.
+# An image's .import sidecar without the image is a stale extraction
+# (the old sweep deleted Godot's extracted textures and left their
+# sidecars): Godot reads the sidecar as "already extracted", never
+# rewrites the file, and falls back to the embedded map uncompressed —
+# 8 load errors per enemy model on every import since 2026-09-06, and
+# 4096-square maps in VRAM uncompressed. A sidecar with no source is
+# nobody's product; it goes, and the next import extracts once.
+sweep_stale_sidecars() {
+    local sidecar
+    for sidecar in "$1"/*.png.import "$1"/*.jpg.import "$1"/*.jpeg.import; do
+        [ -f "$sidecar" ] || continue
+        [ -f "${sidecar%.import}" ] || rm -f "$sidecar"
+    done
+}
+
 decimate_model() {
     local label="$1" src="$2" out="$3" target="$4" tex="$5" base="${6:-}"
-    local census="$OUT_DIR/census/$(basename "$out" .glb).toml"
-    if [ -z "$CENSUS_ONLY" ]; then
+    local metrics="$OUT_DIR/metrics/$(basename "$out" .glb).toml"
+    if [ -z "$METRICS_ONLY" ]; then
         if stale "$out" -- "$src" "$tex" "$SCRIPTS_DIR/decimate.py"; then
+            # A rebuilt glb embeds new maps: the textures Godot extracted
+            # from the old one (<model>_<image>.png/.jpg and their .import
+            # sidecars) would shadow them, since the importer extracts
+            # only what is not already there.
+            rm -f "${out%.glb}"_*.png "${out%.glb}"_*.jpg "${out%.glb}"_*.png.import "${out%.glb}"_*.jpg.import 2>/dev/null
+            # Full Blender output to out/decimate-<model>.log: the door's
+            # histogram reads it (a summary grep hid every warning, 2026-09-07).
+            mkdir -p "$OUT_DIR"
             "$BLENDER" --background --python-exit-code 1 --python "$SCRIPTS_DIR/decimate.py" -- \
-                "$src" "$out" "$target" "$tex" ${base:+"$base"} 2>&1 \
-                | grep -i "decimate:" || echo "  ($label: no decimation summary — check Blender output)"
+                "$src" "$out" "$target" "$tex" ${base:+"$base"} \
+                > "$OUT_DIR/decimate-$(basename "$out" .glb).log" 2>&1 \
+                || echo "  ERROR: $label decimation failed (see out/decimate-$(basename "$out" .glb).log)"
+            grep -i "decimate:" "$OUT_DIR/decimate-$(basename "$out" .glb).log" \
+                || echo "  ($label: no decimation summary — see out/decimate-$(basename "$out" .glb).log)"
         else
             echo "  $label is fresh."
         fi
     fi
-    # The census of the decimated product (out/census/<model>.toml):
+    # The metrics of the decimated product (out/metrics/<model>.toml):
     # parts, extents, materials, surviving ANIMATIONS — the apartment
     # boss shipped five provider clips whose scale channels overrode the
     # roster's size fit (2026-09-06); read this, never `strings` on a .glb.
-    if [ -f "$out" ] && stale "$census" -- "$out" "$SCRIPTS_DIR/scene-census.py" "$SCRIPTS_DIR/cockpit_plan.py"; then
-        mkdir -p "$OUT_DIR/census"
-        python3 "$SCRIPTS_DIR/scene-census.py" "$(basename "$out" .glb)" "$out" "$census" \
-            | grep -i "scene-census:" || echo "  ($label: no census — check scene-census.py output)"
+    if [ -f "$out" ] && stale "$metrics" -- "$out" "$SCRIPTS_DIR/scene-metrics.py" "$SCRIPTS_DIR/cockpit_plan.py"; then
+        mkdir -p "$OUT_DIR/metrics"
+        python3 "$SCRIPTS_DIR/scene-metrics.py" "$(basename "$out" .glb)" "$out" "$metrics" \
+            | grep -i "scene-metrics:" || echo "  ($label: no metrics — check scene-metrics.py output)"
     fi
 }
 
@@ -346,7 +375,7 @@ if [ -d "$SHIPS_SRC" ]; then
     fi
     # Military ship (provider FBX + a .rar of loose maps; the diffuse and
     # cockpit textures are EMBEDDED in the FBX): converted through the
-    # same material-plan doors as the apartment — oracle
+    # same material-plan doors as the apartment — manifest
     # (extract-fbx-materials.py) -> plan (material_plan.py) -> apply
     # (convert-hull.py) — into a roster-frame hull, then its furnished
     # interior extracted as a second cockpit shell. Facing: the provider
@@ -354,26 +383,31 @@ if [ -d "$SHIPS_SRC" ]; then
     # 2026-09-06), the roster frame is nose +Z — a half turn.
     MILITARY_SRC="$SHIPS_SRC/military_ship"
     if [ -d "$MILITARY_SRC" ]; then
-        if [ -z "$CENSUS_ONLY" ] && [ ! -x "$BLENDER" ]; then
+        if [ -z "$METRICS_ONLY" ] && [ ! -x "$BLENDER" ]; then
             echo "  WARNING: Blender not found at $BLENDER — run 'make deps'. Skipping military ship."
         else
             fbx="$(find "$MILITARY_SRC" -maxdepth 1 -iname "MilitaryShip_StockFlight*.fbx" | head -1)"
             tex_rar="$(find "$MILITARY_SRC" -maxdepth 1 -iname "Textures*.rar" | head -1)"
             if [ -n "$fbx" ]; then
-                [ -z "$tex_rar" ] || [ -n "$CENSUS_ONLY" ] || extract_archive "$tex_rar" "$MILITARY_SRC/unpacked/textures"
-                if [ -n "$CENSUS_ONLY" ]; then
+                [ -z "$tex_rar" ] || [ -n "$METRICS_ONLY" ] || extract_archive "$tex_rar" "$MILITARY_SRC/unpacked/textures"
+                if [ -n "$METRICS_ONLY" ]; then
                     :
                 elif stale "$SHIPS_DIR/military_ship.glb" "$MILITARY_SRC/fbx_materials.json" -- \
                         "$fbx" "$tex_rar" "$SCRIPTS_DIR/extract-fbx-materials.py" \
                         "$SCRIPTS_DIR/convert-hull.py" "$SCRIPTS_DIR/plan_apply.py" \
                         "$SCRIPTS_DIR/material_plan.py"; then
+                    mkdir -p "$OUT_DIR"
                     "$BLENDER" --background --python-exit-code 1 --python "$SCRIPTS_DIR/extract-fbx-materials.py" -- \
-                        "$fbx" "$MILITARY_SRC/fbx_materials.json" 2>&1 \
-                        | grep -i "extract-fbx-materials:" || echo "  (military ship: no oracle summary — check Blender output)"
+                        "$fbx" "$MILITARY_SRC/fbx_materials.json" > "$OUT_DIR/manifest-military_ship.log" 2>&1 \
+                        || echo "  ERROR: military ship manifest extraction failed (see out/manifest-military_ship.log)"
+                    grep -i "extract-fbx-materials:" "$OUT_DIR/manifest-military_ship.log" \
+                        || echo "  (military ship: no manifest summary — see out/manifest-military_ship.log)"
                     "$BLENDER" --background --python-exit-code 1 --python "$SCRIPTS_DIR/convert-hull.py" -- \
                         "$fbx" "$SHIPS_DIR/military_ship.glb" "$MILITARY_SRC/unpacked/textures" \
-                        "$MILITARY_SRC/fbx_materials.json" 180 2>&1 \
-                        | grep -i "convert-hull:" || echo "  (military ship: no conversion summary — check Blender output)"
+                        "$MILITARY_SRC/fbx_materials.json" 180 > "$OUT_DIR/hull-military_ship.log" 2>&1 \
+                        || echo "  ERROR: military ship conversion failed (see out/hull-military_ship.log)"
+                    grep -i "convert-hull:" "$OUT_DIR/hull-military_ship.log" \
+                        || echo "  (military ship: no conversion summary — see out/hull-military_ship.log)"
                 else
                     echo "  military_ship.glb is fresh."
                 fi
@@ -419,7 +453,15 @@ if [ -d "$EVIL_MECHS_SRC" ]; then
     else
         echo "  Decimating enemy mech models (target ${DECIMATE_TARGET} tris)..."
         # Drop any stale raw-FBX install from before decimation existed.
-        rm -f "$ENEMIES_DIR"/*.fbx "$ENEMIES_DIR"/*.png "$ENEMIES_DIR"/*.jpg 2>/dev/null
+        # The loose .png/.jpg beside the glbs are NOT ours to sweep: they
+        # are the textures Godot's importer extracts from each glb (its
+        # embedded_image_handling default) and imports VRAM-compressed;
+        # sweeping them every run forced a re-extraction on every import
+        # pass 1, with 8 "Failed loading resource" errors per model
+        # (2026-09-07). decimate_model drops a model's own extractions
+        # when it rebuilds that model.
+        rm -f "$ENEMIES_DIR"/*.fbx 2>/dev/null
+        sweep_stale_sidecars "$ENEMIES_DIR"
         for n in 01 03; do
             src="$(find "$EVIL_MECHS_SRC" -maxdepth 1 -iname "*Evil_mech_${n}*.fbx" | head -1)"
             [ -n "$src" ] || continue
@@ -523,7 +565,7 @@ fi
 # holding what the provider shipped — the model (FBX, or OBJ + MTL), the
 # texture archives (.rar/.zip), a .max source when there is one — and
 # nothing else authored. The stanza extracts the archives beside the
-# sources (unpacked/, gitignored), runs the oracle the model's format
+# sources (unpacked/, gitignored), runs the manifest the model's format
 # calls for (extract-fbx-materials.py / mtl_materials.py, plus
 # extract-max-materials.py when a .max ships), converts through
 # convert-environment.py (material_plan.py policy, plan_apply.py
@@ -534,7 +576,14 @@ fi
 # exists — the level grammar consumes them by environment key. Adding a
 # scene = a folder + one convert_environment line (+ its kit + zones).
 ENVIRONMENTS_DIR="$GODOT_DIR/addons/environments"
-ENV_TEX_CAP=2048
+# Texture cap for scenes: Godot's own maximum texture side. The earlier
+# 2048 was a VRAM guess nobody asked for — the villa's 8192 ground and
+# 3840 concrete came through at a quarter size and read as pixels
+# (owner 2026-09-06: "why are we being precious with these resources?
+# we have 64 GB of RAM"). The metrics's [textures] block carries every
+# scene's shipped-versus-source megapixels; a pack that ever needs a
+# cap gets it per pack through convert_environment's options.
+ENV_TEX_CAP=16384
 
 lfs_guard() {  # <file> — a git-lfs pointer stub means the clone skipped LFS
     if head -c 12 "$1" | grep -q "^version http"; then
@@ -557,12 +606,52 @@ lfs_guard() {  # <file> — a git-lfs pointer stub means the clone skipped LFS
 # each recorded here with its provenance. They are freshness inputs
 # through a stamp file beside the pack: change one and only that pack
 # reconverts.
+# glTF-Transform (tools/node, `make deps-node`): the glb-stage optimizer
+# every scene passes through after export. `join` runs dedup and flatten
+# first — content-identical materials (SketchUp's thousands of clones
+# export as identical glTF materials) merge under one name and their
+# primitives join, keepMeshes keeping node and mesh identity — and
+# `prune` drops what nothing references. The hill house's 11,571
+# single-mesh surfaces (Godot keeps 256 per mesh and drops the rest)
+# became 175 in ten seconds (2026-09-07). The audit's surface-cap and
+# per-class conservation contracts judge the product.
+GLTF_TRANSFORM="${GLTF_TRANSFORM:-tools/node/node_modules/.bin/gltf-transform}"
+GLTF_TRANSFORM_VERSION="${GLTF_TRANSFORM_VERSION:-unpinned}"
+# The optimizer's options are part of every pack's conversion stamp: a
+# change here reconverts every scene, like any converter option.
+# keepMeshes keeps node and mesh identity; keep-solid-textures keeps a
+# solid single-color map a map (prune's default folds it into a color
+# factor, which reads identically but contradicts the plan's word and
+# the audit's textured/flat contract, 2026-09-07).
+OPTIMIZE_OPTS="gltf-transform-$GLTF_TRANSFORM_VERSION join:keepMeshes prune:keep-solid-textures"
+optimize_glb() {
+    local glb="$1" log="$2" joined="${1%.glb}.joined.glb"
+    if [ ! -x "$GLTF_TRANSFORM" ]; then
+        echo "  ERROR: gltf-transform not found at $GLTF_TRANSFORM — run 'make deps'"
+        return 1
+    fi
+    echo "  Optimizing $(basename "$glb") ($OPTIMIZE_OPTS)..."
+    NODE_OPTIONS=--max-old-space-size=24576 "$GLTF_TRANSFORM" join "$glb" "$joined" --keepMeshes true >> "$log" 2>&1 \
+        && NODE_OPTIONS=--max-old-space-size=24576 "$GLTF_TRANSFORM" prune "$joined" "$glb" --keep-solid-textures true >> "$log" 2>&1 \
+        || {
+            echo "  ERROR: gltf-transform failed on $glb (see $log)"
+            rm -f "$joined" "$glb"
+            return 1
+        }
+    rm -f "$joined"
+    grep -E "^info: .*→" "$log" | tail -2 | sed 's/^info: /  /'
+}
+
 convert_environment() {
     local key="$1" pack="$2" pick="${3:-}"
     shift 3 2>/dev/null || shift $#
-    local stamp="$pack/convert.opts"
-    if [ ! -f "$stamp" ] || [ "$(cat "$stamp")" != "$*" ]; then
-        printf '%s' "$*" > "$stamp"
+    # The stamp carries the model pick and every converter option, the
+    # texture cap included, so a pick or a cap change reconverts like any
+    # other option change (a pack's alternate export is usually OLDER
+    # than the product, so mtime alone would never notice the switch).
+    local stamp="$pack/convert.opts" opts="${pick:-first-model} $* --tex-cap $ENV_TEX_CAP --optimize $OPTIMIZE_OPTS"
+    if [ ! -f "$stamp" ] || [ "$(cat "$stamp")" != "$opts" ]; then
+        printf '%s' "$opts" > "$stamp"
     fi
     if [ ! -d "$pack" ]; then
         echo "  $key pack not found at $pack, skipping."
@@ -573,10 +662,10 @@ convert_environment() {
         return
     fi
     mkdir -p "$ENVIRONMENTS_DIR"
-    local unpacked="$pack/unpacked" a model oracle max_src max_table="" mtl out windows=""
+    local unpacked="$pack/unpacked" a model manifest max_src max_table="" mtl out windows=""
     for a in "$pack"/*.rar "$pack"/*.zip; do
         [ -f "$a" ] || continue
-        [ -n "$CENSUS_ONLY" ] && continue
+        [ -n "$METRICS_ONLY" ] && continue
         lfs_guard "$a"
         extract_archive "$a" "$unpacked/$(basename "${a%.*}")"
     done
@@ -591,44 +680,52 @@ convert_environment() {
         exit 1
     fi
     lfs_guard "$model"
-    # The material oracle the model's format calls for, once per change.
+    # The material manifest the model's format calls for, once per change.
     case "$(echo "${model##*.}" | tr '[:upper:]' '[:lower:]')" in
         obj)
             mtl="${model%.*}.mtl"
             [ -f "$mtl" ] || mtl="$(find "$(dirname "$model")" -maxdepth 1 -iname '*.mtl' | head -1)"
-            oracle="$pack/mtl_materials.json"
-            if [ -z "$CENSUS_ONLY" ] && stale "$oracle" -- "$model" "$mtl" "$SCRIPTS_DIR/mtl_materials.py"; then
-                echo "  Extracting $key material oracle from the MTL..."
-                python3 "$SCRIPTS_DIR/mtl_materials.py" "$model" "$mtl" "$oracle" \
+            manifest="$pack/mtl_materials.json"
+            if [ -z "$METRICS_ONLY" ] && stale "$manifest" -- "$model" "$mtl" "$SCRIPTS_DIR/mtl_materials.py"; then
+                echo "  Extracting $key material manifest from the MTL..."
+                python3 "$SCRIPTS_DIR/mtl_materials.py" "$model" "$mtl" "$manifest" \
                     | grep -i "mtl-materials:" || echo "  (mtl-materials: no summary — check output)"
             fi ;;
         *)
-            oracle="$pack/fbx_materials.json"
-            if [ -z "$CENSUS_ONLY" ] && stale "$oracle" -- "$model" "$SCRIPTS_DIR/extract-fbx-materials.py"; then
-                echo "  Extracting $key material oracle from FBX connection tables..."
+            manifest="$pack/fbx_materials.json"
+            if [ -z "$METRICS_ONLY" ] && stale "$manifest" -- "$model" "$SCRIPTS_DIR/extract-fbx-materials.py"; then
+                echo "  Extracting $key material manifest from FBX connection tables..."
+                mkdir -p "$OUT_DIR"
                 "$BLENDER" --background --python-exit-code 1 \
-                    --python "$SCRIPTS_DIR/extract-fbx-materials.py" -- "$model" "$oracle" 2>&1 \
-                    | grep -i "extract-fbx-materials:" || echo "  (extract-fbx-materials: no summary — check Blender output)"
+                    --python "$SCRIPTS_DIR/extract-fbx-materials.py" -- "$model" "$manifest" \
+                    > "$OUT_DIR/manifest-$key.log" 2>&1 \
+                    || echo "  ERROR: $key manifest extraction failed (see out/manifest-$key.log)"
+                grep -i "extract-fbx-materials:" "$OUT_DIR/manifest-$key.log" \
+                    || echo "  (extract-fbx-materials: no summary — see out/manifest-$key.log)"
             fi ;;
     esac
     # A .max source is the authoring truth for Corona materials (the FBX
     # export destroys most of their bindings); its table merges over the
-    # oracle in the plan.
+    # manifest in the plan.
     max_src="$(find "$pack" -maxdepth 3 -iname '*.max' -not -path '*/.*' | head -1)"
     if [ -n "$max_src" ]; then
         max_table="$pack/max_materials.json"
-        if [ -z "$CENSUS_ONLY" ] && stale "$max_table" -- "$max_src" "$SCRIPTS_DIR/extract-max-materials.py"; then
+        if [ -z "$METRICS_ONLY" ] && stale "$max_table" -- "$max_src" "$SCRIPTS_DIR/extract-max-materials.py"; then
             echo "  Extracting $key material table from the .max source..."
+            mkdir -p "$OUT_DIR"
             "$BLENDER" --background --python-exit-code 1 \
-                --python "$SCRIPTS_DIR/extract-max-materials.py" -- "$max_src" "$max_table" 2>&1 \
-                | grep -i "extract-max:" || echo "  (extract-max: no summary — check Blender output)"
+                --python "$SCRIPTS_DIR/extract-max-materials.py" -- "$max_src" "$max_table" \
+                > "$OUT_DIR/max-$key.log" 2>&1 \
+                || echo "  ERROR: $key .max table extraction failed (see out/max-$key.log)"
+            grep -i "extract-max:" "$OUT_DIR/max-$key.log" \
+                || echo "  (extract-max: no summary — see out/max-$key.log)"
         fi
     fi
     out="$ENVIRONMENTS_DIR/$key.glb"
     [ -f "rosters/environments/$key.toml" ] && windows="rosters/windows/$key.toml"
-    if [ -n "$CENSUS_ONLY" ]; then
-        :  # census-only: the installed product is what there is
-    elif stale "$out" ${windows:+"$windows"} -- "$model" "$oracle" ${max_table:+"$max_table"} "$stamp" \
+    if [ -n "$METRICS_ONLY" ]; then
+        :  # metrics-only: the installed product is what there is
+    elif stale "$out" ${windows:+"$windows"} -- "$model" "$manifest" ${max_table:+"$max_table"} "$stamp" \
             "$pack"/*.rar "$pack"/*.zip "$SCRIPTS_DIR/convert-environment.py" \
             "$SCRIPTS_DIR/plan_apply.py" "$SCRIPTS_DIR/material_plan.py"; then
         echo "  Converting $key (full detail, ${ENV_TEX_CAP}px textures; log: out/convert-$key.log)..."
@@ -637,7 +734,7 @@ convert_environment() {
         # behind a summary grep, 2026-09-06).
         mkdir -p "$OUT_DIR"
         "$BLENDER" --background --python-exit-code 1 --python "$SCRIPTS_DIR/convert-environment.py" -- \
-            "$model" "$out" "$unpacked" "$oracle" --tex-cap "$ENV_TEX_CAP" \
+            "$model" "$out" "$unpacked" "$manifest" --tex-cap "$ENV_TEX_CAP" \
             --cache "$pack/scene_cache.blend" --report "$pack/conversion.json" \
             ${max_table:+--max "$max_table"} ${windows:+--windows "$windows"} \
             "$@" \
@@ -652,6 +749,7 @@ convert_environment() {
                 exit 1
             }
         grep -i "convert-environment:" "$OUT_DIR/convert-$key.log" || true
+        optimize_glb "$out" "$OUT_DIR/convert-$key.log" || exit 1
     else
         echo "  $key.glb is fresh."
     fi
@@ -659,42 +757,48 @@ convert_environment() {
         echo "  ERROR: $key conversion produced no glb"
         exit 1
     fi
-    # The census of what got built (out/census/<key>.toml + the recon
+    # The metrics of what got built (out/metrics/<key>.toml + the section
     # sections <key>_plan{,_low,_high}.png / <key>_{long,cross}.png: the
     # scene cut by planes, with the authored zone boxes drawn over the
     # walls): the reproducible reading zone authoring and the kit-scale
-    # decision start from. Re-censuses when the zone roster changes, so
+    # decision start from. Re-measures when the zone roster changes, so
     # a box edit shows against the walls.
-    local census="$OUT_DIR/census/$key.toml" zones="rosters/environments/$key.toml"
-    if stale "$census" -- "$out" "$oracle" "$zones" "$SCRIPTS_DIR/scene-census.py" "$SCRIPTS_DIR/cockpit_plan.py"; then
-        mkdir -p "$OUT_DIR/census"
-        python3 "$SCRIPTS_DIR/scene-census.py" "$key" "$out" "$census" "$oracle" "$zones" \
-            | grep -i "scene-census:" || echo "  ($key: no census — check scene-census.py output)"
+    local metrics="$OUT_DIR/metrics/$key.toml" zones="rosters/environments/$key.toml"
+    if stale "$metrics" -- "$out" "$manifest" "$zones" "$SCRIPTS_DIR/scene-metrics.py" "$SCRIPTS_DIR/cockpit_plan.py"; then
+        mkdir -p "$OUT_DIR/metrics"
+        python3 "$SCRIPTS_DIR/scene-metrics.py" "$key" "$out" "$metrics" "$manifest" "$zones" \
+            | grep -i "scene-metrics:" || echo "  ($key: no metrics — check scene-metrics.py output)"
+        # glTF-Transform's own inspection beside ours (meshes, primitives,
+        # materials, textures as the standard tool reads them).
+        if [ -x "$GLTF_TRANSFORM" ]; then
+            NODE_OPTIONS=--max-old-space-size=24576 "$GLTF_TRANSFORM" inspect "$out" --format md \
+                > "$OUT_DIR/metrics/$key.inspect.md" 2>&1 || echo "  ($key: gltf-transform inspect failed — see out/metrics/$key.inspect.md)"
+        fi
     fi
     chmod -R u+w "$ENVIRONMENTS_DIR"
     echo "  $key environment installed."
 }
 
 convert_environment "apartment" "$ASSETS_DIR/apartment" ""
-# SketchUp's OBJ is millimeters and Z up (oracle census 2026-09-06: the
+# SketchUp's OBJ is millimeters and Z up (manifest metrics 2026-09-06: the
 # room body spans ~6 x 12.5 x 2.8 m once scaled — x 7.6..13.6, y
-# 0.5..3.3, z -22.3..-9.8 in the census frame — inside the provider's
+# 0.5..3.3, z -22.3..-9.8 in the metrics frame — inside the provider's
 # 175 m scenery backdrop). The backdrop STAYS: it is the view through
 # the glass walls (owner 2026-09-06: clipped, the outside was black).
 convert_environment "hill_house" "$ASSETS_DIR/hill_house" "" \
     --unit-scale 0.001 --obj-up Z --obj-forward NEGATIVE_Y
 # The office pack lays its four color schemes in a row along z, 100 m
-# apart (census 2026-09-06: plain at z 25..75, Blue at -75..-25, "2" at
+# apart (metrics 2026-09-06: plain at z 25..75, Blue at -75..-25, "2" at
 # -175..-125, "2Violet" at 125..175). One building is the level: the
 # plain scheme. Pick another by moving the box (that pack reconverts).
 convert_environment "office_building" "$ASSETS_DIR/office_building" "" "--keep=-45,-1,0,25,50,100"
 # The villa's FBX archive ships two exports; the single-UV one is the
 # game mesh (one UV set per vertex, what the glTF wants). Its file
-# declares inches (census: unit_scale_factor 2.54) but the geometry
+# declares inches (metrics: unit_scale_factor 2.54) but the geometry
 # reads as decimeters — at 0.1 m per unit the house is 4.7 m tall on a
 # 20 x 16 m footprint (the listing's villa); at the declared inch it is
 # a 1.2 m dollhouse. 0.1 / 0.0254 on top of the declared conversion.
-convert_environment "mountain_villa" "$ASSETS_DIR/mountain_villa" "FBX Single UV.fbx" \
+convert_environment "mountain_villa" "$ASSETS_DIR/mountain_villa" "FBX UV.fbx" \
     --unit-scale 3.937
 
 # ========== Panel-world kits (CGTrader parts kits -> per-piece glB) ==========
@@ -711,7 +815,7 @@ WALLS_SRC="$ASSETS_DIR/more_walls"
 # split_panel_kit <label> <source> <install_dir>
 split_panel_kit() {
     local label="$1" src="$2" dest="$3"
-    [ -z "$CENSUS_ONLY" ] || return 0  # panels are censused by the probe (Door 3)
+    [ -z "$METRICS_ONLY" ] || return 0  # panels are measured by the probe (Door 3)
     if [ -z "$src" ] || [ ! -f "$src" ]; then
         echo "  $label source not found, skipping."
         return
@@ -728,7 +832,7 @@ split_panel_kit() {
     echo "  Splitting $label panels (target 800 tris each)..."
     mkdir -p "$dest"
     # Fresh slate for the GLBS: a stale piece or variant from a prior
-    # run would be censused as if current. The manifest SURVIVES — it
+    # run would be measured as if current. The manifest SURVIVES — it
     # carries the Transform's persistent flip state into the next bake
     # (the split overwrites it at the end of its run).
     rm -f "$dest"/*.glb

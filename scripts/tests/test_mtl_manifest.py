@@ -1,7 +1,8 @@
-"""The OBJ/MTL oracle (scripts/mtl_materials.py) and the plan vocabulary
-it feeds. Pure: the parser is production code fed a small MTL/OBJ pair
-written by the test — the same statements the hill house's SketchUp
-export uses — and the plan is built by the real material_plan.
+"""The OBJ/MTL material manifest extractor (scripts/mtl_materials.py)
+and the plan vocabulary it feeds. Pure: the parser is production code
+fed a small MTL/OBJ pair written by the test — the same statements the
+hill house's SketchUp export uses — and the plan is built by the real
+material_plan.
 """
 import sys
 from pathlib import Path
@@ -45,7 +46,7 @@ map_Kd Leftover.jpg
 """
 
 # A strip of triangles, one DISTINCT face per material (a face shared by
-# two materials is the two-sided case the oracle discounts).
+# two materials is the two-sided case the manifest discounts).
 OBJ = """\
 # faces wear these
 mtllib scene.mtl
@@ -78,7 +79,7 @@ def test_parse_mtl_reads_scalars_and_texture_channels():
     assert grey["channels"] == {"map_Kd": "Paint_Grey.jpg"}, \
         "the channel carries the file's basename, folders stripped"
     assert abs(mats["Glass"]["props"]["TransparencyFactor"] - 0.69) < 1e-6, \
-        "d is opacity; the oracle speaks TransparencyFactor = 1 - d"
+        "d is opacity; the manifest speaks TransparencyFactor = 1 - d"
     assert "TransparencyFactor" not in grey["props"], "no invented transparency"
     assert mats["Lamp"]["props"]["EmissiveColor"] == [2.0, 2.0, 2.0]
     assert mats["Lamp"]["channels"]["map_Ke"] == "Lamp_Glow.png"
@@ -98,7 +99,7 @@ def test_assigned_is_the_usemtl_set(tmp_path):
     assert assigned_in_obj(obj) == {"Paint_Grey", "Glass", "Lamp", "Lace", "Brick"}
 
 
-def test_extract_matches_the_fbx_oracle_shape(tmp_path):
+def test_extract_matches_the_fbx_manifest_shape(tmp_path):
     obj = tmp_path / "scene.obj"
     mtl = tmp_path / "scene.mtl"
     obj.write_text(OBJ)
@@ -113,8 +114,8 @@ def test_extract_matches_the_fbx_oracle_shape(tmp_path):
 
 
 def test_assigned_means_carries_faces(tmp_path):
-    # Same definition as the FBX oracle's: a `usemtl` no face follows is
-    # an authored leftover the exporter drops, and the audit must not
+    # Same definition as the FBX manifest's: a `usemtl` no face follows
+    # is an authored leftover the exporter drops, and the audit must not
     # demand it from the glb.
     obj = tmp_path / "scene.obj"
     obj.write_text(
@@ -158,8 +159,8 @@ def test_assigned_means_a_distinct_solid_face(tmp_path):
 
 
 def test_extract_reports_the_obj_geometry(tmp_path):
-    # The census of the raw file: counts, the vertex AABB, and the
-    # 5th/95th-percentile extents that tell a room from the backdrop
+    # The counts of the raw file: vertices, faces, the vertex AABB, and
+    # the 5th/95th-percentile extents that tell a room from the backdrop
     # around it (the hill house's single mesh spans 175 km of AABB).
     obj = tmp_path / "scene.obj"
     mtl = tmp_path / "scene.mtl"
