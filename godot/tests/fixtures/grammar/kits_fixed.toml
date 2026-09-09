@@ -1,7 +1,11 @@
 # TEST FIXTURE — a fixed-paradigm kit over the real installed apartment.
 
+[skies.fx_sky]
+texture = "res://addons/sky/starmap_2020_8k_gal.exr"
+
 [kits.fx_house_kit]
 paradigm = "fixed"
 install_dir = "godot/addons/environments"
 scale = 5.0
 environment = "fx_house"
+sky = "fx_sky"

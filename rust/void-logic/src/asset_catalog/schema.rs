@@ -12,12 +12,19 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+
 pub struct KitsFile {
     pub kits: BTreeMap<String, KitRaw>,
+    /// The panoramas a fixed environment's openings look out on, by
+    /// key; a fixed kit names one in `sky`. Optional: a catalog without
+    /// skies leaves the shell's authored environment in place.
+    #[serde(default)]
+    pub skies: BTreeMap<String, SkyRaw>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+
 pub struct KitRaw {
     pub paradigm: KitParadigm,
     /// Repo-relative directory `make assets` populates for this kit — the
@@ -50,6 +57,27 @@ pub struct KitRaw {
     /// `paradigm = "fixed"`.
     #[serde(default)]
     pub environment: Option<String>,
+    /// FIXED kits only, optional: the sky its openings look out on — a
+    /// key into `[skies]`. Absent, the shell keeps the environment
+    /// main.tscn authored.
+    #[serde(default)]
+    pub sky: Option<String>,
+}
+
+
+/// One sky: an equirectangular panorama the fixed levels' world
+/// environment shows behind every opening (owner 2026-09-08: "the
+/// exterior being a skyscape goes with the story"; the NASA Deep Star
+/// Maps 2020, galactic frame). `texture` is the installed res:// path
+/// (`make assets` copies assets/sky/ into godot/addons/sky/);
+/// `attribution` joins catalog/attributions.toml, and the asset audit
+/// holds every sky to a credited, checksum-pinned source.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkyRaw {
+    pub texture: String,
+    #[serde(default)]
+    pub attribution: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

@@ -4,10 +4,11 @@
         <model> <out.glb> <tex_root> <manifest.json> \\
         [--max max_materials.json] [--windows out.toml] \\
         [--cache scene_cache.blend] [--tex-cap N] [--report conversion.json] \\
+        [--environment KEY] \\
         [--unit-scale S] [--obj-up Y|Z] [--obj-forward AXIS] \\
         [--keep lo_x,lo_y,lo_z,hi_x,hi_y,hi_z]
 
-One door for every planet-3 scene (the apartment, the hill house, the
+One stage for every planet-3 scene (the apartment, the hill house, the
 office building, the mountain villa): an archviz export — FBX from 3ds
 Max/Corona or Blender, or OBJ + MTL from SketchUp — becomes one
 self-contained .glb at provider scale in meters. This script is
@@ -17,7 +18,8 @@ material manifest (extract-fbx-materials.py or mtl_materials.py — one
 JSON shape) and, when the pack ships a .max, its material table
 (extract-max-materials.py); scripts/plan_apply.py wires the plans
 (shared with the hull conversion). Here we import the scene by format,
-apply the plans, derive the window panes, cap textures, and export.
+apply the plans, derive the window panes, retile thin maps, cap
+textures, and export.
 
 Per-pack provider facts, recorded by the install script with their
 provenance (the metrics name them):
@@ -30,10 +32,35 @@ provenance (the metrics name them):
                  left empty are dropped. Selects one scene when the
                  provider laid several side by side (the office's four
                  color schemes), and cuts a backdrop away from a room.
+  --environment  the environment key: its fixed kit's scale
+                 (catalog/kits.toml) turns model meters into world
+                 meters for the texel floor.
 The imported scene's bounds are logged in that same frame right after
 import — the numbers a keep box is read from.
 --report writes what --keep did (objects dropped, faces clipped, and the
-materials no surviving face wears) so the audit can subtract it.
+materials no surviving face wears) and what the retile did (per
+material: the verdict — seamless, seamed or held — with the per-axis
+signals behind it, density, repeat factor) so the audit and the owner
+can read each surface's story.
+
+RETILE (owner 2026-09-08: "repeated tiling to increase texture
+resolution so we can hit a high resolution target when the player flies
+close"; 2026-09-09: "I'd rather you just increase the repetition
+first"): after the transform bake, every textured material's density is
+measured the way the metrics measure it (map pixels x UV area over
+surface area, per world meter at the kit scale), with the signals
+scripts/retile.py judges on: the largest UV extent of any UV ISLAND
+(scripts/uv_islands.py — the faces joined by shared vertices at shared
+UVs, one surface's layout; does an island wear the whole map? does the
+author repeat it?), the map's per-axis edge continuity, and the plan's
+alpha. Every surface under the floor whose verdict is not "held" has
+its UVs repeated by the integer that reaches it (retile_factor); the
+report says what that costs (seamless or seamed). A surface is HELD as
+shipped — its resolution the source's ceiling — when a repeat would
+show anything but its own map: an atlas patch, a picture, an alpha
+silhouette, a collapsed mapping, or a mapping so far under the floor
+that no sane repeat reaches it (the one guard is fidelity to the
+vendor, owner 2026-09-09).
 
 No decimation: a scene is a single environment instance, not a
 many-instances enemy model (owner 2026-07-11). Textures are capped at
@@ -57,6 +84,7 @@ a gray scene must never ship silently.
 """
 import argparse
 import json
+import math
 import os
 import sys
 
@@ -67,7 +95,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from material_plan import (  # noqa: E402
     build_plans, loose_matches, normalize_max_table, shipped_inventory,
 )
-from plan_apply import apply_plans, cap_and_pack_images  # noqa: E402
+from plan_apply import apply_plans, cap_and_pack_images, plan_name  # noqa: E402
+from retile import (  # noqa: E402
+    TEXEL_FLOOR_PER_WORLD_M, edge_continuity_axes, repeat_verdict, retile_factor,
+)
+from uv_islands import island_spans  # noqa: E402
 
 parser = argparse.ArgumentParser(prog="convert-environment.py")
 parser.add_argument("model")
@@ -78,6 +110,9 @@ parser.add_argument("--max", dest="max_table", default=None)
 parser.add_argument("--windows", default=None)
 parser.add_argument("--cache", default=None)
 parser.add_argument("--report", default=None)
+parser.add_argument("--environment", default=None,
+                    help="environment key; its fixed kit's scale (catalog/kits.toml) "
+                         "turns model meters into world meters for the texel floor")
 parser.add_argument("--tex-cap", dest="tex_cap", type=int, default=2048)
 parser.add_argument("--unit-scale", dest="unit_scale", type=float, default=1.0)
 parser.add_argument("--obj-up", dest="obj_up", default="Y", choices=["Y", "Z"])
@@ -90,6 +125,7 @@ args = parser.parse_args(sys.argv[sys.argv.index("--") + 1:])
 in_path, out_path, tex_root, tex_cap = args.model, args.out, args.tex_root, args.tex_cap
 PANE_EMISSION = 1.5  # glass glow strength (look knob; blinds silhouette)
 MIN_WIRED = 0.80  # fraction of textured plans that must actually wire
+CONTINUITY_SAMPLE = 256  # a map's edges are judged on a copy this wide at most
 
 # ---- the material plans: policy computed OUTSIDE Blender ----
 if not os.path.isfile(args.manifest):
@@ -122,6 +158,24 @@ relaxed = loose_matches(manifest, inventory)
 print(f"convert-environment: {len(relaxed)} texture references matched by relaxed name")
 for name, chan, declared, shipped in relaxed:
     print(f"convert-environment:   {name} {chan}: {declared} -> {shipped}")
+
+
+def kit_scale_of(environment):
+    """World units per model meter the catalog declares for the fixed kit
+    joined to this environment (catalog/kits.toml); 1.0 when no key is
+    given or no kit joins it."""
+    if not environment:
+        return 1.0
+    import tomllib
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "catalog", "kits.toml")
+    with open(path, "rb") as f:
+        kits = tomllib.load(f)["kits"]
+    for kit in kits.values():
+        if kit.get("paradigm") == "fixed" and kit.get("environment") == environment:
+            return float(kit["scale"])
+    print(f"convert-environment: WARNING no fixed kit joins environment {environment!r} "
+          f"— texel floor judged at kit scale 1")
+    return 1.0
 
 
 def import_model(path):
@@ -283,9 +337,6 @@ if args.keep:
         raise SystemExit("convert-environment: --keep box kept nothing")
     lo, hi = gltf_bounds(meshes)
     print(f"convert-environment: kept bounds (glTF frame, meters) lo={fmt(lo)} hi={fmt(hi)}")
-if args.report:
-    with open(args.report, "w") as f:
-        json.dump(report, f, indent=1, sort_keys=True)
 
 # Conservation diagnostic for the audit's glb test: assigned materials
 # the importer failed to materialize (their surfaces are LOST, not just
@@ -401,6 +452,136 @@ print(f"convert-environment: {len(glowed)} glass pane materials set emissive")
 # refuses shared data ----
 single_user(meshes)
 bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
+
+
+# ---- retile: every surface under the texel floor repeats its map up to
+# it when the repeat shows only its own map; the verdict says what that
+# costs (scripts/retile.py — the rule and its tests) ----
+
+def base_image_of(mat):
+    """The image feeding the material's Base Color, or None."""
+    if not mat.use_nodes:
+        return None
+    bsdf = mat.node_tree.nodes.get("Principled BSDF")
+    if bsdf is None:
+        return None
+    for link in mat.node_tree.links:
+        if (link.to_node == bsdf and link.to_socket.name == "Base Color"
+                and link.from_node.type == "TEX_IMAGE" and link.from_node.image is not None):
+            return link.from_node.image
+    return None
+
+
+_continuity = {}
+
+
+def continuity_of(img):
+    """edge_continuity_axes on a copy no wider than CONTINUITY_SAMPLE (an
+    8192-square map is 268 million floats through bpy), once per image:
+    (u, v)."""
+    if img.name in _continuity:
+        return _continuity[img.name]
+    small = img.copy()
+    w, h = small.size
+    if w > CONTINUITY_SAMPLE or h > CONTINUITY_SAMPLE:
+        small.scale(min(w, CONTINUITY_SAMPLE), min(h, CONTINUITY_SAMPLE))
+    score = edge_continuity_axes(list(small.pixels), small.size[0], small.size[1], channels=4)
+    bpy.data.images.remove(small)
+    _continuity[img.name] = score
+    return score
+
+
+def uv_polygon_area(uv_data, loops):
+    a = 0.0
+    n = len(loops)
+    for i in range(n):
+        u0, v0 = uv_data[loops[i]].uv
+        u1, v1 = uv_data[loops[(i + 1) % n]].uv
+        a += u0 * v1 - u1 * v0
+    return abs(a) / 2.0
+
+
+kit_scale = kit_scale_of(args.environment)
+# Materials by plan name: a scene's clones share one map and merge
+# downstream (the optimizer's dedup), so they are measured and retiled
+# as one surface.
+images = {}
+for mat in bpy.data.materials:
+    img = base_image_of(mat)
+    if img is not None:
+        images[mat.name] = (plan_name(mat), img)
+world_area, uv_area, island_span, islands, loops_of = {}, {}, {}, {}, {}
+for o in meshes:
+    me = o.data
+    uv_layer = me.uv_layers.active
+    if uv_layer is None or not me.materials:
+        continue
+    slot_group = [images.get(m.name, (None, None))[0] if m else None for m in me.materials]
+    uv_data = uv_layer.data
+    faces_of = {}  # group -> this object's faces as (vertex, u, v) rows
+    for poly in me.polygons:
+        group = slot_group[min(poly.material_index, len(slot_group) - 1)]
+        if group is None:
+            continue
+        loops = list(poly.loop_indices)
+        world_area[group] = world_area.get(group, 0.0) + poly.area
+        uv_area[group] = uv_area.get(group, 0.0) + uv_polygon_area(uv_data, loops)
+        faces_of.setdefault(group, []).append(
+            [(me.loops[li].vertex_index, *uv_data[li].uv) for li in loops])
+        loops_of.setdefault(group, []).append((uv_data, loops))
+    # UV islands live within an object (its faces share its vertices);
+    # the material's island span is its largest island anywhere.
+    for group, faces in faces_of.items():
+        spans = island_spans(faces)
+        islands[group] = islands.get(group, 0) + len(spans)
+        pu, pv = island_span.get(group, (0.0, 0.0))
+        island_span[group] = (max([pu] + [s[0] for s in spans]), max([pv] + [s[1] for s in spans]))
+retile_report = {}
+repeated = 0
+for group in sorted(world_area):
+    img = next(i for n, (g, i) in images.items() if g == group)
+    if world_area[group] <= 0.0 or uv_area[group] <= 0.0:
+        continue
+    density_model = math.sqrt(img.size[0] * img.size[1] * uv_area[group] / world_area[group])
+    density_world = density_model / kit_scale
+    continuity = continuity_of(img)
+    alpha = (plans.get(group) or {}).get("alpha")
+    verdict = repeat_verdict(continuity, island_span[group], uv_area[group], alpha)
+    factor = retile_factor(density_world) if verdict != "held" else None
+    if factor is None and verdict != "held":
+        verdict = "held"  # past RETILE_MAX: no sane repeat reaches the floor
+    if factor and factor > 1:
+        for uv_data, loops in loops_of[group]:
+            for li in loops:
+                u, v = uv_data[li].uv
+                uv_data[li].uv = (u * factor, v * factor)
+        repeated += 1
+    retile_report[group] = {
+        "verdict": verdict,
+        "continuity": [round(c, 3) for c in continuity],
+        "island_span": [round(s, 2) for s in island_span[group]],
+        "islands": islands[group],
+        "alpha": bool(alpha), "uv_area": round(uv_area[group], 4),
+        "density_world": round(density_world, 1), "factor": factor or 1,
+        "map": [img.size[0], img.size[1]],
+    }
+report["retile"] = retile_report
+tally = {v: sum(1 for r in retile_report.values() if r["verdict"] == v)
+         for v in ("seamless", "seamed", "held")}
+seamed_repeats = sum(1 for r in retile_report.values()
+                     if r["verdict"] == "seamed" and r["factor"] > 1)
+under_floor_held = sum(1 for r in retile_report.values()
+                       if r["verdict"] == "held" and r["density_world"] < TEXEL_FLOOR_PER_WORLD_M)
+print(f"convert-environment: retile (kit scale {kit_scale:g}, floor "
+      f"{TEXEL_FLOOR_PER_WORLD_M:.0f} texels per world meter): {len(retile_report)} textured "
+      f"materials — {tally['seamless']} seamless, {tally['seamed']} seamed, {tally['held']} held "
+      f"({under_floor_held} of them under the floor); {repeated} repeated ({seamed_repeats} with "
+      f"seams); largest factors: "
+      + ", ".join(f"{n} x{r['factor']} ({r['density_world']:.0f}, {r['verdict']})"
+                  for n, r in sorted(retile_report.items(), key=lambda kv: -kv[1]["factor"])[:6]))
+if args.report:
+    with open(args.report, "w") as f:
+        json.dump(report, f, indent=1, sort_keys=True)
 
 # ---- cap + pack textures so the exporter embeds the capped versions ----
 cap_and_pack_images(tex_cap)

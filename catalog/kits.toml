@@ -6,6 +6,16 @@
 # Pitch and paradigm derive from kits; nothing else in the roster data may
 # state a cell dimension.
 
+# Skies: the panorama a fixed environment's openings look out on (owner
+# 2026-09-08: "the exterior being a skyscape goes with the story"). One
+# entry per picture; a fixed kit names its sky by key. `texture` is the
+# installed res:// path (make assets copies assets/sky/ into
+# godot/addons/sky/); `attribution` joins catalog/attributions.toml — the
+# credits page and the audit hold every sky to a credited, pinned source.
+[skies.starmap_2020]
+texture = "res://addons/sky/starmap_2020_8k_gal.exr"
+attribution = "nasa_deep_star_maps_2020"
+
 [kits.quaternius_megakit]
 paradigm = "layered"
 install_dir = "godot/addons/quaternius/modularscifimegakit"
@@ -32,6 +42,7 @@ install_dir = "godot/addons/environments"
 # meter), and the kit joins its authored zone map by environment key.
 scale = 5.0
 environment = "apartment"
+sky = "starmap_2020"
 
 # Planet 3's other locations (2026-09-06): planet_3.toml deals two of its
 # four per run. Each scene ships in model meters (convert-environment.py
@@ -44,15 +55,18 @@ paradigm = "fixed"
 install_dir = "godot/addons/environments"
 scale = 5.0
 environment = "hill_house"
+sky = "starmap_2020"
 
 [kits.office_building]
 paradigm = "fixed"
 install_dir = "godot/addons/environments"
 scale = 2.0
 environment = "office_building"
+sky = "starmap_2020"
 
 [kits.mountain_villa]
 paradigm = "fixed"
 install_dir = "godot/addons/environments"
 scale = 5.0
 environment = "mountain_villa"
+sky = "starmap_2020"

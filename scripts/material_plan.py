@@ -14,12 +14,14 @@ scripts/plan_apply.py wires the plans inside Blender (mechanism, shared
 by convert-environment.py and convert-hull.py);
 scripts/tests/test_asset_pipeline.py audits them (`make test-assets`).
 """
+import os
+import re
 
 # Emission ceiling for provider-authored light materials (Corona LightMtl
 # and self-illuminated surfaces). Corona treats these as photometric light
 # SOURCES (the apartment ships sky cards at strength 1000); Godot renders
 # them as surfaces, so anything past a gentle glow clips to a white shape.
-# One look knob, owner-retunable.
+# One look knob, owner-retunable (mine: the number is not the owner's).
 EMISSION_CAP = 3.0
 
 # Channel names, canonicalized across the manifests: Corona's (3ds Max
@@ -86,7 +88,6 @@ def texture_files(root):
     folder, split them across several archives, or ship them loose. The
     converters and the audit both resolve through here, so they agree on
     the inventory. First path wins a basename collision (sorted walk)."""
-    import os
     files = {}
     if not root or not os.path.isdir(root):
         return files
@@ -105,7 +106,6 @@ def shipped_inventory(fbx, tex_root):
     INSIDE the model file (the manifest's embedded_textures) — a packed
     diffuse is as shipped as a loose one, and a plan that cannot name it
     ships a gray hull (the military ship, 2026-09-06)."""
-    import os
     loose = {os.path.basename(p) for p in texture_files(tex_root).values()}
     return loose | set(fbx.get("embedded_textures", []))
 
@@ -114,7 +114,6 @@ def normalize_max_table(raw):
     """The .max importer suffixes textured material names with the bitmap's
     authoring path ("ZJ-001106_E:\\CGtrader\\...") — normalize back to the
     material name; entries WITH channels win a key collision."""
-    import re
     mats = raw.get("materials", raw)
     table = {}
     for key, entry in mats.items():
@@ -135,8 +134,6 @@ def clone_stem(basename):
     one source image. A bare trailing number ("ID_Decor_10") is a
     different picture and stays. The audit groups unshipped references
     by this stem, so a hole reads "ceramic_bianco x5500", not 5500 lines."""
-    import os
-    import re
     stem = re.sub(r"[.\-_ ]+", "_", os.path.splitext(basename)[0].lower())
     return re.sub(r"_?\d+_$", "", stem)
 
@@ -147,20 +144,35 @@ def find_in_inventory(basename, inventory):
     exporter may sanitize the name on the way out (SketchUp writes
     "AD_W_Wall_Concrete.jpg" for the shipped "AD.W_Wall_Concrete.jpg"),
     so the match relaxes in steps: exact (case-insensitive), then stem,
-    then stem with dots/underscores/hyphens/spaces treated as one, then
-    that stem with SketchUp's clone mark dropped (`clone_stem`). A bare
-    trailing number is a different picture and never collapses."""
-    import os
-    import re
-    lower = {f.lower(): f for f in inventory}
+    then the stem with SketchUp's clone mark dropped and its spelling
+    kept, then the stem with dots/underscores/hyphens/spaces treated as
+    one, then that with the clone mark dropped (`clone_stem`). A bare
+    trailing number is a different picture and never collapses.
+
+    A function of its inputs: the inventory is walked in name order, so
+    two shipped files that loosen to one stem ("ID_Decor_13.jpg" and
+    "ID.Decor_13.jpg", the hill house) resolve the same way in every
+    process — the converter's and the audit's (run 42, 2026-09-09: they
+    disagreed, and a material merged with its twin read as lost)."""
+    files = sorted(inventory)
+    lower = {}
+    for f in files:
+        lower.setdefault(f.lower(), f)
     hit = lower.get(basename.lower())
     if hit:
         return hit
-    stems = {os.path.splitext(f)[0].lower(): f for f in inventory}
+    stems = {}
+    for f in files:
+        stems.setdefault(os.path.splitext(f)[0].lower(), f)
     stem = os.path.splitext(basename)[0].lower()
     hit = stems.get(stem)
     if hit:
         return hit
+    spelled = re.sub(r"_?\d+_$", "", stem)  # the clone mark off, spelling kept
+    if spelled != stem:
+        hit = stems.get(spelled)
+        if hit:
+            return hit
 
     def loose(s):
         return re.sub(r"[.\-_ ]+", "_", s)
@@ -181,7 +193,6 @@ def loose_matches(fbx, inventory):
     resolved only through the loosened (punctuation-insensitive) match —
     (material, channel, declared, shipped) — so a converter can log what
     the relaxation decided and a reviewer can check the pairs."""
-    import os
     lower = {f.lower() for f in inventory}
     stems = {os.path.splitext(f)[0].lower() for f in inventory}
     found = []

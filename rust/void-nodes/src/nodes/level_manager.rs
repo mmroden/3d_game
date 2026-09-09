@@ -47,6 +47,7 @@ fn arr(v: Vector3) -> [f32; 3] {
 /// lights.
 #[derive(GodotClass)]
 #[class(base=Node3D)]
+
 pub struct LevelManager {
     base: Base<Node3D>,
 
@@ -136,7 +137,21 @@ pub struct LevelManager {
     /// levels' dark ambient is authored in main.tscn; the house's daylight
     /// ambient is authored on its environment file. One truth each.
     saved_ambient: Option<(i32, Color, f32)>,
+    /// The world environment's background mode as it was BEFORE a fixed
+    /// level whose kit names a sky replaced it — captured on the first
+    /// such build, restored on the next build without a sky. The authored
+    /// Sky itself waits on the Environment under AUTHORED_SKY_META (the
+    /// resource keeps the reference; this crate caches no raw `Gd`).
+    /// main.tscn authors the space levels' procedural dusk; the catalog's
+    /// `[skies]` authors the panoramas.
+    saved_background: Option<i32>,
 }
+
+/// Metadata key under which a fixed build parks main.tscn's authored Sky
+/// on the Environment it replaces it on — the resource itself keeps the
+/// strong reference (the node crate caches no raw `Gd` handle, by lint),
+/// and the next build without a sky puts it back.
+const AUTHORED_SKY_META: &str = "void_authored_sky";
 
 /// Dim fixtures emit a fraction of their rated energy — a weak glow.
 const DIM_ENERGY_FACTOR: f32 = 0.5;
@@ -166,6 +181,7 @@ impl INode3D for LevelManager {
             blinking_lights: LiveVec::new(),
             blink_time: 0.0,
             saved_ambient: None,
+            saved_background: None,
         }
     }
 
@@ -306,20 +322,69 @@ impl LevelManager {
         }
     }
 
-    /// Apply (or restore) the world-environment ambient for this build's
-    /// paradigm. A fixed environment authors daylight ambient — the
-    /// stand-in for the bounce its window light would produce under GI;
+/// Apply (or restore) the world-environment override for this build's
+    /// paradigm: a fixed environment authors daylight ambient — the
+    /// stand-in for the bounce its window light would produce under GI —
+    /// and, when its kit names a sky, the panorama behind its openings;
     /// every other build restores what main.tscn authored (the space
     /// levels' darkness is a look, not a default). No-op without a
     /// WorldEnvironment sibling (bare test stacks).
     fn apply_ambient_override(&mut self, spec: &LevelSpec) {
-        use godot::classes::environment::AmbientSource;
-        use godot::classes::WorldEnvironment;
+        use godot::classes::environment::{AmbientSource, BgMode};
+        use godot::classes::{PanoramaSkyMaterial, Sky, Texture2D, WorldEnvironment};
         let Some(parent) = self.base().get_parent() else { return };
         let Some(we) = parent.try_get_node_as::<WorldEnvironment>("WorldEnvironment") else {
             return;
         };
         let Some(mut env) = we.get_environment() else { return };
+        let fixed = match &spec.paradigm {
+            void_logic::level_spec::Paradigm::Fixed(e) => Some(e),
+            _ => None,
+        };
+
+        // The sky: a fixed kit that names one puts its panorama behind
+        // every opening — the exterior is a skyscape (owner 2026-09-08).
+        // Resolved from the catalog by environment key (one truth: the
+        // kit's [skies] entry); main.tscn's authored background comes
+        // back on the next build without one.
+        let sky = fixed.and_then(|e| {
+            void_logic::roster::roster().catalog.sky_of_environment(&e.key).cloned()
+        });
+        let mut sky_applied = false;
+        match sky {
+            Some(sky) => match godot::tools::try_load::<Texture2D>(sky.texture.as_str()) {
+                Ok(texture) => {
+                    if self.saved_background.is_none() {
+                        self.saved_background = Some(env.get_background().ord());
+                        let authored =
+                            env.get_sky().map(|s| s.to_variant()).unwrap_or_default();
+                        env.set_meta(AUTHORED_SKY_META, &authored);
+                    }
+                    let mut material = PanoramaSkyMaterial::new_gd();
+                    material.set_panorama(&texture);
+                    let mut sky_res = Sky::new_gd();
+                    sky_res.set_material(&material);
+                    env.set_sky(&sky_res);
+                    env.set_background(BgMode::SKY);
+                    sky_applied = true;
+                }
+                Err(e) => godot_error!(
+                    "sky '{}': {} failed to load ({e}) — run `make assets`",
+                    sky.key, sky.texture
+                ),
+            },
+            None => {
+                if let Some(mode) = self.saved_background.take() {
+                    match env.get_meta(AUTHORED_SKY_META).try_to::<Gd<Sky>>() {
+                        Ok(authored) => env.set_sky(&authored),
+                        Err(_) => env.set_sky(Gd::null_arg()),
+                    }
+                    env.remove_meta(AUTHORED_SKY_META);
+                    env.set_background(BgMode::from_ord(mode));
+                }
+            }
+        }
+
         let ambient = if self.ambient_override == 1 {
             // Capture diagnostic (`--ambient=1`): flat white ambient makes
             // matte surfaces visible, and the background becomes SENTINEL
@@ -328,9 +393,13 @@ impl LevelManager {
             // plates (vol03 ships metallic=1) mirror the environment — a
             // dark sky renders solid metal walls as false void, a bright
             // sentinel keeps them bright. Same knob family as `--cull`;
-            // never a play-path look.
-            env.set_background(godot::classes::environment::BgMode::COLOR);
-            env.set_bg_color(Color::from_rgb(1.0, 0.0, 1.0));
+            // never a play-path look. A level whose kit names a sky keeps
+            // it: the openings show the sky by design, and the rig
+            // measures what ships.
+            if !sky_applied {
+                env.set_background(BgMode::COLOR);
+                env.set_bg_color(Color::from_rgb(1.0, 0.0, 1.0));
+            }
             // Fog extinction ate the sentinel: at the authored density the
             // background reads near-BLACK past ~12 m, so every distant
             // escape wore the "unlit wall" color and the magenta detector
@@ -344,7 +413,7 @@ impl LevelManager {
             // override is capture-process-lifetime, so nothing restores it.
             env.set_glow_enabled(false);
             Some(void_logic::roster::AmbientDef { color: [1.0, 1.0, 1.0], energy: 1.0 })
-        } else if let void_logic::level_spec::Paradigm::Fixed(e) = &spec.paradigm {
+        } else if let Some(e) = fixed {
             e.ambient
         } else {
             None

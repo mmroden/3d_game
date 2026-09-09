@@ -12,7 +12,7 @@ MODE="${3:-}"
 TRES_ONLY="$MODE"    # --tres-only: re-copy just .tres files (fix Godot path rewrites)
 # --metrics-only (make metrics): no Blender, nothing converted — every
 # stale metrics re-reads its installed product against the current
-# rosters (the zone-authoring loop's door). The cheap copy stanzas still
+# rosters (the zone-authoring loop's stage). The cheap copy stanzas still
 # run; they are idempotent.
 METRICS_ONLY=""
 [ "$MODE" = "--metrics-only" ] && METRICS_ONLY=1
@@ -270,7 +270,7 @@ tex_root() {  # <unpacked-dir>
 # Cockpit shell: a hull's interior furniture (consoles, seat, canopy
 # bows) extracted per the cockpit_plan.py rule with the pilot Eyepoint
 # baked in — the first-person stereo view renders it at full detail
-# around the camera. One door for every hull; audit: `make test-assets`.
+# around the camera. One stage for every hull; audit: `make test-assets`.
 extract_cockpit() {  # <hull.glb> <shell.glb>
     local metrics="$OUT_DIR/metrics/$(basename "$2" .glb).toml"
     if [ -z "$METRICS_ONLY" ]; then
@@ -299,7 +299,7 @@ extract_cockpit() {  # <hull.glb> <shell.glb>
 }
 
 # decimate_model <label> <src> <out.glb> <target_tris> <tex_dir> [base_color_file]
-# The one door for every decimated model (enemy mechs, spheres, drones,
+# The one stage for every decimated model (enemy mechs, spheres, drones,
 # the jump gate): freshness-gated on the source, its texture folder, and
 # decimate.py itself.
 # An image's .import sidecar without the image is a stale extraction
@@ -327,7 +327,7 @@ decimate_model() {
             # sidecars) would shadow them, since the importer extracts
             # only what is not already there.
             rm -f "${out%.glb}"_*.png "${out%.glb}"_*.jpg "${out%.glb}"_*.png.import "${out%.glb}"_*.jpg.import 2>/dev/null
-            # Full Blender output to out/decimate-<model>.log: the door's
+            # Full Blender output to out/decimate-<model>.log: the stage's
             # histogram reads it (a summary grep hid every warning, 2026-09-07).
             mkdir -p "$OUT_DIR"
             "$BLENDER" --background --python-exit-code 1 --python "$SCRIPTS_DIR/decimate.py" -- \
@@ -375,7 +375,7 @@ if [ -d "$SHIPS_SRC" ]; then
     fi
     # Military ship (provider FBX + a .rar of loose maps; the diffuse and
     # cockpit textures are EMBEDDED in the FBX): converted through the
-    # same material-plan doors as the apartment — manifest
+    # same material-plan stages as the apartment — manifest
     # (extract-fbx-materials.py) -> plan (material_plan.py) -> apply
     # (convert-hull.py) — into a roster-frame hull, then its furnished
     # interior extracted as a second cockpit shell. Facing: the provider
@@ -561,7 +561,7 @@ else
 fi
 
 # ========== Planet-3 fixed environments (archviz scenes -> one glB each) ==========
-# One door for every fixed-level scene. A pack is a folder under assets/
+# One stage for every fixed-level scene. A pack is a folder under assets/
 # holding what the provider shipped — the model (FBX, or OBJ + MTL), the
 # texture archives (.rar/.zip), a .max source when there is one — and
 # nothing else authored. The stanza extracts the archives beside the
@@ -598,7 +598,7 @@ lfs_guard() {  # <file> — a git-lfs pointer stub means the clone skipped LFS
 # extracted archives; a pack that ships several names its pick. Every
 # archive at the pack's top level is a provider input (extracted, and a
 # freshness input); what a seller ships for HUMANS — render galleries,
-# manuals — lives under <pack>/reference/, which the door never reads
+# manuals — lives under <pack>/reference/, which the stage never reads
 # (the hill house's 830 MB render zip would otherwise unpack a gigabyte
 # of PSDs into the texture inventory and reconvert the scene). Any
 # further arguments go to convert-environment.py verbatim — the per-pack
@@ -650,7 +650,11 @@ convert_environment() {
     # other option change (a pack's alternate export is usually OLDER
     # than the product, so mtime alone would never notice the switch).
     local stamp="$pack/convert.opts" opts="${pick:-first-model} $* --tex-cap $ENV_TEX_CAP --optimize $OPTIMIZE_OPTS"
-    if [ ! -f "$stamp" ] || [ "$(cat "$stamp")" != "$opts" ]; then
+    # Metrics-only re-reads products; it must never touch a stamp (`make
+    # metrics` once ran without the optimizer version in its environment,
+    # stamped every pack "unpinned", and the next real run reconverted all
+    # four scenes for nothing, 2026-09-08).
+    if [ -z "$METRICS_ONLY" ] && { [ ! -f "$stamp" ] || [ "$(cat "$stamp")" != "$opts" ]; }; then
         printf '%s' "$opts" > "$stamp"
     fi
     if [ ! -d "$pack" ]; then
@@ -727,7 +731,8 @@ convert_environment() {
         :  # metrics-only: the installed product is what there is
     elif stale "$out" ${windows:+"$windows"} -- "$model" "$manifest" ${max_table:+"$max_table"} "$stamp" \
             "$pack"/*.rar "$pack"/*.zip "$SCRIPTS_DIR/convert-environment.py" \
-            "$SCRIPTS_DIR/plan_apply.py" "$SCRIPTS_DIR/material_plan.py"; then
+            "$SCRIPTS_DIR/plan_apply.py" "$SCRIPTS_DIR/material_plan.py" \
+            "$SCRIPTS_DIR/retile.py"; then
         echo "  Converting $key (full detail, ${ENV_TEX_CAP}px textures; log: out/convert-$key.log)..."
         # Full Blender output to a log — a failed conversion's traceback
         # is a run artifact, not noise (the office building died silently
@@ -735,6 +740,7 @@ convert_environment() {
         mkdir -p "$OUT_DIR"
         "$BLENDER" --background --python-exit-code 1 --python "$SCRIPTS_DIR/convert-environment.py" -- \
             "$model" "$out" "$unpacked" "$manifest" --tex-cap "$ENV_TEX_CAP" \
+            --environment "$key" \
             --cache "$pack/scene_cache.blend" --report "$pack/conversion.json" \
             ${max_table:+--max "$max_table"} ${windows:+--windows "$windows"} \
             "$@" \
@@ -800,6 +806,24 @@ convert_environment "office_building" "$ASSETS_DIR/office_building" "" "--keep=-
 # a 1.2 m dollhouse. 0.1 / 0.0254 on top of the declared conversion.
 convert_environment "mountain_villa" "$ASSETS_DIR/mountain_villa" "FBX UV.fbx" \
     --unit-scale 3.937
+
+# ========== Skies (attributed downloads -> godot/addons/sky) ==========
+# The panoramas fixed kits name (catalog/kits.toml [skies]): assets/sky/
+# holds the checksum-pinned downloads (`make assets-fetch`,
+# catalog/attributions.toml — the credits page renders from the same
+# file) and each installs as shipped; the import stage sets its sidecar
+# to VRAM-uncompressed float with mipmaps (Makefile). The audit holds
+# every catalogued sky to an installed, attributed file.
+SKY_DIR="$GODOT_DIR/addons/sky"
+mkdir -p "$SKY_DIR"
+for sky in "$ASSETS_DIR"/sky/*.exr "$ASSETS_DIR"/sky/*.hdr; do
+    [ -f "$sky" ] || continue
+    lfs_guard "$sky"
+    if stale "$SKY_DIR/$(basename "$sky")" -- "$sky"; then
+        echo "  Installing sky $(basename "$sky")..."
+        cp "$sky" "$SKY_DIR/"
+    fi
+done
 
 # ========== Panel-world kits (CGTrader parts kits -> per-piece glB) ==========
 # B11 cubic-cell panel worlds: each "Sci-Fi Parts Kit" pack carries its

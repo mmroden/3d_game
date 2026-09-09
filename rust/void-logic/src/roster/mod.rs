@@ -2531,6 +2531,50 @@ enemy_spawns = [[3.0, 1.0, 1.0]]
         assert!(err.contains("no_such_env"), "names the dangling key: {err}");
     }
 
+
+    /// The fixture kit with a sky: the panorama a fixed environment's
+    /// openings look out on (owner 2026-09-08: "the exterior being a
+    /// skyscape goes with the story").
+    const FX_FIXED_KIT_WITH_SKY: &str = "[skies.fx_sky]\ntexture = \"res://addons/sky/fx.exr\"\n\
+        [kits.fx_house]\nparadigm = \"fixed\"\n\
+        install_dir = \"godot/addons/environments\"\nscale = 5.0\n\
+        environment = \"fx_house_env\"\nsky = \"fx_sky\"\n";
+
+    #[test]
+    fn a_fixed_kits_sky_links_from_the_skies_table_onto_its_environment() {
+        let roster = load_fixed(FX_ENV, FX_FIXED_KIT_WITH_SKY, FX_FIXED_PLANET)
+            .expect("a kit naming a declared sky links");
+        let sky = roster
+            .catalog
+            .sky_of_environment("fx_house_env")
+            .expect("the environment's kit names a sky");
+        assert_eq!((sky.key.as_str(), sky.texture.as_str()), ("fx_sky", "res://addons/sky/fx.exr"));
+        let without = load_fixed(FX_ENV, FX_FIXED_KIT, FX_FIXED_PLANET).expect("no sky links too");
+        assert!(without.catalog.sky_of_environment("fx_house_env").is_none(),
+            "a kit naming no sky leaves the shell's authored environment");
+    }
+
+    #[test]
+    fn a_fixed_kit_with_an_unknown_sky_is_a_link_error() {
+        let doctored = FX_FIXED_KIT_WITH_SKY.replace("sky = \"fx_sky\"", "sky = \"no_such_sky\"");
+        let err = load_fixed(FX_ENV, &doctored, FX_FIXED_PLANET).unwrap_err();
+        assert!(err.contains("no_such_sky"), "names the dangling sky: {err}");
+        let not_res = FX_FIXED_KIT_WITH_SKY.replace("res://addons/sky/fx.exr", "addons/sky/fx.exr");
+        let err = load_fixed(FX_ENV, &not_res, FX_FIXED_PLANET).unwrap_err();
+        assert!(err.contains("res://"), "a sky texture is a res:// path: {err}");
+    }
+
+    #[test]
+    fn sky_is_a_fixed_kit_knob() {
+        let (enemies, kits, grid, planet) = template_parts();
+        let doctored = kits.replace("install_dir", "sky = \"fx_sky\"\ninstall_dir");
+        assert_ne!(kits, doctored, "the template declares a generated kit");
+        let err = load_split(&enemies, &doctored, &grid, MODELS_TOML, &[&planet],
+            EnvSources { authored: &[], windows: &[] })
+            .unwrap_err();
+        assert!(err.contains("sky") && err.contains("fixed-kit knob"), "names the misplaced knob: {err}");
+    }
+
     #[test]
     fn an_environment_with_an_uninstalled_model_is_a_link_error() {
         let doctored = FX_ENV.replace("model = \"apartment\"", "model = \"no_such_scene\"");

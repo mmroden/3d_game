@@ -62,6 +62,48 @@ func test_the_authored_ambient_overrides_the_world_environment():
 	assert_almost_eq(world_env.environment.ambient_light_energy, 0.8, 0.001,
 		"…with the authored energy (env_fixed.toml, Rust-anchored)")
 
+
+func test_the_declared_sky_backs_the_world_environment():
+	# The exterior is a skyscape (owner 2026-09-08): a fixed build whose
+	# kit names a sky (kits_fixed.toml [skies.fx_sky], Rust-anchored) puts
+	# that panorama behind every opening — the world environment's
+	# background becomes the sky, its material a PanoramaSkyMaterial on
+	# the catalog's texture, imported as float (VRAM uncompressed) so the
+	# stars keep their range.
+	var world_env := WorldEnvironment.new()
+	world_env.name = "WorldEnvironment"
+	world_env.environment = Environment.new()
+	world_env.environment.background_mode = Environment.BG_COLOR
+	add_child_autofree(world_env)
+	var lm := LevelManager.new()
+	lm.current_level = 1
+	add_child_autofree(lm)
+	lm.generate_level(SEED, 0)
+	await wait_process_frames(2)
+	assert_eq(world_env.environment.background_mode, Environment.BG_SKY,
+		"the fixed build backs the world environment with its sky")
+	var sky := world_env.environment.sky
+	assert_not_null(sky, "a Sky resource rides the environment")
+	if sky == null:
+		return
+	var material := sky.sky_material
+	assert_true(material is PanoramaSkyMaterial, "the sky is a panorama")
+	if not (material is PanoramaSkyMaterial):
+		return
+	var panorama: Texture2D = (material as PanoramaSkyMaterial).panorama
+	assert_not_null(panorama, "the panorama texture loaded")
+	if panorama == null:
+		return
+	assert_eq(panorama.resource_path, "res://addons/sky/starmap_2020_8k_gal.exr",
+		"…the catalog's texture (kits_fixed.toml, Rust-anchored)")
+	var image := panorama.get_image()
+	assert_not_null(image, "the imported texture reads back as an image")
+	if image == null:
+		return
+	var format: int = image.get_format()
+	assert_true(format in [Image.FORMAT_RGBH, Image.FORMAT_RGBAH, Image.FORMAT_RGBF,
+		Image.FORMAT_RGBAF, Image.FORMAT_RGBE9995],
+		"the sky imported as float (got Image.Format %d)" % format)
 func _room_containers(lm: LevelManager) -> Array:
 	var out := []
 	for child in lm.get_children():

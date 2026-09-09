@@ -10,7 +10,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from material_plan import build_plans, explain_texture_usage  # noqa: E402
+from material_plan import (  # noqa: E402
+    build_plans, clone_stem, explain_texture_usage, find_in_inventory,
+)
 from mtl_materials import assigned_in_obj, extract, parse_mtl  # noqa: E402
 
 MTL = """\
@@ -253,7 +255,6 @@ def test_inventory_lookup_forgives_punctuation_differences():
     # ("AD_W_Wall_Concrete.jpg") while the texture zip keeps the authored
     # names ("AD.W_Wall_Concrete.jpg"); an exact stem match ships the
     # room flat. Dots, underscores, hyphens, and spaces are one class.
-    from material_plan import find_in_inventory
     inventory = {"AD.W_Wall_Concrete.jpg", "ID Carpet-03.png", "Exact.jpg"}
     assert find_in_inventory("AD_W_Wall_Concrete.jpg", inventory) == "AD.W_Wall_Concrete.jpg"
     assert find_in_inventory("ID_Carpet_03.jpg", inventory) == "ID Carpet-03.png"
@@ -271,7 +272,6 @@ def test_inventory_lookup_collapses_sketchup_clone_suffixes():
     # house's 7,400 unresolved names, 2026-09-06) — and collapses onto
     # the base name. A bare trailing number ("ID_Decor_10") is a
     # different picture and does NOT collapse.
-    from material_plan import find_in_inventory
     inventory = {"ID.Fabric_Sofa_Grey_01.jpg", "ID.Decor.jpg", "ID.Decor_10.jpg",
                  "ID.Decor_Ceramic_bianco.jpg", "ID.Metal_Bronze_Satin.jpg"}
     assert find_in_inventory("ID_Fabric_Sofa_Grey_01_1000_.jpg", inventory) \
@@ -286,11 +286,33 @@ def test_inventory_lookup_collapses_sketchup_clone_suffixes():
     assert find_in_inventory("ID_Decor_11.jpg", inventory) is None
 
 
+def test_inventory_lookup_is_the_same_answer_in_every_process():
+    # The hill house ships BOTH "ID_Decor_13.jpg" and "ID.Decor_13.jpg" —
+    # two pictures, one loosened stem. Run 42 (2026-09-09): the converter
+    # resolved the clone reference "ID_Decor_13_1_.jpg" to one, the audit
+    # (its own process, its own set order) to the other, and the audit
+    # reported a material lost that had merely merged with its twin. A
+    # lookup is a function of its inputs: the tie breaks by the file
+    # spelled like the reference (clone mark dropped, punctuation kept)
+    # before any loosening, and a tie that survives that breaks by name
+    # — never by set order.
+    inventory = {"ID_Decor_13.jpg", "ID.Decor_13.jpg"}
+    assert find_in_inventory("ID_Decor_13_1_.jpg", inventory) == "ID_Decor_13.jpg"
+    assert find_in_inventory("ID.Decor_13_1_.jpg", inventory) == "ID.Decor_13.jpg"
+    assert find_in_inventory("ID_Decor_13.jpg", inventory) == "ID_Decor_13.jpg"
+    assert find_in_inventory("ID.Decor_13.jpg", inventory) == "ID.Decor_13.jpg"
+    # No spelling favors either: the same file, every process.
+    for trial in range(20):
+        assert find_in_inventory("ID Decor 13.jpg", set(sorted(inventory, reverse=bool(trial % 2)))) \
+            == "ID.Decor_13.jpg"
+        assert find_in_inventory("ID-Decor-13_5_.jpg", {"ID.Decor_13.jpg", "ID_Decor_13.jpg", "id decor 13.png"}) \
+            == "ID.Decor_13.jpg"
+
+
 def test_clone_stem_names_the_source_image():
     # The audit groups unshipped references by the source image they were
     # cloned from, so a provider hole reads "id_decor_ceramic_bianco x5500"
     # instead of 5500 names.
-    from material_plan import clone_stem
     assert clone_stem("ID_Decor_Ceramic_bianco3650_.jpg") == "id_decor_ceramic_bianco"
     assert clone_stem("ID_Fabric_Sofa_Grey_01_1000_.jpg") == "id_fabric_sofa_grey_01"
     assert clone_stem("ID__Metal_Bronze_Satin997_.jpg") == "id_metal_bronze_satin"

@@ -37,7 +37,7 @@ PYENV := tools/pyenv
 # One-time / occasional setup: installs the toolchains and tools. NOT a
 # prerequisite of build/run/check — those just use what's already installed
 # (see require-rust). Re-run after a machine setup or to update the toolchain.
-# One door, everything inline: Blender (headless mesh work), git-lfs (provider
+# One stage, everything inline: Blender (headless mesh work), git-lfs (provider
 # files over GitHub's 100 MB limit — without it a clone gets pointer stubs),
 # the asset-pipeline python venv (system python; the brew one has a broken
 # ensurepip, 2026-07-12), the io_scene_max Blender extension (.max material
@@ -60,7 +60,7 @@ deps: deps-rust deps-godot deps-gut deps-node deps-blender lsp-up
 # extraction needs. Extensions install per Blender version: a Blender
 # upgrade (5.1 -> 5.2, 2026-09) left io_scene_max behind, and every .max
 # extraction failed for days behind a summary grep while the converter
-# read stale tables. The asset door depends on this target, so the check
+# read stale tables. The asset stage depends on this target, so the check
 # runs before every install, not only on `make deps`.
 deps-blender:
 	@if [ -x "$(BLENDER)" ]; then \
@@ -128,19 +128,34 @@ deps-godot:
 		echo "Godot $(GODOT_VERSION) installed to $(GODOT_APP)"; \
 	fi
 
-# The asset pipeline, assembled from its three doors and the audit that
-# judges their product — each door independently runnable when only its
+# The asset pipeline, assembled from its three stages and the audit that
+# judges their product — each stage independently runnable when only its
 # stage changed (a Transform edit needs only `make assets-install
 # assets-probe`; a material fix only `make assets-import assets-probe`).
 # The audit (test-assets) always runs last: a red contract fails the
-# door itself, never a step chained by hand afterwards (owner
+# stage itself, never a step chained by hand afterwards (owner
 # 2026-09-07). Correctness pressure and reproducibility pressure,
 # granularly.
-assets: assets-install assets-import assets-probe test-assets
+assets: assets-install assets-import assets-probe credits test-assets
+
+# Attributed downloads (catalog/attributions.toml): every third-party
+# file the game fetches by URL rather than buys, pinned by checksum and
+# credited on the generated credits page. Runs before the install stage;
+# a missing pin or a mismatch fails the stage (reproducibility first).
+assets-fetch:
+	@test -x "$(PYENV)/bin/python3" || { echo "ERROR: python venv missing — run 'make deps'"; exit 1; }
+	@echo "==> Fetching attributed downloads (catalog/attributions.toml)..."
+	@$(PYENV)/bin/python3 scripts/fetch_attributed.py catalog/attributions.toml $(CURDIR)
+
+# The credits page, rendered from the same catalog: docs/CREDITS.md is
+# generated and committed; the audit holds it to the render.
+credits:
+	@test -x "$(PYENV)/bin/python3" || { echo "ERROR: python venv missing — run 'make deps'"; exit 1; }
+	@$(PYENV)/bin/python3 scripts/credits.py catalog/attributions.toml docs/CREDITS.md
 
 # Door 1: provider packs -> installed addons (Blender conversions,
 # panel splits + role bakes; split logs land in out/split-<kit>.log).
-assets-install: build deps-godot deps-node deps-blender
+assets-install: build deps-godot deps-node deps-blender assets-fetch
 	@test -d $(ASSETS_DIR)/quaternius-megakit || { echo "ERROR: assets/ not found. Download paid assets manually into assets/."; exit 1; }
 	@echo "==> Installing Godot addons from asset packs..."
 	@mkdir -p out; set -o pipefail; BLENDER="$(BLENDER)" GLTF_TRANSFORM="$(GLTF_TRANSFORM)" GLTF_TRANSFORM_VERSION="$(GLTF_TRANSFORM_VERSION)" ./scripts/install-addons.sh $(ASSETS_DIR) $(GODOT_DIR) 2>&1 | tee out/assets-install.log
@@ -172,10 +187,29 @@ assets-import: deps-godot
 	@# and UVs over their full tiled range. Both are for props, not places.
 	@find $(GODOT_DIR)/addons/environments -name "*.glb.import" \
 		-exec sed -i '' 's|meshes/generate_lods=true|meshes/generate_lods=false|; s|meshes/force_disable_compression=false|meshes/force_disable_compression=true|' {} +
-	@echo "==> Configuring 3D texture settings (mipmaps + VRAM compression)..."
-	@find $(GODOT_DIR)/addons/quaternius/materials -name "*.png.import" \
-		-exec sed -i '' 's|mipmaps/generate=false|mipmaps/generate=true|' {} + \
-		-exec sed -i '' 's|compress/mode=0|compress/mode=2|' {} +
+	@echo "==> Configuring 3D texture imports (mipmaps on, no VRAM compression, no detect-3D flip)..."
+	@# Every imported texture under addons/ (the kit's, the scenes' and the
+	@# models' extracted maps, the hulls'): mipmaps are filtering and stay
+	@# on; VRAM compression is a memory trade the owner never asked for (it
+	@# came in with a 2026-04-02 refactor of mine; owner 2026-09-08: "I
+	@# don't recall wanting to use compression"); detect_3d would flip a
+	@# texture to compressed the first time an editor session used it in
+	@# 3D. The audit holds every sidecar to all three.
+	@find $(GODOT_DIR)/addons \( -name "*.png.import" -o -name "*.jpg.import" -o -name "*.jpeg.import" \) \
+		-exec sed -i '' -e 's|^mipmaps/generate=.*|mipmaps/generate=true|' \
+			-e 's|^compress/mode=.*|compress/mode=0|' \
+			-e 's|^detect_3d/compress_to=.*|detect_3d/compress_to=0|' {} +
+	@# Skies (godot/addons/sky, catalog/kits.toml [skies]): HDR float
+	@# panoramas keep their range only as VRAM Uncompressed (mode 3) —
+	@# lossless and lossy quantize to 8 bits, VRAM Compressed blocks the
+	@# point stars. Mipmaps on for the horizon's glancing angles. The
+	@# audit holds every sky sidecar to it.
+	@if [ -d $(GODOT_DIR)/addons/sky ]; then \
+		find $(GODOT_DIR)/addons/sky \( -name "*.exr.import" -o -name "*.hdr.import" \) \
+			-exec sed -i '' -e 's|^mipmaps/generate=.*|mipmaps/generate=true|' \
+				-e 's|^compress/mode=.*|compress/mode=3|' \
+				-e 's|^detect_3d/compress_to=.*|detect_3d/compress_to=0|' {} + ; \
+	fi
 	@echo "==> Reimporting assets (pass 2: with material script + mipmaps)..."
 	@set -o pipefail; $(GODOT) --headless --import --path $(GODOT_DIR) 2>&1 | tee out/assets-import-pass2.log
 	@$(MAKE) assets-materials
@@ -211,7 +245,7 @@ deps-gut:
 	fi
 
 # glTF-Transform (Node): the glb-stage inspector and optimizer the
-# environment door runs after export — inspect/validate for the metrics,
+# environment stage runs after export — inspect/validate for the metrics,
 # dedup + join + prune so a scene's clone materials merge and its
 # surfaces stay under Godot's 256-per-mesh cap. Pinned and project-local
 # (tools/node), never a global npm install (owner 2026-09-07).
@@ -253,16 +287,16 @@ check-visual: build-release deps-godot
 			> $(CURDIR)/out/visual/last-run.log 2>&1; \
 		code=$$?; cat $(CURDIR)/out/visual/last-run.log; exit $$code
 
-# The zone-authoring loop's door: re-read every installed scene and model
+# The zone-authoring loop's stage: re-read every installed scene and model
 # into out/metrics/ (TOML + section images) against the CURRENT rosters —
 # no Blender, nothing converted, seconds. Edit rosters/environments/
 # <key>.toml, run this, read out/metrics/<key>_plan.png and the
 # <key>_long_NN / _cross_NN cuts (owner 2026-09-06: a metrics run outside
-# the door is not reproducible; this is the door).
+# the stage is not reproducible; this is the stage).
 metrics:
 	@echo "==> Measuring installed scenes and models against the rosters..."
-	@./scripts/install-addons.sh $(ASSETS_DIR) $(GODOT_DIR) --metrics-only
-	@echo "==> Condensing the doors' last logs into error/warning histograms..."
+	@GLTF_TRANSFORM="$(GLTF_TRANSFORM)" GLTF_TRANSFORM_VERSION="$(GLTF_TRANSFORM_VERSION)" ./scripts/install-addons.sh $(ASSETS_DIR) $(GODOT_DIR) --metrics-only
+	@echo "==> Condensing the stages' last logs into error/warning histograms..."
 	@logs=$$(ls out/assets-install.log out/convert-*.log out/split-*.log out/decimate-*.log out/cockpit-*.log out/hull-*.log out/manifest-*.log out/max-*.log 2>/dev/null); \
 		[ -n "$$logs" ] && python3 scripts/log-histogram.py assets-install out/metrics/log_assets-install.toml $$logs \
 		|| echo "  (no assets-install logs yet — run make assets-install)"
@@ -296,13 +330,13 @@ lint:
 test-assets: lint
 	@test -x "$(PYENV)/bin/python3" || { echo "ERROR: python venv missing — run 'make deps'"; exit 1; }
 	@echo "==> Running asset-pipeline audit (pytest)..."
-	@# TESTS=<path or node id> narrows the run (the door takes a selector;
+	@# TESTS=<path or node id> narrows the run (the stage takes a selector;
 	@# python is never invoked directly — a settings hook refuses it).
 	@$(PYENV)/bin/python3 -m pytest $(or $(TESTS),scripts/tests) -q
 
 # Filtered Rust tests with output: make test-rust FILTER=test_name
 # Library tests only — the visual suite (tests/visual.rs) boots Godot and
-# has its own door, `make check-visual`.
+# has its own stage, `make check-visual`.
 test-rust:
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
 		cd $(RUST_DIR) && $(CARGO) test --lib $(FILTER) -- --nocapture $(TESTFLAGS)

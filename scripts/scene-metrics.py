@@ -70,6 +70,8 @@ from cockpit_plan import (  # noqa: E402
     BIN_CHUNK, GLB_MAGIC, JSON_CHUNK, _matmul, _trs_matrix, _xform, parse_glb,
 )
 
+from material_plan import clone_stem, find_in_inventory, texture_files  # noqa: E402
+
 LARGEST = 24  # parts listed individually, by AABB volume
 SECTION_MAX_CELLS = 1600  # longest image side, pixels
 SECTION_MIN_CELL = 0.025  # meters per pixel, floor
@@ -879,7 +881,6 @@ def source_images(manifest_path):
     unpacked = os.path.join(os.path.dirname(os.path.abspath(manifest_path)), "unpacked")
     if not os.path.isdir(unpacked):
         return {}
-    from material_plan import texture_files
     return texture_files(unpacked)
 
 
@@ -892,7 +893,6 @@ def texture_rows(gltf, binbuf, manifest_path=None):
     one (owner 2026-09-06: "are you decimating textures? things look
     very very low res")."""
     sources = source_images(manifest_path)
-    from material_plan import find_in_inventory
     filters = {}
     for tex in gltf.get("textures", []):
         sampler = gltf.get("samplers", [{}])[tex["sampler"]] if "sampler" in tex else {}
@@ -1037,7 +1037,6 @@ def flat_lines(materials, tris_by_material):
 
 
 def main(key, glb_path, out_path, manifest_path=None, zones_path=None):
-    from material_plan import clone_stem
     gltf, binbuf = glb_chunks(glb_path)
     parts = parse_glb(glb_path, distinct_tris=False)
     lo = [min(p["lo"][k] for p in parts) for k in range(3)]

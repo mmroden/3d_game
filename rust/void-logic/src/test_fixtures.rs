@@ -79,11 +79,11 @@ pub fn fixed_fixture_grammar() -> Roster {
 
 #[cfg(test)]
 mod tests {
-    /// ANCHOR for godot/tests/test_fixed_level.gd (the house convention:
+/// ANCHOR for godot/tests/test_fixed_level.gd (the house convention:
     /// GUT never re-derives grammar; its constants trace here). The GUT
     /// file pins the fixture's shape — zone count, scale, the porch start
-    /// box, the den arena center — so editing the fixture files means
-    /// updating BOTH this anchor and the GUT constants together.
+    /// box, the den arena center, the sky — so editing the fixture files
+    /// means updating BOTH this anchor and the GUT constants together.
     #[test]
     fn gut_fixed_level_anchors() {
         let grammar = super::fixed_fixture_grammar();
@@ -101,6 +101,13 @@ mod tests {
         assert_eq!((boss.key.as_str(), boss.min, boss.extents),
             ("den", [4, 0, 0], [2, 2, 2]),
             "GUT arena: world center (25, 5, 5) at scale 5");
+        // The sky behind the fixture house's openings: kits_fixed.toml
+        // [skies.fx_sky] on the installed NASA star map.
+        assert_eq!(
+            grammar.catalog.sky_of_environment(&env.key).map(|s| s.texture.as_str()),
+            Some("res://addons/sky/starmap_2020_8k_gal.exr"),
+            "GUT SKY"
+        );
         // Containment: one slab per unshared zone-cell face. 28 cells,
         // 52 shared pairs -> 168 - 104 = 64 boundary faces.
         let mut cells = std::collections::HashSet::new();

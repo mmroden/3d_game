@@ -12,3 +12,6 @@ assets/hill_house/*.obj filter=lfs diff=lfs merge=lfs -text
 assets/hill_house/*.zip filter=lfs diff=lfs merge=lfs -text
 assets/office_building/*_textures.rar filter=lfs diff=lfs merge=lfs -text
 assets/mountain_villa/Textures.rar filter=lfs diff=lfs merge=lfs -text
+# Downloaded attributed files (catalog/attributions.toml): the NASA star
+# map is 153 MB.
+assets/sky/*.exr filter=lfs diff=lfs merge=lfs -text

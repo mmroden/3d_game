@@ -1,0 +1,35 @@
+# HAND-AUTHORED: every third-party source the game ships or was built
+# from, with the license it came under and the credit line it owes —
+# the one place those facts live. `make credits` renders docs/CREDITS.md
+# from this file; `make assets` fetches every declared download to its
+# path and holds it to its checksum (an unpinned or mismatched download
+# fails the stage); the audit holds the committed page to the render.
+#
+# Fields: key (stable id), name, author, url, license (as the source
+# states it; verified = false marks a line still to be checked against
+# the seller's terms), credit (the line the license or the source asks
+# for, verbatim), used_for. Optional downloads = [{ url, path, sha256 }]
+# for files acquired by URL rather than purchase; sha256 is the pin.
+
+[[source]]
+key = "nasa_deep_star_maps_2020"
+name = "Deep Star Maps 2020"
+author = "NASA/Goddard Space Flight Center Scientific Visualization Studio"
+url = "https://svs.gsfc.nasa.gov/4851"
+license = "NASA imagery is not copyrighted (public domain); the page asks for credit"
+credit = "NASA/Goddard Space Flight Center Scientific Visualization Studio. Gaia DR2: ESA/Gaia/DPAC."
+used_for = "the sky of the fixed environments (planet 3): an equirectangular star field, galactic coordinates"
+downloads = [
+  { url = "https://svs.gsfc.nasa.gov/vis/a000000/a004800/a004851/starmap_2020_8k_gal.exr", path = "assets/sky/starmap_2020_8k_gal.exr",
+    sha256 = "d70924422d3e0159764b16a19658784befcf73b97e06e5c16614860c1514bb58" },  # 8192x4096 OpenEXR, 160.7 MB, fetched 2026-09-09
+]
+
+[[source]]
+key = "quaternius_kits"
+name = "Quaternius asset kits"
+author = "Quaternius"
+url = "https://quaternius.com"
+license = "CC0 1.0 (the kit's import script: attribution appreciated)"
+verified = false
+credit = "Quaternius"
+used_for = "the modular panel and prop kits of the generated planets"
