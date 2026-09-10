@@ -67,6 +67,41 @@ fn capture_ex(
     dir: &Path,
 ) -> Vec<PathBuf> {
     assert!(!poses.is_empty(), "capture needs poses");
+    let shot = poses
+        .iter()
+        .map(|p| format!("{:.2},{:.2},{:.2},{:.2},{:.2}", p[0], p[1], p[2], p[3], p[4]))
+        .collect::<Vec<_>>()
+        .join(";");
+    let mut args: Vec<String> = vec![
+        format!("--level={level}"),
+        format!("--seed={run_seed}"),
+        (if sbs { "--sbs=1" } else { "--sbs=0" }).to_string(),
+        "--populace=0".to_string(),
+        "--cull=0".to_string(),
+    ];
+    args.extend(ambient.then(|| "--ambient=1".to_string()));
+    args.extend(extra.iter().cloned());
+    args.push(format!("--shot={shot}"));
+    launch_capture(&args, poses.len(), &format!("level {level} seed {run_seed}"), dir)
+}
+
+/// The same door for a MENU screen (`--screen=credits`): the shot list
+/// is the roll's offsets in pixels, one frame per offset, mono.
+fn capture_screen(screen: &str, offsets: &[f32], dir: &Path) -> Vec<PathBuf> {
+    assert!(!offsets.is_empty(), "capture needs offsets");
+    let shot = offsets.iter().map(|o| format!("{o:.0}")).collect::<Vec<_>>().join(";");
+    let args = vec![
+        format!("--screen={screen}"),
+        "--sbs=0".to_string(),
+        format!("--shot={shot}"),
+    ];
+    launch_capture(&args, offsets.len(), &format!("screen {screen}"), dir)
+}
+
+/// Boot Godot once with the capture knobs, collect one frame per shot
+/// from `dir` (cleared of stale frames first), and keep the engine's
+/// chatter beside them as engine.log.
+fn launch_capture(args: &[String], expected: usize, subject: &str, dir: &Path) -> Vec<PathBuf> {
     std::fs::create_dir_all(dir).expect("capture dir");
     for stale in std::fs::read_dir(dir).expect("capture dir readable") {
         let p = stale.expect("dir entry").path();
@@ -74,22 +109,11 @@ fn capture_ex(
             std::fs::remove_file(p).expect("stale frame removed");
         }
     }
-    let shot = poses
-        .iter()
-        .map(|p| format!("{:.2},{:.2},{:.2},{:.2},{:.2}", p[0], p[1], p[2], p[3], p[4]))
-        .collect::<Vec<_>>()
-        .join(";");
     let status = Command::new(godot())
         .arg("--path")
         .arg(repo_root().join("godot"))
         .args(["--resolution", "1144x828", "--"])
-        .arg(format!("--level={level}"))
-        .arg(format!("--seed={run_seed}"))
-        .arg(if sbs { "--sbs=1" } else { "--sbs=0" })
-        .args(["--populace=0", "--cull=0"])
-        .args(ambient.then_some("--ambient=1"))
-        .args(extra)
-        .arg(format!("--shot={shot}"))
+        .args(args)
         .arg(format!("--shot-dir={}", dir.display()))
         // The engine's chatter is part of the run artifact: park/build/
         // save ordering questions get answered from the log, not rerun
@@ -98,7 +122,7 @@ fn capture_ex(
         .stderr(std::process::Stdio::null())
         .status()
         .unwrap_or_else(|e| panic!("Godot did not launch ({e}) — set GODOT or run make deps"));
-    assert!(status.success(), "capture run failed (level {level} seed {run_seed})");
+    assert!(status.success(), "capture run failed ({subject})");
 
     let mut frames: Vec<PathBuf> = std::fs::read_dir(dir)
         .expect("capture dir readable")
@@ -106,11 +130,7 @@ fn capture_ex(
         .filter(|p| p.extension().is_some_and(|e| e == "png"))
         .collect();
     frames.sort();
-    assert_eq!(
-        frames.len(),
-        poses.len(),
-        "level {level} seed {run_seed}: one frame per pose"
-    );
+    assert_eq!(frames.len(), expected, "{subject}: one frame per shot");
     frames
 }
 
@@ -205,6 +225,27 @@ fn void_fractions(path: &Path) -> (f32, f32) {
     }
     let n = (img.width() * img.height()) as f32;
     (sentinel as f32 / n, black as f32 / n)
+}
+
+
+/// Fraction of the pixels in the box [x0, x1) x [y0, y1) of frame
+/// width and height that read as text: every channel bright, against a
+/// panel whose fill is a mid blue and a backdrop that is darker still.
+fn bright_fraction(path: &Path, x0: f32, x1: f32, y0: f32, y1: f32) -> f32 {
+    let img = image::open(path).expect("frame opens").to_rgb8();
+    let (w, h) = img.dimensions();
+    let (col0, col1) = ((w as f32 * x0) as u32, (w as f32 * x1) as u32);
+    let (row0, row1) = ((h as f32 * y0) as u32, (h as f32 * y1) as u32);
+    let mut bright = 0u32;
+    for y in row0..row1 {
+        for x in col0..col1 {
+            let px = img.get_pixel(x, y);
+            if px[0] >= 170 && px[1] >= 170 && px[2] >= 170 {
+                bright += 1;
+            }
+        }
+    }
+    bright as f32 / ((row1 - row0) * (col1 - col0)) as f32
 }
 
 /// Fraction of the frame reading as the sentinel on a direct sightline
@@ -665,4 +706,57 @@ fn stereo_pairs_obey_the_off_axis_geometry() {
             pair.display()
         );
     }
+}
+
+
+/// The credits crawl renders, fits, and moves (owner 2026-09-09: "can we
+/// do the same thing with the menu as a way to validate that credits are
+/// displayed?"): a `--screen=credits` boot parks the crawl at three
+/// offsets — the column risen that far from below the bottom edge; every
+/// frame carries text (the menu's backdrop is space, mostly black by
+/// design, so the text is the render proof), no text runs off the
+/// frame's left or right edge (the centered column fits the window), and
+/// the frame changes from one offset to the next — the crawl moved.
+/// `KEEP_FRAMES=1` keeps the frames under out/visual/ for a look at the
+/// layout itself.
+#[test]
+fn credits_roll_renders_and_scrolls() {
+    // Risen 400 px: the title and the first pairs are on screen; 1000 and
+    // 1600: deeper into the roll.
+    const OFFSETS: [f32; 3] = [400.0, 1000.0, 1600.0];
+    // The outermost columns of the frame, either side: a centered column
+    // that fits leaves them empty of text.
+    const EDGE: f32 = 0.03;
+    const MIN_TEXT: f32 = 0.001;
+    const MAX_EDGE_TEXT: f32 = 0.0005;
+    const MIN_MOVE: f32 = 0.5;
+
+    let dir = frames_dir(0, 0, "credits");
+    let frames = capture_screen("credits", &OFFSETS, &dir);
+    let mut faults = Vec::new();
+    for (frame, offset) in frames.iter().zip(OFFSETS) {
+        let text = bright_fraction(frame, 0.0, 1.0, 0.0, 1.0);
+        if text < MIN_TEXT {
+            faults.push(format!(
+                "offset {offset:.0}: {:.2}% bright pixels — no text on the crawl ({})",
+                text * 100.0, frame.display()));
+        }
+        let left = bright_fraction(frame, 0.0, EDGE, 0.0, 1.0);
+        let right = bright_fraction(frame, 1.0 - EDGE, 1.0, 0.0, 1.0);
+        if left > MAX_EDGE_TEXT || right > MAX_EDGE_TEXT {
+            faults.push(format!(
+                "offset {offset:.0}: text at the frame's edges (left {:.2}%, right {:.2}%) — \
+                 the column is wider than the window ({})",
+                left * 100.0, right * 100.0, frame.display()));
+        }
+    }
+    for (pair, offsets) in frames.windows(2).zip(OFFSETS.windows(2)) {
+        let moved = band_diff(&pair[0], &pair[1], 0.0, 1.0);
+        if moved < MIN_MOVE {
+            faults.push(format!(
+                "offsets {:.0} -> {:.0}: the frame changed by {moved:.2} — the crawl did not move",
+                offsets[0], offsets[1]));
+        }
+    }
+    assert!(faults.is_empty(), "credits crawl:\n{}", faults.join("\n"));
 }

@@ -1,11 +1,14 @@
 use godot::prelude::*;
 use godot::classes::{
-    CanvasLayer, ICanvasLayer, Label, Control, Engine, Input, Node,
+    CanvasLayer, ICanvasLayer, Label, Control, Engine, Input, Node, VBoxContainer,
+    control::LayoutPreset, text_server::AutowrapMode,
 };
+use godot::global::HorizontalAlignment;
 
 use super::menu_panel;
 use crate::nodes::constants::{actions, methods, nodes, signals, theme};
-use crate::nodes::live_handle::{LiveRef, LiveVec};
+use crate::nodes::live_handle::{LiveOpt, LiveRef, LiveVec};
+use void_logic::credits::{self, Roll, RollDrive, RollEntry};
 use void_logic::game_options::GameOptions;
 use void_logic::menu_cursor::MenuCursor;
 use void_logic::ui_style;
@@ -18,6 +21,7 @@ enum MenuAction {
     NewGame,
     Bestiary,
     Options,
+    Credits,
     Exit,
 }
 
@@ -28,14 +32,25 @@ impl MenuAction {
             Self::NewGame => "New Game",
             Self::Bestiary => "Bestiary",
             Self::Options => "Options",
+            Self::Credits => "Credits",
             Self::Exit => "Exit",
         }
     }
 }
 
-/// FF-style main menu: [Continue] / New Game / Options / Exit. Continue
-/// appears only while GameManager says a continuable run exists (pushed via
-/// `set_continue_available` — the menu never reads disk).
+/// What the layer is showing: the panel's action rows, the panel's
+/// options rows, or the credits crawl over the whole screen. One typed
+/// state, so a third view could not arrive as a second bool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuView {
+    Root,
+    Options,
+    Credits,
+}
+
+/// FF-style main menu: [Continue] / New Game / Bestiary / Options / Credits /
+/// Exit. Continue appears only while GameManager says a continuable run
+/// exists (pushed via `set_continue_available` — the menu never reads disk).
 /// Pure view — emits signals for all actions, never reaches into the scene tree.
 #[derive(GodotClass)]
 #[class(base=CanvasLayer)]
@@ -52,10 +67,23 @@ pub struct MainMenuUI {
     labels: LiveVec<Label>,
     /// The container the action rows live in, kept so a Continue-availability
     /// change can rebuild just the rows.
-    items_parent: Option<LiveRef<godot::classes::VBoxContainer>>,
-    in_options: bool,
+    items_parent: Option<LiveRef<VBoxContainer>>,
+    view: MenuView,
     option_cursor: MenuCursor,
     option_labels: LiveVec<Label>,
+    /// The credits crawl: its motion (void_logic), the full-screen node it
+    /// rises through and the centered column of every credit pair — the
+    /// nodes alive only while the crawl runs.
+    roll: Roll,
+    /// A capture (or a test) parked the crawl here: re-applied every frame,
+    /// so a park that landed before the column laid out still takes, and
+    /// the crawl holds still for the frame that gets saved.
+    roll_parked_at: Option<f32>,
+    credits_crawl: Option<LiveRef<Control>>,
+    credits_column: Option<LiveRef<VBoxContainer>>,
+    /// The panel, hidden while the crawl runs and shown again after: the
+    /// crawl is the whole screen, nothing boxed.
+    hidden_for_roll: LiveVec<Control>,
     /// Cached copy of the authoritative `GameOptions`, seeded from
     /// GameManager at startup and updated on `options_changed`. One
     /// type, one default — no second literal to drift out of sync.
@@ -67,10 +95,24 @@ pub struct MainMenuUI {
 fn actions_for(continue_available: bool) -> Vec<MenuAction> {
     // The bestiary is always browsable (it opens on the two currency entries
     // even before an enemy is sighted) — a root-level catalog, not a run.
+    // Credits likewise: the crawl reads the catalog, never a run.
     if continue_available {
-        vec![MenuAction::Continue, MenuAction::NewGame, MenuAction::Bestiary, MenuAction::Options, MenuAction::Exit]
+        vec![
+            MenuAction::Continue,
+            MenuAction::NewGame,
+            MenuAction::Bestiary,
+            MenuAction::Options,
+            MenuAction::Credits,
+            MenuAction::Exit,
+        ]
     } else {
-        vec![MenuAction::NewGame, MenuAction::Bestiary, MenuAction::Options, MenuAction::Exit]
+        vec![
+            MenuAction::NewGame,
+            MenuAction::Bestiary,
+            MenuAction::Options,
+            MenuAction::Credits,
+            MenuAction::Exit,
+        ]
     }
 }
 
@@ -85,9 +127,14 @@ impl ICanvasLayer for MainMenuUI {
             continue_restarts: false,
             labels: LiveVec::new(),
             items_parent: None,
-            in_options: false,
+            view: MenuView::Root,
             option_cursor: MenuCursor::new(4),
             option_labels: LiveVec::new(),
+            roll: Roll::new(),
+            roll_parked_at: None,
+            credits_crawl: None,
+            credits_column: None,
+            hidden_for_roll: LiveVec::new(),
             options: GameOptions::default(),
         }
     }
@@ -100,17 +147,17 @@ impl ICanvasLayer for MainMenuUI {
         self.connect_to_game_manager();
     }
 
-    fn process(&mut self, _delta: f64) {
+    fn process(&mut self, delta: f64) {
         if !self.base().is_visible() {
             return;
         }
 
         let input = Input::singleton();
 
-        if self.in_options {
-            self.handle_options_actions(&input);
-        } else {
-            self.handle_menu_actions(&input);
+        match self.view {
+            MenuView::Root => self.handle_menu_actions(&input),
+            MenuView::Options => self.handle_options_actions(&input),
+            MenuView::Credits => self.handle_credits_actions(&input, delta as f32),
         }
     }
 }
@@ -145,7 +192,7 @@ impl MainMenuUI {
         self.options.sbs_enabled = sbs_on;
         self.options.msaa_enabled = msaa_on;
         self.options.dynamic_stereo = dynamic_on;
-        if self.in_options {
+        if self.view == MenuView::Options {
             self.refresh_options();
         }
     }
@@ -178,9 +225,62 @@ impl MainMenuUI {
         self.continue_restarts = restarts;
         self.rebuild_items();
     }
+
+    /// Start the credits crawl from below the bottom edge — the Credits
+    /// row's own door, the `--screen=credits` boot's, and the test seam.
+    #[func]
+    pub fn open_credits(&mut self) {
+        self.view = MenuView::Credits;
+        self.roll = Roll::new();
+        self.roll_parked_at = None;
+        self.build_credits_crawl();
+    }
+
+    /// Test/inspection seam: whether the crawl is running.
+    #[func]
+    pub fn credits_visible(&self) -> bool {
+        self.view == MenuView::Credits
+    }
+
+    /// Test/inspection seam and capture readback: the crawl's offset in
+    /// pixels — how far the column has risen from below the bottom edge.
+    #[func]
+    pub fn credits_offset(&self) -> f32 {
+        self.roll.offset()
+    }
+
+    /// Test/inspection seam: the crawl's full travel — the column's height
+    /// plus the window's, bottom edge to past the top.
+    #[func]
+    pub fn credits_extent(&self) -> f32 {
+        self.roll.extent()
+    }
+
+    /// Park the crawl at `offset` pixels and hold it there — the capture
+    /// door (`--screen=credits --shot=<offset;…>`), also a test seam.
+    #[func]
+    pub fn set_credits_offset(&mut self, offset: f32) {
+        self.roll_parked_at = Some(offset);
+        self.roll.park(offset);
+        self.apply_roll_offset();
+    }
+
+    /// Test seam: let a parked crawl run again from where it stands.
+    #[func]
+    pub fn release_credits(&mut self) {
+        self.roll_parked_at = None;
+    }
 }
 
 impl MainMenuUI {
+    /// The title on the panel — and the crawl's first line.
+    const TITLE: &'static str = "VOID SCAVENGER";
+    /// The crawl's column: the bestiary's readable width, centered; in
+    /// SBS each eye sees the window's central half, and this sits inside.
+    const COLUMN_WIDTH: f32 = 760.0;
+    /// Air under the title, and between one credit pair and the next.
+    const PAIR_GAP: f32 = 48.0;
+
     fn connect_to_game_manager(&mut self) {
         // MainMenuUI is a child of Main, GameManager is also a child of Main
         let Some(parent) = self.base().get_parent() else {
@@ -209,7 +309,7 @@ impl MainMenuUI {
 
         // Title
         let mut title = Label::new_alloc();
-        title.set_text("VOID SCAVENGER");
+        title.set_text(Self::TITLE);
         title.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_TITLE);
         title.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.6, 0.8, 1.0));
         vbox.add_child(&title);
@@ -307,9 +407,12 @@ impl MainMenuUI {
                 self.base_mut().emit_signal(signals::BESTIARY_SELECTED, &[]);
             }
             MenuAction::Options => {
-                self.in_options = true;
+                self.view = MenuView::Options;
                 self.option_cursor.reset();
                 self.show_options();
+            }
+            MenuAction::Credits => {
+                self.open_credits();
             }
             MenuAction::Exit => {
                 self.base_mut().emit_signal(signals::EXIT_SELECTED, &[]);
@@ -444,7 +547,141 @@ impl MainMenuUI {
         self.option_labels.for_each_live(|_, label, _| label.queue_free());
         self.option_labels.clear();
         self.labels.for_each_live(|_, label, _| label.set_visible(true));
-        self.in_options = false;
+        self.view = MenuView::Root;
+        self.update_cursor();
+    }
+
+    /// The crawl's pairs — contribution, then person: the team and every
+    /// shipped source in the catalog's order (`void_logic::credits`, from
+    /// catalog/attributions.toml).
+    fn credits_roll() -> Vec<RollEntry> {
+        credits::credits().roll()
+    }
+
+    /// The window the crawl rises through: the UI viewport's size.
+    fn window_size(&self) -> Vector2 {
+        self.base()
+            .get_viewport()
+            .map(|v| v.get_visible_rect().size)
+            .unwrap_or(Vector2::ZERO)
+    }
+
+    /// Build the crawl: the panel goes, and a centered column — the title,
+    /// then every pair, contribution above person — sits just below the
+    /// bottom edge of a full-screen node, to rise through it. Every line
+    /// wraps at the column's width. The column lays out a frame later; its
+    /// height sets the crawl's extent from then on.
+    fn build_credits_crawl(&mut self) {
+        self.free_credits_crawl();
+        if let Some(items_parent) = &self.items_parent {
+            if let Some(panel) = items_parent
+                .with(|vbox| vbox.get_parent())
+                .flatten()
+                .and_then(|p| p.try_cast::<Control>().ok())
+            {
+                let mut panel = panel;
+                panel.set_visible(false);
+                self.hidden_for_roll.push(&panel, ());
+            }
+        }
+
+        let mut crawl = Control::new_alloc();
+        crawl.set_anchors_preset(LayoutPreset::FULL_RECT);
+        crawl.set_clip_contents(true);
+        let mut column = VBoxContainer::new_alloc();
+        column.set_custom_minimum_size(Vector2::new(Self::COLUMN_WIDTH, 0.0));
+        column.add_child(&Self::crawl_label(Self::TITLE, ui_style::FONT_TITLE, ui_style::TEXT_SELECTED));
+        column.add_child(&Self::crawl_gap());
+        for entry in Self::credits_roll() {
+            column.add_child(&Self::crawl_label(
+                &entry.contribution, ui_style::FONT_DETAIL, ui_style::TEXT_SECONDARY));
+            column.add_child(&Self::crawl_label(
+                &entry.person, ui_style::FONT_HEADING, ui_style::TEXT_SELECTED));
+            column.add_child(&Self::crawl_gap());
+        }
+        crawl.add_child(&column);
+        self.base_mut().add_child(&crawl);
+
+        self.credits_crawl = Some(LiveRef::new(&crawl));
+        self.credits_column = Some(LiveRef::new(&column));
+        self.apply_roll_offset();
+    }
+
+    /// One centered line of the crawl, wrapping at the column's width.
+    fn crawl_label(text: &str, size: i32, color: [f32; 3]) -> Gd<Label> {
+        let mut label = Label::new_alloc();
+        label.set_text(text);
+        label.add_theme_font_size_override(theme::FONT_SIZE, size);
+        label.add_theme_color_override(theme::FONT_COLOR, super::rgb(color));
+        label.set_horizontal_alignment(HorizontalAlignment::CENTER);
+        label.set_autowrap_mode(AutowrapMode::WORD_SMART);
+        label.set_custom_minimum_size(Vector2::new(Self::COLUMN_WIDTH, 0.0));
+        label
+    }
+
+    fn crawl_gap() -> Gd<Control> {
+        let mut gap = Control::new_alloc();
+        gap.set_custom_minimum_size(Vector2::new(0.0, Self::PAIR_GAP));
+        gap
+    }
+
+    /// Drive the crawl one frame: the extent is the column's height plus
+    /// the window's (bottom edge to past the top), read once the column
+    /// has laid out; move under the held direction or on its own; place
+    /// the column. Back or Select leave early; the crawl's own end
+    /// returns to the menu.
+    fn handle_credits_actions(&mut self, input: &Gd<Input>, delta: f32) {
+        if input.is_action_just_pressed(actions::MENU_SELECT)
+            || input.is_action_just_pressed(actions::MENU_BACK)
+        {
+            self.close_credits();
+            return;
+        }
+        let window = self.window_size();
+        let column_height = self.credits_column.with(|c| c.get_size().y).unwrap_or(0.0);
+        let extent = if column_height > 0.0 { column_height + window.y } else { 0.0 };
+        self.roll.set_extent(extent);
+        let drive = if let Some(parked) = self.roll_parked_at {
+            self.roll.park(parked);
+            RollDrive::Hold
+        } else if input.is_action_pressed(actions::MENU_DOWN) {
+            RollDrive::Forward
+        } else if input.is_action_pressed(actions::MENU_UP) {
+            RollDrive::Back
+        } else {
+            RollDrive::Auto
+        };
+        self.roll.advance(delta, drive);
+        self.apply_roll_offset();
+        if extent > 0.0 && self.roll_parked_at.is_none() && self.roll.finished() {
+            self.close_credits();
+        }
+    }
+
+    /// Place the column: centered, its top `offset` pixels above the
+    /// window's bottom edge.
+    fn apply_roll_offset(&mut self) {
+        let window = self.window_size();
+        let position = Vector2::new(
+            ((window.x - Self::COLUMN_WIDTH) / 2.0).max(0.0),
+            window.y - self.roll.offset(),
+        );
+        self.credits_column.with(|column| column.set_position(position));
+    }
+
+    fn free_credits_crawl(&mut self) {
+        self.credits_column = None;
+        if let Some(crawl) = self.credits_crawl.take() {
+            crawl.with(|c| c.queue_free());
+        }
+    }
+
+    fn close_credits(&mut self) {
+        self.free_credits_crawl();
+        self.roll_parked_at = None;
+        self.hidden_for_roll.for_each_live(|_, control, _| control.set_visible(true));
+        self.hidden_for_roll.clear();
+        self.view = MenuView::Root;
         self.update_cursor();
     }
 

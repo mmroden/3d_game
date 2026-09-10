@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-
 pub struct KitsFile {
     pub kits: BTreeMap<String, KitRaw>,
     /// The panoramas a fixed environment's openings look out on, by
@@ -24,7 +23,6 @@ pub struct KitsFile {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-
 pub struct KitRaw {
     pub paradigm: KitParadigm,
     /// Repo-relative directory `make assets` populates for this kit — the

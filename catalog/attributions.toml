@@ -1,15 +1,208 @@
-# HAND-AUTHORED: every third-party source the game ships or was built
-# from, with the license it came under and the credit line it owes —
-# the one place those facts live. `make credits` renders docs/CREDITS.md
-# from this file; `make assets` fetches every declared download to its
-# path and holds it to its checksum (an unpinned or mismatched download
-# fails the stage); the audit holds the committed page to the render.
+# HAND-AUTHORED: the credits — the team, and every third-party source the
+# game ships or was built from, with the license it came under and the
+# credit line it owes — the one place those facts live. Two renders, one
+# truth: `make credits` writes docs/CREDITS.md, and void_logic::credits
+# embeds this file for the menu's credits crawl. `make assets` fetches
+# every declared download to its path and holds it to its checksum (an
+# unpinned or mismatched download fails the stage); the audit holds the
+# committed page to the render, every file git tracks under assets/ to a
+# source, and every artist the audio files name in their own tags
+# (catalog/audio_credits.generated.toml, their credits as read at
+# ingestion) to the source claiming them.
 #
-# Fields: key (stable id), name, author, url, license (as the source
-# states it; verified = false marks a line still to be checked against
-# the seller's terms), credit (the line the license or the source asks
-# for, verbatim), used_for. Optional downloads = [{ url, path, sha256 }]
-# for files acquired by URL rather than purchase; sha256 is the pin.
+# [[team]]: name, role — in crawl order.
+# [[source]]: key (stable id), name, author, url, license (as the source
+# states it; verified = false marks a line still to be checked against the
+# seller's terms), credit (the line the license or the source asks for,
+# verbatim), used_for, contribution (the ONE short line the in-game crawl
+# shows above the author — "Talon hull model"; the crawl is contribution,
+# then person, in this file's order), packs (path prefixes under assets/
+# this source covers — a directory, a file, or the leading part of a file
+# name; the audit's join from the files on disk to the credit they owe).
+# Optional: ships = false for a pack in the repository nothing installs
+# from (on the page, off the crawl, no contribution line); downloads =
+# [{ url, path, sha256 }] for files acquired by URL rather than purchase —
+# sha256 is the pin.
+#
+# Provenance (2026-09-09): the license files, terms PDFs and audio
+# metadata inside the packs; the owner's CGTrader order history for the
+# purchased models; a rendered preview (make previews) where a hull's
+# file carried no seller trace; the owner's word for the audio sellers.
+
+[[team]]
+name = "Mark Roden"
+role = "Design, direction, code"
+
+[[team]]
+name = "Claude (Anthropic)"
+role = "Engineering collaborator"
+
+# ---- ships and the world ----
+
+[[source]]
+key = "cgtrader_kraffingstudio"
+name = "Spacecraft"
+author = "kraffingstudio"
+url = "https://www.cgtrader.com"
+license = "CGTrader Royalty Free License (subscription download); the license itself asks no credit"
+verified = false
+credit = "Spacecraft by kraffingstudio (CGTrader)"
+used_for = "the Vanguard, the starter hull, and the cockpit shell extracted from it"
+contribution = "Vanguard hull and cockpit model"
+packs = ["assets/cgtrader_ships/Spaceship_1"]
+
+[[source]]
+key = "cgtrader_3d_expert"
+name = "Alien-Inspired Futuristic Spaceship"
+author = "3d-expert"
+url = "https://www.cgtrader.com"
+license = "CGTrader Royalty Free License (subscription download); the license itself asks no credit"
+verified = false
+credit = "Alien-Inspired Futuristic Spaceship by 3d-expert (CGTrader)"
+used_for = "the Talon hull"
+contribution = "Talon hull model"
+packs = ["assets/cgtrader_ships/ship_upgrades/basic_ship.glb"]
+
+[[source]]
+key = "cgtrader_oguzfaruk1"
+name = "Spaceship"
+author = "oguzfaruk1"
+url = "https://www.cgtrader.com"
+license = "CGTrader Royalty Free License (subscription download); the license itself asks no credit"
+verified = false
+credit = "Spaceship by oguzfaruk1 (CGTrader)"
+used_for = "the Hive hull"
+contribution = "Hive hull model"
+packs = ["assets/cgtrader_ships/ship_upgrades/Dronbizimisimiz.glb"]
+
+[[source]]
+key = "cgtrader_anima_z"
+name = "Anima-Z sci-fi models"
+author = "Anima-Z"
+url = "https://www.cgtrader.com"
+license = "CGTrader Royalty Free License (subscription download); the license itself asks no credit"
+verified = false
+credit = "Evil mech 01 & 03, Sphere ship 01–03, Sphere drone 01–03, Alien troop 01, Alien spacecraft 04 and Unmanned Scifi Drone 02 by Anima-Z (CGTrader)"
+used_for = "the mech, sphere-ship, sphere-drone, alien-troop and UMSFD enemies, and the Reaver hull"
+contribution = "Reaver hull and enemy models"
+packs = [
+  "assets/cgtrader_ships/evil_mechs", "assets/cgtrader_ships/spheres",
+  "assets/cgtrader_ships/grey_spheres/uploads_files_4230153_",
+  "assets/cgtrader_ships/grey_spheres/uploads_files_4231809_",
+  "assets/cgtrader_ships/grey_spheres/uploads_files_4231816_",
+  "assets/cgtrader_ships/grey_spheres/uploads_files_4825421_",
+  "assets/cgtrader_ships/ship_upgrades/Alien_spacecraft_04_FBX_.glb",
+]
+
+[[source]]
+key = "cgtrader_humza130241"
+name = "Sci-Fi Drone"
+author = "humza130241"
+url = "https://www.cgtrader.com"
+license = "CGTrader Royalty Free License (subscription download); the license itself asks no credit"
+verified = false
+credit = "Sci-Fi Drone by humza130241 (CGTrader)"
+used_for = "the apartment boss drone"
+contribution = "Apartment boss model"
+packs = ["assets/cgtrader_ships/grey_spheres/uploads_files_4675537_"]
+
+[[source]]
+key = "cgtrader_paladindog"
+name = "Military Sci-Fi Ship with Crashed Version"
+author = "paladindog"
+url = "https://www.cgtrader.com"
+license = "CGTrader Royalty Free License (subscription download); the license itself asks no credit"
+verified = false
+credit = "Military Sci-Fi Ship by paladindog (CGTrader)"
+used_for = "a converted hull and its cockpit shell, not yet assigned to a ship"
+contribution = "Military ship model"
+packs = ["assets/cgtrader_ships/military_ship"]
+
+[[source]]
+key = "cgtrader_millionthvector"
+name = "jumpgate circular light emitting device"
+author = "MillionthVector"
+url = "https://www.cgtrader.com"
+license = "CGTrader Royalty Free License (subscription download); the license itself asks no credit"
+verified = false
+credit = "Jumpgate by MillionthVector (CGTrader)"
+used_for = "the end-of-level exit portal"
+contribution = "Exit portal model"
+packs = ["assets/cgtrader_ships/jump_gate"]
+
+[[source]]
+key = "quaternius_kits"
+name = "Quaternius asset kits"
+author = "Quaternius"
+url = "https://quaternius.com"
+license = "CC0 1.0 Universal per License_Source.txt in the Source packs; quaternius.com/license: free for commercial use, no attribution required"
+credit = "Models by @Quaternius"
+used_for = "the modular panel and prop kits of the generated planets and the drone enemies (Modular SciFi MegaKit, Sci-Fi Essentials); the fish, monster and spaceship packs install but nothing references them yet"
+contribution = "Modular kits and drone models"
+packs = [
+  "assets/quaternius-megakit", "assets/quaternius-essentials",
+  "assets/quaternius-monsters", "assets/quaternius-fish", "assets/quaternius-spaceships",
+]
+
+[[source]]
+key = "cgtrader_rex_hsu"
+name = "Sci-Fi Parts Kit Pack Vol 1-PBR and Vol 03"
+author = "REX-Hsu"
+url = "https://www.cgtrader.com"
+license = "CGTrader Royalty Free License (subscription download); the license itself asks no credit"
+verified = false
+credit = "Sci-Fi Parts Kit Pack Vol 1-PBR and Vol 03 by REX-Hsu (CGTrader)"
+used_for = "the wall and furnishing panel kits of the panel-world planet"
+contribution = "Wall panel kits"
+packs = ["assets/more_walls"]
+
+[[source]]
+key = "cgtrader_zj_vision"
+name = "modern public housing interior design 3d model"
+author = "Zj-vision"
+url = "https://www.cgtrader.com"
+license = "CGTrader Royalty Free License (subscription download); the license itself asks no credit"
+verified = false
+credit = "Apartment interior by Zj-vision (CGTrader)"
+used_for = "the apartment, planet 3's fixed location"
+contribution = "Apartment environment"
+packs = ["assets/apartment"]
+
+[[source]]
+key = "cgtrader_justnecessary"
+name = "Hill House Interior Scene Kitchen Living Room Modern Design"
+author = "Ho Trong Nhan (Just Necessary)"
+url = "https://www.cgtrader.com"
+license = "CGTrader Royalty Free License (subscription download); the license itself asks no credit"
+verified = false
+credit = "Hill House Interior Scene by Just Necessary (CGTrader)"
+used_for = "the hill house, a planet 3 location"
+contribution = "Hill house environment"
+packs = ["assets/hill_house"]
+
+[[source]]
+key = "cgtrader_cgtdg"
+name = "Mountain Villa House"
+author = "cgtdg"
+url = "https://www.cgtrader.com"
+license = "CGTrader Royalty Free License (subscription download); the license itself asks no credit"
+verified = false
+credit = "Mountain Villa House by cgtdg (CGTrader)"
+used_for = "the mountain villa, a planet 3 location"
+contribution = "Mountain villa environment"
+packs = ["assets/mountain_villa"]
+
+[[source]]
+key = "cgtrader_michauart"
+name = "Office building in square shape in 4 colors with interior"
+author = "michauart"
+url = "https://www.cgtrader.com"
+license = "CGTrader Royalty Free License (subscription download); the license itself asks no credit"
+verified = false
+credit = "Office building by michauart (CGTrader)"
+used_for = "the office building, a planet 3 location"
+contribution = "Office building environment"
+packs = ["assets/office_building"]
 
 [[source]]
 key = "nasa_deep_star_maps_2020"
@@ -19,17 +212,88 @@ url = "https://svs.gsfc.nasa.gov/4851"
 license = "NASA imagery is not copyrighted (public domain); the page asks for credit"
 credit = "NASA/Goddard Space Flight Center Scientific Visualization Studio. Gaia DR2: ESA/Gaia/DPAC."
 used_for = "the sky of the fixed environments (planet 3): an equirectangular star field, galactic coordinates"
-downloads = [
-  { url = "https://svs.gsfc.nasa.gov/vis/a000000/a004800/a004851/starmap_2020_8k_gal.exr", path = "assets/sky/starmap_2020_8k_gal.exr",
-    sha256 = "d70924422d3e0159764b16a19658784befcf73b97e06e5c16614860c1514bb58" },  # 8192x4096 OpenEXR, 160.7 MB, fetched 2026-09-09
+contribution = "Star field"
+packs = ["assets/sky"]
+
+[[source.downloads]]  # 8192x4096 OpenEXR, 160.7 MB, fetched 2026-09-09
+url = "https://svs.gsfc.nasa.gov/vis/a000000/a004800/a004851/starmap_2020_8k_gal.exr"
+path = "assets/sky/starmap_2020_8k_gal.exr"
+sha256 = "d70924422d3e0159764b16a19658784befcf73b97e06e5c16614860c1514bb58"
+
+# ---- music and sound ----
+
+[[source]]
+key = "alkakrab_music"
+name = "AlkaKrab music"
+author = "AlkaKrab"
+license = "AlkaKrab Music License Agreement (PDF in the pack): royalty-free, commercial use allowed, credit appreciated but not required; no redistribution as-is; open-source use needs the author's permission"
+credit = "Music by AlkaKrab"
+used_for = "the per-level background loops, the combat stingers and the boss tracks"
+contribution = "Music"
+packs = ["assets/music/Level Backgrounds", "assets/music/combat", "assets/music/Boss Music Tracks"]
+
+[[source]]
+key = "juanjo_sound_ambient"
+name = "juanjo_sound ambient tracks"
+author = "Michael Barker (juanjo_sound)"
+url = "https://www.youtube.com/@juanjo_sound"
+license = "terms-of-use v3 (in the pack): credit REQUIRED as \"Michael Barker\" or \"juanjo_sound\", with a link to the YouTube channel if possible; no upload to streaming services, no Content ID claims"
+credit = "Music by Michael Barker (juanjo_sound) — https://www.youtube.com/@juanjo_sound"
+used_for = "the menu and reserve ambient beds"
+contribution = "Ambient music"
+packs = ["assets/music/Ambient"]
+
+[[source]]
+key = "shapeforms_sci_fi_weapons"
+name = "Shapeforms Audio: Sci-Fi Weapons — Cyberpunk Arsenal"
+author = "Rich McBride / Shapeforms Audio"
+url = "https://www.shapeforms.com"
+license = "Shapeforms Audio royalty-free license (the pack's terms are not in the repository; the files carry its copyright line)"
+verified = false
+credit = "Sound effects from Sci-Fi Weapons: Cyberpunk Arsenal © Shapeforms Audio — https://www.shapeforms.com"
+used_for = "explosions, metal and wood impacts, dash attacks, weapon arming and spawn sounds, the Impulse Cannon and Valkyrie fire"
+contribution = "Weapon and explosion sound effects"
+packs = [
+  "assets/sfx/AttachmentAttacks", "assets/sfx/Explosion_Impacts", "assets/sfx/Impulse Cannon",
+  "assets/sfx/Spawns", "assets/sfx/Valkyrie",
+  "assets/sfx/Impacts/METLImpt_", "assets/sfx/Impacts/WOODImpt_", "assets/sfx/Impacts/explosion_",
+  "assets/sfx/Impacts/impact_metal_", "assets/sfx/Impacts/impact_wood_",
 ]
 
 [[source]]
-key = "quaternius_kits"
-name = "Quaternius asset kits"
-author = "Quaternius"
-url = "https://quaternius.com"
-license = "CC0 1.0 (the kit's import script: attribution appreciated)"
+key = "samplekingdom_sci_fi_weapons"
+name = "SampleKingdom sci-fi weapon pack"
+author = "SampleKingdom"
+license = "SampleKingdom royalty-free license (the pack's terms are not in the repository; the files carry no tags — owner's purchase record, 2026-09-09)"
 verified = false
-credit = "Quaternius"
-used_for = "the modular panel and prop kits of the generated planets"
+credit = "Weapon sound effects by SampleKingdom"
+used_for = "the blaster, laser, rifle, SMG, plasma, retro-laser, grenade-launcher and heavy-MG gunshots, reloads, weapon handling, weapon-system and kinetic impact sounds"
+contribution = "Weapon handling sound effects"
+packs = [
+  "assets/sfx/Gunshots", "assets/sfx/Reloads", "assets/sfx/WeaponHandle", "assets/sfx/WeaponSystems",
+  "assets/sfx/Impacts/impact_kinetic_", "assets/sfx/Impacts/impact_kinematic_",
+]
+
+# ---- in the repository, not shipped ----
+
+[[source]]
+key = "kenney_space_kit"
+name = "Kenney Space Kit 2.0"
+author = "Kenney"
+url = "https://www.kenney.nl"
+license = "CC0 (License.txt in the pack): crediting Kenney or www.kenney.nl is welcome, not mandatory"
+credit = "Kenney (www.kenney.nl)"
+used_for = "in the repository since the first scaffold; nothing installs from it"
+packs = ["assets/kenney-space-kit"]
+ships = false
+
+[[source]]
+key = "freepbr_textures"
+name = "FreePBR sci-fi texture sets"
+author = "FreePBR.com"
+url = "https://freepbr.com"
+license = "free for games and 3D work, not to be redistributed elsewhere; credit appreciated (About these PBR files.txt in the pack)"
+credit = "Textures by FreePBR.com"
+used_for = "in the repository as candidate wall materials; nothing installs from it"
+packs = ["assets/pbr-textures"]
+ships = false

@@ -147,15 +147,24 @@ assets-fetch:
 	@echo "==> Fetching attributed downloads (catalog/attributions.toml)..."
 	@$(PYENV)/bin/python3 scripts/fetch_attributed.py catalog/attributions.toml $(CURDIR)
 
-# The credits page, rendered from the same catalog: docs/CREDITS.md is
-# generated and committed; the audit holds it to the render.
+# The credits, two steps. First the ingestion pipeline's first reading:
+# every sound file's own credits (RIFF INFO / bext, ID3v2 tags) into
+# catalog/audio_credits.generated.toml, so a new pack's artist reaches the
+# credits audit the moment it lands (owner 2026-09-09: "we will want to
+# have that new data carried forward"). Then the page: docs/CREDITS.md
+# rendered from catalog/attributions.toml, generated and committed. Pure
+# Python, seconds; the audit holds the committed reading to a fresh one,
+# every tagged artist to the source that claims the file, and the page to
+# its render. Runs before the install stage and again inside `make assets`.
 credits:
 	@test -x "$(PYENV)/bin/python3" || { echo "ERROR: python venv missing — run 'make deps'"; exit 1; }
+	@echo "==> Reading the audio files' own credits (catalog/audio_credits.generated.toml)..."
+	@$(PYENV)/bin/python3 scripts/audio_credits.py $(CURDIR) catalog/audio_credits.generated.toml
 	@$(PYENV)/bin/python3 scripts/credits.py catalog/attributions.toml docs/CREDITS.md
 
 # Door 1: provider packs -> installed addons (Blender conversions,
 # panel splits + role bakes; split logs land in out/split-<kit>.log).
-assets-install: build deps-godot deps-node deps-blender assets-fetch
+assets-install: build deps-godot deps-node deps-blender assets-fetch credits
 	@test -d $(ASSETS_DIR)/quaternius-megakit || { echo "ERROR: assets/ not found. Download paid assets manually into assets/."; exit 1; }
 	@echo "==> Installing Godot addons from asset packs..."
 	@mkdir -p out; set -o pipefail; BLENDER="$(BLENDER)" GLTF_TRANSFORM="$(GLTF_TRANSFORM)" GLTF_TRANSFORM_VERSION="$(GLTF_TRANSFORM_VERSION)" ./scripts/install-addons.sh $(ASSETS_DIR) $(GODOT_DIR) 2>&1 | tee out/assets-install.log
@@ -283,7 +292,7 @@ check-visual: build-release deps-godot
 	@echo "==> Running visual contracts (log: out/visual/last-run.log)..."
 	@mkdir -p $(CURDIR)/out/visual
 	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
-		cd $(RUST_DIR) && GODOT="$(GODOT)" $(CARGO) test -p void_logic --test visual -- --nocapture \
+		cd $(RUST_DIR) && GODOT="$(GODOT)" $(CARGO) test -p void_logic --test visual $(FILTER) -- --nocapture \
 			> $(CURDIR)/out/visual/last-run.log 2>&1; \
 		code=$$?; cat $(CURDIR)/out/visual/last-run.log; exit $$code
 
@@ -304,6 +313,26 @@ metrics:
 		[ -n "$$logs" ] && python3 scripts/log-histogram.py assets-import out/metrics/log_assets-import.toml $$logs \
 		|| echo "  (no assets-import logs yet — run make assets-import)"
 	@$(MAKE) test-assets
+
+# The picture beside a model's metrics: one rendered preview per
+# installed hull and enemy under out/metrics/ (<model>_preview.png),
+# framed from the model's own bounds by scripts/preview_plan.py and
+# rendered headless by Blender (scripts/render-preview.py). A reading
+# aid for identification and review — a seller's listing matched by eye
+# (owner 2026-09-09), a hull checked before it reaches the roster —
+# never a gate. MODELS=<glb ...> narrows the run.
+previews: MODELS ?= $(wildcard $(GODOT_DIR)/addons/ships/*.glb $(GODOT_DIR)/addons/enemies/*.glb)
+previews: deps-blender
+	@mkdir -p out/metrics
+	@for glb in $(MODELS); do \
+		stem=$$(basename "$$glb" .glb); \
+		if $(BLENDER) --background --python-exit-code 1 --python scripts/render-preview.py -- \
+				"$$glb" "$(CURDIR)/out/metrics/$${stem}_preview.png" > "out/preview-$$stem.log" 2>&1; then \
+			grep -i "render-preview:" "out/preview-$$stem.log"; \
+		else \
+			echo "  ERROR: $$stem preview failed (see out/preview-$$stem.log)"; \
+		fi; \
+	done
 
 # Re-copies sanitized .tres materials from asset packs and re-applies
 # local material patches (no reimport).

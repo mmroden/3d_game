@@ -85,6 +85,14 @@ pub struct GameManager {
     #[export]
     start_level: i32,
 
+    /// Dev knob (same family as `start_level`): a menu screen to boot
+    /// straight into — `"credits"` opens the roll — for looking at a
+    /// screen the way `--level=N` looks at a level. With a `--shot=`
+    /// list, the sequencer's poses are the ROLL's offsets in pixels
+    /// (`--shot=0;400;800`), not camera poses. Empty = the menu.
+    #[export]
+    screen: GString,
+
     /// Reference-capture knob (`--shot=x,y,z,yaw_deg[,pitch_deg]`): after
     /// the level builds, park the ship at exactly this pose, motionless.
     /// Captures then compare against vendor stills from a REPRODUCIBLE
@@ -112,9 +120,10 @@ pub struct GameManager {
     #[export]
     populace_override: i32,
 
-    /// The parsed `shot_pose` list ("x,y,z,yaw[,pitch];…") and the
-    /// sequencer's cursor: which pose the ship is parked at, and how many
-    /// frames it has settled there (culling/lights need a few).
+    /// The parsed `shot_pose` list ("x,y,z,yaw[,pitch];…" — or "offset;…"
+    /// for a screen) and the sequencer's cursor: which pose the subject
+    /// is parked at, and how many frames it has settled there
+    /// (culling/lights need a few).
     shot_poses: Vec<[f32; 5]>,
     shot_index: usize,
     shot_timer: i32,
@@ -147,6 +156,7 @@ impl INode for GameManager {
             boss_fight: None,
             level_spec: None,
             start_level: 0,
+            screen: GString::new(),
             shot_pose: GString::new(),
             sbs_override: -1,
             shot_dir: GString::new(),
@@ -180,6 +190,8 @@ impl INode for GameManager {
                 if let Ok(level) = v.parse::<i32>() {
                     self.start_level = level.max(0);
                 }
+            } else if let Some(v) = arg.strip_prefix("--screen=") {
+                self.screen = v.into();
             } else if let Some(v) = arg.strip_prefix("--seed=") {
                 if let Ok(seed) = v.parse::<i64>() {
                     self.fixed_seed = seed;
@@ -282,6 +294,13 @@ impl INode for GameManager {
             return;
         }
 
+        // Reference-capture sequencing on a menu screen (`--screen=`): the
+        // subject is the roll, which lives outside Playing. No-op without
+        // a shot list.
+        if self.capture_subject_is_roll() && self.phase == GamePhase::MainMenu {
+            self.tick_shot_sequence();
+        }
+
         if self.phase != GamePhase::Playing {
             return;
         }
@@ -323,6 +342,17 @@ impl GameManager {
             self.start_new_game();
             self.advance_from_ship_select();
             self.advance_from_bestiary();
+        } else if self.capture_subject_is_roll() {
+            // Dev knob: a boot with a menu screen under inspection
+            // (`--screen=credits`) opens it at once; a shot list then parks
+            // the roll at each offset — the level rig's sequence, over the
+            // roll's own pose.
+            if let Some(parent) = self.base().get_parent() {
+                if let Some(mut menu) = Self::find_ui_node(&parent, nodes::MAIN_MENU_UI) {
+                    menu.call(methods::OPEN_CREDITS, &[]);
+                }
+            }
+            self.apply_shot_pose();
         }
     }
 
@@ -2125,15 +2155,17 @@ impl GameManager {
         }
     }
 
-    /// The reference-capture knob: park the ship at the first authored
-    /// pose (`shot_pose` = "x,y,z,yaw_deg[,pitch_deg];…"). Runs after
-    /// every level build; [`tick_shot_sequence`] then visits the rest —
-    /// one boot frames EVERY authored vantage, reproducibly.
+    /// The reference-capture knob: park the subject at the first authored
+    /// pose (`shot_pose` = "x,y,z,yaw_deg[,pitch_deg];…" in a level, or
+    /// "offset;…" in pixels on a screen). Runs after every level build,
+    /// or once the screen is open; [`tick_shot_sequence`] then visits the
+    /// rest — one boot frames EVERY authored vantage, reproducibly.
     fn apply_shot_pose(&mut self) {
         let spec = self.shot_pose.to_string();
         if spec.is_empty() {
             return;
         }
+        let needed = if self.capture_subject_is_roll() { 1 } else { 4 };
         self.shot_poses = spec
             .split(';')
             .filter_map(|pose| {
@@ -2141,19 +2173,21 @@ impl GameManager {
                     .split(',')
                     .filter_map(|s| s.trim().parse().ok())
                     .collect();
-                if vals.len() < 4 {
-                    godot_warn!("shot pose needs x,y,z,yaw_deg[,pitch_deg]: '{pose}'");
+                if vals.len() < needed {
+                    godot_warn!(
+                        "shot pose needs x,y,z,yaw_deg[,pitch_deg] in a level, an offset on a screen: '{pose}'"
+                    );
                     return None;
                 }
-                Some([vals[0], vals[1], vals[2], vals[3],
-                      vals.get(4).copied().unwrap_or(0.0)])
+                let at = |i: usize| vals.get(i).copied().unwrap_or(0.0);
+                Some([at(0), at(1), at(2), at(3), at(4)])
             })
             .collect();
         self.shot_index = 0;
         self.shot_timer = 0;
         self.shot_drawn_at_pose = false;
         if let Some(pose) = self.shot_poses.first().copied() {
-            self.park_at(pose);
+            self.park(pose);
         }
     }
 
@@ -2180,34 +2214,29 @@ impl GameManager {
         if self.shot_timer < Self::SHOT_SETTLE_FRAMES - 1 {
             return;
         }
-        // Save only when the camera that RENDERS is verifiably at the
-        // pose — and has DRAWN there. The viewport draws through the view
-        // rig's eye camera, a per-frame MIRROR of Player/Camera3D that
-        // converges a frame behind its source and goes stale across pause
-        // boundaries (L12-S1 2026-07-14; L7-S1/L12-S2 2026-07-20 — the
-        // old guard read the SOURCE camera, and a lookup miss degraded it
-        // to a blind timer, so duplicates slipped through). Two-phase:
-        // verify the viewport's ACTIVE camera, then let one more frame
-        // draw before reading the texture (get_image() returns the last
-        // DRAWN frame). Waiting costs frames; saving a lie costs a run.
+        // Save only when the subject that RENDERS is verifiably at the
+        // pose — and has DRAWN there. In a level the viewport draws through
+        // the view rig's eye camera, a per-frame MIRROR of Player/Camera3D
+        // that converges a frame behind its source and goes stale across
+        // pause boundaries (L12-S1 2026-07-14; L7-S1/L12-S2 2026-07-20 —
+        // the old guard read the SOURCE camera, and a lookup miss degraded
+        // it to a blind timer, so duplicates slipped through); on a screen
+        // the roll's own offset is the reading. Two-phase: verify the
+        // subject, then let one more frame draw before reading the texture
+        // (get_image() returns the last DRAWN frame). Waiting costs
+        // frames; saving a lie costs a run.
         let pose = self.shot_poses[self.shot_index];
-        let parked = Vector3::new(pose[0], pose[1], pose[2]);
-        let cam_at = self
-            .base()
-            .get_viewport()
-            .and_then(|v| v.get_camera_3d())
-            .map(|c| c.get_global_position());
-        match cam_at {
-            // A camera renders and is NOT at the pose: keep settling,
+        match self.subject_astray(pose) {
+            // The subject renders and is NOT at the pose: keep settling,
             // bounded — past the ceiling, save loudly and let the
             // harness's stuck-frame check own the verdict.
-            Some(at) if (at - parked).length() > 1.0 => {
+            Some(true) => {
                 if self.shot_timer < Self::SHOT_SETTLE_CEILING {
                     return;
                 }
                 godot_print!(
-                    "shot {}: settle ceiling — saving UNVERIFIED (render \
-                     camera astray); the stuck-frame check owns the verdict",
+                    "shot {}: settle ceiling — saving UNVERIFIED (subject \
+                     astray); the stuck-frame check owns the verdict",
                     self.shot_index
                 );
             }
@@ -2225,7 +2254,7 @@ impl GameManager {
         self.shot_drawn_at_pose = false;
         self.shot_index += 1;
         if let Some(pose) = self.shot_poses.get(self.shot_index).copied() {
-            self.park_at(pose);
+            self.park(pose);
         } else if !self.shot_dir.is_empty() {
             self.base().get_tree().quit();
         }
@@ -2252,16 +2281,18 @@ impl GameManager {
         image.save_png(&path);
         // The pose the frame ACTUALLY rendered from — capture-integrity
         // questions get answered from the log, not by inference.
-        let at = self
-            .base()
-            .get_parent()
-            .and_then(|p| p.try_get_node_as::<Node3D>(nodes::PLAYER))
-            .map(|pl| pl.get_global_position())
-            .unwrap_or_default();
-        godot_print!(
-            "shot {index} saved at ({:.1}, {:.1}, {:.1}) -> {path}",
-            at.x, at.y, at.z
-        );
+        let at = if self.capture_subject_is_roll() {
+            format!("roll offset {:.0} px", self.roll_offset().unwrap_or(f32::NAN))
+        } else {
+            let at = self
+                .base()
+                .get_parent()
+                .and_then(|p| p.try_get_node_as::<Node3D>(nodes::PLAYER))
+                .map(|pl| pl.get_global_position())
+                .unwrap_or_default();
+            format!("({:.1}, {:.1}, {:.1})", at.x, at.y, at.z)
+        };
+        godot_print!("shot {index} saved at {at} -> {path}");
     }
 
     /// Park the ship at a pose, motionless (position, yaw, pitch). The
@@ -2281,6 +2312,45 @@ impl GameManager {
         player.set_global_position(Vector3::new(pose[0], pose[1], pose[2]));
         player.set_rotation_degrees(Vector3::new(pose[4], pose[3], 0.0));
         player.reset_physics_interpolation();
+    }
+
+
+    /// The shot sequencer's subject: the ship in a level, the credits
+    /// crawl on a `--screen=credits` boot.
+    fn capture_subject_is_roll(&self) -> bool {
+        self.screen == "credits"
+    }
+
+    /// Park the sequencer's subject at `pose`: the ship in a level; on
+    /// the credits screen, the roll at `pose[0]` pixels (held there).
+    fn park(&mut self, pose: [f32; 5]) {
+        if self.capture_subject_is_roll() {
+            if let Some(parent) = self.base().get_parent() {
+                if let Some(mut menu) = Self::find_ui_node(&parent, nodes::MAIN_MENU_UI) {
+                    menu.call(methods::SET_CREDITS_OFFSET, &[Variant::from(pose[0])]);
+                }
+            }
+        } else {
+            self.park_at(pose);
+        }
+    }
+
+    /// The roll's offset as the menu reports it (None without a menu).
+    fn roll_offset(&self) -> Option<f32> {
+        let parent = self.base().get_parent()?;
+        let mut menu = Self::find_ui_node(&parent, nodes::MAIN_MENU_UI)?;
+        Some(menu.call(methods::CREDITS_OFFSET, &[]).to::<f32>())
+    }
+
+    /// Whether the rendering subject is verifiably OFF the pose — the
+    /// render camera in a level, the roll's offset on a screen — or
+    /// `None` when nothing renders to read (the headless GUT stage).
+    fn subject_astray(&self, pose: [f32; 5]) -> Option<bool> {
+        if self.capture_subject_is_roll() {
+            return self.roll_offset().map(|at| (at - pose[0]).abs() > 1.0);
+        }
+        let at = self.base().get_viewport()?.get_camera_3d()?.get_global_position();
+        Some((at - Vector3::new(pose[0], pose[1], pose[2])).length() > 1.0)
     }
 
     fn regenerate_level(&mut self) {

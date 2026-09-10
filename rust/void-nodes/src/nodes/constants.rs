@@ -47,6 +47,9 @@ pub mod signals {
 // ── Callable method names ─────────────────────────────────────────────
 
 pub mod methods {
+    pub const OPEN_CREDITS: &str = "open_credits";
+    pub const SET_CREDITS_OFFSET: &str = "set_credits_offset";
+    pub const CREDITS_OFFSET: &str = "credits_offset";
     pub const START_NEW_GAME: &str = "start_new_game";
     pub const CONTINUE_GAME: &str = "continue_game";
     pub const SHOW_BESTIARY_FROM_MENU: &str = "show_bestiary_from_menu";

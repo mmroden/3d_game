@@ -59,5 +59,6 @@ pub mod spatial_layout;
 pub mod unlocks;
 pub mod input_method;
 pub mod menu_cursor;
+pub mod credits;
 pub mod newtypes;
 pub mod util;

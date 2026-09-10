@@ -21,13 +21,49 @@ def load(text):
     return tomllib.loads(text)
 
 
+def section(source):
+    """One source's block: author, the crawl line (shipped sources), use,
+    license (flagged while unverified), the credit line, and the address
+    when there is one."""
+    unverified = source.get("verified") is False
+    lines = [
+        f"## {source['name']}",
+        "",
+        f"- Author: {source['author']}",
+    ]
+    if source.get("contribution"):
+        lines.append(f"- Contribution: {source['contribution']}")
+    lines += [
+        f"- Used for: {source['used_for']}",
+        f"- License: {source['license']}"
+        + ("  *(license line still to be verified at the source)*" if unverified else ""),
+        f"- Credit: {source['credit']}",
+    ]
+    if source.get("url"):
+        lines.append(f"- Source: {source['url']}")
+    lines.append("")
+    return lines
+
+
 def render(doc):
-    """Markdown, one section per source in name order. A source missing
-    a required field is a hole the render refuses: we cannot ship what
-    we cannot credit."""
+    """Markdown: the team first, then one section per shipped source in
+    name order, then — set apart — the packs in the repository that
+    nothing installs from. A team entry or source missing a required
+    field (a shipped source's `contribution`, the in-game crawl's line,
+    included) is a hole the render refuses: we cannot ship what we cannot
+    credit."""
+    team = doc.get("team", [])
+    for member in team:
+        missing = [k for k in ("name", "role") if not member.get(k)]
+        if missing:
+            who = member.get("name") or member.get("role") or "?"
+            raise ValueError(
+                f"team entry {who!r} lacks {', '.join(missing)} — "
+                f"the crawl names everyone and what they did")
     sources = doc.get("source", [])
     for source in sources:
-        missing = [k for k in REQUIRED if not source.get(k)]
+        required = REQUIRED + (("contribution",) if source.get("ships", True) else ())
+        missing = [k for k in required if not source.get(k)]
         if missing:
             raise ValueError(
                 f"attribution {source.get('key', '?')!r} lacks {', '.join(missing)} — "
@@ -37,24 +73,33 @@ def render(doc):
         "(make credits) — do not edit; add or correct a source in the catalog. -->",
         "# Credits",
         "",
+    ]
+    if team:
+        lines += ["## Made by", ""]
+        lines += [f"- {member['name']} — {member['role']}" for member in team]
+        lines.append("")
+    lines += [
+        "## Third-party work",
+        "",
         "Third-party work this game ships or was built from, with the license",
         "each came under and the credit it asks for.",
         "",
     ]
-    for source in sorted(sources, key=lambda s: s["name"].lower()):
-        unverified = source.get("verified") is False
+    ordered = sorted(sources, key=lambda s: s["name"].lower())
+    for source in ordered:
+        if source.get("ships", True):
+            lines += section(source)
+    parked = [s for s in ordered if not s.get("ships", True)]
+    if parked:
         lines += [
-            f"## {source['name']}",
+            "## In the repository, not shipped",
             "",
-            f"- Author: {source['author']}",
-            f"- Used for: {source['used_for']}",
-            f"- License: {source['license']}"
-            + ("  *(license line still to be verified at the source)*" if unverified else ""),
-            f"- Credit: {source['credit']}",
+            "Packs checked in that nothing installs from yet — credited all the",
+            "same, and off the in-game crawl.",
+            "",
         ]
-        if source.get("url"):
-            lines.append(f"- Source: {source['url']}")
-        lines.append("")
+        for source in parked:
+            lines += section(source)
     return "\n".join(lines)
 
 

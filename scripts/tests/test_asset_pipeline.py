@@ -29,6 +29,8 @@ except ImportError:  # the audit venv (python 3.9) carries tomli
 
 import pytest
 
+import subprocess
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
@@ -50,6 +52,8 @@ from material_plan import (  # noqa: E402
 )
 from retile import TEXEL_FLOOR_PER_WORLD_M  # noqa: E402  (the floor's one home)
 
+import audio_credits  # noqa: E402  (scripts/audio_credits.py: the audio files' own credits)
+
 APARTMENT = ROOT / "assets" / "apartment"
 MILITARY_SHIP = ROOT / "assets" / "cgtrader_ships" / "military_ship"
 HILL_HOUSE = ROOT / "assets" / "hill_house"
@@ -61,6 +65,7 @@ ADDONS = ROOT / "godot" / "addons"
 CATALOG_KITS = ROOT / "catalog" / "kits.toml"
 ATTRIBUTIONS = ROOT / "catalog" / "attributions.toml"
 CREDITS_PAGE = ROOT / "docs" / "CREDITS.md"
+AUDIO_CREDITS = ROOT / "catalog" / "audio_credits.generated.toml"
 METRICS_DIR = ROOT / "out" / "metrics"
 
 # pack -> the pipeline's artifacts for it: the material manifest (FBX
@@ -960,6 +965,85 @@ def test_every_attributed_download_is_pinned():
     unpinned = [(s.get("key"), d.get("path")) for s in doc.get("source", [])
                 for d in s.get("downloads", []) if not d.get("sha256")]
     assert not unpinned, f"downloads without a sha256 pin: {unpinned}"
+
+
+def test_every_tracked_asset_file_is_credited():
+    """The join from a pack on disk to the credit it owes (2026-09-09):
+    every file git tracks under assets/ falls under some source's
+    `packs` prefix (a directory, a file, or the leading part of a file
+    name). A file nobody claims is one that could ship uncredited; a
+    claimed prefix nothing tracks is a stale claim. Uncovered files are
+    coalesced by directory so the gap reads as packs, not filenames."""
+    with open(ATTRIBUTIONS, "rb") as f:
+        doc = tomllib.load(f)
+    prefixes = {p: s.get("key") for s in doc.get("source", []) for p in s.get("packs", [])}
+    listing = subprocess.run(["git", "ls-files", "-z", "assets"], cwd=ROOT, check=True,
+                             capture_output=True).stdout.decode()
+    tracked = [t for t in listing.split("\0") if t]
+    assert tracked, "git tracks the provider packs under assets/"
+
+    uncovered = {}
+    for path in tracked:
+        if not any(path.startswith(p) for p in prefixes):
+            pack = "/".join(path.split("/")[:-1][:3])
+            uncovered[pack] = uncovered.get(pack, 0) + 1
+    assert not uncovered, (
+        "tracked provider files no source in catalog/attributions.toml claims "
+        "(add a `packs` prefix to the source that owes the credit):\n  "
+        + "\n  ".join(f"{n:4d}  {pack}/" for pack, n in sorted(uncovered.items())))
+
+    stale = sorted(p for p in prefixes if not any(t.startswith(p) for t in tracked))
+    assert not stale, f"`packs` prefixes that match nothing git tracks: {stale}"
+
+
+# ---- the audio files' own credits: their provenance tags, read at the
+# start of the ingestion pipeline (make credits) into
+# catalog/audio_credits.generated.toml, and joined here to the attributions.
+
+def test_the_audio_credits_are_current():
+    """The committed reading is the audio files as they are now — a pack
+    dropped in without rerunning the stage shows up here."""
+    assert AUDIO_CREDITS.exists(), f"{AUDIO_CREDITS} missing — run `make credits`"
+    expected = audio_credits.collect(ROOT, audio_credits.audio_files(ROOT))
+    with open(AUDIO_CREDITS, "rb") as f:
+        committed = tomllib.load(f).get("track", [])
+    assert committed == expected, (
+        "catalog/audio_credits.generated.toml is not the reading of the audio under assets/ — "
+        "run `make credits` (the catalog is generated; never edit it)")
+
+
+def test_every_tagged_artist_is_credited_by_the_source_that_claims_the_file():
+    """The join: a track whose tags name an artist must fall under a
+    source whose author or credit line names them. A Broadcast Wave
+    originator counts as a name only when the file's own copyright line
+    also names it (Shapeforms stamps both); otherwise it is the tool that
+    wrote the file — REAPER stamps itself as originator on every export.
+    A new artist in an old directory, or a new directory, fails here with
+    the name and the files — the data carried forward, never transcribed
+    twice."""
+    with open(ATTRIBUTIONS, "rb") as f:
+        sources = tomllib.load(f).get("source", [])
+    with open(AUDIO_CREDITS, "rb") as f:
+        tracks = tomllib.load(f).get("track", [])
+    uncredited = {}
+    for track in tracks:
+        names = [track["artist"]] if track.get("artist") else []
+        originator = track.get("originator", "")
+        if originator and originator.lower() in track.get("copyright", "").lower():
+            names.append(originator)
+        if not names:
+            continue
+        claimant = next((s for s in sources
+                         if any(track["path"].startswith(p) for p in s.get("packs", []))), None)
+        credited_by = " ".join((claimant or {}).get(k, "") for k in ("author", "credit")).lower()
+        for name in names:
+            if name.lower() not in credited_by:
+                key = (name, (claimant or {}).get("key", "<no source claims this file>"))
+                uncredited.setdefault(key, []).append(track["path"])
+    assert not uncredited, (
+        "tagged artists the claiming source does not name (artist, claiming source, files):\n  "
+        + "\n  ".join(f"{name!r} under {key}: {len(paths)} file(s), e.g. {paths[0]}"
+                      for (name, key), paths in sorted(uncredited.items())))
 
 
 # ---- stage logs: every ERROR and WARNING a pipeline stage printed,

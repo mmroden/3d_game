@@ -47,7 +47,6 @@ fn arr(v: Vector3) -> [f32; 3] {
 /// lights.
 #[derive(GodotClass)]
 #[class(base=Node3D)]
-
 pub struct LevelManager {
     base: Base<Node3D>,
 

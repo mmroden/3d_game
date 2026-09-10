@@ -262,10 +262,18 @@ func test_one_press_on_the_level_2_summary_lands_in_the_shop_not_past_it():
 	gm.advance_to_shop()
 	await wait_process_frames(2)
 
-	# Leave the level-1 shop the way a player does: walk to Continue (a
-	# fresh catalog has 9 rows — 6 stats, laser, life, radar) and press it.
-	# This is what used to park the cursor on Continue for the next visit.
-	for _i in range(9):
+	# Leave the level-1 shop the way a player does: walk down past every
+	# offer row to Continue and press it. The count derives from the
+	# storefront on screen — one row and one detail hint per offer, plus
+	# title, two balances, Continue and Save & Exit (the presentation
+	# contract test_shop_ui_renders_one_row_per_offer_plus_continue pins) —
+	# never a pinned number: the catalog changes (Fire Rate retired
+	# 2026-08-20) and the walk must follow it. This is what used to park
+	# the cursor on Continue for the next visit.
+	@warning_ignore("integer_division")
+	var offers: int = (shop.find_children("*", "Label", true, false).size() - 5) / 2
+	assert_gt(offers, 0, "the level-1 shop offers something")
+	for _i in range(offers):
 		Input.action_press("menu_down")
 		await wait_process_frames(2)
 		Input.action_release("menu_down")
@@ -310,7 +318,6 @@ func test_one_press_on_the_level_2_summary_lands_in_the_shop_not_past_it():
 	assert_lt(gm.get_components(), components_before,
 		"the player can actually buy something after level 2")
 	assert_eq(gm.get_phase_name(), "Shop", "buying keeps the shop open")
-
 
 func test_save_and_exit_banks_the_run_at_the_next_level():
 	# The shop's Save & Exit row (owner's ask 2026-07-04): everything up to
