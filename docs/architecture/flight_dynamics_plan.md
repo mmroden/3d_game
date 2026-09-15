@@ -142,7 +142,7 @@ damage payload.
 ## Order & discipline
 
 A → B (no behavior change), C anytime, D → E. Each phase:
-red-green-refactor, `make check` green, design-review agent on the diff
+red-green-refactor, `make check` green, mark-review agent on the diff
 before merge.
 
 ## Implementation status (2026-06-12)
