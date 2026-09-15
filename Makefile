@@ -1,4 +1,4 @@
-.PHONY: deps deps-rust deps-godot deps-gut lsp-up require-rust check check-visual test-rust test-godot test-assets demo edit clean run build build-release assets assets-install assets-import assets-probe assets-materials
+.PHONY: deps deps-rust deps-godot deps-gut lsp-up require-rust check check-visual test-rust test-godot test-assets demo edit clean run build build-release assets assets-install assets-import assets-probe assets-materials ground-truth
 
 # Project-local tool paths
 TOOLS_DIR := $(CURDIR)/tools
@@ -362,6 +362,19 @@ test-assets: lint
 	@# TESTS=<path or node id> narrows the run (the stage takes a selector;
 	@# python is never invoked directly — a settings hook refuses it).
 	@$(PYENV)/bin/python3 -m pytest $(or $(TESTS),scripts/tests) -q
+
+# The ground-truth reading: do the review docs still describe the code?
+# Every repo path named under docs/review/ and every symbol in the
+# canonical-sites table of docs/review/ground_truth.md is checked against
+# the tracked tree (scripts/ground-truth.py); the reading lands in
+# out/metrics/ground_truth.toml and any missing claim fails the target. A
+# gate the invoker runs before mark-review, like the others, so a doc that
+# drifted from the code fails here instead of steering a reviewer at a
+# phantom. The same reading runs inside test-assets.
+ground-truth:
+	@test -x "$(PYENV)/bin/python3" || { echo "ERROR: python venv missing — run 'make deps'"; exit 1; }
+	@mkdir -p out/metrics
+	@$(PYENV)/bin/python3 scripts/ground-truth.py $(CURDIR) docs/review out/metrics/ground_truth.toml
 
 # Filtered Rust tests with output: make test-rust FILTER=test_name
 # Library tests only — the visual suite (tests/visual.rs) boots Godot and

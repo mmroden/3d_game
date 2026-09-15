@@ -10,7 +10,8 @@ use crate::asset_catalog::{ENVIRONMENTS_GENERATED_TOML, MODELS_TOML};
 use crate::roster::{load_from, EnvSources, Roster};
 
 /// The SHIPPED catalog — the ONE test-support home for it (helper
-/// duplication across test modules is plaque; see design-review §10).
+/// duplication across test modules is plaque; see
+/// docs/review/principles/atherosclerosis.md, check 2).
 /// Tests that assemble against real assets resolve their placements'
 /// ids here; fixture-grammar tests resolve through their own
 /// `roster.catalog` instead.
