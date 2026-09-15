@@ -47,6 +47,7 @@ paths, the pinned engine, and the dylib install.
 | `make roster-template` | Re-render `rosters/TEMPLATE.toml`, the authoring scaffold (`make build` does this automatically). |
 | `make roster-vocab` | Re-render `rosters/VOCABULARY.md`, the closed-vocabulary reference (also automatic in `build`). |
 | `make assets-materials` | Re-copy sanitized materials + local patches, no reimport. |
+| `make export` | Self-contained macOS build (Apple Silicon only, ad-hoc signed): `out/VoidScavenger-macos-arm64.zip`. A recipient clears Gatekeeper once with `xattr -dr com.apple.quarantine VoidScavenger.app`. |
 
 ## Authoring game content: `rosters/`
 

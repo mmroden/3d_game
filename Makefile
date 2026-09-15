@@ -1,4 +1,4 @@
-.PHONY: deps deps-rust deps-godot deps-gut lsp-up require-rust check check-visual test-rust test-godot test-assets demo edit clean run build build-release assets assets-install assets-import assets-probe assets-materials ground-truth
+.PHONY: deps deps-rust deps-godot deps-godot-templates deps-gut lsp-up require-rust check check-visual test-rust test-godot test-assets demo edit clean run export build build-release assets assets-install assets-import assets-probe assets-materials ground-truth
 
 # Project-local tool paths
 TOOLS_DIR := $(CURDIR)/tools
@@ -13,6 +13,20 @@ GODOT_VERSION := 4.6.1
 GODOT_RELEASE := stable
 GODOT_ZIP := Godot_v$(GODOT_VERSION)-$(GODOT_RELEASE)_macos.universal.zip
 GODOT_URL := https://github.com/godotengine/godot/releases/download/$(GODOT_VERSION)-$(GODOT_RELEASE)/$(GODOT_ZIP)
+# Export templates: the engine binaries an export wraps around the project.
+# Godot looks for them in its own data dir (not tools/), so that is where
+# they go; only the macOS template is kept (125 MB of the 1.2 GB tpz).
+GODOT_TEMPLATES_TPZ := Godot_v$(GODOT_VERSION)-$(GODOT_RELEASE)_export_templates.tpz
+GODOT_TEMPLATES_URL := https://github.com/godotengine/godot/releases/download/$(GODOT_VERSION)-$(GODOT_RELEASE)/$(GODOT_TEMPLATES_TPZ)
+GODOT_TEMPLATES_DIR := $(HOME)/Library/Application Support/Godot/export_templates/$(GODOT_VERSION).$(GODOT_RELEASE)
+# The official macOS template is universal only; an arm64 preset asks for
+# an arm64 binary, so deps-godot-templates thins it (lipo) into this zip —
+# the release binary only — which godot/export_presets.cfg names as its
+# custom release template.
+GODOT_ARM64_TEMPLATE := $(TOOLS_DIR)/godot_macos_arm64_template.zip
+# The export's product (make export): the .app, and the zip to send.
+EXPORT_APP := $(CURDIR)/out/VoidScavenger.app
+EXPORT_ZIP := $(CURDIR)/out/VoidScavenger-macos-arm64.zip
 
 # GUT (Godot Unit Test)
 GUT_VERSION := 9.6.0
@@ -43,7 +57,7 @@ PYENV := tools/pyenv
 # ensurepip, 2026-07-12), the io_scene_max Blender extension (.max material
 # recovery, installed via Blender's own extension system), and the headless
 # Godot editor LSP (via lsp-up below — see that target's comment).
-deps: deps-rust deps-godot deps-gut deps-node deps-blender lsp-up
+deps: deps-rust deps-godot deps-godot-templates deps-gut deps-node deps-blender lsp-up
 	@if ! command -v git-lfs >/dev/null 2>&1; then \
 		echo "==> Installing git-lfs (large provider assets)..."; \
 		brew install git-lfs; \
@@ -126,6 +140,31 @@ deps-godot:
 		unzip -o -q $(TOOLS_DIR)/$(GODOT_ZIP) -d $(TOOLS_DIR); \
 		rm -f $(TOOLS_DIR)/$(GODOT_ZIP); \
 		echo "Godot $(GODOT_VERSION) installed to $(GODOT_APP)"; \
+	fi
+
+deps-godot-templates:
+	@if [ -f "$(GODOT_TEMPLATES_DIR)/macos.zip" ]; then \
+		echo "Godot $(GODOT_VERSION) macOS export template already installed."; \
+	else \
+		echo "==> Downloading Godot $(GODOT_VERSION) export templates..."; \
+		mkdir -p "$(GODOT_TEMPLATES_DIR)" $(TOOLS_DIR); \
+		curl -L -o $(TOOLS_DIR)/$(GODOT_TEMPLATES_TPZ) $(GODOT_TEMPLATES_URL); \
+		unzip -o -q -j $(TOOLS_DIR)/$(GODOT_TEMPLATES_TPZ) templates/macos.zip templates/version.txt -d "$(GODOT_TEMPLATES_DIR)"; \
+		rm -f $(TOOLS_DIR)/$(GODOT_TEMPLATES_TPZ); \
+		echo "macOS export template installed to $(GODOT_TEMPLATES_DIR)"; \
+	fi
+	@if [ -f "$(GODOT_ARM64_TEMPLATE)" ]; then \
+		echo "arm64 export template already thinned."; \
+	else \
+		echo "==> Thinning the macOS export template to arm64..."; \
+		rm -rf $(TOOLS_DIR)/macos_template.app; \
+		unzip -o -q "$(GODOT_TEMPLATES_DIR)/macos.zip" -d $(TOOLS_DIR); \
+		bin=$(TOOLS_DIR)/macos_template.app/Contents/MacOS/godot_macos_release; \
+		lipo -thin arm64 $$bin.universal -output $$bin.arm64; \
+		rm -f $(TOOLS_DIR)/macos_template.app/Contents/MacOS/*.universal; \
+		(cd $(TOOLS_DIR) && zip -q -r -y "$(GODOT_ARM64_TEMPLATE)" macos_template.app); \
+		rm -rf $(TOOLS_DIR)/macos_template.app; \
+		echo "arm64 export template at $(GODOT_ARM64_TEMPLATE)"; \
 	fi
 
 # The asset pipeline, assembled from its three stages and the audit that
@@ -440,6 +479,23 @@ build-release: require-rust
 run: build-release deps-godot
 	@echo "==> Launching game (release)..."
 	@$(GODOT) --path $(GODOT_DIR) $(if $(LEVEL)$(SEED),-- $(if $(LEVEL),--level=$(LEVEL)) $(if $(SEED),--seed=$(SEED)))
+
+# Self-contained macOS build, Apple Silicon only: the Godot runtime, the
+# release dylib and every imported resource in one .app, zipped to send
+# (godot/export_presets.cfg is the preset — arm64, ad-hoc signed, tests/
+# tools/gut excluded). No Developer ID yet, so a recipient clears
+# Gatekeeper's quarantine once: `xattr -dr com.apple.quarantine
+# VoidScavenger.app`, or Privacy & Security > Open Anyway. The stage checks
+# its own product: the extension is in the bundle, and the exported game
+# boots and quits cleanly headless (out/export*.log keep the evidence).
+export: build-release deps-godot deps-godot-templates
+	@echo "==> Exporting macOS arm64 build..."
+	@rm -rf "$(EXPORT_APP)" "$(EXPORT_ZIP)"; mkdir -p out
+	@set -o pipefail; $(GODOT) --headless --path $(GODOT_DIR) --export-release macOS "$(EXPORT_APP)" 2>&1 | tee out/export.log
+	@test -f "$(EXPORT_APP)/Contents/Frameworks/libvoid_scavenger.dylib" || { echo "export: libvoid_scavenger.dylib is not in the bundle"; exit 1; }
+	@set -o pipefail; "$(EXPORT_APP)/Contents/MacOS/Void Scavenger" --headless --quit-after 3 2>&1 | tee out/export-smoke.log
+	@ditto -c -k --keepParent "$(EXPORT_APP)" "$(EXPORT_ZIP)"
+	@du -h "$(EXPORT_ZIP)"
 
 demo: build deps-godot
 	@echo "==> Launching game (debug)..."

@@ -206,6 +206,10 @@ enabled=PackedStringArray("res://addons/gut/plugin.cfg")
 [rendering]
 
 textures/default_filters/anisotropic_filtering_level=4
+; Required by the arm64 macOS export (Godot refuses it otherwise). Every
+; texture imports lossless (compress/mode=0, make assets-import), so this
+; VRAM-format flag changes no import — it only unlocks the export.
+textures/vram_compression/import_etc2_astc=true
 ; MSAA off by default to match GameOptions; ViewManager applies it
 ; per-viewport from the authoritative option. TAA stays on (separate AA).
 anti_aliasing/quality/msaa_3d=0
