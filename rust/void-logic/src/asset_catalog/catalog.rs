@@ -69,6 +69,15 @@ pub struct KitDef {
     pub install_dir: String,
 }
 
+/// A linked sky: the equirectangular panorama a fixed environment's
+/// world environment shows behind every opening. `texture` is the
+/// installed res:// path the shell loads into a PanoramaSkyMaterial.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkyDef {
+    pub key: String,
+    pub texture: String,
+}
+
 /// What a linked kit builds with.
 #[derive(Debug)]
 pub enum KitKind {
@@ -80,7 +89,9 @@ pub enum KitKind {
     /// An authored environment scene, named by KEY. The catalog does
     /// not know the roster's authored zone maps — the roster resolves
     /// the key at its own link (the one deliberate cross-boundary join).
-    Fixed { environment: String },
+    /// `sky`: the panorama its openings look out on, linked from the
+    /// catalog's `[skies]` table when the kit names one.
+    Fixed { environment: String, sky: Option<SkyDef> },
 }
 
 impl KitDef {
@@ -92,10 +103,19 @@ impl KitDef {
         }
     }
 
-    /// The authored environment KEY — `Some` iff this is a fixed kit.
+/// The authored environment KEY — `Some` iff this is a fixed kit.
     pub fn environment(&self) -> Option<&str> {
         match &self.kind {
-            KitKind::Fixed { environment } => Some(environment),
+            KitKind::Fixed { environment, .. } => Some(environment),
+            KitKind::Layered | KitKind::Panel(_) => None,
+        }
+    }
+
+    /// The sky a fixed kit's openings look out on — `Some` iff this is a
+    /// fixed kit that names one.
+    pub fn sky(&self) -> Option<&SkyDef> {
+        match &self.kind {
+            KitKind::Fixed { sky, .. } => sky.as_ref(),
             KitKind::Layered | KitKind::Panel(_) => None,
         }
     }
@@ -149,7 +169,7 @@ pub struct AssetCatalog {
 }
 
 impl AssetCatalog {
-    /// Parse and link the four catalog sources. Errors collect — a bad
+/// Parse and link the four catalog sources. Errors collect — a bad
     /// catalog reports every violation at once, like the roster's linker.
     pub fn load(
         kits_toml: &str,
@@ -225,6 +245,24 @@ impl AssetCatalog {
             interner.intern(path);
         }
 
+        // Skies: the panoramas fixed kits name. A texture is a res://
+        // path into the installed tree (the audit holds it to an
+        // installed, attributed file).
+        let skies: std::collections::BTreeMap<String, SkyDef> = kits_file
+            .skies
+            .iter()
+            .filter_map(|(key, raw)| {
+                if !raw.texture.starts_with("res://") {
+                    errors.push(format!(
+                        "sky '{key}': texture must be a res:// path, got {:?}",
+                        raw.texture
+                    ));
+                    return None;
+                }
+                Some((key.clone(), SkyDef { key: key.clone(), texture: raw.texture.clone() }))
+            })
+            .collect();
+
         // Kits (BTreeMap: TOML rejects re-declared kit tables). The grid
         // joins in from the probe's derived measurements — never authored.
         // FIXED kits are the one deliberate exception: a fixed scene has
@@ -261,9 +299,22 @@ impl AssetCatalog {
                         ));
                         return None;
                     };
+                    let sky = match raw.sky.as_deref() {
+                        None => None,
+                        Some(sky_key) => match skies.get(sky_key) {
+                            Some(sky) => Some(sky.clone()),
+                            None => {
+                                errors.push(format!(
+                                    "kit '{key}': unknown sky '{sky_key}' — not in \
+                                     [skies] (catalog/kits.toml)"
+                                ));
+                                None
+                            }
+                        },
+                    };
                     return Some(KitDef {
                         key: key.clone(),
-                        kind: KitKind::Fixed { environment },
+                        kind: KitKind::Fixed { environment, sky },
                         tile: scale,
                         story: scale,
                         install_dir: raw.install_dir.clone(),
@@ -272,6 +323,7 @@ impl AssetCatalog {
                 for (field, present) in [
                     ("scale", raw.scale.is_some()),
                     ("environment", raw.environment.is_some()),
+                    ("sky", raw.sky.is_some()),
                 ] {
                     if present {
                         errors.push(format!(
@@ -456,6 +508,17 @@ impl AssetCatalog {
     /// Resolve an environment KEY to its installed scene's minted id.
     pub fn environment_scene_id(&self, key: &str) -> Option<SceneId> {
         self.environments.get(key).and_then(|p| self.id_of(p))
+    }
+
+
+    /// The sky the fixed kit that builds environment `key` names, if any
+    /// (the roster joins it onto the environment at its link, so the
+    /// shell reads one def).
+    pub fn sky_of_environment(&self, key: &str) -> Option<&SkyDef> {
+        self.kits
+            .iter()
+            .find(|k| k.environment() == Some(key))
+            .and_then(|k| k.sky())
     }
 }
 

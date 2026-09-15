@@ -193,11 +193,11 @@ func test_player_trigger_damages_an_enemy_inside_the_full_game_stack():
 			break
 	assert_true(found_clear, "the pinned level must offer one clear firing lane")
 	player.global_position = spot
-	# The hitscan line runs 0.5 m above the body origin (the camera/reticle
-	# height); aim the BODY at a point 0.5 below the target so the beam
-	# line crosses the enemy's center — exactly what aiming the reticle
-	# does in play.
-	player.look_at(enemy.global_position + Vector3.DOWN * 0.5)
+	# The hitscan line runs at the cockpit camera height above the body
+	# origin (derived, never pinned); aim the BODY that far below the
+	# target so the beam line crosses the enemy's center — exactly what
+	# aiming the reticle does in play.
+	player.look_at(enemy.global_position + Vector3.DOWN * player.cockpit_eye_height())
 	player.reset_physics_interpolation()
 	await wait_physics_frames(2, "let the bar render at full health")
 	var full_width: float = fill.global_transform.basis.x.length()
@@ -213,7 +213,7 @@ func test_player_trigger_damages_an_enemy_inside_the_full_game_stack():
 			hurt = true
 			break
 		if i % 30 == 0 and is_instance_valid(enemy):  # the target drifts; re-aim
-			player.look_at(enemy.global_position + Vector3.DOWN * 0.5)
+			player.look_at(enemy.global_position + Vector3.DOWN * player.cockpit_eye_height())
 			player.reset_physics_interpolation()
 	Input.action_release("fire")
 	assert_true(hurt,
@@ -313,7 +313,7 @@ func _full_stack_aimed_at_enemy(aim_offset: Vector3) -> Dictionary:
 	# Lane coordinates: lateral = across the firing lane, up = world up.
 	var lane: Vector3 = (target - spot).normalized()
 	var lateral: Vector3 = lane.cross(Vector3.UP).normalized()
-	var aim_point: Vector3 = target + Vector3.DOWN * 0.5 \
+	var aim_point: Vector3 = target + Vector3.DOWN * player.cockpit_eye_height() \
 		+ lateral * aim_offset.x + Vector3.UP * aim_offset.y
 	player.look_at(aim_point)
 	player.reset_physics_interpolation()

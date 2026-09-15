@@ -108,6 +108,29 @@ pub fn ui_plane_position(cam_origin: [f32; 3], cam_forward: [f32; 3], distance: 
     ]
 }
 
+// --- The convergence travel band ---
+//
+// The stereo director (see director.rs) parks the zero-parallax plane on
+// the scene's current subject. Its travel is bounded here: NEAR sits
+// safely past the cockpit shell (the capsule's radial clearance keeps
+// the shell inside ~0.45 m), so the plane never converges into the
+// pilot's own console; FAR is the deep rest when the stage is empty.
+// (These bounds outlived the removed depth-adaptive reticle, which
+// tracked the same band before the owner cut the visible sight,
+// 2026-08-19 — the plane itself is the "look here" signal now.)
+
+pub const CONVERGENCE_NEAR: f32 = 1.2;
+pub const CONVERGENCE_FAR: f32 = 10.0;
+
+/// One frame of exponential approach from `current` toward `target` at
+/// `rate` (1/s). Never overshoots; `dt = 0` is the identity. The shared
+/// easing under every depth-affecting dial — the comfort literature's
+/// discomfort driver is the RATE of vergence change, so nothing that
+/// moves perceived depth moves in steps.
+pub fn exp_approach(current: f32, target: f32, rate: f32, dt: f32) -> f32 {
+    current + (target - current) * (1.0 - (-rate * dt).exp())
+}
+
 /// Rect `[x, y, w, h]` for the UI TextureRect overlay in the left eye container.
 /// Local coords inside the left SubViewportContainer — origin is (0,0).
 pub fn ui_overlay_rect_left(config: &StereoConfig) -> [f32; 4] {
@@ -119,8 +142,6 @@ pub fn ui_overlay_rect_left(config: &StereoConfig) -> [f32; 4] {
 pub fn ui_overlay_rect_right(config: &StereoConfig) -> [f32; 4] {
     [0.0, 0.0, config.viewport_width as f32, config.viewport_height as f32]
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -299,6 +320,14 @@ mod tests {
         assert!((x - 0.0).abs() < 0.01);
         assert!((y - 0.0).abs() < 0.01);
         assert!((z - (-2.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn convergence_band_clears_the_cockpit_shell() {
+        // The shell nests inside the flight capsule (radius 0.45); the
+        // converged plane must never bury itself in the pilot's console.
+        assert!(CONVERGENCE_NEAR > 0.45);
+        assert!(CONVERGENCE_FAR > CONVERGENCE_NEAR);
     }
 
     #[test]

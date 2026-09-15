@@ -15,9 +15,15 @@ pub enum LaserLevel {
     Violet = 7,
 }
 
+/// Per-shot damage as a multiple of the level number. The cadence
+/// redesign (owner, 2026-08-20) raised the base fire rate 2/s -> 8/s
+/// with this scaled by the inverse ratio, keeping every level's DPS
+/// unchanged — the gun got faster, not stronger.
+pub const PER_SHOT_SCALE: f32 = 0.25;
+
 impl LaserLevel {
     pub fn damage(&self) -> f32 {
-        *self as u32 as f32
+        *self as u32 as f32 * PER_SHOT_SCALE
     }
 
     /// RGBA color for beam rendering.
@@ -93,14 +99,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn damage_matches_level_number() {
-        assert_eq!(LaserLevel::Red.damage(), 1.0);
-        assert_eq!(LaserLevel::Orange.damage(), 2.0);
-        assert_eq!(LaserLevel::Yellow.damage(), 3.0);
-        assert_eq!(LaserLevel::Green.damage(), 4.0);
-        assert_eq!(LaserLevel::Blue.damage(), 5.0);
-        assert_eq!(LaserLevel::Indigo.damage(), 6.0);
-        assert_eq!(LaserLevel::Violet.damage(), 7.0);
+    fn damage_scales_levels_dps_neutrally() {
+        // Cadence redesign (owner, 2026-08-20): base fire rate rose from
+        // 2/s to 8/s with per-shot damage scaled by the inverse ratio, so
+        // every ROYGBIV level's DPS is exactly what it was — the gun got
+        // faster, not stronger. Levels stay strictly ordered with one
+        // constant step between neighbors.
+        assert!((PER_SHOT_SCALE - 0.25).abs() < 1e-6,
+            "the inverse of the 2/s -> 8/s cadence change — ONE constant");
+        assert_eq!(LaserLevel::Red.damage(), 1.0 * PER_SHOT_SCALE);
+        assert_eq!(LaserLevel::Violet.damage(), 7.0 * PER_SHOT_SCALE);
+        let ladder = [
+            LaserLevel::Red, LaserLevel::Orange, LaserLevel::Yellow,
+            LaserLevel::Green, LaserLevel::Blue, LaserLevel::Indigo,
+            LaserLevel::Violet,
+        ];
+        for pair in ladder.windows(2) {
+            let step = pair[1].damage() - pair[0].damage();
+            assert!((step - PER_SHOT_SCALE).abs() < 1e-6,
+                "one constant step up the ladder, got {step}");
+        }
     }
 
     #[test]

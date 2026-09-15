@@ -38,8 +38,8 @@ impl Pitch {
     /// measured by the make-assets probe once it lands) — nobody authors a
     /// cell dimension anywhere else. Shipped-grammar door for
     /// [`Roster::pitch_for_level`].
-    pub fn for_level(level: u32) -> Self {
-        crate::roster::roster().pitch_for_level(level)
+    pub fn for_level(level: u32, run_seed: crate::seed::Seed) -> Self {
+        crate::roster::roster().pitch_for_level(level, run_seed)
     }
 }
 
@@ -98,11 +98,11 @@ mod tests {
         // no second constant to drift against. These literals pin what the
         // megakit and panel meshes measure (tests may hold literals).
         for level in 1..=6 {
-            let p = Pitch::for_level(level);
+            let p = Pitch::for_level(level, crate::seed::Seed::new(1));
             assert_eq!((p.tile, p.story), (4.0, 5.0), "level {level}: megakit grid");
         }
         // Planet 2+: cubic panel cells — tile == story at the panel extent.
-        let p2 = Pitch::for_level(7);
+        let p2 = Pitch::for_level(7, crate::seed::Seed::new(1));
         assert_eq!((p2.tile, p2.story), (3.0, 3.0), "planet 2 is cubic at 3 m");
     }
 

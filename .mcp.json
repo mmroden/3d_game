@@ -1,14 +1,8 @@
 {
   "mcpServers": {
     "serena": {
-      "command": "/opt/homebrew/bin/uvx",
-      "args": [
-        "-p", "3.13",
-        "--from", "git+https://github.com/oraios/serena",
-        "serena", "start-mcp-server",
-        "--context", "agent",
-        "--project", "/Users/mroden/src/3d_game"
-      ]
+      "command": "/Users/mroden/src/3d_game/scripts/serena-launch.sh",
+      "args": []
     }
   }
 }

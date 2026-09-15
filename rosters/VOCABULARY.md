@@ -85,10 +85,14 @@ unit: same room, adjacent cells. Schedulable anywhere an enemy is.
 
 `planet`, `levels` (declared length), `kits = ["<kit key>"]` (pitch and
 paradigm DERIVE from the kit), `rooms = { base, per_level }` (GENERATED
-planets only — a fixed planet's room count is its environment's zone count,
-and it declares exactly one kit plus a boss slot at EVERY level), one
-`[[level]]` block per relative level — coverage must match `levels`
-EXACTLY, both directions — and `[[boss_slot]]`:
+planets only — a fixed planet's room count is its dealt environment's
+zone count, and it stages a boss slot at EVERY level), one `[[level]]`
+block per relative level — coverage must match `levels` EXACTLY, both
+directions — and `[[boss_slot]]`. A FIXED planet's `kits` are its
+locations (every one fixed, never mixed with generated kits): each run
+deals them in a seeded order, one per level — distinct while the kits
+last, then wrapping — so a planet declaring more kits than levels shows
+a different subset every run:
 
 ```toml
 [[level]]

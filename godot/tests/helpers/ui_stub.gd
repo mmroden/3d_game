@@ -18,6 +18,8 @@ signal sbs_toggled(enabled: bool)
 @warning_ignore("unused_signal")
 signal msaa_toggled(enabled: bool)
 @warning_ignore("unused_signal")
+signal dynamic_stereo_toggled(enabled: bool)
+@warning_ignore("unused_signal")
 signal resume_selected
 @warning_ignore("unused_signal")
 signal quit_selected

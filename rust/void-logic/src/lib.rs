@@ -4,7 +4,9 @@
 pub mod abstract_graph;
 pub mod armament;
 pub mod cell;
+pub mod cockpit;
 pub mod coverer;
+pub mod director;
 pub mod fixed_layout;
 pub mod generator;
 pub mod room_theme;
@@ -57,5 +59,6 @@ pub mod spatial_layout;
 pub mod unlocks;
 pub mod input_method;
 pub mod menu_cursor;
+pub mod credits;
 pub mod newtypes;
 pub mod util;

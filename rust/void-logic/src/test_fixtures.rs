@@ -10,7 +10,8 @@ use crate::asset_catalog::{ENVIRONMENTS_GENERATED_TOML, MODELS_TOML};
 use crate::roster::{load_from, EnvSources, Roster};
 
 /// The SHIPPED catalog — the ONE test-support home for it (helper
-/// duplication across test modules is plaque; see design-review §10).
+/// duplication across test modules is plaque; see
+/// docs/review/principles/atherosclerosis.md, check 2).
 /// Tests that assemble against real assets resolve their placements'
 /// ids here; fixture-grammar tests resolve through their own
 /// `roster.catalog` instead.
@@ -79,17 +80,19 @@ pub fn fixed_fixture_grammar() -> Roster {
 
 #[cfg(test)]
 mod tests {
-    /// ANCHOR for godot/tests/test_fixed_level.gd (the house convention:
+/// ANCHOR for godot/tests/test_fixed_level.gd (the house convention:
     /// GUT never re-derives grammar; its constants trace here). The GUT
     /// file pins the fixture's shape — zone count, scale, the porch start
-    /// box, the den arena center — so editing the fixture files means
-    /// updating BOTH this anchor and the GUT constants together.
+    /// box, the den arena center, the sky — so editing the fixture files
+    /// means updating BOTH this anchor and the GUT constants together.
     #[test]
     fn gut_fixed_level_anchors() {
         let grammar = super::fixed_fixture_grammar();
-        let env = grammar.environment_for_level(1).expect("level 1 is fixed");
+        let env = grammar
+            .environment_for_level(1, crate::seed::Seed::new(1))
+            .expect("level 1 is fixed");
         assert_eq!(env.zones.len(), 4, "GUT ZONES");
-        let pitch = grammar.pitch_for_level(1);
+        let pitch = grammar.pitch_for_level(1, crate::seed::Seed::new(1));
         assert_eq!((pitch.tile, pitch.story), (5.0, 5.0), "GUT SCALE");
         let start = &env.zones[env.start_zone];
         assert_eq!((start.key.as_str(), start.min, start.extents),
@@ -99,6 +102,13 @@ mod tests {
         assert_eq!((boss.key.as_str(), boss.min, boss.extents),
             ("den", [4, 0, 0], [2, 2, 2]),
             "GUT arena: world center (25, 5, 5) at scale 5");
+        // The sky behind the fixture house's openings: kits_fixed.toml
+        // [skies.fx_sky] on the installed NASA star map.
+        assert_eq!(
+            grammar.catalog.sky_of_environment(&env.key).map(|s| s.texture.as_str()),
+            Some("res://addons/sky/starmap_2020_8k_gal.exr"),
+            "GUT SKY"
+        );
         // Containment: one slab per unshared zone-cell face. 28 cells,
         // 52 shared pairs -> 168 - 104 = 64 boundary faces.
         let mut cells = std::collections::HashSet::new();

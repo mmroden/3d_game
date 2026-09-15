@@ -7,7 +7,7 @@
 #
 # Zones are COARSE gameplay volumes over the fixed geometry (culling,
 # spawn grouping, boss/portal placement) — not wall-accurate rooms.
-# Drafted from the recon floor plan (owner reviews): entry at the front
+# Drafted from the floor-plan section (owner reviews): entry at the front
 # door, galley/study west wing, the big central living space, reading
 # nook east, kitchen strip north, bath lobe northwest, bedroom northeast.
 #

@@ -62,6 +62,11 @@ impl IArea3D for CurrencyCache {
         self.base_mut().set_collision_mask(1); // Detect layer 1 (player)
         self.base_mut().set_collision_layer(0); // Don't block anything
 
+        // A cache is a free-floating point of interest: the stereo
+        // director's floater rung converges on the nearest one in the cone.
+        self.base_mut()
+            .add_to_group(crate::nodes::constants::groups::FLOATERS);
+
         // Connect body_entered signal
         let callable = self.base().callable(methods::ON_BODY_ENTERED);
         self.base_mut().connect(signals::BODY_ENTERED, &callable);

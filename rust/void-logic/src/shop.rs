@@ -186,7 +186,15 @@ fn stat_label(kind: UpgradeKind) -> String {
 }
 
 pub fn offers(run: &RunState) -> Vec<ShopOffer> {
-    let mut out: Vec<ShopOffer> = UpgradeKind::ALL.iter().map(|kind| {
+    let mut out: Vec<ShopOffer> = UpgradeKind::ALL.iter()
+        // FireRate is RETIRED from the catalog (owner, 2026-08-20): the
+        // cadence redesign fixed the base rate fast enough that the gate
+        // is imperceptible, so the stat bought nothing. The enum variant
+        // stays — ids are positional and serialized into saves — only
+        // the offer is gone; already-purchased copies keep compounding
+        // harmlessly.
+        .filter(|kind| **kind != UpgradeKind::FireRate)
+        .map(|kind| {
         let cost = stat_cost(run, *kind);
         let now = run.loadout.stat_multiplier(*kind);
         ShopOffer {
@@ -482,6 +490,18 @@ mod tests {
         let run = RunState::new(Seed::new(42));
         let offers = offers(&run);
         for kind in UpgradeKind::ALL {
+            if *kind == UpgradeKind::FireRate {
+                // Retired (owner, 2026-08-20): the cadence redesign fixed
+                // the base rate fast enough that the gate is imperceptible
+                // — a stat whose whole product was un-slowing the gun sold
+                // nothing. The enum variant stays (ids are positional and
+                // serialized into saves); only the OFFER is gone.
+                assert!(
+                    !offers.iter().any(|o| o.id == ShopItemId::Stat(*kind)),
+                    "FireRate must not be offered — the stat is retired"
+                );
+                continue;
+            }
             assert!(offers.iter().any(|o| o.id == ShopItemId::Stat(*kind)),
                 "catalog must offer {kind:?}");
         }

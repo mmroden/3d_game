@@ -237,8 +237,11 @@ pub mod subdrone {
 pub mod valkyrie {
     /// Fan half-angle (radians) of the burst before the bolts curve in.
     pub const BURST_SPREAD: f32 = 0.12;
-    /// Per-bolt damage multiple over the laser's per-shot damage.
-    pub const DAMAGE_MULT: f32 = 2.0;
+    /// Per-bolt damage multiple over the laser's per-shot damage. Raised
+    /// 2.0 -> 8.0 with the cadence redesign (owner, 2026-08-20): laser
+    /// per-shot damage scaled by 1/4 to hold DPS at the new 8/s rate,
+    /// and this compensates so a rack-dump's total punch is unchanged.
+    pub const DAMAGE_MULT: f32 = 8.0;
     /// Muzzle speed of the heavy bolts (m/s).
     pub const BOLT_SPEED: f32 = 35.0;
 

@@ -3,6 +3,15 @@
 
 use crate::newtypes::Damage;
 
+/// How long a trigger tap is remembered while the weapon cools down
+/// (seconds). A press inside this window fires the instant the cooldown
+/// expires — without it, taps landing mid-cooldown were simply eaten
+/// ("shooting every other time I hit the trigger", owner playtest
+/// 2026-08-20). Generous enough to bridge a human tap cadence against
+/// the base cooldown, short enough that an abandoned press never fires
+/// a surprise shot much later.
+pub const TAP_BUFFER: f32 = 0.15;
+
 /// Result of attempting to fire the weapon.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FireResult {
@@ -12,13 +21,15 @@ pub enum FireResult {
     OnCooldown,
 }
 
-/// Tracks weapon state: cooldown timer, fire rate, damage.
+/// Tracks weapon state: cooldown timer, fire rate, damage, and the
+/// tap buffer.
 #[derive(Debug, Clone)]
 pub struct WeaponState {
     pub fire_rate: f32,
     pub damage: Damage,
     pub max_range: f32,
     cooldown: f32,
+    buffered: f32,
 }
 
 impl WeaponState {
@@ -28,12 +39,34 @@ impl WeaponState {
             damage,
             max_range,
             cooldown: 0.0,
+            buffered: 0.0,
         }
     }
 
-    /// Advance cooldown by delta seconds.
-    pub fn tick(&mut self, delta: f32) {
+    /// Record a trigger press. A press while ready is a no-op (the held
+    /// fire path takes it this same tick); a press during cooldown arms
+    /// the tap buffer so the shot leaves the moment the weapon is ready.
+    pub fn press(&mut self) {
+        if self.cooldown > 0.0 {
+            self.buffered = TAP_BUFFER;
+        }
+    }
+
+    /// Advance the clocks by `delta` seconds. Returns the buffered shot's
+    /// damage when a remembered tap matures (cooldown just expired with
+    /// the buffer alive) — the caller fires it exactly as if the trigger
+    /// were down that tick.
+    pub fn tick(&mut self, delta: f32) -> Option<Damage> {
         self.cooldown = (self.cooldown - delta).max(0.0);
+        if self.buffered > 0.0 {
+            self.buffered = (self.buffered - delta).max(0.0);
+            if self.cooldown <= 0.0 && self.buffered > 0.0 {
+                self.buffered = 0.0;
+                self.cooldown = 1.0 / self.fire_rate;
+                return Some(self.damage);
+            }
+        }
+        None
     }
 
     /// Attempt to fire. Returns `Fired` with damage if ready, `OnCooldown` otherwise.
@@ -129,8 +162,58 @@ mod tests {
     #[test]
     fn cooldown_does_not_go_negative() {
         let mut weapon = WeaponState::default();
-        weapon.tick(10.0); // Way more than needed
+        assert_eq!(weapon.tick(10.0), None); // Way more than needed
         assert!(weapon.is_ready());
-        assert_eq!(weapon.cooldown, 0.0);
+    }
+
+    // --- the tap buffer ---
+
+    #[test]
+    fn tap_during_cooldown_fires_the_moment_the_weapon_is_ready() {
+        let mut weapon = WeaponState::default();
+        weapon.try_fire();
+        weapon.tick(0.4); // 0.1s of cooldown left
+        weapon.press(); // tap lands mid-cooldown — must not be eaten
+        assert_eq!(weapon.tick(0.05), None, "still cooling");
+        let shot = weapon.tick(0.06);
+        assert_eq!(shot, Some(Damage::new(1.0)), "buffered tap fires on expiry");
+        assert!(!weapon.is_ready(), "the buffered shot starts its own cooldown");
+    }
+
+    #[test]
+    fn an_abandoned_tap_expires_with_the_buffer() {
+        let mut weapon = WeaponState::default();
+        weapon.try_fire();
+        weapon.tick(0.1); // 0.4s of cooldown left — longer than the buffer
+        weapon.press();
+        for _ in 0..20 {
+            assert_eq!(weapon.tick(0.05), None, "stale tap must never fire late");
+        }
+        assert!(weapon.is_ready());
+    }
+
+    #[test]
+    fn press_while_ready_buffers_nothing() {
+        // The held-fire path takes a ready press the same tick; buffering
+        // it too would double-fire.
+        let mut weapon = WeaponState::default();
+        weapon.press();
+        assert_eq!(weapon.tick(0.05), None);
+        assert!(weapon.is_ready());
+    }
+
+    #[test]
+    fn a_held_trigger_never_double_fires_around_the_buffer() {
+        let mut weapon = WeaponState::default();
+        weapon.try_fire(); // held: first shot
+        weapon.press(); // same trigger, buffered against the fresh cooldown
+        weapon.tick(0.3);
+        let matured = weapon.tick(0.3); // cooldown expires, buffer long dead
+        assert_eq!(matured, None, "buffer expired before the cooldown did");
+        // The held path fires it instead — exactly one shot.
+        assert_eq!(
+            weapon.try_fire(),
+            FireResult::Fired { damage: Damage::new(1.0) }
+        );
     }
 }

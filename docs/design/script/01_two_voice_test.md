@@ -1,5 +1,13 @@
 # Voice Test 2 — the two-voice cast (pilot corpus model)
 
+> **2026-08-30 — model A superseded.** The two recorded voices are now CONTROL
+> (the man in the chair) and the Other, both performed by Mark; the pilot VO is
+> cut and the Player is unvoiced (voices.md). What survives from this
+> experiment: record-clean-garble-in-post, and the corpus idea — the Other
+> learns from what's said on the wire, which is now Control's transmissions
+> and the Player's unheard calls. Current register draft:
+> [02_run_one.md](02_run_one.md).
+
 Presumes cast model A (2026-07-18): TWO recorded voices, both performed by
 Mark — the PILOT (deep bass, dry, low-energy) and the AI (same session,
 clean takes; all garble is post-processing per script_guide.md). The

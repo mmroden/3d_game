@@ -158,21 +158,30 @@ impl LevelSpec {
         };
 
         let planet_def = grammar.planet_for_level(level);
+        let paradigm = if let Some(env) = grammar.environment_for_level(level, run_seed) {
+            Paradigm::Fixed(env.clone())
+        } else if grammar.panel_world(level) {
+            // The declared kits' derived wall pools — census × policy,
+            // resolved by the linker; never a named list here.
+            Paradigm::Panel(grammar.panel_kits_for_level(level))
+        } else {
+            Paradigm::Layered
+        };
+        // A fixed level's room count is its dealt environment's authored
+        // zone count; a generated level's grows by the planet's declared
+        // formula.
+        let room_budget = match &paradigm {
+            Paradigm::Fixed(env) => env.zones.len(),
+            Paradigm::Panel(_) | Paradigm::Layered => {
+                (planet_def.rooms_base + level * planet_def.rooms_per_level) as usize
+            }
+        };
         Self {
             level,
             planet: grammar.planet_number_and_relative(level).0,
-            pitch: grammar.pitch_for_level(level),
-            paradigm: if let Some(env) = grammar.environment_for_level(level) {
-                Paradigm::Fixed(env.clone())
-            } else if grammar.panel_world(level) {
-                // The declared kits' derived wall pools — census × policy,
-                // resolved by the linker; never a named list here.
-                Paradigm::Panel(grammar.panel_kits_for_level(level))
-            } else {
-                Paradigm::Layered
-            },
-            room_budget: (planet_def.rooms_base + level * planet_def.rooms_per_level)
-                as usize,
+            pitch: grammar.pitch_for_level(level, run_seed),
+            paradigm,
+            room_budget,
             roster,
             coverage,
             boss,
@@ -309,7 +318,7 @@ mod tests {
                 env.zones.len(),
                 "level {level}: the room budget is the authored zone count"
             );
-            let kit_scale = grammar.pitch_for_level(level);
+            let kit_scale = grammar.pitch_for_level(level, crate::seed::Seed::new(1));
             assert_eq!(
                 (spec.pitch.tile, spec.pitch.story),
                 (kit_scale.tile, kit_scale.story),

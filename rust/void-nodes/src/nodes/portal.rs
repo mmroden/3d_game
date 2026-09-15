@@ -38,6 +38,12 @@ impl IArea3D for Portal {
         shape.set_shape(&sphere);
         self.base_mut().add_child(&shape);
 
+        // The exit gate is a free-floating point of interest: the stereo
+        // director's floater rung converges on it when no threat holds
+        // the cone — the plane literally leads the eye to the way out.
+        self.base_mut()
+            .add_to_group(crate::nodes::constants::groups::FLOATERS);
+
         // Visual: the jump-gate model (installed by `make assets`; see
         // scenes::JUMP_GATE_MODEL), fit to the trigger diameter. Loaded through
         // the shared model helper like the ship and enemies — no procedural mesh.

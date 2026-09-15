@@ -1,47 +1,67 @@
 # Voice Bible — Void Scavenger
 
+> **STATUS (2026-08-30):** This doc previously overstated its authority.
+> Sections quoting Mark or stamped "(Mark, 2026-08-30)" are his design;
+> everything else is unratified Claude proposal awaiting his redline.
+> Invented character names were an overreach: the only permitted labels are
+> role-addresses ("Control") and the `[CALLSIGN]` placeholder Mark will fill.
+
 Who can speak, through what channel, knowing what, lying how. Every dialogue
 question ("would X say this here?") is answered against this table before any
-line is written. Locked rules referenced here live in
-[plot_bible.md](plot_bible.md); open decisions in
-[plot_open_questions.md](plot_open_questions.md).
+line is written.
 
 ## Cast
 
-### THE HANDLER (working name)
-- **Identity:** Human mission control aboard the expedition ship, light-seconds
-  from the belt. Was on the link when the Player's drone got trapped; has been
-  trying to keep contact since.
-- **Epistemic position:** Knows the human side completely — the expedition, the
-  mind-meld drone program, who the Player is/was. Knows *nothing* about the
-  Other except telemetry. Cannot see or hear what the Player experiences inside
-  the simulation; reads only neural/link data ("your readings just spiked —
-  what's happening in there?").
-- **Channel:** The pre-existing mind-meld uplink. Full two-way language from
-  minute one. Degrades across meta-progression (crossing-curves arc, below).
-- **Truth status:** Honest but ignorant. Late-game: possibly counterfeit (Q3) —
-  the Other, having eavesdropped on this channel to learn human language, may
-  learn to imitate it.
-- **Arc:** Strong → intermittent → dark (and/or compromised). The tutorial-nudge
-  voice of run one is the handler doing their job.
-- **Gates:** Signal strength modulated by within-run depth; content gated on
-  `runs_completed` like everything else.
+### CONTROL — the man in the chair (Mark, 2026-08-30)
+
+Quoted phrases below are Mark's words.
+
+- **Identity:** A man — Mark's word, and Mark voices the entire cast (budget
+  and design agree). Mission control for a military exploration/scout
+  flight. He has no name: "Control" is a radio address, not a name, and it
+  stays that way.
+- **Epistemic position:** "They see what the player sees, but they can't
+  hear what the player says, because the Other has prevented that kind of
+  signal passage." He watches the Player's own feed and gets nothing back —
+  every transmission is half a conversation. He knows the mission cold;
+  what he cannot work out is why the Player "can't just come back to base,"
+  why they're trapped in this weird situation.
+- **Register & arc:** "A pilot's control tower" — scout-mission jargon,
+  dense procedure words, straight-laced. Then "increasingly off-book" as
+  the repetition sets in and the befuddlement mounts. The erosion is
+  countable: procedure-word density per line falls planet by planet.
+  Befuddlement peaks on planet 3, watching the Player fly through prosaic
+  surroundings — apartments, schools, libraries.
+- **The RTB thread:** Initially he calls for the Player to return to base —
+  and watches the Player fail to comply, unable to distinguish "can't hear
+  me" from "can't fly it." The order decays into ritual with everything
+  else.
+- **Truth status:** Honest but ignorant. (Whether this channel is ever
+  counterfeited is an open question — Q3.)
 
 ### THE OTHER
 - **Identity:** Dormant defensive AI, remnant of the dinosaur civilization.
   Zero-g-native cognition (bible rule 8). Sincere, alien, very old.
 - **Epistemic position:** Knows its entire history but cannot yet *say* it;
-  knows the Player only through diagnostics. Hears the handler channel (it is
-  its Rosetta stone for human language — this is diegetically why its voice
-  de-garbles). The handler cannot hear it.
+  knows the Player only through what it observes. It hears the whole
+  channel — and it is the reason Control hears nothing: the Player's
+  outbound signal terminates at the Other ("the Other has prevented that
+  kind of signal passage" — Mark, 2026-08-30). Every call the Player keys
+  toward base is received by the computer instead: the Player is
+  "unknowingly corresponding" with it. The channel is also how it learns
+  human speech — diegetically why its voice de-garbles.
 - **Channel:** The simulation itself — levels, enemies, geometry are all its
   speech. Voice-over emerges at M1, heavily garbled. The end-of-level choice
   interface is its inbound channel, growing across meta-tiers (2 crude glyphs →
   4 phrased prompts). The interface's growth is visible sync progress.
 - **Truth status:** Sincere but alien; its history is unknowable in full (bible
   rule 2). It does not lie; it is *incommensurable*, which reads as unreliable.
-- **Arc:** Garble → clarity (processing tiers); stimulus-response → something
-  approaching conversation, never quite arriving.
+- **Arc:** "The computer's garbled voice becomes ungarbled over time and as
+  the player plays further" (Mark, 2026-08-30). As the garble lifts, the
+  voice underneath is revealed to be Control's — it learned speech from the
+  only speech on the wire. Its early vocabulary is the channel's
+  most-repeated material (radio checks, the RTB order, the callsign); its
+  first wrongness is placement, not wording.
 
 ### THE PLAYER
 - **Identity:** Human survey pilot, consciousness trapped in the Other's
@@ -49,25 +69,27 @@ line is written. Locked rules referenced here live in
   deepens, corroborating or contradicting the handler's account.
 - **Epistemic position:** Knows only what they experience. Unreliable about
   their own past (amnesia).
-- **Channel:** Speaks ONLY on the handler channel (pending Q2). Never voiced at
-  the Other — that channel doesn't carry Player speech; the choice interface is
-  the only Player→Other door (bible rule 6). The Player was never mute: the
-  Other just couldn't parse the channel where they'd been talking all along.
-- **Arc:** Grounded wtf-surrogate early; as the handler link dies, the Player's
-  voice has nowhere to go — the Player falls silent exactly when the Other
-  becomes fluent.
+- **Channel:** The Player talks — keys the mic, calls base — and none of it
+  arrives where it is aimed: the Other swallows the path (Mark,
+  2026-08-30). In the mix the Player is unvoiced ("basically two voices"):
+  we hear the consequences of the Player speaking — Control's non-answers,
+  the Other's learning — never the speech itself.
+- **Arc:** The channel asymmetry inverts across the game: run one opens with
+  a fluent handler and a mute Other; the endgame closes with a dark handler
+  and a fluent Other — in the same voice. The Player is the still point the
+  two curves cross through.
 
 ## Audibility matrix
 
-| speaker ↓ / hearer → | Player | Handler | Other |
+| speaker ↓ / hearer → | Player | Control | Other |
 |----------------------|--------|---------|-------|
-| **Player** (voice, handler-link) | — | yes (lagged) | overheard, unparsed early → parsed later |
-| **Player** (choice interface) | — | no | yes |
-| **Handler** | yes (lagged) | — | overheard: its language-learning corpus |
-| **Other** | yes | **no** — telemetry noise only | — |
+| **Player** (mic) | — | **never arrives** — the Other blocks the path | yes — sole receiver of everything the Player sends |
+| **Control** | yes | — | overheard: its entire language corpus |
+| **Other** | yes (garble → clarity) | open — does Control ever hear it? | — |
 
-The handler never hears the Other. Dramatic irony is structural: the handler
-reacts to spiking readings while the player hears the cause.
+Control also watches the Player's visual feed — sight down, sound none
+(Mark, 2026-08-30). Dramatic irony is structural: Control describes what he
+sees and never learns what the Player would say back.
 
 ## Channel physics: the lag tell
 
@@ -80,9 +102,21 @@ run one or the tell is worthless.
 
 ## Production
 
-- **Casting:** two actors (Handler, Other) + Player if Q2 resolves to voiced.
-  Handler-counterfeit is the handler's actor through the Other's processing
-  chain — the near-match is the point.
+- **Casting (2026-08-30; supersedes the two-actor note and model A in
+  [01_two_voice_test](script/01_two_voice_test.md)):** ONE performer voices
+  everything recorded — the handler and the Other. The Player is unvoiced.
+  Diegetic before it is economic: the Other's entire language corpus is the
+  handler channel, so when its audio de-garbles, the voice underneath must
+  be the handler's. De-garbling is a slow unmasking, performed in the
+  player's ear rather than told.
+- **The tell-decay ladder.** What distinguishes the two voices erodes on
+  schedule: early — garble + grammar tier; mid — grammar + the lag; by T4 —
+  the lag alone. A counterfeit beat, if fired (Q3), plays against a player
+  whose learned tells have all expired but one. Establish the lag from
+  minute one or none of this is fair.
+- **`corpus:` tags.** T1–T2 Other lines cite the handler line IDs their
+  vocabulary came from — nothing in its mouth before the handler put it
+  there. The first un-sourced word (T3) is a beat in itself.
 - **Garble is post-processing, not performance.** Every line is recorded clean,
   once. Degradation tiers are applied in the mix, keyed to within-run signal
   quality and meta-tier. The VA never records "garbled" takes.
