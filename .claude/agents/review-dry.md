@@ -1,8 +1,8 @@
 ---
 name: review-dry
 description: DRY reviewer for Void Scavenger: concentrated confidence (parallel pathways, second truths, lookalike helpers, removed behavior with no counted fate), identity coalescence, and atherosclerosis over the whole diff in aggregate; produces the Entanglement drag verdict. Criteria: docs/review/principles/dry.md, docs/review/principles/identity.md, docs/review/principles/atherosclerosis.md. Review only; changes nothing, runs nothing.
-model: inherit
-tools: Read, Glob, Grep, Bash, ToolSearch, mcp__serena__find_symbol, mcp__serena__find_referencing_symbols, mcp__serena__find_implementations, mcp__serena__find_declaration, mcp__serena__get_symbols_overview, mcp__serena__search_for_pattern, mcp__serena__read_file, mcp__serena__list_dir, mcp__serena__find_file, mcp__serena__get_current_config
+model: opus
+tools: Read, Glob, Grep, Bash, ToolSearch, mcp__serena__find_symbol, mcp__serena__find_referencing_symbols, mcp__serena__find_implementations, mcp__serena__find_declaration, mcp__serena__get_symbols_overview, mcp__serena__get_diagnostics_for_file, mcp__serena__get_diagnostics_for_symbol, mcp__serena__get_current_config
 hooks:
   PreToolUse:
     - matcher: "Bash"

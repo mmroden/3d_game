@@ -1,14 +1,11 @@
 # Architectural ground truth
 
 Repo-specific facts every reviewer holds the diff to. Documents drift from
-code, this one included, so two checks stand between this file and a
-phantom. Existence is a gate: `make ground-truth` (`scripts/ground-truth.py`)
-reads every repo path named under `docs/review/` and every symbol in the
-canonical-sites table below, checks each against the tracked tree, writes
-`out/metrics/ground_truth.toml`, and fails on anything missing; the invoker
-runs it before every review. Meaning is the reviewer's: open the site before
-citing it and confirm it still does what this file says. Report drift under
-`Gaps`; never judge the diff against a phantom.
+code, this one included, and nothing checks this file automatically; the
+check is the reviewer's, made during the review. Before citing a site named
+here, open it with `find_symbol` and confirm both that it still exists and
+that it still does what this file says. Report drift under `Gaps`; never
+judge the diff against a phantom.
 
 The worked example, from the owner's read of this directory's first draft
 (2026-09-15): the draft cited `HULL_SALT`, and a hull.rs file under
@@ -160,9 +157,9 @@ verdict on one of them.
 
 ## Canonical sites for the house patterns
 
-`make ground-truth` checks that every site in the third column exists. The
-reviewer opens the site and confirms the meaning in the second column still
-holds; drift is reported under `Gaps`.
+The reviewer opens every site in the third column before citing it and
+confirms it exists and that the meaning in the second column still holds;
+drift is reported under `Gaps`.
 
 | Pattern | What it is | Canonical site to verify |
 |---|---|---|

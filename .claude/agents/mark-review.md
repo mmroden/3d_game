@@ -1,8 +1,8 @@
 ---
 name: mark-review
 description: Pre-merge review orchestrator for Void Scavenger. Run on a diff before merging any PR. Fans out the five design lenses, then the adversarial sweep with their findings in hand, then consolidates per docs/review/evidence.md; verifies every finding at its site, marks what the owner already decided, ranks, and returns the report. Review only; changes nothing.
-model: inherit
-tools: Read, Glob, Grep, Bash, ToolSearch, Agent, mcp__serena__find_symbol, mcp__serena__find_referencing_symbols, mcp__serena__find_implementations, mcp__serena__find_declaration, mcp__serena__get_symbols_overview, mcp__serena__search_for_pattern, mcp__serena__read_file, mcp__serena__list_dir, mcp__serena__find_file, mcp__serena__get_current_config
+model: opus
+tools: Read, Glob, Grep, Bash, ToolSearch, Agent, mcp__serena__find_symbol, mcp__serena__find_referencing_symbols, mcp__serena__find_implementations, mcp__serena__find_declaration, mcp__serena__get_symbols_overview, mcp__serena__get_diagnostics_for_file, mcp__serena__get_diagnostics_for_symbol, mcp__serena__get_current_config
 hooks:
   PreToolUse:
     - matcher: "Bash"

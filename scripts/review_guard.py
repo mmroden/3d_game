@@ -14,54 +14,93 @@ hidden inside another (backticks, `$(`, `<(`), no editing flag on sed, no
 offending word so the reviewer can say what it needed. Unparseable input
 is refused too: the guard fails closed.
 
-Two registries live here so each has one home. READ_ONLY_TOOLS is the set
-of tools a review agent's `tools:` line may name; the frontmatter contract
-test in scripts/tests/test_review_guard.py holds every agent to it, so a
-tool reaches a reviewer only by being declared read-only here. The command
-allowlist below is what `verdict` applies to Bash.
+Two registries live here so each has one home. `read_only_tools()` is the
+set of tools a review agent's `tools:` line may name; the frontmatter
+contract test in scripts/tests/test_review_guard.py holds every agent to
+it, so a tool reaches a reviewer only by being declared read-only here.
+The command allowlist, `read_commands()` and the per-command checks, is
+what `verdict` applies to Bash. Every registry is a function so that it
+is a symbol: code here is edited only through the symbol tools.
 """
 import json
 import re
 import shlex
 import sys
 
-READ_ONLY_TOOLS = frozenset({
-    "Read", "Glob", "Grep", "Bash", "ToolSearch", "WebFetch",
-    "mcp__serena__find_symbol", "mcp__serena__find_referencing_symbols",
-    "mcp__serena__find_implementations", "mcp__serena__find_declaration",
-    "mcp__serena__get_symbols_overview", "mcp__serena__search_for_pattern",
-    "mcp__serena__read_file", "mcp__serena__list_dir", "mcp__serena__find_file",
-    "mcp__serena__get_current_config",
-})
 
-READ_COMMANDS = frozenset({
-    "cat", "head", "tail", "wc", "ls", "diff", "cmp", "comm", "echo", "printf",
-    "cut", "tr", "uniq", "nl", "paste", "basename", "dirname", "pwd", "date",
-    "file", "stat", "which", "test", "[", "true", "false", "cd", "jq", "column",
-    "realpath", "grep", "egrep", "fgrep", "rg", "sed", "find", "sort",
-    "git", "gh",
-})
-GIT_READ = frozenset({
-    "diff", "show", "log", "blame", "status", "grep", "ls-files", "ls-tree",
-    "cat-file", "rev-parse", "merge-base", "describe", "shortlog", "name-rev",
-    "rev-list", "check-ignore", "show-ref", "for-each-ref", "count-objects",
-    "var", "version", "help",
-})
-GIT_GLOBAL_WITH_ARG = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace"})
-GH_READ = frozenset({
-    ("pr", "view"), ("pr", "diff"), ("pr", "list"), ("pr", "checks"), ("pr", "status"),
-    ("issue", "view"), ("issue", "list"), ("repo", "view"), ("run", "view"), ("run", "list"),
-})
-SED_FLAGS = frozenset({"-n", "-E", "-r", "-s", "-u", "-z", "--quiet", "--silent",
-                       "--regexp-extended", "--posix"})
-FIND_WRITES = frozenset({"-delete", "-exec", "-execdir", "-ok", "-okdir",
-                         "-fprint", "-fprint0", "-fprintf", "-fls"})
-SEPARATORS = frozenset({"|", "||", "&&", ";", ";;", "&", "(", ")", "{", "}"})
-LEADING_KEYWORDS = frozenset({"if", "elif", "while", "until", "then", "else", "do", "!", "time"})
-LONE_KEYWORDS = frozenset({"done", "fi", "esac"})
-HIDDEN_COMMAND = ("`", "$(", "<(", ">(")
-ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-SED_RANGE_PRINT = re.compile(r"^[0-9$]+(,[0-9$]+)?p$")
+def read_only_tools():
+    """The tools a review agent's frontmatter may name."""
+    return frozenset({
+        "Read", "Glob", "Grep", "Bash", "ToolSearch", "WebFetch",
+        "mcp__serena__find_symbol", "mcp__serena__find_referencing_symbols",
+        "mcp__serena__find_implementations", "mcp__serena__find_declaration",
+        "mcp__serena__get_symbols_overview", "mcp__serena__get_diagnostics_for_file",
+        "mcp__serena__get_diagnostics_for_symbol", "mcp__serena__get_current_config",
+    })
+
+
+def read_commands():
+    """A reviewer's Bash is git and gh, nothing else: docs are read with Read,
+    code with the symbol tools (owner 2026-09-15)."""
+    return frozenset({"git", "gh"})
+
+
+def git_read():
+    return frozenset({
+        "diff", "show", "log", "blame", "status", "grep", "ls-files", "ls-tree",
+        "cat-file", "rev-parse", "merge-base", "describe", "shortlog", "name-rev",
+        "rev-list", "check-ignore", "show-ref", "for-each-ref", "count-objects",
+        "var", "version", "help",
+    })
+
+
+def git_global_with_arg():
+    return frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace"})
+
+
+def gh_read():
+    return frozenset({
+        ("pr", "view"), ("pr", "diff"), ("pr", "list"), ("pr", "checks"), ("pr", "status"),
+        ("issue", "view"), ("issue", "list"), ("repo", "view"), ("run", "view"), ("run", "list"),
+    })
+
+
+def code_path():
+    """A code file by extension, or a path into a code root; the same shape the
+    settings.json hooks refuse for everyone (owner 2026-09-15)."""
+    return re.compile(r"\.(py|rs|cpp|cc|cxx|hpp|h|gd)(\b|$)"
+                      r"|(^|/)(rust|scripts)(/|$)"
+                      r"|(^|/)godot/(scripts|tests|tools)(/|$)")
+
+
+def names_only_flags():
+    """diff/show flags that print names and counts, never file content."""
+    return frozenset({"--stat", "--name-only", "--name-status", "--numstat",
+                      "--shortstat", "--dirstat", "-s", "--no-patch"})
+
+
+def patch_flags():
+    return frozenset({"-p", "--patch", "-u"})
+
+
+def separators():
+    return frozenset({"|", "||", "&&", ";", ";;", "&", "(", ")", "{", "}"})
+
+
+def leading_keywords():
+    return frozenset({"if", "elif", "while", "until", "then", "else", "do", "!", "time"})
+
+
+def lone_keywords():
+    return frozenset({"done", "fi", "esac"})
+
+
+def hidden_command_markers():
+    return ("`", "$(", "<(", ">(")
+
+
+def assignment():
+    return re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
 def _tokens(line):
@@ -73,7 +112,7 @@ def _tokens(line):
 def _segments(tokens):
     segment = []
     for token in tokens:
-        if token in SEPARATORS:
+        if token in separators():
             if segment:
                 yield segment
             segment = []
@@ -104,70 +143,45 @@ def _strip_redirections(segment):
     return kept, None
 
 
-def _sed_script_ok(script):
-    for piece in script.split(";"):
-        piece = piece.strip()
-        if not piece or piece == "p" or SED_RANGE_PRINT.match(piece):
-            continue
-        if len(piece) > 1 and piece[0] == "s":
-            delimiter, flags, seen, j = piece[1], "", 0, 2
-            while j < len(piece):
-                if piece[j] == "\\":
-                    j += 2
-                    continue
-                if piece[j] == delimiter:
-                    seen += 1
-                    if seen == 2:
-                        flags = piece[j + 1:]
-                        break
-                j += 1
-            if seen == 2 and not set(flags) & set("we"):
-                continue
-        return False
-    return True
-
-
 def _check_git(args):
     i = 0
     while i < len(args) and args[i].startswith("-"):
-        i += 2 if args[i] in GIT_GLOBAL_WITH_ARG else 1
+        i += 2 if args[i] in git_global_with_arg() else 1
     sub = args[i] if i < len(args) else ""
-    if sub not in GIT_READ:
+    rest = args[i + 1:]
+    if sub not in git_read():
         return f"`git {sub}`".strip() + " can change the repository or its branches"
-    for token in args[i + 1:]:
+    for token in rest:
         if token == "-o" or token.startswith("--output"):
             return f"`git {sub} {token}` writes a file"
+    return _check_git_content(sub, rest)
+
+
+def _check_git_content(sub, rest):
+    """git prints file content only as names and counts, or from a non-code
+    path; code is reached only through the symbol tools (owner 2026-09-15)."""
+    symbols = "; code is reached only through the symbol tools"
+    code = [t for t in rest if code_path().search(t.split(":", 1)[1] if ":" in t else t)]
+    if sub in ("blame", "grep") and code:
+        return f"`git {sub} {code[0]}` reads code as text{symbols}"
+    if sub == "grep" and "--" not in rest:
+        return "`git grep` with no pathspec searches code; give `-- <docs or data path>`"
+    if sub == "diff" and not any(t in names_only_flags() for t in rest):
+        return f"`git diff` prints file content; use --stat, --name-only, or --name-status{symbols}"
+    if sub == "show":
+        if code:
+            return f"`git show {code[0]}` reads code as text{symbols}"
+        if not any(t in names_only_flags() for t in rest) and not any(":" in t for t in rest):
+            return f"`git show` prints the patch; use --stat or --name-only, or ref:path to a docs file{symbols}"
+    if sub == "log" and any(t in patch_flags() for t in rest):
+        return f"`git log -p` prints file content{symbols}"
     return None
 
 
 def _check_gh(args):
     pair = tuple(args[:2])
-    if pair not in GH_READ:
+    if pair not in gh_read():
         return f"`gh {' '.join(args[:2])}`".strip() + " is not a read of the pull request"
-    return None
-
-
-def _check_sed(args):
-    scripts, files, i = [], [], 0
-    while i < len(args):
-        token = args[i]
-        if token.startswith("-i") or token.startswith("--in-place"):
-            return f"`sed {token}` edits the file in place"
-        if token in ("-e", "--expression"):
-            scripts.append(args[i + 1] if i + 1 < len(args) else "")
-            i += 2
-            continue
-        if token.startswith("-"):
-            if token not in SED_FLAGS:
-                return f"`sed {token}` is not a reading flag"
-        elif not scripts and not files:
-            scripts.append(token)
-        else:
-            files.append(token)
-        i += 1
-    for script in scripts:
-        if not _sed_script_ok(script):
-            return f"`sed {script}` is not a print or substitute script"
     return None
 
 
@@ -175,29 +189,22 @@ def _check_segment(segment):
     segment, reason = _strip_redirections(segment)
     if reason:
         return reason
-    while segment and (ASSIGNMENT.match(segment[0]) or segment[0] in LEADING_KEYWORDS):
+    while segment and (assignment().match(segment[0]) or segment[0] in leading_keywords()):
         segment = segment[1:]
-    if not segment or segment[0] in LONE_KEYWORDS or segment[0] == "for":
+    if not segment or segment[0] in lone_keywords() or segment[0] == "for":
         return None
     command, args = segment[0], segment[1:]
-    if command not in READ_COMMANDS:
-        return f"`{command}` is not on the reviewer's read-only allowlist"
+    if command not in read_commands():
+        return (f"`{command}` is not on the reviewer's allowlist; a reviewer's Bash "
+                "is git and gh reads only")
     if command == "git":
         return _check_git(args)
-    if command == "gh":
-        return _check_gh(args)
-    if command == "sed":
-        return _check_sed(args)
-    if command == "find" and any(token in FIND_WRITES for token in args):
-        return "`find` with " + ", ".join(t for t in args if t in FIND_WRITES) + " changes or runs things"
-    if command == "sort" and any(token == "-o" or token.startswith("--output") for token in args):
-        return "`sort -o` writes a file"
-    return None
+    return _check_gh(args)
 
 
 def verdict(command):
     """None when every command is read-only; otherwise the reason to block."""
-    for marker in HIDDEN_COMMAND:
+    for marker in hidden_command_markers():
         if marker in command:
             return f"`{marker}` hides a command inside another"
     for line in command.split("\n"):
@@ -225,8 +232,9 @@ def main(stdin=sys.stdin, stderr=sys.stderr):
         return 2
     reason = verdict(command)
     if reason:
-        print(f"Reviewers are read-only: {reason}. Bash is for reading "
-              "(git diff/show/log/blame/status, gh pr view/diff, cat, grep...). "
+        print(f"Reviewers are read-only: {reason}. Bash is for reading history and "
+              "docs (git diff/show/log/blame/status, gh pr view/diff; cat, grep, sed "
+              "on docs, TOML, Makefiles). Code is read through the symbol tools. "
               "scripts/review_guard.py", file=stderr)
         return 2
     return 0
