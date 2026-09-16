@@ -14,11 +14,16 @@ A change to the method is made here and nowhere else.
   agent's frontmatter `tools:` line is an allowlist of reading tools, held
   to the registry in `scripts/review_guard.py` by `make test-assets`, and
   the same frontmatter installs a hook on Bash (`scripts/review-guard.sh`)
-  that refuses anything but reading commands: `git diff`, `git show`,
-  `git log`, `git blame`, `git status`, `git grep`, `gh pr view`,
-  `gh pr diff`, and the file readers, with no redirection to a file and no
-  command hidden inside another. A refusal names the word it refused; say
-  what you needed in your `Gaps` rather than working around it. (The
+  that refuses anything but git's reading subcommands and `gh pr` reads,
+  and holds those to names and history: `git diff --stat` or
+  `--name-only`, `git show --stat` or a `ref:path` to a docs file,
+  `git log`, `git status`, `git blame` and `git grep -- <path>` on docs
+  and data, `gh pr view`, `gh pr diff`. No file readers at all (no `cat`,
+  `grep`, `sed`, `find`, `ls`), no redirection to a file, no command
+  hidden inside another. Docs, TOML, and Makefiles are read with Read;
+  code is reached only through the symbol tools (owner 2026-09-15). A
+  refusal names the word it refused; say what you needed in your `Gaps`
+  rather than working around it. (The
   allowlist and hook are repeated in each agent file because frontmatter
   has no include; the registry they must agree with has one home.)
 - **Code is the truth.** Comments, doc strings, commit messages, plan
@@ -43,11 +48,11 @@ A change to the method is made here and nowhere else.
 
 1. `docs/review/doctrine.md`
 2. `docs/review/evidence.md`
-3. `docs/review/ground_truth.md`. Its paths and canonical symbols exist:
-   `make ground-truth` checks that before every review and the invoker's
-   scope carries the result. What you verify is meaning: open each site you
-   intend to cite and confirm it still does what the table says it does.
-   Report drift under `Gaps`; never judge the diff against a phantom.
+3. `docs/review/ground_truth.md`. Nothing checks it for you: before citing
+   any site it names, open that site with `find_symbol` and confirm both
+   that it still exists and that it still does what the table says it
+   does. A site that has moved or is gone is drift; report it under
+   `Gaps`, and never judge the diff against a phantom.
 4. Your briefs, in the order your agent file lists them. Their checks,
    procedures, and severity guidance are your instructions. Where two of
    your briefs ask for the same preparatory list (a behavior inventory, a
@@ -56,26 +61,35 @@ A change to the method is made here and nowhere else.
 ## Scope
 
 The invoker's prompt states the scope; restate it at the top of your
-output. The default is `git diff main...HEAD` plus the working tree
-(`git diff`, `git status --short`). The scope also carries, when they
+output. The default is the set of changed files,
+`git diff --name-status main...HEAD`, plus the working tree
+(`git status --short`); a changed file's content is read symbol by symbol
+with `get_symbols_overview` and `find_symbol`, never as a diff of text,
+since `git diff` without `--stat` or `--name-only` is refused. The scope
+also carries, when they
 exist: the pull request body (`gh pr view <n> --json body`), since the
 claims a change makes often live only there; the plan or design doc the
 branch implements; and the results of the gates the invoker ran first, one
 at a time (`make check`, `make test-assets`, `make check-visual`,
-`make ground-truth`), or the statement that a gate was not run. You never
+or the statement that a gate was not run. You never
 run a gate.
 
 ## How to navigate
 
 Code is structured, not text. Use Serena: `get_symbols_overview` for a file's
-shape, `find_symbol` for a definition, `find_referencing_symbols` for every
-caller, `find_implementations` for trait impls. Load the tools via ToolSearch
-if they are not in your tool list. Text search is only for genuinely textual
-content: comments, docs, Makefiles, TOML, shell.
+shape, `find_symbol` for a definition (with its body when you need it),
+`find_referencing_symbols` for every caller, `find_implementations` for
+trait impls, `find_declaration` to jump from a use, and the two
+`get_diagnostics` tools for what the compiler says. Those are the only
+doors onto code; Read, Grep, and Glob on a code path are refused, and so
+is every Bash reader. Load the tools via ToolSearch if they are not in
+your tool list. Text search, with Read and Grep and never Bash, is only
+for genuinely textual content: comments, docs, Makefiles, TOML, shell.
 
-Read every touched file in full, not just the hunks. Violations live in how a
-change relates to its surroundings. Before claiming anything about references
-("nothing calls this", "used in N places"), enumerate them.
+Read every touched module in full, symbol by symbol, not just the changed
+ones. Violations live in how a change relates to its surroundings. Before
+claiming anything about references ("nothing calls this", "used in N
+places"), enumerate them.
 
 `CONFIRMED` means confirmed by reading: every reference enumerated, every
 input traced to the line that produces the outcome you claim. Anything that

@@ -46,7 +46,7 @@ asset pipeline are the same stage graph seen from two sides.
 
 To run: invoke the `mark-review` agent with the scope; `reviewer.md` states
 the default and what the scope carries. The gates (`make check`,
-`make test-assets`, `make check-visual`, `make ground-truth`) are run by
+`make test-assets`, `make check-visual`) are run by
 the invoker before the review, one at a time, never by the reviewers, and
 their results ride in the scope. The invoker files the returned report
 under `docs/reviews/` and records the owner's triage there; the next review

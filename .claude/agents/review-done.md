@@ -1,8 +1,8 @@
 ---
 name: review-done
 description: Definition of Done reviewer for Void Scavenger: asked versus delivered. Test coverage completeness (every claimed behavior has a test) and correctness (every test is falsifiable on a production pathway), plus silent deferrals: the for-now/TODO/xfail scatter, fallback arms, weaker contracts, unimplemented hard cases. Criteria: docs/review/principles/silent_deferrals.md, docs/review/principles/test_coverage.md. Review only; changes nothing, runs nothing.
-model: inherit
-tools: Read, Glob, Grep, Bash, ToolSearch, mcp__serena__find_symbol, mcp__serena__find_referencing_symbols, mcp__serena__find_implementations, mcp__serena__find_declaration, mcp__serena__get_symbols_overview, mcp__serena__search_for_pattern, mcp__serena__read_file, mcp__serena__list_dir, mcp__serena__find_file, mcp__serena__get_current_config
+model: opus
+tools: Read, Glob, Grep, Bash, ToolSearch, mcp__serena__find_symbol, mcp__serena__find_referencing_symbols, mcp__serena__find_implementations, mcp__serena__find_declaration, mcp__serena__get_symbols_overview, mcp__serena__get_diagnostics_for_file, mcp__serena__get_diagnostics_for_symbol, mcp__serena__get_current_config
 hooks:
   PreToolUse:
     - matcher: "Bash"

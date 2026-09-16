@@ -1,8 +1,8 @@
 ---
 name: review-strategic
 description: Strategic reviewer for Void Scavenger: design intent present and declared future, YAGNI versus structure, tactical for-now structures, encapsulation and hierarchy placement, house-convention conformance, and Gang of Four pattern literacy with the extensibility test. Criteria: docs/review/principles/strategic_design.md, docs/review/principles/pattern_literacy.md, docs/review/principles/encapsulation.md. Review only; changes nothing, runs nothing.
-model: inherit
-tools: Read, Glob, Grep, Bash, ToolSearch, mcp__serena__find_symbol, mcp__serena__find_referencing_symbols, mcp__serena__find_implementations, mcp__serena__find_declaration, mcp__serena__get_symbols_overview, mcp__serena__search_for_pattern, mcp__serena__read_file, mcp__serena__list_dir, mcp__serena__find_file, mcp__serena__get_current_config
+model: opus
+tools: Read, Glob, Grep, Bash, ToolSearch, mcp__serena__find_symbol, mcp__serena__find_referencing_symbols, mcp__serena__find_implementations, mcp__serena__find_declaration, mcp__serena__get_symbols_overview, mcp__serena__get_diagnostics_for_file, mcp__serena__get_diagnostics_for_symbol, mcp__serena__get_current_config
 hooks:
   PreToolUse:
     - matcher: "Bash"
