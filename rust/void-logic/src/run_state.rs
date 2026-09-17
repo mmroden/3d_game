@@ -12,6 +12,8 @@ use crate::ship_type::ShipType;
 use crate::unlocks::PermanentUnlocks;
 use serde::{Deserialize, Serialize};
 
+use crate::level_spec::LevelSpec;
+
 /// The health bar turns yellow below this hull fraction.
 pub const HEALTH_YELLOW_BELOW: f32 = 0.5;
 /// The health bar turns red below this hull fraction.
@@ -67,6 +69,14 @@ pub struct Profile {
     pub seen_enemies: SeenEnemies,
     /// Permanent unlocks (radar, map, …).
     pub unlocks: PermanentUnlocks,
+}
+
+/// What entering a level yields: the level's one spec, and whether the
+/// bestiary grew doing it (the caller persists the profile when it did).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LevelEntry {
+    pub spec: LevelSpec,
+    pub bestiary_grew: bool,
 }
 
 /// Tracks the state of a single roguelike run.
@@ -318,6 +328,25 @@ impl RunState {
     /// is seen, so the caller can persist the freshly-grown bestiary.
     pub fn mark_enemy_seen(&mut self, key: crate::roster::EnemyKey) -> bool {
         self.profile.seen_enemies.mark(key)
+    }
+
+    /// Entering the current level: THE spec construction for it, and the
+    /// bestiary catalogs everything that level can produce (its coverage —
+    /// direct spawns closed over their minions) in the same call, so the
+    /// profile can never lag the level being entered. Re-entering (a
+    /// respawn) builds the same spec and is not news.
+    pub fn enter_level(&mut self, grammar: &crate::roster::Roster) -> LevelEntry {
+        let spec = LevelSpec::for_level(
+            grammar,
+            self.run_seed,
+            self.current_level,
+            &self.profile.unlocks,
+        );
+        let mut bestiary_grew = false;
+        for key in &spec.coverage {
+            bestiary_grew |= self.mark_enemy_seen(*key);
+        }
+        LevelEntry { spec, bestiary_grew }
     }
 
     /// Current laser damage per beam.
@@ -711,6 +740,48 @@ mod tests {
         run.apply_death_penalty();
         assert!(run.profile.seen_enemies.contains(nth_enemy(1)),
             "the bestiary survives death, like organics");
+    }
+
+    #[test]
+    fn entering_a_level_catalogs_everything_it_can_produce() {
+        // The 2026-09-16 playtest: level 2 was played, bombers were killed,
+        // and the saved bestiary held only level 1's type — the profile
+        // lagged the level by one. The contract: entering a level catalogs
+        // THAT level's coverage, in the same call that builds its spec.
+        let grammar = crate::roster::roster();
+        let mut run = RunState::new(Seed::new(42));
+
+        let first = run.enter_level(grammar);
+        assert!(!first.spec.coverage.is_empty(), "level 1 fields at least one type");
+        assert!(first.bestiary_grew, "the first level is always news to a fresh profile");
+        for key in &first.spec.coverage {
+            assert!(run.profile.seen_enemies.contains(*key),
+                "{} is catalogued on entering the level that fields it", key.as_str());
+        }
+        assert_eq!(run.profile.seen_enemies.count(), first.spec.coverage.len(),
+            "exactly the level of entry — nothing stale, nothing early");
+
+        // The next level grows the catalog by its own coverage: the union.
+        run.current_level += 1;
+        let second = run.enter_level(grammar);
+        let union: std::collections::HashSet<_> = first
+            .spec
+            .coverage
+            .iter()
+            .chain(second.spec.coverage.iter())
+            .copied()
+            .collect();
+        for key in &union {
+            assert!(run.profile.seen_enemies.contains(*key));
+        }
+        assert_eq!(run.profile.seen_enemies.count(), union.len());
+        assert_eq!(second.bestiary_grew, union.len() > first.spec.coverage.len(),
+            "growth is reported exactly when a new type arrived");
+
+        // Re-entering the same level (a respawn) is not news.
+        let again = run.enter_level(grammar);
+        assert_eq!(again.spec, second.spec, "one spec per level, whoever asks");
+        assert!(!again.bestiary_grew);
     }
 
     #[test]

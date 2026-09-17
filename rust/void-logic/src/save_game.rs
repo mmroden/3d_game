@@ -264,6 +264,66 @@ mod tests {
     }
 
     #[test]
+    fn a_profile_only_save_with_a_sighting_catalogs_that_enemy() {
+        // The shape on disk after a run-over (2026-09-16 playtest: the
+        // bestiary showed only the two canisters): no snapshot, a profile
+        // whose bestiary names one declared enemy. Loading it and opening
+        // the catalog must show the pickups AND that enemy.
+        let sighted = nth_enemy(0);
+        let json = format!(
+            r#"{{"profile":{{"organics":{{"balance":100}},"seen_enemies":{{"seen":["{}"]}},"unlocks":{{"owned":[]}}}},"run":null}}"#,
+            sighted.as_str()
+        );
+        let save = SaveGame::from_json(&json).expect("the on-disk shape loads");
+        assert!(!save.has_run(), "run-over: nothing to continue");
+        let mut run = RunState::new(Seed::new(7));
+        save.apply_to(&mut run);
+        let entries = crate::bestiary::entries(&run.profile.seen_enemies);
+        assert_eq!(entries.len(), 3, "two pickups + the one sighting");
+        assert_eq!(
+            entries[2].kind,
+            crate::bestiary::BestiaryKind::Enemy(sighted),
+            "the sighted enemy is catalogued"
+        );
+    }
+
+    #[test]
+    fn a_finished_first_level_catalogs_its_whole_coverage_across_a_reload() {
+        // What the briefing must list after level 1: every enemy type that
+        // level can produce (its coverage, derived from the grammar — direct
+        // spawns closed over their minions), persisted through the profile
+        // and back. The count is whatever the grammar declares for level 1;
+        // nothing here names a def.
+        let grammar = crate::roster::roster();
+        let mut run = RunState::new(Seed::new(42));
+        let entry = run.enter_level(grammar);
+        let coverage = entry.spec.coverage;
+        assert!(!coverage.is_empty(), "level 1 fields at least one enemy type");
+        assert!(entry.bestiary_grew, "the first level is always news to a fresh profile");
+
+        let save = SaveGame::profile_only(&run);
+        let reloaded = SaveGame::from_json(&save.to_json()).expect("round-trips");
+        let mut fresh = RunState::new(Seed::new(1));
+        reloaded.apply_to(&mut fresh);
+
+        let entries = crate::bestiary::entries(&fresh.profile.seen_enemies);
+        assert_eq!(
+            entries.len(),
+            2 + coverage.len(),
+            "the pickups plus every type level 1 can produce"
+        );
+        for key in &coverage {
+            assert!(
+                entries
+                    .iter()
+                    .any(|e| e.kind == crate::bestiary::BestiaryKind::Enemy(*key)),
+                "{} is catalogued after level 1",
+                key.as_str()
+            );
+        }
+    }
+
+    #[test]
     fn apply_resets_ephemeral_state() {
         let save = SaveGame::from_run_state(&seasoned_run());
         let mut fresh = RunState::new(Seed::new(99));

@@ -471,7 +471,7 @@ impl GameManager {
         }
         self.run_state.current_level = target;
         godot_print!("DEBUG JUMP: rebuilding at level {target}");
-        self.mark_level_enemies_seen();
+        self.enter_level();
         self.push_loading_veil(true);
         self.pending_level_build = 2;
     }
@@ -1665,7 +1665,7 @@ impl GameManager {
         // frame — one choke point covers new game, Continue, the next
         // level, and respawns alike.
         if next == GamePhase::Playing && prev != GamePhase::Paused {
-            self.mark_level_enemies_seen();
+            self.enter_level();
             self.push_loading_veil(true);
             self.pending_level_build = 2;
             // A run becomes continuable at the start of level 2 — it has
@@ -1691,25 +1691,16 @@ impl GameManager {
         }
     }
 
-    /// Catalog every enemy type this level will contain, so the *next* briefing
-    /// lists them, and persist the bestiary if it grew (it is permanent).
-    fn mark_level_enemies_seen(&mut self) {
-        let mut grew = false;
-        // Coverage, not the direct roster: it includes death-spawn-only types
-        // (the SpawnDrone an EyeDrone drops), so the briefing lists a type the
-        // moment the level can produce it. `enemies_for_level` filtered on
-        // `spawns_directly()` and could never surface a death-only enemy.
-        let coverage = self
-            .level_spec
-            .as_ref()
-            .map(|s| s.coverage.clone())
-            .unwrap_or_default();
-        for enemy in coverage {
-            if self.run_state.mark_enemy_seen(enemy) {
-                grew = true;
-            }
-        }
-        if grew {
+    /// Level entry, at the phase transition — before any screen or the
+    /// build: the run's ONE spec for this level (cached here; the deferred
+    /// build and every later mediator decision read it) and the bestiary
+    /// grown to cover it, persisted the moment it grew (it is permanent).
+    /// Anything shown between here and the build — the loading veil, a
+    /// briefing — already reads the incoming level, never the last one.
+    fn enter_level(&mut self) {
+        let entry = self.run_state.enter_level(void_logic::roster::roster());
+        self.level_spec = Some(entry.spec);
+        if entry.bestiary_grew {
             self.persist_profile();
         }
     }
@@ -2487,16 +2478,13 @@ impl GameManager {
     }
 
     fn regenerate_level(&mut self) {
-        // ONE spec construction per level entry: every attribute (pitch,
-        // paradigm, roster, boss staging incl. the red container and the
-        // rolled hull) resolves here, against the profile, and this same
-        // value drives the build and every later mediator decision.
-        let spec = LevelSpec::for_level(
-            void_logic::roster::roster(),
-            self.run_state.run_seed,
-            self.run_state.current_level,
-            &self.run_state.profile.unlocks,
-        );
+        // The spec was constructed ONCE at level entry (`enter_level`,
+        // on the phase transition); the build consumes that same value,
+        // so nothing here can disagree with what the entry catalogued.
+        let spec = self
+            .level_spec
+            .clone()
+            .expect("a level build follows a level entry");
         // Every level entry names its run seed — any playtest moment is
         // reproducible (playtest 2026-07-09: an unlogged random seed made a
         // spawn-swarm configuration unrecoverable).
@@ -2511,7 +2499,6 @@ impl GameManager {
         // spec-placed miniboss (never both — LevelSpec enforces it).
         self.boss_fight =
             (spec.boss.is_some() || spec.miniboss.is_some()).then(BossFight::new);
-        self.level_spec = Some(spec.clone());
         let Some(parent) = self.base().get_parent() else { return };
         if let Some(level_mgr) = parent.try_get_node_as::<LevelManager>(nodes::LEVEL_MANAGER) {
             let mut level_mgr = level_mgr;
