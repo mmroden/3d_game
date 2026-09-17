@@ -209,6 +209,7 @@ impl INode3D for LevelManager {
     }
 
     fn exit_tree(&mut self) {
+        self.telemetry.report_final();
         self.telemetry.unregister_monitors();
     }
 
@@ -1075,6 +1076,9 @@ impl LevelManager {
             enemy_count,
             if structure_only { " (structure-only)" } else { "" },
         );
+        // The build is over; what follows is play (or a capture's posed
+        // frames) — the windows measure that, never the build.
+        self.telemetry.reset_windows();
     }
 
     /// Free the collision bodies the glTF importer baked from `_col`/

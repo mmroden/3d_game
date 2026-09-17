@@ -709,6 +709,56 @@ fn stereo_pairs_obey_the_off_axis_geometry() {
 }
 
 
+/// STEREO ALONG THE ARTERY: side-by-side renders every flythrough
+/// vantage (distinct frames, each a left|right pair spanning the full
+/// window) — the SBS counterpart of the mono cockpit contract's rig
+/// self-check — and the run's closing telemetry line is echoed, so the
+/// render path's cost in SBS is read from this stage across commits
+/// (the XR rig change, docs/design/xr_rig.md §4), never from a scratch
+/// probe. `KEEP_FRAMES=1` keeps the pairs under out/visual/.
+#[test]
+fn stereo_flythrough_renders_every_vantage() {
+    let level = *levels_of_planet(2)
+        .first()
+        .expect("the grammar declares planet 2");
+    let run_seed = 1i64;
+    let (spec, graph) = build_graph(level, run_seed);
+    let poses = flythrough_poses(&graph, spec.pitch);
+    assert!(poses.len() >= 2, "the stereo flythrough needs two artery vantages");
+    let dir = frames_dir(level, run_seed, "-stereo-flythrough");
+    // Commanded geometry (the shipped static defaults) keeps the capture
+    // at the commanded resolution — the play path's SBS goes fullscreen.
+    let rig = void_logic::stereo::StereoConfig::default();
+    let extra = [
+        format!("--interaxial={:.4}", rig.eye_separation),
+        format!("--convergence={:.3}", rig.convergence_distance),
+    ];
+    let frames = capture_ex(level, run_seed, &poses, true, true, &extra, &dir);
+
+    let bytes: Vec<Vec<u8>> = frames
+        .iter()
+        .map(|f| std::fs::read(f).expect("frame reads"))
+        .collect();
+    assert!(
+        !(1..bytes.len()).any(|i| bytes[i] == bytes[i - 1]),
+        "capture rig stalled in SBS — adjacent frames identical ({})",
+        dir.display()
+    );
+    for frame in &frames {
+        let (w, _) = image::image_dimensions(frame).expect("frame opens");
+        assert_eq!(w, 1144, "an SBS frame spans the full window ({})", frame.display());
+    }
+
+    let log = std::fs::read_to_string(dir.join("engine.log")).expect("engine.log kept");
+    let cost = log
+        .lines()
+        .rev()
+        .find(|l| l.contains("kinetics final:"))
+        .expect("the run prints its closing telemetry line");
+    println!("visual: cost SBS L{level} S{run_seed} {} poses | {cost}", poses.len());
+}
+
+
 /// The credits crawl renders, fits, and moves (owner 2026-09-09: "can we
 /// do the same thing with the menu as a way to validate that credits are
 /// displayed?"): a `--screen=credits` boot parks the crawl at three

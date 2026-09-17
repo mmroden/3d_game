@@ -33,6 +33,11 @@ pub struct Telemetry {
     /// catch hitches the kinetics/draw windows are blind to.
     physics: TimingWindow,
     process: TimingWindow,
+    /// Draw calls per rendered frame, windowed like the timings: the
+    /// structural cost of the render path (two eyes vs. one multiview
+    /// pass), read as a percentile rather than whichever frame happens
+    /// to be current when a line prints.
+    draw_calls: TimingWindow,
     /// The viewports whose render time is summed each frame. In mono
     /// this is the root viewport; in SBS it is the two eye
     /// sub-viewports — never the root compositor, which only blits the
@@ -50,9 +55,24 @@ impl Telemetry {
             render_gpu: TimingWindow::new(TIMING_WINDOW),
             physics: TimingWindow::new(TIMING_WINDOW),
             process: TimingWindow::new(TIMING_WINDOW),
+            draw_calls: TimingWindow::new(TIMING_WINDOW),
             viewport_rids: Vec::new(),
             monitors_registered: false,
         }
+    }
+
+    /// A level build is a phase boundary, not stutter: every window
+    /// restarts empty when a build completes, so the percentiles (the
+    /// periodic line and the closing line alike) describe play — or a
+    /// capture's posed frames — never the build that preceded them.
+    pub fn reset_windows(&mut self) {
+        self.step = TimingWindow::new(TIMING_WINDOW);
+        self.frame = TimingWindow::new(TIMING_WINDOW);
+        self.render_cpu = TimingWindow::new(TIMING_WINDOW);
+        self.render_gpu = TimingWindow::new(TIMING_WINDOW);
+        self.physics = TimingWindow::new(TIMING_WINDOW);
+        self.process = TimingWindow::new(TIMING_WINDOW);
+        self.draw_calls = TimingWindow::new(TIMING_WINDOW);
     }
 
     /// Measure the render time of exactly these viewports — the ones
@@ -133,6 +153,8 @@ impl Telemetry {
             .record(perf.get_monitor(Monitor::TIME_PHYSICS_PROCESS) as f32 * 1000.0);
         self.process
             .record(perf.get_monitor(Monitor::TIME_PROCESS) as f32 * 1000.0);
+        self.draw_calls
+            .record(perf.get_monitor(Monitor::RENDER_TOTAL_DRAW_CALLS_IN_FRAME) as f32);
     }
 
     pub fn step_ms_p50(&self) -> f32 {
@@ -153,12 +175,23 @@ impl Telemetry {
         if tick == 0 || tick % STATS_EVERY_TICKS != 0 {
             return;
         }
+        self.print_line("kinetics");
+    }
+
+    /// The run's closing line — the same counters, printed once at exit
+    /// so every stage artifact (a capture run's engine.log) carries the
+    /// render cost without needing five seconds of play. Before/after
+    /// comparisons of the render path read this line across commits.
+    pub fn report_final(&self) {
+        self.print_line("kinetics final");
+    }
+
+    fn print_line(&self, label: &str) {
         use godot::classes::performance::Monitor;
         let perf = Performance::singleton();
-        let draw_calls = perf.get_monitor(Monitor::RENDER_TOTAL_DRAW_CALLS_IN_FRAME);
         let nodes = perf.get_monitor(Monitor::OBJECT_NODE_COUNT);
         godot_print!(
-            "kinetics: p50 {:.3} | p99 {:.3} | jit {:.3} || frame: p50 {:.2} | p99 {:.2} | jit {:.2} || phys p99 {:.2} | proc p99 {:.2} || draw cpu p99 {:.2} | gpu p99 {:.2} | calls {} | nodes {}",
+            "{label}: p50 {:.3} | p99 {:.3} | jit {:.3} || frame: p50 {:.2} | p99 {:.2} | jit {:.2} || phys p99 {:.2} | proc p99 {:.2} || draw cpu p50 {:.2} p99 {:.2} | gpu p50 {:.2} p99 {:.2} | calls p50 {:.0} | nodes {}",
             self.step.percentile(50.0),
             self.step.percentile(99.0),
             self.step.jitter(),
@@ -167,9 +200,11 @@ impl Telemetry {
             self.frame.jitter(),
             self.physics.percentile(99.0),
             self.process.percentile(99.0),
+            self.render_cpu.percentile(50.0),
             self.render_cpu.percentile(99.0),
+            self.render_gpu.percentile(50.0),
             self.render_gpu.percentile(99.0),
-            draw_calls as i64,
+            self.draw_calls.percentile(50.0),
             nodes as i64,
         );
     }
