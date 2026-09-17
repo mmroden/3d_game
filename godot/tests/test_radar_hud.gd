@@ -13,9 +13,16 @@ func _rig() -> Dictionary:
 	var player := Node3D.new()
 	player.name = "Player"
 	root.add_child(player)
-	var camera := Camera3D.new()
-	camera.name = "Camera3D"
-	player.add_child(camera)
+	# The scene's camera shape (docs/design/xr_rig.md): the eyepoint origin
+	# under the player, the XR camera under it — the HUD projects through
+	# Player/XROrigin3D/XRCamera3D. With no XR interface registered in this
+	# rig, the XR camera projects exactly as a plain camera.
+	var origin := XROrigin3D.new()
+	origin.name = "XROrigin3D"
+	player.add_child(origin)
+	var camera := XRCamera3D.new()
+	camera.name = "XRCamera3D"
+	origin.add_child(camera)
 	var hud := HUD.new()
 	hud.name = "HUD"
 	root.add_child(hud)

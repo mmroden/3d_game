@@ -14,18 +14,19 @@ func before_each():
 	# current) settle.
 	await wait_process_frames(3)
 
-func test_left_eye_camera_renders_at_boot():
-	# Mono draws through the left-eye sub-viewport's camera, NOT the player
-	# camera on the root viewport (that was the black-in-mono parallel pathway).
-	# The left eye camera must be current or every screen is black.
-	var left_cam = main.get_node_or_null(
-		"ViewManager/StereoCanvas/LeftContainer/LeftViewport/LeftCamera")
-	assert_not_null(left_cam, "the left-eye camera must exist")
-	assert_true(left_cam.current,
-		"the left-eye camera must render the world (mono draws through it)")
-	var player_cam = main.get_node_or_null("Player/Camera3D")
-	assert_false(player_cam.current,
-		"the player camera must NOT be current — it's the reference, the eye draws")
+func test_the_xr_camera_renders_at_boot():
+	# One render pathway: the player's XRCamera3D (under the XR origin at
+	# the eyepoint) is the only camera, current in the root viewport, which
+	# renders through the SBS display interface (use_xr). It must be
+	# current or every screen is black.
+	var cam = main.get_node_or_null("Player/XROrigin3D/XRCamera3D")
+	assert_not_null(cam, "the XR camera must exist under the player's XR origin")
+	assert_true(cam.current,
+		"the XR camera must render the world — there is no other camera")
+	assert_true(main.get_viewport().use_xr,
+		"the root viewport renders through the display interface")
+	assert_eq(XRServer.primary_interface.get_name(), "SBS",
+		"the SBS interface is primary at boot")
 
 func test_main_menu_shows_the_showcase_ship():
 	var showcase = main.get_node_or_null("Turntable")
@@ -37,7 +38,7 @@ func test_main_menu_shows_the_showcase_ship():
 
 func test_showcase_sits_in_front_of_the_camera():
 	var showcase = main.get_node_or_null("Turntable")
-	var cam = main.get_node_or_null("Player/Camera3D")
+	var cam = main.get_node_or_null("Player/XROrigin3D/XRCamera3D")
 	var d = showcase.global_position.distance_to(cam.global_position)
 	assert_lt(d, 12.0,
 		"the showcase must be parked in front of the camera, not off in the void")
@@ -95,7 +96,7 @@ func test_bestiary_shows_the_turntable_in_a_backdrop_room():
 	assert_true(display.visible, "the bestiary turntable must be visible")
 	assert_not_null(display.get_node_or_null("Model"),
 		"the turntable must be spinning a model")
-	var cam = main.get_node("Player/Camera3D")
+	var cam = main.get_node("Player/XROrigin3D/XRCamera3D")
 	var d = display.global_position.distance_to(cam.global_position)
 	assert_lt(d, 12.0, "the turntable must be in front of the camera")
 	# The briefing must show the SAME lit backdrop room as ship-select — not a
@@ -181,7 +182,7 @@ func test_bestiary_subject_starts_facing_the_camera():
 	# the camera — the same yaw idiom the level uses (face the viewer, then
 	# the def's yaw_offset corrects the imported front axis).
 	var showcase = main.get_node("Turntable")
-	var cam = main.get_node("Player/Camera3D")
+	var cam = main.get_node("Player/XROrigin3D/XRCamera3D")
 	# kind = enemy (2). This test deliberately targets a CAPABILITY, not a def:
 	# a -Z-fronting model (yaw_offset_deg = 0), the case where the front-axis
 	# correction actually has work to do — the Model node's -basis.z only reads

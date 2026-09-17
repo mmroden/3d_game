@@ -258,18 +258,11 @@ impl LevelManager {
     }
 
     /// The viewport RIDs whose render time telemetry is measuring.
-    /// Exposed for tests: in SBS this must be the two eye sub-viewports,
-    /// not the root compositor.
+    /// Exposed for tests: the root viewport, which renders the world in
+    /// one multiview pass in either display mode.
     #[func]
     pub fn measured_viewport_rids(&self) -> Array<Rid> {
         self.telemetry.measured_viewports().into_iter().collect()
-    }
-
-    /// ViewManager republishes its active 3D viewports on every mode
-    /// change; retarget render measurement onto them.
-    #[func]
-    fn on_render_viewports_changed(&mut self, viewports: Array<Rid>) {
-        self.apply_measured_viewports(viewports);
     }
 
     /// The world grid's cell size — GameManager derives the map projection
@@ -1201,27 +1194,19 @@ impl LevelManager {
         }
     }
 
-    /// Give a dynamic body a convex collider per `MeshInstance3D` under
-    /// `node`, each placed at the mesh's transform relative to the body so the
-    /// hull hugs the rendered geometry. Convex (not trimesh) because Jolt
-    /// allows concave shapes only on static bodies — one source: the mesh.
-    /// Subscribe to ViewManager's active-viewport publication (so
-    /// render measurement follows mode changes) and seed the current
-    /// set immediately — ViewManager is the sole authority on which
-    /// viewports draw the 3D world, so we never recompute that here.
+    /// Point render measurement at the viewport that draws the 3D world.
+    /// ViewManager is the sole authority on that set — the root viewport,
+    /// one multiview pass in either display mode — so it is read once here
+    /// and never recomputed.
     fn connect_render_viewports(&mut self) {
         let Some(main) = self.base().get_parent() else {
             godot_print!("LevelManager: no parent; render telemetry idle");
             return;
         };
-        let Some(mut view_mgr) = main.try_get_node_as::<ViewManager>(nodes::VIEW_MANAGER) else {
+        let Some(view_mgr) = main.try_get_node_as::<ViewManager>(nodes::VIEW_MANAGER) else {
             godot_print!("LevelManager: no ViewManager sibling; render telemetry idle");
             return;
         };
-        let callable = self.base().callable(methods::ON_RENDER_VIEWPORTS_CHANGED);
-        if !view_mgr.is_connected(signals::RENDER_VIEWPORTS_CHANGED, &callable) {
-            view_mgr.connect(signals::RENDER_VIEWPORTS_CHANGED, &callable);
-        }
         let rids = view_mgr.bind().active_viewport_rids();
         self.apply_measured_viewports(rids);
     }

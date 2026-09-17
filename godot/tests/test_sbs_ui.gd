@@ -69,17 +69,19 @@ func test_sbs_mode_creates_visible_ui_plane():
 	await get_tree().process_frame
 	await get_tree().process_frame
 
-	var ui_plane = _main.get_node("ViewManager/UIPlane")
-	assert_not_null(ui_plane, "UIPlane must exist under ViewManager")
+	# The plane is cockpit-locked: a child of the XR origin (the eyepoint),
+	# so it rides the ship's interpolation like the hull — no per-frame sync.
+	var ui_plane = _main.get_node("Player/XROrigin3D/UIPlane")
+	assert_not_null(ui_plane, "UIPlane must exist under the XR origin")
 	assert_true(ui_plane.visible, "UIPlane must be visible in SBS mode")
 
 func test_ui_plane_hidden_in_mono_mode():
-	var ui_plane = _main.get_node("ViewManager/UIPlane")
+	var ui_plane = _main.get_node("Player/XROrigin3D/UIPlane")
 	assert_not_null(ui_plane, "UIPlane must exist even in mono mode")
 	assert_false(ui_plane.visible, "UIPlane must be hidden in mono mode")
 
 func test_ui_plane_has_viewport_texture():
-	var ui_plane = _main.get_node("ViewManager/UIPlane") as MeshInstance3D
+	var ui_plane = _main.get_node("Player/XROrigin3D/UIPlane") as MeshInstance3D
 	assert_not_null(ui_plane, "UIPlane must be a MeshInstance3D")
 	var material = ui_plane.get_surface_override_material(0)
 	if material == null:
@@ -90,8 +92,8 @@ func test_ui_plane_has_viewport_texture():
 
 func test_mono_draws_ui_through_the_fullscreen_mono_layer():
 	# In mono, the HUD (health bars, center reticle) is drawn by the fullscreen
-	# MonoUILayer CanvasLayer. The in-eye LeftUIOverlay sits inside a
-	# SubViewportContainer and scales the tiny reticle away, so it must NOT be the
+	# MonoUILayer CanvasLayer. The old in-eye overlay sat inside a
+	# sub-viewport container and scaled the tiny reticle away, so that is NOT the
 	# mono UI path. Boot is mono.
 	var mono = _main.get_node_or_null("ViewManager/MonoUILayer")
 	assert_not_null(mono, "MonoUILayer must exist")
@@ -105,20 +107,29 @@ func test_sbs_hides_the_mono_ui_layer():
 	var mono = _main.get_node("ViewManager/MonoUILayer")
 	assert_false(mono.visible, "MonoUILayer must hide in SBS")
 
-func test_mono_view_recovers_the_window_after_a_resize():
-	# Mono is the no-goggles way to play; the single-eye view must follow
-	# the window (playtest 2026-07-05: a resized window left the 3D view
-	# frozen at its old size in a sea of dead gray, reticle divorced from
-	# the optical center). Simulate the stale state a resize used to leave
-	# behind, then fire the resize handler: the eye must re-cover the
-	# window.
-	var vm = _main.get_node("ViewManager")
-	var left = _main.get_node("ViewManager/StereoCanvas/LeftContainer")
-	left.size = Vector2(123, 77) # the stale pre-resize footprint
-	vm.on_window_size_changed()
-	var win := Vector2(DisplayServer.window_get_size())
-	assert_eq(left.size, win,
-		"mono's single eye must re-cover the window after a resize")
+func test_the_display_interface_renders_the_root_viewport():
+	# One render pathway: the root viewport under use_xr, drawn by the SBS
+	# display interface (docs/design/xr_rig.md). Mono is one view of that
+	# same interface; SBS is two. The engine polls the interface's render
+	# target size every frame, so the window-follows-resize contract the
+	# old sub-viewport rig needed (playtest 2026-07-05: a resized window
+	# left the eye frozen at its old size) holds by construction — there
+	# is no cached eye size left to go stale.
+	var root := _main.get_viewport()
+	assert_true(root.use_xr, "the root viewport renders through the interface")
+	var iface := XRServer.primary_interface
+	assert_not_null(iface, "the SBS interface is the primary XR interface")
+	assert_eq(iface.get_name(), "SBS", "…by name")
+	assert_true(iface.is_initialized(), "…and initialized, or nothing draws")
+	assert_eq(iface.get_view_count(), 1, "mono renders one view")
+	_main.get_node("GameManager").on_sbs_toggled()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	assert_eq(iface.get_view_count(), 2, "SBS renders two views through the same interface")
+	_main.get_node("GameManager").on_sbs_toggled()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	assert_eq(iface.get_view_count(), 1, "…and back to one")
 
 # --- full-screen washes cover the WINDOW, not the safe-area band ---
 

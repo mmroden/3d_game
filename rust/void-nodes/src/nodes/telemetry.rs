@@ -38,10 +38,10 @@ pub struct Telemetry {
     /// pass), read as a percentile rather than whichever frame happens
     /// to be current when a line prints.
     draw_calls: TimingWindow,
-    /// The viewports whose render time is summed each frame. In mono
-    /// this is the root viewport; in SBS it is the two eye
-    /// sub-viewports — never the root compositor, which only blits the
-    /// two eyes and does almost no 3D work.
+    /// The viewports whose render time is summed each frame: the root
+    /// viewport, which renders the 3D world in one multiview pass through
+    /// the display interface (one view in mono, two side by side) — the
+    /// set ViewManager publishes, never recomputed here.
     viewport_rids: Vec<Rid>,
     monitors_registered: bool,
 }
@@ -76,9 +76,8 @@ impl Telemetry {
     }
 
     /// Measure the render time of exactly these viewports — the ones
-    /// actually rendering the 3D world for the current display mode.
-    /// In SBS that is the two eye sub-viewports; measuring the root
-    /// compositor instead would report ~0 and hide the real cost.
+    /// actually rendering the 3D world (the root, under `use_xr`); a
+    /// viewport that only composites would report ~0 and hide the cost.
     pub fn measure_viewports(&mut self, rids: &[Rid]) {
         let mut rs = RenderingServer::singleton();
         let next: Vec<Rid> = rids
@@ -86,9 +85,8 @@ impl Telemetry {
             .copied()
             .filter(|rid| *rid != Rid::Invalid)
             .collect();
-        // Retire measurement on viewports leaving the set (e.g. the eyes
-        // after an SBS→mono toggle), so no orphaned GPU timer keeps
-        // running on a viewport we no longer sum.
+        // Retire measurement on viewports leaving the set, so no orphaned
+        // GPU timer keeps running on a viewport we no longer sum.
         for &rid in &self.viewport_rids {
             if !next.contains(&rid) {
                 rs.viewport_set_measure_render_time(rid, false);
@@ -132,7 +130,7 @@ impl Telemetry {
 
     /// Record one rendered frame: its delta plus the render times of
     /// every measured viewport, summed — the honest per-frame 3D cost
-    /// (both eyes in SBS).
+    /// (both views of the multiview pass in SBS).
     pub fn record_frame(&mut self, delta_ms: f32) {
         self.frame.record(delta_ms);
         if !self.viewport_rids.is_empty() {

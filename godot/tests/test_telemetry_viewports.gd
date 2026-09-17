@@ -1,9 +1,9 @@
 extends GutTest
-## Telemetry must measure the viewports that actually render the 3D
-## scene. There is ONE render pathway — the eye sub-viewports: mono draws
-## through the left eye (shown fullscreen), SBS through both. The root
-## viewport never renders the world (it only hosts the eye canvas), so
-## measuring it would report ~0 and hide the real per-eye render cost.
+## Telemetry must measure the viewport that actually renders the 3D
+## scene. There is ONE render pathway — the root viewport under `use_xr`,
+## drawn in a single multiview pass by the display interface: one view in
+## mono, two side by side. Nothing else renders the world, so the measured
+## set is the root in both modes and a mode toggle never moves it.
 
 var _main: Node3D
 
@@ -23,65 +23,28 @@ func after_each():
 	if dir and dir.file_exists("options.cfg"):
 		dir.remove("options.cfg")
 
-func test_mono_measures_the_left_eye():
+func test_mono_measures_the_root_xr_viewport():
 	var lm = _main.get_node("LevelManager")
 	var measured = lm.measured_viewport_rids()
-	var left = _main.get_node(
-		"ViewManager/StereoCanvas/LeftContainer/LeftViewport")
+	var root := _main.get_viewport()
+	assert_true(root.use_xr,
+		"the root viewport renders through the display interface (use_xr)")
 	assert_eq(measured.size(), 1,
-		"mono renders through the left eye, so it measures exactly that one viewport")
-	assert_true(measured.has(left.get_viewport_rid()),
-		"mono measures the left eye sub-viewport (the one that draws)")
-	assert_false(measured.has(_main.get_viewport().get_viewport_rid()),
-		"mono must NOT measure the root viewport — the left eye draws, not the root")
+		"one render pathway → exactly one measured viewport")
+	assert_true(measured.has(root.get_viewport_rid()),
+		"mono measures the root XR viewport — the one that draws")
 
-func test_sbs_measures_both_eyes_not_root():
+func test_sbs_measures_the_same_root_viewport():
 	_main.get_node("GameManager").on_sbs_toggled()
 	await get_tree().process_frame
 	await get_tree().process_frame
 
 	var lm = _main.get_node("LevelManager")
 	var measured = lm.measured_viewport_rids()
-
-	var left = _main.get_node(
-		"ViewManager/StereoCanvas/LeftContainer/LeftViewport")
-	var right = _main.get_node(
-		"ViewManager/StereoCanvas/RightContainer/RightViewport")
-	var root_rid = _main.get_viewport().get_viewport_rid()
-
-	assert_eq(measured.size(), 2,
-		"SBS measures both eye sub-viewports")
-	assert_false(measured.has(root_rid),
-		"SBS must NOT measure the root compositor viewport")
-	assert_true(measured.has(left.get_viewport_rid()),
-		"SBS measures the left eye sub-viewport")
-	assert_true(measured.has(right.get_viewport_rid()),
-		"SBS measures the right eye sub-viewport")
-
-func test_toggling_back_to_mono_keeps_left_eye_only():
-	# SBS on, then off again — the measured set must follow the state machine
-	# back to mono, which keeps the LEFT eye (it still draws) and drops only the
-	# right eye. The root is never in the set.
-	var gm = _main.get_node("GameManager")
-	gm.on_sbs_toggled()
-	await get_tree().process_frame
-	await get_tree().process_frame
-	gm.on_sbs_toggled()
-	await get_tree().process_frame
-	await get_tree().process_frame
-
-	var lm = _main.get_node("LevelManager")
-	var measured = lm.measured_viewport_rids()
-	var left = _main.get_node(
-		"ViewManager/StereoCanvas/LeftContainer/LeftViewport")
-	var right = _main.get_node(
-		"ViewManager/StereoCanvas/RightContainer/RightViewport")
-
+	var root := _main.get_viewport()
 	assert_eq(measured.size(), 1,
-		"back in mono, measures exactly the left eye")
-	assert_true(measured.has(left.get_viewport_rid()),
-		"the left eye keeps drawing in mono, so it stays measured")
-	assert_false(measured.has(right.get_viewport_rid()),
-		"the right eye is dropped from the set in mono")
-	assert_false(measured.has(_main.get_viewport().get_viewport_rid()),
-		"the root viewport is never measured")
+		"SBS is the same pass with two views — still one measured viewport")
+	assert_true(measured.has(root.get_viewport_rid()),
+		"SBS measures the root XR viewport")
+	assert_eq(XRServer.primary_interface.get_view_count(), 2,
+		"…and that pass now renders two views")

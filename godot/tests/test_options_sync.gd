@@ -33,23 +33,20 @@ func test_menu_msaa_matches_authoritative_option_at_startup():
 		"the menu must show MSAA off at startup, matching the default")
 
 func test_toggling_msaa_applies_to_the_active_viewport():
-	# Mono by default: the 3D world is drawn by the LEFT eye sub-viewport
-	# (shown fullscreen), NOT the root viewport — the root only hosts the eye
-	# canvas. So the MSAA option must anti-alias the left eye, the viewport that
-	# actually renders. ViewManager (the view) applies it; the controller never
+	# The 3D world is drawn by the ROOT viewport through the display
+	# interface (use_xr) — mono and SBS alike, one multiview pass. So the
+	# MSAA option must anti-alias the root, the viewport that actually
+	# renders. ViewManager (the view) applies it; the controller never
 	# pokes the viewport.
-	var left := _main.get_node(
-		"ViewManager/StereoCanvas/LeftContainer/LeftViewport") as SubViewport
 	var root := _main.get_viewport()
-	assert_eq(left.msaa_3d, Viewport.MSAA_DISABLED,
-		"MSAA off by default → the rendering eye viewport is not anti-aliased")
+	assert_true(root.use_xr, "the root renders through the display interface")
+	assert_eq(root.msaa_3d, Viewport.MSAA_DISABLED,
+		"MSAA off by default → the rendering viewport is not anti-aliased")
 	_main.get_node("GameManager").on_msaa_toggled()
 	await get_tree().process_frame
 	await get_tree().process_frame
-	assert_eq(left.msaa_3d, Viewport.MSAA_4X,
-		"toggling MSAA on must anti-alias the left eye — the viewport that draws")
-	assert_eq(root.msaa_3d, Viewport.MSAA_DISABLED,
-		"the root viewport never renders the world, so MSAA must not touch it")
+	assert_eq(root.msaa_3d, Viewport.MSAA_4X,
+		"toggling MSAA on must anti-alias the root — the viewport that draws")
 
 func test_options_persist_across_a_reload():
 	# Preferences remember themselves: a toggle is written to disk, and a

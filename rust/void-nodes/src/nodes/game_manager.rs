@@ -6,6 +6,7 @@ use godot::classes::{
 
 use super::level_manager::LevelManager;
 use super::persistence;
+use super::views::ViewManager;
 
 /// Persisted display/render preferences — the single GameOptions is
 /// loaded from here at startup and rewritten on every change.
@@ -2315,15 +2316,15 @@ impl GameManager {
             return;
         }
         // Save only when the subject that RENDERS is verifiably at the
-        // pose — and has DRAWN there. In a level the viewport draws through
-        // the view rig's eye camera, a per-frame MIRROR of Player/Camera3D
-        // that converges a frame behind its source and goes stale across
-        // pause boundaries (L12-S1 2026-07-14; L7-S1/L12-S2 2026-07-20 —
-        // the old guard read the SOURCE camera, and a lookup miss degraded
-        // it to a blind timer, so duplicates slipped through); on a screen
-        // the roll's own offset is the reading. Two-phase: verify the
-        // subject, then let one more frame draw before reading the texture
-        // (get_image() returns the last DRAWN frame). Waiting costs
+        // pose — and has DRAWN there. In a level that subject is the root
+        // viewport's current camera — the player's XRCamera3D, the one
+        // camera the display interface renders (the old rig mirrored a
+        // source camera into eye cameras a frame behind, and a lookup
+        // miss degraded the guard to a blind timer, so duplicates slipped
+        // through: L12-S1 2026-07-14; L7-S1/L12-S2 2026-07-20); on a
+        // screen the roll's own offset is the reading. Two-phase: verify
+        // the subject, then let one more frame draw before reading the
+        // texture (the capture reads the last DRAWN frame). Waiting costs
         // frames; saving a lie costs a run.
         let pose = self.shot_poses[self.shot_index];
         match self.subject_astray(pose) {
@@ -2374,9 +2375,17 @@ impl GameManager {
         // rendering). Draw NOW, with the camera the settle handshake
         // just verified, so the pixels are this pose's by construction.
         godot::classes::RenderingServer::singleton().force_draw();
-        let Some(viewport) = self.base().get_viewport() else { return };
-        let Some(texture) = viewport.get_texture() else { return };
-        let Some(image) = texture.get_image() else { return };
+        // What the display shows is ViewManager's to say: the root render
+        // target in mono, the two multiview layers stitched left|right in
+        // SBS — the one capture door for both.
+        let Some(image) = self
+            .base()
+            .get_parent()
+            .and_then(|p| p.try_get_node_as::<ViewManager>(nodes::VIEW_MANAGER))
+            .and_then(|vm| vm.bind().capture_frame())
+        else {
+            return;
+        };
         let path = format!("{dir}/shot_{index:02}.png");
         image.save_png(&path);
         // The pose the frame ACTUALLY rendered from — capture-integrity

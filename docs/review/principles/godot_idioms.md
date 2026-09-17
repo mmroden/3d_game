@@ -17,10 +17,11 @@ has two halves: does the engine already do this, and if the code does not
 use that, what storytelling need does it name that the facility fails? A
 hand-rolled subsystem with its need stated where the next reader will find
 it is a decision; without one it is a finding. Decisions still open on this
-question (the stereo rig, the convergence geometry) are recorded in
-`../ground_truth.md` under "Open decisions"; a diff there is reviewed for
-keeping the question open, not for answering it, and this brief carries no
-standing verdict on them.
+question (the Frame convergence policy, MSAA under two views on Metal) are
+recorded in `../ground_truth.md` under "Open decisions"; a diff there is
+reviewed for keeping the question open, not for answering it, and this
+brief carries no standing verdict on them. The stereo rig itself is
+decided (the XR interface path, ground truth "Immersive 3D is the goal").
 
 ## Checks
 
@@ -49,8 +50,10 @@ standing verdict on them.
    engine's interpolation is opted out deliberately and the reason is on
    the line. Asymmetric-frustum stereo (shifted projections) and toe-in
    convergence (rotated cameras) differ: toe-in produces vertical parallax
-   at the frame edges. Cite which one a rig does; whether ours changes is
-   an open decision in the ground truth.
+   at the frame edges. Cite which one a rig does; ours is the shifted
+   frustum inside the display interface (docs/design/xr_rig.md §3), and a
+   change there is a projection function plus the disparity contract's
+   reading, per the ground truth.
 4. **Signals, not polling.** State changes flow by signal to typed
    constants; a `process` that polls another node's state for a change is
    a finding. Signals connect at the right lifecycle point and disconnect
@@ -98,7 +101,7 @@ standing verdict on them.
     coupling finding.
 14. **Engine version awareness.** A workaround for an engine bug carries
     the issue number and the version it is fixed in, so it can be removed
-    (the audio-listener note in `view_manager.rs` is the model). A
+    (the Metal MSAA note on `stereo::msaa_allowed` is the model). A
     workaround without either is plaque.
 
 ## Procedure
@@ -117,7 +120,8 @@ An engine subsystem reproduced by hand on a rendering or physics hot path
 with no stated need: BLOCKER, with the facility named and a `to settle:`
 measurement for the performance claim; with the need stated in code only:
 CONCERN, to be promoted into the ground truth; with the need in the ground
-truth: not a finding. Toe-in stereo: cite it; the decision is open.
+truth: not a finding. Toe-in stereo: cite it; the projection is one function of the display
+interface and the ground truth names where it is measured.
 Node-per-object on a hot path
 where the server is the tool: CONCERN. Polling instead of signals, physics
 moved per render frame, resources rebuilt per instance: CONCERN. Settings

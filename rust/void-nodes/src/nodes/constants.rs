@@ -39,7 +39,6 @@ pub mod signals {
     pub const BACK_PRESSED: &str = "back_pressed";
     pub const SAVE_EXIT_PRESSED: &str = "save_exit_pressed";
     pub const SHIELD_BURST_REQUESTED: &str = "shield_burst_requested";
-    pub const RENDER_VIEWPORTS_CHANGED: &str = "render_viewports_changed";
     pub const BOSS_ARENA_ENTERED: &str = "boss_arena_entered";
 }
 
@@ -63,7 +62,6 @@ pub mod methods {
     pub const ON_OPTION_ADJUSTED: &str = "on_option_adjusted";
     pub const ON_OPTIONS_CHANGED: &str = "on_options_changed";
     pub const BROADCAST_OPTIONS: &str = "broadcast_options";
-    pub const ON_RENDER_VIEWPORTS_CHANGED: &str = "on_render_viewports_changed";
     pub const ON_BOSS_ARENA_ENTERED: &str = "on_boss_arena_entered";
     pub const SEAL_BOSS_GATE: &str = "seal_boss_gate";
     pub const RISE_BOSS: &str = "rise_boss";
@@ -240,7 +238,10 @@ pub mod nodes {
     pub const GAME_MANAGER: &str = "GameManager";
     pub const LEVEL_MANAGER: &str = "LevelManager";
     pub const PLAYER: &str = "Player";
-    pub const PLAYER_CAMERA: &str = "Player/Camera3D";
+    /// The eyepoint: the XR origin the ship carries (cockpit or chase pose).
+    pub const PLAYER_ORIGIN: &str = "Player/XROrigin3D";
+    /// The one camera — the head under a tracked runtime, eyes-front otherwise.
+    pub const PLAYER_CAMERA: &str = "Player/XROrigin3D/XRCamera3D";
     pub const TURNTABLE: &str = "Turntable";
     pub const LOADING_UI: &str = "LoadingUI";
     pub const MAIN_MENU_UI: &str = "MainMenuUI";
@@ -251,18 +252,10 @@ pub mod nodes {
     pub const BESTIARY_UI: &str = "BestiaryUI";
     pub const DEATH_SCREEN_UI: &str = "DeathScreenUI";
     pub const PAUSE_MENU_UI: &str = "PauseMenuUI";
-    pub const STEREO_CANVAS: &str = "StereoCanvas";
     pub const MONO_UI_LAYER: &str = "MonoUILayer";
     pub const UI_VIEWPORT: &str = "UIViewport";
-    pub const LEFT_CAMERA: &str = "StereoCanvas/LeftContainer/LeftViewport/LeftCamera";
-    pub const RIGHT_CAMERA: &str = "StereoCanvas/RightContainer/RightViewport/RightCamera";
-    pub const LEFT_CONTAINER: &str = "StereoCanvas/LeftContainer";
-    pub const RIGHT_CONTAINER: &str = "StereoCanvas/RightContainer";
     pub const VIEW_MANAGER: &str = "ViewManager";
-    pub const LEFT_VIEWPORT: &str = "StereoCanvas/LeftContainer/LeftViewport";
-    pub const RIGHT_VIEWPORT: &str = "StereoCanvas/RightContainer/RightViewport";
-    pub const LEFT_UI_OVERLAY: &str = "StereoCanvas/LeftContainer/LeftUIOverlay";
-    pub const RIGHT_UI_OVERLAY: &str = "StereoCanvas/RightContainer/RightUIOverlay";
+    /// The cockpit-locked UI quad's name (a child of PLAYER_ORIGIN).
     pub const UI_PLANE: &str = "UIPlane";
     pub const AUDIO_MANAGER: &str = "AudioManager";
 }
@@ -331,7 +324,6 @@ mod tests {
             signals::ROOM_CHANGED,
             signals::SHIP_COLOR_SELECTED,
             signals::SHIP_TYPE_SELECTED,
-            signals::RENDER_VIEWPORTS_CHANGED,
         ];
         for sig in &all_signals {
             assert!(
@@ -354,7 +346,6 @@ mod tests {
             methods::ON_OPTION_ADJUSTED,
             methods::ON_OPTIONS_CHANGED,
             methods::BROADCAST_OPTIONS,
-            methods::ON_RENDER_VIEWPORTS_CHANGED,
             methods::ON_BODY_ENTERED,
             methods::ADVANCE_TO_SHOP,
             methods::ADVANCE_TO_NEXT_LEVEL,
@@ -529,7 +520,6 @@ mod tests {
             signals::ROOM_CHANGED,
             signals::SHIP_COLOR_SELECTED,
             signals::SHIP_TYPE_SELECTED,
-            signals::RENDER_VIEWPORTS_CHANGED,
         ];
         for (i, a) in all.iter().enumerate() {
             for (j, b) in all.iter().enumerate() {
@@ -549,7 +539,6 @@ mod tests {
             methods::ON_OPTION_ADJUSTED,
             methods::ON_OPTIONS_CHANGED, methods::ON_BODY_ENTERED,
             methods::BROADCAST_OPTIONS,
-            methods::ON_RENDER_VIEWPORTS_CHANGED,
             methods::ADVANCE_TO_SHOP, methods::ADVANCE_TO_NEXT_LEVEL,
             methods::BUY_SHOP_ITEM, methods::RETURN_TO_MENU,
             methods::ON_RESPAWN_PRESSED, methods::SHOW_LIFE_LOST,
@@ -587,16 +576,13 @@ mod tests {
     fn node_paths_are_well_formed() {
         let all_nodes = [
             nodes::GAME_MANAGER, nodes::LEVEL_MANAGER,
-            nodes::PLAYER, nodes::PLAYER_CAMERA,
+            nodes::PLAYER, nodes::PLAYER_ORIGIN, nodes::PLAYER_CAMERA,
             nodes::TURNTABLE, nodes::MAIN_MENU_UI,
             nodes::HUD, nodes::KILL_SUMMARY_UI,
             nodes::SHOP_UI, nodes::DEATH_SCREEN_UI,
             nodes::PAUSE_MENU_UI,
-            nodes::STEREO_CANVAS, nodes::MONO_UI_LAYER,
-            nodes::UI_VIEWPORT, nodes::LEFT_CAMERA,
-            nodes::RIGHT_CAMERA, nodes::LEFT_CONTAINER,
-            nodes::RIGHT_CONTAINER, nodes::LEFT_UI_OVERLAY,
-            nodes::RIGHT_UI_OVERLAY,
+            nodes::MONO_UI_LAYER,
+            nodes::UI_VIEWPORT,
             nodes::UI_PLANE,
             nodes::AUDIO_MANAGER,
         ];

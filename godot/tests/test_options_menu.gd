@@ -87,12 +87,14 @@ func test_the_options_rows_reach_the_mixer_through_game_manager():
 
 func test_a_toggle_and_a_choice_reach_their_consumers():
 	var gm = _main.get_node("GameManager")
-	var left := _main.get_node("ViewManager/StereoCanvas/LeftContainer/LeftViewport") as SubViewport
-	assert_almost_eq(left.scaling_3d_scale, 1.0, 0.001, "full render scale to begin with")
+	# The root viewport renders the world (use_xr, one multiview pass) —
+	# the render scale lands there.
+	var root := _main.get_viewport()
+	assert_almost_eq(root.scaling_3d_scale, 1.0, 0.001, "full render scale to begin with")
 	gm.on_option_adjusted("render_scale", -1)
 	await wait_process_frames(1)
-	assert_almost_eq(left.scaling_3d_scale, 0.75, 0.001,
-		"the render scale reaches the eye viewport through the broadcast")
+	assert_almost_eq(root.scaling_3d_scale, 0.75, 0.001,
+		"the render scale reaches the rendering viewport through the broadcast")
 	assert_eq(gm.option_value_text("render_scale"), "75%")
 	gm.on_option_adjusted("render_scale", -1)
 	gm.on_option_adjusted("render_scale", -1)

@@ -1,45 +1,53 @@
 use godot::prelude::*;
 use godot::builtin::Signal;
 use godot::classes::{
-    Camera3D, CanvasLayer, DisplayServer, INode3D, MeshInstance3D, Node, Node3D,
-    QuadMesh, StandardMaterial3D, SubViewport, SubViewportContainer, TextureRect,
+    CanvasLayer, DisplayServer, INode3D, Image, MeshInstance3D, Node, Node3D, QuadMesh,
+    RenderingServer, StandardMaterial3D, SubViewport, TextureRect, XrCamera3D, XrServer,
     base_material_3d::{ShadingMode, Transparency, CullMode, Flags},
     display_server::WindowMode,
-    node::PhysicsInterpolationMode,
     texture_rect::StretchMode,
     sub_viewport::UpdateMode,
     viewport::Msaa,
 };
 
 use crate::nodes::constants::{methods, nodes, signals};
+use crate::nodes::live_handle::{LiveOpt, LiveRef};
 use crate::nodes::ui::options_wire;
+use crate::nodes::views::sbs_interface::{window_pixels, SbsInterface};
 use void_logic::game_options::{RenderScale, WindowMode as WindowPreference};
-use void_logic::stereo::{
-    frustum_offsets, left_eye_offset, right_eye_offset,
-    single_viewport_size, ui_plane_size, ui_viewport_size,
-    DisplayMode, StereoConfig,
-};
+use void_logic::stereo::{msaa_allowed, per_eye_size, ui_plane_size, DisplayMode, StereoConfig};
 
-/// Default distance (meters) from camera to the floating UI plane in SBS mode.
-/// A moderate in-scene depth: close enough (2 m) forces hard convergence and
-/// reads as nausea; this sits the HUD comfortably out in the scene. Comfort/
-/// readability is governed more by keeping the HUD *inboard* (see the HUD's
-/// safe-area band) than by this distance — disparity on a flat plane is uniform,
-/// so distance doesn't fix the "off-center element, one eye reaching" blur. The
-/// quad scales with distance, so on-screen size is unchanged. The material
-/// disables depth test (`setup_ui_plane`) so this depth isn't occluded by walls.
+/// Default distance (meters) from the eyepoint to the floating UI plane in
+/// SBS mode. A moderate in-scene depth: close enough (2 m) forces hard
+/// convergence and reads as nausea; this sits the HUD comfortably out in
+/// the scene. Comfort/readability is governed more by keeping the HUD
+/// *inboard* (see the HUD's safe-area band) than by this distance —
+/// disparity on a flat plane is uniform, so distance doesn't fix the
+/// "off-center element, one eye reaching" blur. The quad scales with
+/// distance, so on-screen size is unchanged. The material disables depth
+/// test (`setup_ui_plane`) so this depth isn't occluded by walls.
 const DEFAULT_UI_PLANE_DISTANCE: f32 = 4.0;
 
-/// First-class view manager: owns the display pipeline (mono or SBS stereo).
+/// First-class view manager: owns the display pipeline (mono or SBS
+/// stereo) — docs/design/xr_rig.md.
 ///
-/// Lives as a direct child of Main. Listens to GameManager's `options_changed`
-/// signal and reconfigures rendering accordingly. Never duplicates state that
-/// GameManager owns — receives the authoritative `sbs_enabled` via signal.
+/// The 3D world renders ONCE, through the root viewport under `use_xr`,
+/// by the `SbsInterface` this node registers as the XRServer's primary
+/// interface: one view in mono, two side by side, the eye geometry and
+/// the window blits inside the interface. The player's `XRCamera3D`
+/// (under `Player/XROrigin3D`, the eyepoint) is the one camera.
+///
+/// Lives as a direct child of Main. Listens to GameManager's
+/// `options_changed` signal and reconfigures accordingly. Never duplicates
+/// state that GameManager owns — receives the authoritative `sbs_enabled`
+/// via signal.
 ///
 /// UI CanvasLayers always render into a fixed-size UIViewport (set once at
-/// startup, never changed). In mono mode a MonoUILayer composites that texture
-/// fullscreen; in SBS mode a 3D quad (UIPlane) in the shared World3D displays
-/// the UIViewport texture, giving the UI real stereo depth.
+/// startup, never changed). In mono a MonoUILayer composites that texture
+/// fullscreen (the engine draws a viewport's 2D canvas at one view); in SBS
+/// (two views, where the engine skips 2D) a quad under the XR origin — the
+/// cockpit-locked UIPlane — displays the UIViewport texture, giving the UI
+/// real stereo depth.
 #[derive(GodotClass)]
 #[class(base=Node3D)]
 pub struct ViewManager {
@@ -71,6 +79,8 @@ pub struct ViewManager {
     /// `--ambient` family. Both set => they beat every runtime source.
     capture_interaxial: Option<f32>,
     capture_convergence: Option<f32>,
+    /// The cockpit-locked UI quad, a child of the player's XR origin.
+    ui_plane: Option<LiveRef<MeshInstance3D>>,
 }
 
 #[godot_api]
@@ -89,6 +99,7 @@ impl INode3D for ViewManager {
             director_focus: None,
             capture_interaxial: None,
             capture_convergence: None,
+            ui_plane: None,
         }
     }
 
@@ -107,18 +118,24 @@ impl INode3D for ViewManager {
                 }
             }
         }
-        self.setup_viewports();
+        self.setup_interface();
+        self.setup_ui();
         self.set_ui_viewport_once();
         self.connect_to_game_manager();
         self.connect_to_window_resize();
+        self.push_stereo();
         godot_print!("ViewManager ready — {}", self.current_mode.label());
         self.log_display_geometry("startup");
     }
 
+    fn exit_tree(&mut self) {
+        self.teardown_interface();
+    }
+
     fn process(&mut self, _delta: f64) {
         // Dynamic stereo: poll the ship's stereo director for this frame's
-        // dials before the eyes sync. Static mode leaves None, so the
-        // exported tuning values rule (the A/B baseline).
+        // dials before the interface renders. Static mode leaves None, so
+        // the exported tuning values rule (the A/B baseline).
         self.director_focus = if self.dynamic_stereo {
             self.base()
                 .get_parent()
@@ -134,36 +151,19 @@ impl INode3D for ViewManager {
         } else {
             None
         };
-        // The left eye renders in BOTH modes (mono = left eye fullscreen, SBS =
-        // both eyes), so keep it tracking the player camera every frame. The 3D
-        // UI plane only exists in SBS.
-        self.sync_eye_cameras();
-        if self.current_mode == DisplayMode::SideBySide {
-            self.sync_ui_plane();
-        }
+        self.push_stereo();
     }
 }
 
 #[godot_api]
 impl ViewManager {
-    /// Emitted whenever the set of viewports rendering the 3D world
-    /// changes (mode toggle). Telemetry listens so it always measures
-    /// the eyes that actually draw, never the root compositor.
-    #[signal]
-    fn render_viewports_changed(viewports: Array<Rid>);
-
     /// Called when the window resizes (fullscreen transition, manual resize,
-    /// etc.) Recomputes viewport and container sizes from the actual window
-    /// dims in BOTH modes — mono is the no-goggles way to play, and its
-    /// single eye must follow the window too (a mode-gated resize left the
-    /// 3D view frozen at its old size, playtest 2026-07-05). The 3D UI
-    /// plane only exists in SBS.
+    /// etc.). The 3D render target follows the window by construction (the
+    /// engine polls the interface's size every frame); only the UI texture
+    /// and its plane are sized here, in BOTH modes.
     #[func]
     pub fn on_window_size_changed(&mut self) {
-        self.resize_viewports();
-        if self.current_mode == DisplayMode::SideBySide {
-            self.resize_ui_plane();
-        }
+        self.resize_ui();
         self.log_display_geometry("window resized");
     }
 
@@ -182,8 +182,8 @@ impl ViewManager {
         // 2x Retina backing store of 2056x1329 pt, downsampled to the
         // panel). Print the scale so the log decodes itself.
         let scale = ds.screen_get_scale();
-        let config = self.stereo_config();
-        let texture_side = godot::classes::RenderingServer::singleton()
+        let [eye_w, eye_h] = per_eye_size(self.current_mode, window_pixels());
+        let texture_side = RenderingServer::singleton()
             .get_rendering_device()
             .map(|device| {
                 device
@@ -203,8 +203,8 @@ impl ViewManager {
             window.y,
             ds.window_get_mode(),
             self.current_mode.label(),
-            config.viewport_width,
-            config.viewport_height,
+            eye_w,
+            eye_h,
             texture_side,
         );
     }
@@ -234,27 +234,21 @@ impl ViewManager {
                 self.resize_window(sbs);
             }
             self.current_mode = target;
-            self.resize_viewports();
-            // Rebuild the UI plane to the new per-eye aspect on the same frame
-            // as the toggle, rather than waiting on the OS resize event.
-            self.resize_ui_plane();
+            // The interface flips its view count on the same frame as the
+            // toggle; the engine re-sizes the render target from it.
+            self.push_stereo();
+            // Rebuild the UI texture and plane to the new geometry on the
+            // same frame, rather than waiting on the OS resize event.
+            self.resize_ui();
             self.apply_visibility(sbs);
-            self.park_player_camera();
             self.log_display_geometry("display mode change");
-
-            // Publish the now-active 3D viewports so telemetry re-targets
-            // measurement onto the eyes (SBS) or the root (mono).
-            let rids = self.active_viewport_rids();
-            self.base_mut()
-                .emit_signal(signals::RENDER_VIEWPORTS_CHANGED, &[rids.to_variant()]);
-
             godot_print!("SBS stereo {}", if sbs { "enabled" } else { "disabled" });
         }
 
-        // ViewManager owns all viewport anti-aliasing: apply MSAA to
-        // whatever is now the active 3D viewport(s). Runs on every
-        // options change — a pure MSAA toggle and a post-mode-switch
-        // re-apply both end up correct.
+        // ViewManager owns all viewport anti-aliasing: apply MSAA to the
+        // viewport that renders the world. Runs on every options change —
+        // a pure MSAA toggle and a post-mode-switch re-apply both end up
+        // correct.
         self.apply_msaa(msaa_enabled);
         // The 3D render scale rides every broadcast too; the window
         // preference applies in mono (SBS owns the window there), and
@@ -267,42 +261,148 @@ impl ViewManager {
 }
 
 impl ViewManager {
-    /// The viewport RIDs currently rendering the 3D world: the left eye
-    /// sub-viewport in mono, both eye sub-viewports in SBS. The single
-    /// source of truth for "what is being drawn", since ViewManager
+    /// The viewport RIDs rendering the 3D world: the root viewport, in
+    /// both modes — one multiview pass through the display interface. The
+    /// single source of truth for "what is being drawn", since ViewManager
     /// owns the display pipeline. Called by typed Rust collaborators
     /// (LevelManager) — never over a Godot string boundary.
     pub(crate) fn active_viewport_rids(&self) -> Array<Rid> {
         let mut rids = Array::new();
-        match self.current_mode {
-            DisplayMode::SideBySide => {
-                for path in [nodes::LEFT_VIEWPORT, nodes::RIGHT_VIEWPORT] {
-                    match self.base().try_get_node_as::<SubViewport>(path) {
-                        Some(vp) => rids.push(vp.get_viewport_rid()),
-                        // The eyes always exist after setup_viewports; a
-                        // miss is a structural invariant break, not a
-                        // soft skip — make it loud so telemetry can't
-                        // silently under-measure.
-                        None => godot_warn!(
-                            "ViewManager: SBS eye viewport '{}' missing; render telemetry under-measures",
-                            path
-                        ),
-                    }
-                }
-            }
-            DisplayMode::Mono => {
-                // Mono renders through the LEFT eye sub-viewport (shown
-                // fullscreen), not the root viewport — so MSAA and telemetry
-                // must target it, the same eye that actually draws.
-                match self.base().try_get_node_as::<SubViewport>(nodes::LEFT_VIEWPORT) {
-                    Some(vp) => rids.push(vp.get_viewport_rid()),
-                    None => godot_warn!(
-                        "ViewManager: mono left viewport missing; render telemetry under-measures"
-                    ),
-                }
-            }
+        match self.base().get_viewport() {
+            Some(vp) => rids.push(vp.get_viewport_rid()),
+            // The root always exists once we are in the tree; a miss is a
+            // structural invariant break — make it loud so telemetry
+            // can't silently under-measure.
+            None => godot_warn!("ViewManager: no root viewport; render telemetry under-measures"),
         }
         rids
+    }
+
+    /// The frame the display shows, as an image — the capture rig's one
+    /// door. Mono is the root render target; side by side it is the two
+    /// multiview layers stitched left|right, exactly what the window
+    /// shows (the harness's SBS frame spans the full window, one eye per
+    /// half). `None` when nothing has been drawn (headless).
+    pub(crate) fn capture_frame(&self) -> Option<Gd<Image>> {
+        let viewport = self.base().get_viewport()?;
+        let texture = viewport.get_texture()?;
+        match self.current_mode {
+            DisplayMode::Mono => texture.get_image(),
+            DisplayMode::SideBySide => {
+                let rs = RenderingServer::singleton();
+                let rid = texture.get_rid();
+                let left = rs.texture_2d_layer_get(rid, 0)?;
+                let right = rs.texture_2d_layer_get(rid, 1)?;
+                let (w, h) = (left.get_width(), left.get_height());
+                let mut pair = Image::create_empty(w * 2, h, false, left.get_format())?;
+                let eye = Rect2i::new(Vector2i::ZERO, Vector2i::new(w, h));
+                pair.blit_rect(&left, eye, Vector2i::ZERO);
+                pair.blit_rect(&right, eye, Vector2i::new(w, 0));
+                Some(pair)
+            }
+        }
+    }
+
+    /// Register the SBS display interface as the XRServer's primary
+    /// interface and hand the root viewport to it: from here on the 3D
+    /// world renders through `use_xr`, one pass, one or two views.
+    fn setup_interface(&mut self) {
+        let mut interface = SbsInterface::new_gd();
+        let mut xr = XrServer::singleton();
+        xr.add_interface(&interface);
+        if !interface.initialize() {
+            godot_error!("ViewManager: the SBS display interface failed to initialize");
+            return;
+        }
+        xr.set_primary_interface(&interface);
+        match self.base().get_viewport() {
+            Some(mut viewport) => {
+                viewport.set_use_xr(true);
+                // Mouse picking of physics objects is a one-window-ray
+                // notion the engine switches off (with a warning) the
+                // moment a viewport renders two views; nothing here picks,
+                // so it is off by decision rather than by warning.
+                viewport.set_physics_object_picking(false);
+            }
+            None => godot_error!("ViewManager: no root viewport to render through"),
+        }
+    }
+
+    /// Hand the viewport back and unregister the interface while this
+    /// node leaves the tree — before the extension unloads. The XRServer
+    /// outlives scene-level GDExtension classes at shutdown, and an
+    /// interface it still held would be uninitialized through a class
+    /// that no longer exists; it also keeps a test process that boots
+    /// Main many times from accumulating interfaces.
+    fn teardown_interface(&mut self) {
+        if let Some(mut viewport) = self.base().get_viewport() {
+            viewport.set_use_xr(false);
+        }
+        let Some(mut interface) = self.sbs_interface() else {
+            return;
+        };
+        let mut xr = XrServer::singleton();
+        xr.set_primary_interface(Gd::null_arg());
+        interface.uninitialize();
+        xr.remove_interface(&interface);
+    }
+
+    /// The primary interface, when it is ours. The XRServer owns the
+    /// instance; this node never caches a handle to it.
+    fn sbs_interface(&self) -> Option<Gd<SbsInterface>> {
+        XrServer::singleton()
+            .get_primary_interface()
+            .and_then(|iface| iface.try_cast::<SbsInterface>().ok())
+    }
+
+    /// Push this frame's display mode, stereo dials and camera FOV into
+    /// the interface — the one place the render learns them.
+    fn push_stereo(&self) {
+        let dials = self.stereo_dials();
+        let fov = self.camera_fov();
+        if let Some(mut iface) = self.sbs_interface() {
+            iface.bind_mut().configure(self.current_mode, dials, fov);
+        }
+    }
+
+    /// The vertical field of view the player's camera is authored with —
+    /// inert to the engine under `use_xr`, consumed by the interface.
+    fn camera_fov(&self) -> f32 {
+        self.base()
+            .get_parent()
+            .and_then(|main| main.try_get_node_as::<XrCamera3D>(nodes::PLAYER_CAMERA))
+            .map(|camera| camera.get_fov())
+            .unwrap_or(75.0)
+    }
+
+    /// The stereo dials in force this frame. Dial priority: capture
+    /// diagnostics (the rig commanding exact geometry) beat the director,
+    /// which beats the static exports. In both override modes the
+    /// director/rig owns the dials absolutely — depth_strength is the
+    /// static mode's volume knob and must not double-scale a computed
+    /// baseline. The per-eye dimensions are the interface's business
+    /// (it re-reads the window every frame).
+    fn stereo_dials(&self) -> StereoConfig {
+        let (eye_separation, depth_strength, convergence_distance) =
+            match (self.capture_interaxial, self.capture_convergence) {
+                (Some(interaxial), Some(convergence)) => (interaxial, 1.0, convergence),
+                _ => match self.director_focus {
+                    Some((convergence, interaxial)) => (interaxial, 1.0, convergence),
+                    None => (
+                        self.eye_separation,
+                        self.depth_strength,
+                        self.convergence_distance,
+                    ),
+                },
+            };
+        let [viewport_width, viewport_height] = per_eye_size(self.current_mode, window_pixels());
+        StereoConfig {
+            eye_separation,
+            depth_strength,
+            convergence_distance,
+            viewport_width,
+            viewport_height,
+        }
     }
 
     /// ViewManager is a direct child of Main; GameManager is a sibling.
@@ -322,10 +422,11 @@ impl ViewManager {
         }
     }
 
-    /// Connect to the root viewport's size_changed signal so we reactively
-    /// resize viewports whenever the window changes (fullscreen, drag, etc.)
-    /// Uses CONNECT_DEFERRED to avoid re-entrant borrow panics — the callback
-    /// runs next frame, not during the signal emission that triggered the resize.
+    /// Connect to the root viewport's size_changed signal so the UI texture
+    /// and plane follow the window (fullscreen, drag, etc.). Uses
+    /// CONNECT_DEFERRED to avoid re-entrant borrow panics — the callback
+    /// runs next frame, not during the signal emission that triggered the
+    /// resize.
     fn connect_to_window_resize(&mut self) {
         let Some(viewport) = self.base().get_viewport() else {
             godot_warn!("ViewManager: no viewport for size_changed signal");
@@ -362,189 +463,48 @@ impl ViewManager {
         }
     }
 
-    fn stereo_config(&self) -> StereoConfig {
-        let ds = DisplayServer::singleton();
-        // The WINDOW is the truth: on notched Macs a fullscreen window is
-        // SHORTER than the screen (the camera-housing band), so substituting
-        // screen_get_size() whenever fullscreen sized the eyes 78 px too
-        // tall — permanently (playtest 2026-07-09). The old workaround
-        // (macOS animates the fullscreen transition, so the window size can
-        // lag a beat) survives as a fallback for the degenerate report
-        // only; the OS resize event re-runs sizing once the transition
-        // settles, so a transiently stale read self-heals.
-        let mut win = ds.window_get_size();
-        if win.x <= 0 || win.y <= 0 {
-            win = ds.screen_get_size();
-        }
-        // In SBS mode the window is 2x wide; per-eye width is half that.
-        let w = if self.current_mode == DisplayMode::SideBySide {
-            (win.x / 2) as u32
-        } else {
-            win.x as u32
-        };
-        // Dial priority: capture diagnostics (the rig commanding exact
-        // geometry) beat the director, which beats the static exports.
-        // In both override modes the director/rig owns the dials
-        // absolutely — depth_strength is the static mode's volume knob
-        // and must not double-scale a computed baseline.
-        let (eye_separation, depth_strength, convergence_distance) =
-            match (self.capture_interaxial, self.capture_convergence) {
-                (Some(interaxial), Some(convergence)) => (interaxial, 1.0, convergence),
-                _ => match self.director_focus {
-                    Some((convergence, interaxial)) => (interaxial, 1.0, convergence),
-                    None => (
-                        self.eye_separation,
-                        self.depth_strength,
-                        self.convergence_distance,
-                    ),
-                },
-            };
-        StereoConfig {
-            eye_separation,
-            depth_strength,
-            convergence_distance,
-            viewport_width: w,
-            viewport_height: win.y as u32,
-        }
-    }
-
-    fn setup_viewports(&mut self) {
-        let config = self.stereo_config();
-        let [eye_w, eye_h] = single_viewport_size(&config);
-
-        // Share the main scene's World3D so stereo cameras see the same geometry
-        let main_world = self.base().get_viewport()
-            .expect("ViewManager must be in the scene tree during setup")
-            .get_world_3d();
-
-        // CanvasLayer renders on top of the 3D scene
-        let mut canvas_layer = CanvasLayer::new_alloc();
-        canvas_layer.set_name("StereoCanvas");
-
-        // Left eye — full resolution, positioned at origin
-        let mut left_container = SubViewportContainer::new_alloc();
-        left_container.set_name("LeftContainer");
-        left_container.set_stretch(true);
-        left_container.set_position(Vector2::new(0.0, 0.0));
-        left_container.set_size(Vector2::new(eye_w as f32, eye_h as f32));
-
-        let mut left_viewport = SubViewport::new_alloc();
-        left_viewport.set_name("LeftViewport");
-        left_viewport.set_size(Vector2i::new(eye_w as i32, eye_h as i32));
-        if let Some(world) = main_world.clone() {
-            left_viewport.set_world_3d(&world);
-        }
-        Self::apply_aa(&mut left_viewport);
-        // 3D audio listener: in Godot 4.6 positional audio routes through the
-        // *current camera's* viewport (godot#94403, fixed in 4.7), and our only
-        // current cameras are the eye cameras inside these SubViewports. So the
-        // viewport that owns the listening camera must opt into 3D audio — without
-        // this, every AudioStreamPlayer3D is silent. The left eye is the render
-        // camera in both mono and SBS, and it tracks the player each frame
-        // (sync_eye_cameras), so it's the right listener.
-        left_viewport.set_as_audio_listener_3d(true);
-
-        let mut left_cam = Camera3D::new_alloc();
-        left_cam.set_name("LeftCamera");
-        // Driven per rendered frame (sync_eye_cameras) — the engine's own
-        // physics interpolation would re-blend the last two set poses and
-        // smear the rig a frame behind the world (the residual chase-view
-        // jitter, playtest 2026-07-04). The eyes and the UI plane opt out
-        // and move as one rigid unit.
-        left_cam.set_physics_interpolation_mode(PhysicsInterpolationMode::OFF);
-
-        left_viewport.add_child(&left_cam);
-        left_container.add_child(&left_viewport);
-        canvas_layer.add_child(&left_container);
-
-        // Right eye — full resolution, positioned after left
-        let mut right_container = SubViewportContainer::new_alloc();
-        right_container.set_name("RightContainer");
-        right_container.set_stretch(true);
-        right_container.set_position(Vector2::new(eye_w as f32, 0.0));
-        right_container.set_size(Vector2::new(eye_w as f32, eye_h as f32));
-
-        let mut right_viewport = SubViewport::new_alloc();
-        right_viewport.set_name("RightViewport");
-        right_viewport.set_size(Vector2i::new(eye_w as i32, eye_h as i32));
-        if let Some(world) = main_world {
-            right_viewport.set_world_3d(&world);
-        }
-        Self::apply_aa(&mut right_viewport);
-
-        let mut right_cam = Camera3D::new_alloc();
-        right_cam.set_name("RightCamera");
-        right_cam.set_physics_interpolation_mode(PhysicsInterpolationMode::OFF);
-
-        right_viewport.add_child(&right_cam);
-        right_container.add_child(&right_viewport);
-        canvas_layer.add_child(&right_container);
-
-        // --- UI SubViewport for overlaying UI on both eyes ---
-        let [ui_w, ui_h] = ui_viewport_size(&config);
+    /// The UI pipeline: the one UIViewport every UI layer renders into,
+    /// the fullscreen MonoUILayer that shows it in mono, and the
+    /// cockpit-locked UIPlane that shows it in SBS.
+    fn setup_ui(&mut self) {
+        let [ui_w, ui_h] = self.ui_texture_size();
 
         let mut ui_viewport = SubViewport::new_alloc();
-        ui_viewport.set_name("UIViewport");
+        ui_viewport.set_name(nodes::UI_VIEWPORT);
         ui_viewport.set_size(Vector2i::new(ui_w as i32, ui_h as i32));
         ui_viewport.set_transparent_background(true);
         ui_viewport.set_update_mode(UpdateMode::ALWAYS);
-
-        // UI TextureRect in left eye (kept for fallback but hidden in SBS)
-        let mut left_ui_rect = TextureRect::new_alloc();
-        left_ui_rect.set_name("LeftUIOverlay");
-        left_ui_rect.set_size(Vector2::new(eye_w as f32, eye_h as f32));
-        left_ui_rect.set_stretch_mode(StretchMode::SCALE);
-        left_ui_rect.set_mouse_filter(godot::classes::control::MouseFilter::IGNORE);
-        left_container.add_child(&left_ui_rect);
-
-        // UI TextureRect in right eye (kept for fallback but hidden in SBS)
-        let mut right_ui_rect = TextureRect::new_alloc();
-        right_ui_rect.set_name("RightUIOverlay");
-        right_ui_rect.set_size(Vector2::new(eye_w as f32, eye_h as f32));
-        right_ui_rect.set_stretch_mode(StretchMode::SCALE);
-        right_ui_rect.set_mouse_filter(godot::classes::control::MouseFilter::IGNORE);
-        right_container.add_child(&right_ui_rect);
-
-        self.base_mut().add_child(&canvas_layer);
-
-        // Add UIViewport as child of this node (not under CanvasLayer)
         self.base_mut().add_child(&ui_viewport);
 
-        // MonoUILayer — shows UIViewport texture in mono mode (fullscreen overlay)
+        // MonoUILayer — shows the UIViewport texture in mono (fullscreen
+        // overlay on the root canvas, which the engine draws at one view).
         let mut mono_ui_layer = CanvasLayer::new_alloc();
-        mono_ui_layer.set_name("MonoUILayer");
-
+        mono_ui_layer.set_name(nodes::MONO_UI_LAYER);
         let mut mono_ui_rect = TextureRect::new_alloc();
         mono_ui_rect.set_name("MonoUIRect");
         mono_ui_rect.set_anchors_preset(godot::classes::control::LayoutPreset::FULL_RECT);
         mono_ui_rect.set_stretch_mode(StretchMode::SCALE);
         mono_ui_rect.set_mouse_filter(godot::classes::control::MouseFilter::IGNORE);
-
         mono_ui_layer.add_child(&mono_ui_rect);
         self.base_mut().add_child(&mono_ui_layer);
 
-        // Set UIViewport texture on overlay rects
         let ui_texture = ui_viewport.get_texture()
             .expect("UIViewport must have a texture after creation");
-        left_ui_rect.set_texture(&ui_texture);
-        right_ui_rect.set_texture(&ui_texture);
         mono_ui_rect.set_texture(&ui_texture);
 
-        // --- 3D UI plane: world-space quad for SBS stereo depth ---
+        // --- 3D UI plane: cockpit-locked quad for SBS stereo depth ---
         self.setup_ui_plane(ui_texture);
 
-        // Mono by default: left eye fullscreen, right eye + UIPlane hidden, UI
-        // via the fullscreen MonoUILayer. The player camera is parked non-current
-        // so the eye viewport owns the render.
+        // Mono by default: MonoUILayer shows the UI, the plane hides.
         self.apply_visibility(false);
-        self.park_player_camera();
     }
 
-    /// Create a MeshInstance3D with a QuadMesh textured with the UIViewport.
-    /// In SBS mode this floats in front of the camera so both stereo cameras
-    /// render it with natural parallax, giving the UI real depth.
+    /// Create the UIPlane: a QuadMesh textured with the UIViewport, a child
+    /// of the player's XR origin at `ui_plane_distance` straight ahead. In
+    /// SBS both eyes render it with natural parallax, giving the UI real
+    /// depth; being a child of the origin it rides the ship's rendered
+    /// (interpolated) pose exactly like the hull — no per-frame sync.
     fn setup_ui_plane(&mut self, ui_texture: Gd<godot::classes::ViewportTexture>) {
-        // Read FOV and aspect from the actual camera rather than hardcoding
         let (fov, aspect) = self.camera_fov_and_aspect();
         let [quad_w, quad_h] = ui_plane_size(self.ui_plane_distance, fov, aspect);
 
@@ -566,18 +526,27 @@ impl ViewManager {
             godot::classes::base_material_3d::TextureParam::ALBEDO,
             &texture_2d,
         );
-
         quad_mesh.set_material(&material);
 
         let mut ui_plane = MeshInstance3D::new_alloc();
-        ui_plane.set_name("UIPlane");
-        // Same per-frame-driven rig as the eye cameras: no engine re-blend,
-        // or the whole HUD swims against the view in SBS.
-        ui_plane.set_physics_interpolation_mode(PhysicsInterpolationMode::OFF);
+        ui_plane.set_name(nodes::UI_PLANE);
         ui_plane.set_mesh(&quad_mesh);
         ui_plane.set_visible(false);
+        ui_plane.set_transform(Transform3D::new(
+            Basis::IDENTITY,
+            Vector3::new(0.0, 0.0, -self.ui_plane_distance),
+        ));
 
-        self.base_mut().add_child(&ui_plane);
+        let Some(mut origin) = self
+            .base()
+            .get_parent()
+            .and_then(|main| main.try_get_node_as::<Node3D>(nodes::PLAYER_ORIGIN))
+        else {
+            godot_error!("ViewManager: no player XR origin to carry the UI plane");
+            return;
+        };
+        origin.add_child(&ui_plane);
+        self.ui_plane = Some(LiveRef::new(&ui_plane));
     }
 
     /// FOV from the player camera, and the aspect of the UI plane. The plane
@@ -585,232 +554,73 @@ impl ViewManager {
     /// must be the full-window aspect (not per-eye) — otherwise a wide texture
     /// is crushed onto a narrow quad and the UI reads squished.
     fn camera_fov_and_aspect(&self) -> (f32, f32) {
-        let Some(main_scene) = self.base().get_parent() else {
-            return (75.0, 16.0 / 9.0);
-        };
-        let Some(camera) = main_scene.try_get_node_as::<Camera3D>(nodes::PLAYER_CAMERA) else {
-            return (75.0, 16.0 / 9.0);
-        };
-        let fov = camera.get_fov();
-        let config = self.stereo_config();
-        let sbs = self.current_mode == DisplayMode::SideBySide;
-        let full_w = if sbs { config.viewport_width * 2 } else { config.viewport_width };
-        let aspect = if config.viewport_height > 0 {
-            full_w as f32 / config.viewport_height as f32
+        let fov = self.camera_fov();
+        let [win_w, win_h] = window_pixels();
+        let aspect = if win_h > 0 {
+            win_w as f32 / win_h as f32
         } else {
             16.0 / 9.0
         };
         (fov, aspect)
     }
 
-    /// Resize the UI plane quad to match current camera FOV and aspect ratio.
-    fn resize_ui_plane(&self) {
-        let Some(ui_plane) = self.base().try_get_node_as::<MeshInstance3D>(nodes::UI_PLANE) else {
-            return;
-        };
+    /// The UI texture spans the FULL window in both modes. The UI
+    /// CanvasLayers anchor their controls to the root window
+    /// (custom_viewport redirects rendering, not layout), so a centered
+    /// panel sits at window-center. If the UIViewport were only per-eye
+    /// wide, window-center would land at its right edge — which is exactly
+    /// the "menus shoved right in SBS" bug.
+    fn ui_texture_size(&self) -> [u32; 2] {
+        window_pixels()
+    }
+
+    /// Size the UI texture and the plane quad to the current window.
+    fn resize_ui(&self) {
+        let [ui_w, ui_h] = self.ui_texture_size();
+        if let Some(mut vp) = self.base().try_get_node_as::<SubViewport>(nodes::UI_VIEWPORT) {
+            vp.set_size(Vector2i::new(ui_w as i32, ui_h as i32));
+        }
         let (fov, aspect) = self.camera_fov_and_aspect();
         let [quad_w, quad_h] = ui_plane_size(self.ui_plane_distance, fov, aspect);
-
-        let plane = ui_plane.clone();
-        if let Some(mesh) = plane.get_mesh() {
-            if let Ok(mut quad) = mesh.try_cast::<QuadMesh>() {
-                quad.set_size(Vector2::new(quad_w, quad_h));
+        self.ui_plane.with(|plane| {
+            if let Some(mesh) = plane.get_mesh() {
+                if let Ok(mut quad) = mesh.try_cast::<QuadMesh>() {
+                    quad.set_size(Vector2::new(quad_w, quad_h));
+                }
             }
-        }
+        });
     }
 
-    /// Position the UIPlane in front of the mono camera each frame.
-    fn sync_ui_plane(&self) {
-        let Some(main_scene) = self.base().get_parent() else {
-            return;
-        };
-        let Some(camera) = main_scene.try_get_node_as::<Camera3D>(nodes::PLAYER_CAMERA) else {
-            return;
-        };
-        let Some(ui_plane) = self.base().try_get_node_as::<MeshInstance3D>(nodes::UI_PLANE) else {
-            return;
-        };
-
-        // INTERPOLATED, not raw: the world renders at the physics-interpolated
-        // pose, and a plane pinned to the raw pose swims against it.
-        let mut camera = camera;
-        let cam_transform = camera.get_global_transform_interpolated();
-        let forward = -cam_transform.basis.col_c();
-        let plane_origin = cam_transform.origin + forward * self.ui_plane_distance;
-
-        let mut plane = ui_plane.clone();
-        plane.set_global_transform(Transform3D::new(cam_transform.basis, plane_origin));
-    }
-
-    /// Sync stereo cameras to the mono camera's transform.
-    /// ViewManager is a sibling of Player under Main, so we look up
-    /// Player/Camera3D via the parent scene.
-    fn sync_eye_cameras(&mut self) {
-        let Some(main_scene) = self.base().get_parent() else {
-            return;
-        };
-        let Some(camera) = main_scene.try_get_node_as::<Camera3D>(nodes::PLAYER_CAMERA) else {
-            return;
-        };
-
-        // INTERPOLATED, not raw (chase-view fix, playtest 2026-07-04): the
-        // ship's hull renders at the physics-interpolated pose, but the raw
-        // transform steps at physics ticks — an eye camera copying the raw
-        // pose oscillates against the hull it's chasing. Invisible in
-        // cockpit (no hull in frame), violent in chase view.
-        let mut camera = camera;
-        let camera_transform = camera.get_global_transform_interpolated();
-        let config = self.stereo_config();
-
-        // Off-axis convergence needs FRUSTUM projection: Godot silently
-        // ignores `frustum_offset` on a PERSPECTIVE camera, which left
-        // convergence a dead knob until the disparity contracts measured
-        // the pixels (2026-08-20). The frustum equivalent of the source
-        // camera: size = near-plane height from its own FOV; the
-        // dimensionless stereo shift (per unit distance — the tested
-        // math in stereo.rs) scales by `near` to land in near-plane
-        // world units, Godot's frustum_offset convention.
-        let near = camera.get_near();
-        let frustum_size = 2.0 * near * (camera.get_fov().to_radians() / 2.0).tan();
-
-        // Mono = a single centered eye: no horizontal separation, no frustum
-        // skew. SBS splits the eyes apart with the configured stereo offsets.
-        let mono = self.current_mode != DisplayMode::SideBySide;
-        let (l_off, r_off, l_frustum, r_frustum) = if mono {
-            ([0.0_f32; 3], [0.0_f32; 3], 0.0_f32, 0.0_f32)
-        } else {
-            let [lf, rf] = frustum_offsets(&config);
-            (left_eye_offset(&config), right_eye_offset(&config), lf, rf)
-        };
-
-        let local_x = camera_transform.basis.col_a();
-
-        let place_eye = |eye: Option<Gd<Camera3D>>, off: f32, frustum: f32| {
-            let Some(mut cam) = eye else { return };
-            let mut t = camera_transform;
-            t.origin += local_x * off;
-            cam.set_global_transform(t);
-            if mono {
-                cam.set_projection(godot::classes::camera_3d::ProjectionType::PERSPECTIVE);
-            } else {
-                cam.set_projection(godot::classes::camera_3d::ProjectionType::FRUSTUM);
-                cam.set_size(frustum_size);
-                cam.set_frustum_offset(Vector2::new(frustum * near, 0.0));
-            }
-        };
-
-        place_eye(
-            self.base().try_get_node_as::<Camera3D>(nodes::LEFT_CAMERA),
-            l_off[0],
-            l_frustum,
-        );
-        // The right eye only renders in SBS, but positioning it in mono is
-        // harmless (its viewport is hidden) and keeps the code branch-free.
-        place_eye(
-            self.base().try_get_node_as::<Camera3D>(nodes::RIGHT_CAMERA),
-            r_off[0],
-            r_frustum,
-        );
-    }
-
+    /// UI: in mono the HUD is drawn by the fullscreen MonoUILayer (a proper
+    /// CanvasLayer at 1:1, so tiny center chrome survives); in SBS the 3D
+    /// UIPlane takes over, so the flat layer hides.
     fn apply_visibility(&mut self, sbs: bool) {
-        // StereoCanvas hosts the eye viewports and is ALWAYS visible now — the
-        // left eye is the render path in both modes (mono = left eye fullscreen).
-        if let Some(mut canvas) = self.base().try_get_node_as::<CanvasLayer>(nodes::STEREO_CANVAS) {
-            canvas.set_visible(true);
-        }
-        // The right eye only renders in SBS; in mono the left container is sized
-        // fullscreen (see resize_viewports / stereo_config).
-        if let Some(mut right) = self.base().try_get_node_as::<SubViewportContainer>(nodes::RIGHT_CONTAINER) {
-            right.set_visible(sbs);
-        }
-        if let Some(mut left) = self.base().try_get_node_as::<SubViewportContainer>(nodes::LEFT_CONTAINER) {
-            left.set_visible(true);
-        }
-        // UI: in mono the HUD is drawn by the fullscreen MonoUILayer (a proper
-        // CanvasLayer at 1:1, so the tiny center reticle survives); in SBS the
-        // 3D UIPlane takes over, so the flat layer hides. The in-eye overlays
-        // live inside the SubViewportContainers, which scale the reticle away —
-        // they're retired (always hidden), kept only so the texture wiring in
-        // setup stays uniform.
         if let Some(mut mono) = self.base().try_get_node_as::<CanvasLayer>(nodes::MONO_UI_LAYER) {
             mono.set_visible(!sbs);
         }
-        if let Some(mut overlay) = self.base().try_get_node_as::<TextureRect>(nodes::LEFT_UI_OVERLAY) {
-            overlay.set_visible(false);
-        }
-        if let Some(mut overlay) = self.base().try_get_node_as::<TextureRect>(nodes::RIGHT_UI_OVERLAY) {
-            overlay.set_visible(false);
-        }
-        // 3D UI plane: visible in SBS, hidden in mono
-        if let Some(mut plane) = self.base().try_get_node_as::<MeshInstance3D>(nodes::UI_PLANE) {
-            plane.set_visible(sbs);
-        }
+        self.ui_plane.with(|plane| plane.set_visible(sbs));
     }
 
-    /// Update container/overlay sizes to match current window geometry.
-    /// SubViewports with stretch-enabled parents resize automatically —
-    /// only touch containers and overlay TextureRects.
-    fn resize_viewports(&mut self) {
-        let config = self.stereo_config();
-        let [eye_w, eye_h] = single_viewport_size(&config);
-        let [ui_w, ui_h] = ui_viewport_size(&config);
-
-        // Left container: position (0,0), size = per-eye
-        if let Some(mut c) = self.base().try_get_node_as::<SubViewportContainer>(nodes::LEFT_CONTAINER) {
-            c.set_position(Vector2::new(0.0, 0.0));
-            c.set_size(Vector2::new(eye_w as f32, eye_h as f32));
-        }
-        if let Some(mut r) = self.base().try_get_node_as::<TextureRect>(nodes::LEFT_UI_OVERLAY) {
-            r.set_size(Vector2::new(eye_w as f32, eye_h as f32));
-        }
-
-        // Right container: position (eye_w, 0), size = per-eye
-        if let Some(mut c) = self.base().try_get_node_as::<SubViewportContainer>(nodes::RIGHT_CONTAINER) {
-            c.set_position(Vector2::new(eye_w as f32, 0.0));
-            c.set_size(Vector2::new(eye_w as f32, eye_h as f32));
-        }
-        if let Some(mut r) = self.base().try_get_node_as::<TextureRect>(nodes::RIGHT_UI_OVERLAY) {
-            r.set_size(Vector2::new(eye_w as f32, eye_h as f32));
-        }
-
-        // UIViewport spans the FULL window, not per-eye. The UI CanvasLayers
-        // anchor their controls to the root window (custom_viewport redirects
-        // rendering, not layout), so a centered panel sits at window-center. If
-        // the UIViewport were only per-eye wide, window-center would land at its
-        // right edge — which is exactly the "menus shoved right in SBS" bug.
-        let sbs = self.current_mode == DisplayMode::SideBySide;
-        let ui_full_w = if sbs { ui_w * 2 } else { ui_w };
-        if let Some(mut vp) = self.base().try_get_node_as::<SubViewport>(nodes::UI_VIEWPORT) {
-            vp.set_size(Vector2i::new(ui_full_w as i32, ui_h as i32));
-        }
-    }
-
-    /// Set up eye anti-aliasing at construction. MSAA starts disabled —
-    /// it is driven by the authoritative option via `apply_eye_msaa`,
-    /// applied at startup by GameManager's options broadcast. TAA is
-    /// always on (cheap, separate from the MSAA option).
-    fn apply_aa(viewport: &mut SubViewport) {
-        viewport.set_msaa_3d(Msaa::DISABLED);
-        viewport.set_use_taa(true);
-    }
-
-    /// Apply the MSAA option to the viewport(s) actually rendering the
-    /// 3D world — both eye sub-viewports in SBS, the LEFT eye sub-viewport
-    /// (shown fullscreen) in mono. The root viewport never draws the world
-    /// (it only hosts the eye canvas), so it must never be targeted — same
-    /// set as `active_viewport_rids`. ViewManager is the sole owner of
-    /// viewport anti-aliasing.
+    /// Apply the MSAA option to the viewport that renders the 3D world —
+    /// the root, in both modes. ViewManager is the sole owner of viewport
+    /// anti-aliasing (TAA rides the project setting, always on). Where the
+    /// engine's driver cannot multisample a multiview render (`msaa_allowed`),
+    /// the option stays recorded but the render goes without, and the log
+    /// says so.
     fn apply_msaa(&mut self, enabled: bool) {
-        let msaa = if enabled { Msaa::MSAA_4X } else { Msaa::DISABLED };
-        let paths: &[&str] = match self.current_mode {
-            DisplayMode::SideBySide => &[nodes::LEFT_VIEWPORT, nodes::RIGHT_VIEWPORT],
-            DisplayMode::Mono => &[nodes::LEFT_VIEWPORT],
-        };
-        for path in paths {
-            if let Some(mut vp) = self.base().try_get_node_as::<SubViewport>(*path) {
-                vp.set_msaa_3d(msaa);
-            }
+        let driver = RenderingServer::singleton()
+            .get_current_rendering_driver_name()
+            .to_string();
+        let allowed = msaa_allowed(self.current_mode, &driver);
+        if enabled && !allowed {
+            godot_print!(
+                "MSAA requested but the {driver} driver cannot multisample a {} render; rendering without it (TAA stays on)",
+                self.current_mode.label()
+            );
+        }
+        let msaa = if enabled && allowed { Msaa::MSAA_4X } else { Msaa::DISABLED };
+        if let Some(mut vp) = self.base().get_viewport() {
+            vp.set_msaa_3d(msaa);
         }
     }
 
@@ -850,31 +660,11 @@ impl ViewManager {
         }
     }
 
-    /// Apply the 3D render scale to both eye sub-viewports — the world
-    /// is drawn at that fraction of the window and upscaled. Both eyes
-    /// always, so a later SBS toggle inherits it.
+    /// Apply the 3D render scale to the rendering viewport — the world is
+    /// drawn at that fraction of the per-eye target and upscaled.
     fn apply_render_scale(&mut self, scale: RenderScale) {
-        for path in [nodes::LEFT_VIEWPORT, nodes::RIGHT_VIEWPORT] {
-            if let Some(mut vp) = self.base().try_get_node_as::<SubViewport>(path) {
-                vp.set_scaling_3d_scale(scale.factor());
-            }
+        if let Some(mut vp) = self.base().get_viewport() {
+            vp.set_scaling_3d_scale(scale.factor());
         }
     }
-
-    /// The player's own `Camera3D` is never the render camera now — the eye
-    /// SubViewport cameras draw the world in both modes (mono = left eye). It
-    /// stays non-current so it can't fight the eye viewports for the root
-    /// surface, which was the black-in-mono bug. It remains the *reference*
-    /// transform the eye cameras track each frame.
-    fn park_player_camera(&self) {
-        let Some(main_scene) = self.base().get_parent() else {
-            return;
-        };
-        if let Some(mut camera) = main_scene.try_get_node_as::<Camera3D>(nodes::PLAYER_CAMERA) {
-            camera.set_current(false);
-        }
-    }
-
-    // (3D audio listener is enabled directly on the left eye SubViewport in
-    // setup_viewports — see the `set_as_audio_listener_3d` call there.)
 }

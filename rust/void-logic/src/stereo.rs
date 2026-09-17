@@ -15,13 +15,6 @@ impl DisplayMode {
     }
 }
 
-/// Whether a CanvasLayer's custom viewport should be reset to default.
-/// Returns `false` when no custom viewport is set, preventing the Godot 4.6
-/// error "Cannot set viewport to nullptr" on redundant resets.
-pub fn should_reset_custom_viewport(has_custom: bool) -> bool {
-    has_custom
-}
-
 /// Configuration for side-by-side stereoscopic rendering.
 #[derive(Debug, Clone)]
 pub struct StereoConfig {
@@ -66,8 +59,96 @@ pub fn frustum_offsets(config: &StereoConfig) -> [f32; 2] {
     [shift, -shift]
 }
 
-pub fn single_viewport_size(config: &StereoConfig) -> [u32; 2] {
-    [config.viewport_width, config.viewport_height]
+
+/// Views the display interface renders per frame: one eye in mono, two
+/// side by side.
+pub fn view_count(mode: DisplayMode) -> u32 {
+    match mode {
+        DisplayMode::Mono => 1,
+        DisplayMode::SideBySide => 2,
+    }
+}
+
+
+/// The render target one view needs for a `window` of `[w, h]` pixels:
+/// the whole window in mono; side by side, each eye takes half the width.
+pub fn per_eye_size(mode: DisplayMode, window: [u32; 2]) -> [u32; 2] {
+    match mode {
+        DisplayMode::Mono => window,
+        DisplayMode::SideBySide => [window[0] / 2, window[1]],
+    }
+}
+
+
+/// Whether the MSAA option may be applied to the render for `mode` on
+/// `rendering_driver` (Godot's driver name: "metal", "vulkan", …).
+/// Godot 4.6.1's Metal driver cannot slice a multisample array — the
+/// per-view MSAA resolve of a two-view render asserts inside Metal's
+/// texture-view validation (`MTLTextureType2DMultisampleArray` viewed as
+/// `MTLTextureType2D`, 2026-09-17, TAA on or off) — so on Metal MSAA is a
+/// single-view feature. Re-test on an engine upgrade before widening.
+pub fn msaa_allowed(mode: DisplayMode, rendering_driver: &str) -> bool {
+    !(rendering_driver == "metal" && view_count(mode) > 1)
+}
+
+/// Horizontal eye offset (meters, camera X) for `view` of `mode`: the
+/// single eye sits on the camera axis; the stereo pair straddles it.
+pub fn eye_offset_for_view(mode: DisplayMode, config: &StereoConfig, view: u32) -> f32 {
+    match (mode, view) {
+        (DisplayMode::Mono, _) => 0.0,
+        (DisplayMode::SideBySide, 0) => left_eye_offset(config)[0],
+        (DisplayMode::SideBySide, _) => right_eye_offset(config)[0],
+    }
+}
+
+/// Off-axis perspective projection, column-major (Godot's `Projection`
+/// layout): the symmetric perspective of `fov_v_deg` (vertical) and
+/// `aspect`, its window slid horizontally by `shift` — the dimensionless
+/// stereo shift per unit distance from `frustum_offsets`, which lands in
+/// the matrix as the off-axis term `shift / (tan(fov_v/2) · aspect)`.
+/// `shift = 0` is the plain perspective.
+pub fn off_axis_projection(fov_v_deg: f32, aspect: f32, near: f32, far: f32, shift: f32) -> [f64; 16] {
+    let tan_half = ((fov_v_deg as f64).to_radians() / 2.0).tan();
+    let (n, f, a) = (near as f64, far as f64, aspect as f64);
+    let mut m = [0.0; 16];
+    m[0] = 1.0 / (tan_half * a);
+    m[5] = 1.0 / tan_half;
+    // Column 2: the off-axis slide (a frustum whose left/right bounds are
+    // both moved by shift·near has (right+left)/(right−left) = shift/tan_h).
+    m[8] = shift as f64 / (tan_half * a);
+    m[10] = -(f + n) / (f - n);
+    m[11] = -1.0;
+    m[14] = -2.0 * f * n / (f - n);
+    m
+}
+
+/// The projection for `view` of `mode`: mono and a parallel rig are the
+/// symmetric perspective; a converged rig slides each eye's window by
+/// its `frustum_offsets` entry.
+pub fn projection_for_view(
+    mode: DisplayMode,
+    config: &StereoConfig,
+    view: u32,
+    fov_v_deg: f32,
+    aspect: f32,
+    near: f32,
+    far: f32,
+) -> [f64; 16] {
+    let shift = match mode {
+        DisplayMode::Mono => 0.0,
+        DisplayMode::SideBySide => frustum_offsets(config)[view.min(1) as usize],
+    };
+    off_axis_projection(fov_v_deg, aspect, near, far, shift)
+}
+
+/// Where each rendered view lands in the window, `[x, y, w, h]` pixels,
+/// in view order: the single eye fills the window; the pair tiles it
+/// left|right.
+pub fn blit_rects(mode: DisplayMode, config: &StereoConfig) -> Vec<[u32; 4]> {
+    match mode {
+        DisplayMode::Mono => vec![left_viewport_rect(config)],
+        DisplayMode::SideBySide => vec![left_viewport_rect(config), right_viewport_rect(config)],
+    }
 }
 
 /// Total output resolution for full SBS: [2 * per_eye_width, height].
@@ -83,12 +164,6 @@ pub fn right_viewport_rect(config: &StereoConfig) -> [u32; 4] {
     [config.viewport_width, 0, config.viewport_width, config.viewport_height]
 }
 
-/// UI viewport size — same as per-eye resolution.
-/// UI renders at native per-eye res regardless of SBS mode.
-pub fn ui_viewport_size(config: &StereoConfig) -> [u32; 2] {
-    [config.viewport_width, config.viewport_height]
-}
-
 /// Size of the world-space UI quad at a given distance from the camera.
 /// Returns [width, height] in world units (meters).
 /// The quad fills the camera's field of view at the given distance.
@@ -96,16 +171,6 @@ pub fn ui_plane_size(distance: f32, fov_degrees: f32, aspect_ratio: f32) -> [f32
     let half_fov = (fov_degrees / 2.0).to_radians();
     let h = 2.0 * distance * half_fov.tan();
     [h * aspect_ratio, h]
-}
-
-/// Position the UI plane in front of the camera along its forward vector.
-/// Returns [x, y, z] in world coordinates.
-pub fn ui_plane_position(cam_origin: [f32; 3], cam_forward: [f32; 3], distance: f32) -> [f32; 3] {
-    [
-        cam_origin[0] + cam_forward[0] * distance,
-        cam_origin[1] + cam_forward[1] * distance,
-        cam_origin[2] + cam_forward[2] * distance,
-    ]
 }
 
 // --- The convergence travel band ---
@@ -129,18 +194,6 @@ pub const CONVERGENCE_FAR: f32 = 10.0;
 /// moves perceived depth moves in steps.
 pub fn exp_approach(current: f32, target: f32, rate: f32, dt: f32) -> f32 {
     current + (target - current) * (1.0 - (-rate * dt).exp())
-}
-
-/// Rect `[x, y, w, h]` for the UI TextureRect overlay in the left eye container.
-/// Local coords inside the left SubViewportContainer — origin is (0,0).
-pub fn ui_overlay_rect_left(config: &StereoConfig) -> [f32; 4] {
-    [0.0, 0.0, config.viewport_width as f32, config.viewport_height as f32]
-}
-
-/// Rect `[x, y, w, h]` for the UI TextureRect overlay in the right eye container.
-/// Local coords inside the right SubViewportContainer — origin is (0,0).
-pub fn ui_overlay_rect_right(config: &StereoConfig) -> [f32; 4] {
-    [0.0, 0.0, config.viewport_width as f32, config.viewport_height as f32]
 }
 
 #[cfg(test)]
@@ -192,12 +245,6 @@ mod tests {
     }
 
     #[test]
-    fn single_viewport_is_full_per_eye_resolution() {
-        let cfg = StereoConfig::default();
-        assert_eq!(single_viewport_size(&cfg), [1920, 1080]);
-    }
-
-    #[test]
     fn right_eye_offset_is_positive_half_separation() {
         let cfg = StereoConfig::default();
         let offset = right_eye_offset(&cfg);
@@ -225,6 +272,170 @@ mod tests {
         assert_eq!(offsets, [0.0, 0.0], "parallel mode should have no frustum shift");
     }
 
+
+    // --- The display interface's contract: views, eye offsets, projections, blits ---
+
+    /// NDC x of a camera-space point through a column-major projection.
+    fn ndc_x(m: &[f64; 16], p: [f64; 3]) -> f64 {
+        let clip_x = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12];
+        let clip_w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
+        clip_x / clip_w
+    }
+
+    /// The symmetric perspective, written out independently of the code
+    /// under test (Godot's `Projection::set_perspective`, column-major).
+    fn symmetric_perspective(fov_v_deg: f32, aspect: f32, near: f32, far: f32) -> [f64; 16] {
+        let t = (fov_v_deg as f64).to_radians().tan_half();
+        let (n, f, a) = (near as f64, far as f64, aspect as f64);
+        let mut m = [0.0; 16];
+        m[0] = 1.0 / (t * a);
+        m[5] = 1.0 / t;
+        m[10] = -(f + n) / (f - n);
+        m[11] = -1.0;
+        m[14] = -2.0 * f * n / (f - n);
+        m
+    }
+
+    trait TanHalf {
+        fn tan_half(self) -> f64;
+    }
+    impl TanHalf for f64 {
+        fn tan_half(self) -> f64 {
+            (self / 2.0).tan()
+        }
+    }
+
+    const FOV: f32 = 75.0;
+    const NEAR: f32 = 0.05;
+    const FAR: f32 = 400.0;
+
+    #[test]
+    fn view_count_is_one_eye_in_mono_and_two_side_by_side() {
+        assert_eq!(view_count(DisplayMode::Mono), 1);
+        assert_eq!(view_count(DisplayMode::SideBySide), 2);
+    }
+
+
+    #[test]
+    fn per_eye_size_is_the_window_in_mono_and_half_its_width_side_by_side() {
+        assert_eq!(per_eye_size(DisplayMode::Mono, [3840, 1080]), [3840, 1080]);
+        assert_eq!(per_eye_size(DisplayMode::SideBySide, [3840, 1080]), [1920, 1080]);
+        // An odd window floors the half — the two views tile inside it.
+        assert_eq!(per_eye_size(DisplayMode::SideBySide, [1145, 828]), [572, 828]);
+    }
+
+
+    #[test]
+    fn msaa_is_single_view_only_on_the_metal_driver() {
+        // Godot 4.6.1's Metal driver cannot slice a multisample array (the
+        // per-view MSAA resolve asserts in texture-view creation, verified
+        // 2026-09-17 with TAA on and off); Vulkan multiviews with MSAA fine.
+        assert!(msaa_allowed(DisplayMode::Mono, "metal"));
+        assert!(!msaa_allowed(DisplayMode::SideBySide, "metal"));
+        assert!(msaa_allowed(DisplayMode::SideBySide, "vulkan"));
+        assert!(msaa_allowed(DisplayMode::Mono, "vulkan"));
+        // Headless has no driver to speak of; mono there is the GUT shell.
+        assert!(msaa_allowed(DisplayMode::Mono, ""));
+    }
+
+    #[test]
+    fn mono_eye_sits_on_the_camera_axis_and_the_pair_straddles_it() {
+        let cfg = StereoConfig::default();
+        assert_eq!(eye_offset_for_view(DisplayMode::Mono, &cfg, 0), 0.0);
+        let l = eye_offset_for_view(DisplayMode::SideBySide, &cfg, 0);
+        let r = eye_offset_for_view(DisplayMode::SideBySide, &cfg, 1);
+        assert_eq!(l, left_eye_offset(&cfg)[0]);
+        assert_eq!(r, right_eye_offset(&cfg)[0]);
+        assert!(l < 0.0 && r > 0.0 && (l + r).abs() < 1e-9, "the eyes straddle the axis");
+    }
+
+    #[test]
+    fn unshifted_projection_is_the_symmetric_perspective() {
+        let aspect = 16.0 / 9.0;
+        let got = off_axis_projection(FOV, aspect, NEAR, FAR, 0.0);
+        let want = symmetric_perspective(FOV, aspect, NEAR, FAR);
+        for (i, (g, w)) in got.iter().zip(&want).enumerate() {
+            assert!((g - w).abs() < 1e-9, "element {i}: got {g}, want {w}");
+        }
+    }
+
+    #[test]
+    fn mono_and_parallel_views_project_symmetrically() {
+        let aspect = 16.0 / 9.0;
+        let want = symmetric_perspective(FOV, aspect, NEAR, FAR);
+        let parallel = StereoConfig::default(); // convergence 0 = parallel
+        for (mode, view) in [
+            (DisplayMode::Mono, 0),
+            (DisplayMode::SideBySide, 0),
+            (DisplayMode::SideBySide, 1),
+        ] {
+            let got = projection_for_view(mode, &parallel, view, FOV, aspect, NEAR, FAR);
+            assert_eq!(got, want, "{mode:?} view {view}");
+        }
+    }
+
+    #[test]
+    fn the_convergence_point_lands_on_the_same_pixel_in_both_eyes() {
+        let cfg = StereoConfig {
+            convergence_distance: 3.0,
+            ..StereoConfig::default()
+        };
+        let aspect = 572.0 / 828.0;
+        // The head-space point straight ahead at the convergence distance,
+        // seen from each eye: offset by that eye's separation, projected
+        // through that eye's window. Zero parallax means NDC x = 0 in both.
+        for view in 0..2 {
+            let eye_x = eye_offset_for_view(DisplayMode::SideBySide, &cfg, view) as f64;
+            let m = projection_for_view(DisplayMode::SideBySide, &cfg, view, FOV, aspect, NEAR, FAR);
+            let x = ndc_x(&m, [-eye_x, 0.0, -(cfg.convergence_distance as f64)]);
+            assert!(x.abs() < 1e-6, "view {view} sees the convergence point at NDC x {x}");
+        }
+    }
+
+    #[test]
+    fn depth_reads_crossed_in_front_of_the_convergence_plane_and_uncrossed_behind() {
+        let cfg = StereoConfig {
+            convergence_distance: 3.0,
+            ..StereoConfig::default()
+        };
+        let aspect = 16.0 / 9.0;
+        let disparity = |z: f64| -> f64 {
+            let mut x = [0.0; 2];
+            for view in 0..2 {
+                let eye_x = eye_offset_for_view(DisplayMode::SideBySide, &cfg, view) as f64;
+                let m = projection_for_view(DisplayMode::SideBySide, &cfg, view, FOV, aspect, NEAR, FAR);
+                x[view as usize] = ndc_x(&m, [-eye_x, 0.0, -z]);
+            }
+            x[1] - x[0] // right-eye x minus left-eye x, the rig's convention
+        };
+        assert!(disparity(1.5) < 0.0, "nearer than the plane: crossed (negative)");
+        assert!(disparity(6.0) > 0.0, "beyond the plane: uncrossed (positive)");
+        // Parallel rig: everything finite is crossed, infinity at the plane.
+        let parallel = StereoConfig::default();
+        let m_l = projection_for_view(DisplayMode::SideBySide, &parallel, 0, FOV, aspect, NEAR, FAR);
+        let m_r = projection_for_view(DisplayMode::SideBySide, &parallel, 1, FOV, aspect, NEAR, FAR);
+        let z = 10.0;
+        let l = ndc_x(&m_l, [-(left_eye_offset(&parallel)[0] as f64), 0.0, -z]);
+        let r = ndc_x(&m_r, [-(right_eye_offset(&parallel)[0] as f64), 0.0, -z]);
+        assert!(r - l < 0.0, "parallel: finite depth reads crossed");
+    }
+
+    #[test]
+    fn blit_rects_tile_the_window_in_view_order() {
+        let cfg = StereoConfig::default();
+        assert_eq!(
+            blit_rects(DisplayMode::Mono, &cfg),
+            vec![[0, 0, cfg.viewport_width, cfg.viewport_height]],
+            "the single eye fills the window"
+        );
+        let sbs = blit_rects(DisplayMode::SideBySide, &cfg);
+        assert_eq!(sbs.len(), 2);
+        assert_eq!(sbs[0], left_viewport_rect(&cfg));
+        assert_eq!(sbs[1], right_viewport_rect(&cfg));
+        assert_eq!(sbs[0][0] + sbs[0][2], sbs[1][0], "no gap, no overlap");
+        assert_eq!(sbs[1][0] + sbs[1][2], total_output_size(&cfg)[0]);
+    }
+
     #[test]
     fn depth_strength_scales_eye_offsets() {
         let cfg = StereoConfig {
@@ -249,24 +460,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn ui_viewport_size_matches_per_eye() {
-        let cfg = StereoConfig::default();
-        assert_eq!(ui_viewport_size(&cfg), [1920, 1080]);
-    }
-
-    #[test]
-    fn ui_overlay_left_is_full_viewport() {
-        let cfg = StereoConfig::default();
-        assert_eq!(ui_overlay_rect_left(&cfg), [0.0, 0.0, 1920.0, 1080.0]);
-    }
-
-    #[test]
-    fn ui_overlay_right_is_full_viewport_at_local_origin() {
-        let cfg = StereoConfig::default();
-        assert_eq!(ui_overlay_rect_right(&cfg), [0.0, 0.0, 1920.0, 1080.0]);
-    }
-
     // The UI-layer adoption contract moved from a name list here to a
     // STRUCTURAL rule: ViewManager adopts every CanvasLayer child of Main
     // into the UIViewport (a hand-maintained list went stale the moment a
@@ -276,16 +469,6 @@ mod tests {
     #[test]
     fn display_mode_default_is_mono() {
         assert_eq!(DisplayMode::default(), DisplayMode::Mono);
-    }
-
-    #[test]
-    fn should_reset_when_custom_viewport_is_set() {
-        assert!(should_reset_custom_viewport(true));
-    }
-
-    #[test]
-    fn should_skip_reset_when_already_default() {
-        assert!(!should_reset_custom_viewport(false));
     }
 
     // --- UI plane tests (world-space 3D quad for SBS) ---
@@ -312,17 +495,6 @@ mod tests {
     }
 
     #[test]
-    fn ui_plane_position_is_in_front_of_camera() {
-        let cam_origin = [0.0, 0.0, 0.0];
-        let cam_forward = [0.0, 0.0, -1.0]; // Godot: -Z is forward
-        let distance = 2.0;
-        let [x, y, z] = ui_plane_position(cam_origin, cam_forward, distance);
-        assert!((x - 0.0).abs() < 0.01);
-        assert!((y - 0.0).abs() < 0.01);
-        assert!((z - (-2.0)).abs() < 0.01);
-    }
-
-    #[test]
     fn convergence_band_clears_the_cockpit_shell() {
         // The shell nests inside the flight capsule (radius 0.45); the
         // converged plane must never bury itself in the pilot's console.
@@ -330,15 +502,4 @@ mod tests {
         assert!(CONVERGENCE_FAR > CONVERGENCE_NEAR);
     }
 
-    #[test]
-    fn ui_plane_position_follows_arbitrary_camera() {
-        let cam_origin = [10.0, 5.0, -3.0];
-        // Forward along +X axis
-        let cam_forward = [1.0, 0.0, 0.0];
-        let distance = 3.0;
-        let [x, y, z] = ui_plane_position(cam_origin, cam_forward, distance);
-        assert!((x - 13.0).abs() < 0.01);
-        assert!((y - 5.0).abs() < 0.01);
-        assert!((z - (-3.0)).abs() < 0.01);
-    }
 }

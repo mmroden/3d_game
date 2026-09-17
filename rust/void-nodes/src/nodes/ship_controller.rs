@@ -2,7 +2,7 @@ use godot::prelude::*;
 use godot::classes::{
     InputEvent, InputEventMouseMotion,
     RigidBody3D, IRigidBody3D, PhysicsDirectBodyState3D, PhysicsRayQueryParameters3D,
-    MeshInstance3D, Camera3D, Node3D, CollisionShape3D, CapsuleShape3D, OmniLight3D,
+    MeshInstance3D, Node3D, CollisionShape3D, CapsuleShape3D, OmniLight3D,
     GpuParticles3D, SphereMesh, StandardMaterial3D,
     Input,
 };
@@ -94,8 +94,9 @@ pub struct ShipController {
     /// `integrate_forces`, then cleared. A dead or disengaged enemy stops
     /// pulling by simply not calling.
     tractor_accel: Vector3,
-    /// Cached player camera, repositioned when the view mode changes.
-    camera: Option<LiveRef<Camera3D>>,
+    /// The eyepoint — the XR origin the ship carries (its XRCamera3D child
+    /// is the one render camera), repositioned when the view mode changes.
+    eyepoint: Option<LiveRef<Node3D>>,
     /// The first-person cockpit shell around the camera; the inverse of the
     /// exterior hull: visible only in cockpit view.
     cockpit_shell: Option<LiveRef<Node3D>>,
@@ -161,7 +162,7 @@ impl IRigidBody3D for ShipController {
             power_mode: PowerMode::default(),
             slow: SlowDebuff::new(),
             tractor_accel: Vector3::ZERO,
-            camera: None,
+            eyepoint: None,
             cockpit_shell: None,
             stereo_director: void_logic::director::StereoDirector::default(),
             camera_mode: CameraMode::Cockpit,
@@ -201,9 +202,9 @@ impl IRigidBody3D for ShipController {
         // no-infinite-spin invariant (angular_damp > 0).
         self.apply_envelope();
 
-        // Cache the camera for view-mode placement (None-safe if absent).
-        self.camera = self.base()
-            .try_get_node_as::<Camera3D>("Camera3D")
+        // Cache the eyepoint for view-mode placement (None-safe if absent).
+        self.eyepoint = self.base()
+            .try_get_node_as::<Node3D>("XROrigin3D")
             .map(|c| LiveRef::new(&c));
         self.spawn_ship_model();
         self.spawn_cockpit_shell();
@@ -653,7 +654,7 @@ impl ShipController {
                 Transform3D::new(godot_util::basis_from_direction(look_dir), CHASE_OFFSET)
             }
         };
-        self.camera.with(|camera| camera.set_transform(transform));
+        self.eyepoint.with(|eyepoint| eyepoint.set_transform(transform));
     }
 
 

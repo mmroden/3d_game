@@ -129,7 +129,15 @@ Side-by-side stereo for xReal glasses is first-class. One full-window
 `UIViewport`, never per-eye; each eye sees the central half; corner HUD in a
 central safe-area band. No camera shake, ever; damage escalates via tints.
 Panels serve any face (6DOF) via baked per-role variants, not runtime rotation.
-How the stereo is rendered is an open decision, below.
+The 3D world renders ONCE, through the root viewport under `use_xr`, by the
+display interface the XRServer holds (docs/design/xr_rig.md): the
+`SbsInterface` (`rust/void-nodes/src/nodes/views/sbs_interface.rs`) plays
+the xReal as a crippled headset — one view in mono, two side by side, eyes
+front, head still — and Godot's `OpenXRInterface` is the Frame's (chunk 3,
+not built). The player's `XRCamera3D` under `Player/XROrigin3D` is the one
+camera; the `UIPlane` is a child of that origin (cockpit-locked). A second
+render of the scene (a `SubViewport` per eye, a hand-driven camera) is a
+finding, not an open decision.
 
 ## Open decisions
 
@@ -138,22 +146,26 @@ for keeping the question open (isolation, no new tendrils, a measurement
 path), not for answering it either way, and no brief carries a standing
 verdict on one of them.
 
-- **The stereo rig.** Side-by-side stereo in
-  `rust/void-nodes/src/nodes/views/view_manager.rs` is hand-rolled: two
-  `SubViewport`s with a `Camera3D` each sharing one `World3D`, eye poses
-  driven per frame, the UI composited through a plane. Godot's native path
-  is `Viewport.use_xr` with an `XRInterface`, and `XRInterfaceExtension`
-  lets a GDExtension supply its own views. The owner's rule (2026-09-15):
-  use the tools Godot provides for cockpits and stereo, but only where they
-  meet our needs as storytellers; OpenXR is still being explored and is the
-  likely path for Valve Steam Frame integration. Until that lands, the
-  review's job on a view-manager diff is to keep the rig isolated so the XR
-  path can replace it: no tendrils into unrelated types, the stereo director
-  experiment behind its option. To settle: a measured frame-time comparison
-  made through a stage, and whether the UI plane survives under the XR path.
-- **Convergence geometry.** Whether the rig's convergence is shifted-frustum
-  or toe-in is unmeasured. Toe-in produces vertical parallax at the frame
-  edges; a diff that changes the projection cites which it does.
+- **The stereo rig** — DECIDED 2026-09-17 (owner): the XR interface path,
+  above; docs/design/xr_rig.md §7 carries the before/after measurement
+  through the visual stage. What stays open inside it: the Frame's
+  convergence policy (§5 there: `world_scale` law vs. relief-only remap —
+  an in-headset experiment, dials exposed) and the mono path's shape (one
+  interface at one view, confirmed working; the alternative was `use_xr`
+  off).
+- **Convergence geometry.** The rig's convergence is shifted-frustum — the
+  off-axis term in `void_logic::stereo::off_axis_projection`, read in code,
+  not measured. The owner does not accept the frustum-vs-toe-in argument
+  and holds it irrelevant to the goal; the projection is one swappable
+  function of the interface, and the disparity contract in
+  `rust/void-logic/tests/visual.rs` is where corner vertical parallax would
+  be measured for either. A diff that changes the projection cites which it
+  does.
+- **MSAA under two views on Metal.** Godot 4.6.1's Metal driver asserts
+  slicing a multisample array (per-view MSAA resolve), so
+  `stereo::msaa_allowed` keeps MSAA single-view on that driver; TAA stays.
+  Re-test on an engine upgrade before widening; a diff that widens it cites
+  the run.
 
 ## Canonical sites for the house patterns
 

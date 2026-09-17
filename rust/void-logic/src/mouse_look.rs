@@ -56,12 +56,12 @@ impl MouseLook {
         // still pending (the last tick of a hold takes the remainder).
         let share = (dt / Self::HOLD).min(1.0);
         let mut spent = [0.0; 2];
-        for axis in 0..2 {
-            let want = self.frame[axis] * share;
-            spent[axis] = if want.abs() >= self.pending[axis].abs() { self.pending[axis] } else { want };
-            self.pending[axis] -= spent[axis];
-            if self.pending[axis].abs() < 1e-4 {
-                self.pending[axis] = 0.0;
+        for ((spent, pending), frame) in spent.iter_mut().zip(&mut self.pending).zip(&self.frame) {
+            let want = frame * share;
+            *spent = if want.abs() >= pending.abs() { *pending } else { want };
+            *pending -= *spent;
+            if pending.abs() < 1e-4 {
+                *pending = 0.0;
             }
         }
         // Pixels → radians → a rate over this tick → a fraction of the

@@ -212,3 +212,12 @@ textures/vram_compression/import_etc2_astc=true
 ; per-viewport from the authoritative option. TAA stays on (separate AA).
 anti_aliasing/quality/msaa_3d=0
 anti_aliasing/quality/use_taa=true
+
+[xr]
+
+; The 3D world renders through the root viewport's XR interface (the SBS
+; display interface: one view in mono, two side by side — docs/design/
+; xr_rig.md). The engine compiles the multiview scene-shader variants
+; only when this is on; without it a two-view render has no vertex
+; shader and the pipeline creation fails.
+shaders/enabled=true
