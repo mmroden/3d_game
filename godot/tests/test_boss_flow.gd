@@ -9,42 +9,21 @@ extends GutTest
 ## State ids mirror void_logic::boss_fight::BossFightState::id():
 ## -1 = no boss level, 0 Dormant, 1 Engaged, 2 Defeated, 3 RewardCollected.
 
-const UiStub := preload("res://tests/helpers/ui_stub.gd")
+const FullStack := preload("res://tests/helpers/full_stack.gd")
 
 var _gm: GameManager
 var _lm: LevelManager
 var _player: ShipController
 
 func _build_stack() -> void:
-	var root := Node3D.new()
-	add_child_autofree(root)
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub := UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
-	_lm = LevelManager.new()
-	_lm.name = "LevelManager"
-	_player = ShipController.new()
-	_player.name = "Player"
-	_player.add_to_group("player")
-	var shape := CollisionShape3D.new()
-	shape.name = "CollisionShape3D"
-	shape.shape = SphereShape3D.new()
-	_player.add_child(shape)
-	_gm = GameManager.new()
-	_gm.fixed_seed = 1  # the pinned seed — B4's Rust anchors pin this level
-	root.add_child(_lm)
-	root.add_child(_player)
-	root.add_child(_gm)
-	_gm.clear_save_for_tests()
+	# The pinned seed — B4's Rust anchors pin this level.
+	var stack := FullStack.build(self, {"seed": 1})
+	_gm = stack.gm
+	_lm = stack.lm
+	_player = stack.player
 
 func _walk_to_playing() -> void:
-	_gm.advance_from_ship_select()
-	for _i in range(12):
-		if _gm.get_phase_name() == "Playing":
-			break
-		_gm.advance_from_bestiary()
-	assert_eq(_gm.get_phase_name(), "Playing", "the stack must reach Playing")
+	FullStack.walk_to_playing(self, _gm)
 
 func _advance_one_level() -> void:
 	_gm.on_portal_entered()
@@ -52,16 +31,22 @@ func _advance_one_level() -> void:
 	_gm.advance_to_next_level()
 	_walk_to_playing()
 
-## Advance level-by-level until the run reaches a staged fight, so tests never
-## pin WHICH level carries a boss (that is grammar the owner tunes freely).
+## Reach the next staged fight without pinning WHICH level carries a boss
+## (that is grammar the owner tunes freely): GameManager derives the run's
+## boss levels from the grammar, and the dev hop rebuilds straight there —
+## one build, none for the levels between (each was a full build plus its
+## backdrop when this walked level by level, 2026-09-16).
 func _advance_to_a_boss_level() -> bool:
-	for _i in range(12):
-		await wait_process_frames(2)  # the staging settles a couple frames in
-		if _gm.boss_fight_state() != -1:
-			return true
-		_advance_one_level()
-	await wait_process_frames(2)
-	return _gm.boss_fight_state() != -1
+	await wait_process_frames(2)  # the staging settles a couple frames in
+	if _gm.boss_fight_state() != -1:
+		return true
+	var current: int = _gm.get_current_level()
+	for level in _gm.boss_levels():
+		if level > current:
+			_gm.debug_jump_level(level - current)
+			await wait_process_frames(4)  # the deferred rebuild (loading veil frame)
+			return _gm.boss_fight_state() != -1
+	return false
 
 func _boss_gate() -> Node:
 	var gates := _lm.find_children("*", "BossGate", true, false)

@@ -8,7 +8,7 @@ extends GutTest
 ## decay + zone policy is unit-tested in void-logic (damage_flash.rs);
 ## this pins the shell contract.
 
-const UiStub := preload("res://tests/helpers/ui_stub.gd")
+const FullStack := preload("res://tests/helpers/full_stack.gd")
 
 
 func _hud() -> HUD:
@@ -82,36 +82,12 @@ func test_shield_hits_never_tint():
 
 
 func _playing_stack() -> Dictionary:
-	var root := Node3D.new()
-	add_child_autofree(root)
-	for ui_name in ["MainMenuUI", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub := UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
+	# The REAL HUD rides this stack — the tint under test is its overlay.
 	var hud := HUD.new()
-	hud.name = "HUD"
-	root.add_child(hud)
-	var lm := LevelManager.new()
-	lm.name = "LevelManager"
-	var player := ShipController.new()
-	player.name = "Player"
-	player.add_to_group("player")
-	var shape := CollisionShape3D.new()
-	shape.name = "CollisionShape3D"
-	shape.shape = SphereShape3D.new()
-	player.add_child(shape)
-	var gm := GameManager.new()
-	root.add_child(lm)
-	root.add_child(player)
-	root.add_child(gm)
-	gm.clear_save_for_tests()
+	var stack := FullStack.build(self, {"real": {"HUD": hud}})
+	var gm: GameManager = stack.gm
 	gm.start_new_game()
-	gm.advance_from_ship_select()
-	for _i in range(12):
-		if gm.get_phase_name() == "Playing":
-			break
-		gm.advance_from_bestiary()
-	assert_eq(gm.get_phase_name(), "Playing", "the stack must reach Playing")
+	FullStack.walk_to_playing(self, gm)
 	return {"gm": gm, "hud": hud}
 
 

@@ -825,6 +825,21 @@ for sky in "$ASSETS_DIR"/sky/*.exr "$ASSETS_DIR"/sky/*.hdr; do
     fi
 done
 
+# ========== Interface art (attributed downloads -> godot/addons/ui) ==========
+# The controls screen's gamepad silhouette (catalog/attributions.toml):
+# assets/ui/ holds the checksum-pinned download; it installs as shipped,
+# and the import stage rasterizes the SVG at twice its nominal size
+# (Makefile) so it stays crisp on a 1080p menu.
+UI_DIR="$GODOT_DIR/addons/ui"
+mkdir -p "$UI_DIR"
+for art in "$ASSETS_DIR"/ui/*.svg; do
+    [ -f "$art" ] || continue
+    if stale "$UI_DIR/$(basename "$art")" -- "$art"; then
+        echo "  Installing interface art $(basename "$art")..."
+        cp "$art" "$UI_DIR/"
+    fi
+done
+
 # ========== Panel-world kits (CGTrader parts kits -> per-piece glB) ==========
 # B11 cubic-cell panel worlds: each "Sci-Fi Parts Kit" pack carries its
 # pieces as sibling objects (Vol 01: one GLB with embedded textures; Vol 03:

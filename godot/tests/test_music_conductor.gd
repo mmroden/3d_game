@@ -10,7 +10,7 @@ extends GutTest
 ## Bed ids mirror void_logic::audio_catalog::MusicBed::id():
 ## 0 Menu, 1 Level, 2 Combat, 3 Boss.
 
-const UiStub := preload("res://tests/helpers/ui_stub.gd")
+const FullStack := preload("res://tests/helpers/full_stack.gd")
 
 var _gm: GameManager
 var _lm: LevelManager
@@ -28,35 +28,14 @@ func _build_stack() -> void:
 	_audio.name = "AudioManager"
 	main.add_child(_audio)
 
-	var root := Node3D.new()
-	add_child_autofree(root)
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub := UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
-	_lm = LevelManager.new()
-	_lm.name = "LevelManager"
-	_player = ShipController.new()
-	_player.name = "Player"
-	_player.add_to_group("player")
-	var shape := CollisionShape3D.new()
-	shape.name = "CollisionShape3D"
-	shape.shape = SphereShape3D.new()
-	_player.add_child(shape)
-	_gm = GameManager.new()
-	_gm.fixed_seed = 1  # the pinned seed — level 3 stages the Brute
-	root.add_child(_lm)
-	root.add_child(_player)
-	root.add_child(_gm)
-	_gm.clear_save_for_tests()
+	# The pinned seed — level 3 stages the Brute.
+	var stack := FullStack.build(self, {"seed": 1})
+	_gm = stack.gm
+	_lm = stack.lm
+	_player = stack.player
 
 func _walk_to_playing() -> void:
-	_gm.advance_from_ship_select()
-	for _i in range(12):
-		if _gm.get_phase_name() == "Playing":
-			break
-		_gm.advance_from_bestiary()
-	assert_eq(_gm.get_phase_name(), "Playing", "the stack must reach Playing")
+	FullStack.walk_to_playing(self, _gm)
 
 func _advance_one_level() -> void:
 	_gm.on_portal_entered()

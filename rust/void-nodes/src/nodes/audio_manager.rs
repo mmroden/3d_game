@@ -1,12 +1,14 @@
 use godot::prelude::*;
 use godot::classes::{
-    AudioStreamPlayer, AudioStreamPlayer3D,
+    AudioServer, AudioStreamPlayer, AudioStreamPlayer3D,
     Node, INode, Engine, ResourceLoader,
 };
 use rand::seq::IndexedRandom;
 
 use super::constants::{signals, methods, nodes};
 use super::live_handle::{LiveOpt, LiveRef};
+use super::ui::options_wire;
+use void_logic::game_options::GameOptions;
 use void_logic::audio_catalog::{
     combat_pool, fade_in_gain, fade_out_gain, menu_track, MusicBed, SfxEvent,
     CROSSFADE_SECS, GAMEPLAY_MUSIC_VOL, MENU_MUSIC_VOL, TRANSITION_MUSIC_VOL,
@@ -106,6 +108,7 @@ impl INode for AudioManager {
 
         self.music_player_a = Some(LiveRef::new(&player_a));
         self.music_player_b = Some(LiveRef::new(&player_b));
+        self.connect_options();
 
         // Connect to GameManager's phase_changed signal
         if let Some(parent) = self.base().get_parent() {
@@ -154,6 +157,38 @@ impl INode for AudioManager {
 
 #[godot_api]
 impl AudioManager {
+    /// GameManager's options broadcast: the three bus volumes (alpha note
+    /// 2026-09-15: "I tend to dial back most game volume"). Bus gain is
+    /// the engine's own mixer door; the players' per-phase ducking sits
+    /// on top of it untouched.
+    #[func]
+    fn on_options_changed(&mut self, options: options_wire::OptionsDictionary) {
+        let options = options_wire::from_dictionary(&options);
+        let mut server = AudioServer::singleton();
+        for (bus, notches) in [
+            ("Master", options.master_volume),
+            ("Music", options.music_volume),
+            ("SFX", options.sfx_volume),
+        ] {
+            let index = server.get_bus_index(bus);
+            if index >= 0 {
+                server.set_bus_volume_db(index, linear_to_db(GameOptions::volume_fraction(notches)));
+            }
+        }
+    }
+
+    /// Listen for the options broadcast (GameManager is a sibling under
+    /// Main; its startup broadcast is deferred past every ready).
+    fn connect_options(&mut self) {
+        let Some(parent) = self.base().get_parent() else { return };
+        if let Some(mut gm) = parent.try_get_node_as::<Node>(nodes::GAME_MANAGER) {
+            let callable = self.base().callable(methods::ON_OPTIONS_CHANGED);
+            if !gm.is_connected(signals::OPTIONS_CHANGED, &callable) {
+                gm.connect(signals::OPTIONS_CHANGED, &callable);
+            }
+        }
+    }
+
     /// Called when GameManager emits phase_changed(phase_name: GString).
     #[func]
     fn on_phase_changed_audio(&mut self, phase_name: GString) {

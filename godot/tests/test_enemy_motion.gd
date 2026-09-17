@@ -7,43 +7,21 @@ extends GutTest
 ## (layered megakit) as the control, planet 2 (cubic panel cells) as the
 ## repro.
 
-const UiStub := preload("res://tests/helpers/ui_stub.gd")
+const FullStack := preload("res://tests/helpers/full_stack.gd")
 
 var _gm: GameManager
 var _lm: LevelManager
 var _player: ShipController
 
 func _build_stack(level: int) -> void:
-	var root := Node3D.new()
-	add_child_autofree(root)
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub := UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
-	_lm = LevelManager.new()
-	_lm.name = "LevelManager"
-	_player = ShipController.new()
-	_player.name = "Player"
-	_player.add_to_group("player")
-	var shape := CollisionShape3D.new()
-	shape.name = "CollisionShape3D"
-	shape.shape = SphereShape3D.new()
-	_player.add_child(shape)
-	_gm = GameManager.new()
-	_gm.fixed_seed = 1
-	_gm.start_level = level  # the LEVEL= dev door — one build, no walking
-	root.add_child(_lm)
-	root.add_child(_player)
-	root.add_child(_gm)
-	_gm.clear_save_for_tests()
+	# The LEVEL= dev door — one build, no walking.
+	var stack := FullStack.build(self, {"seed": 1, "level": level})
+	_gm = stack.gm
+	_lm = stack.lm
+	_player = stack.player
 
 func _walk_to_playing() -> void:
-	_gm.advance_from_ship_select()
-	for _i in range(12):
-		if _gm.get_phase_name() == "Playing":
-			break
-		_gm.advance_from_bestiary()
-	assert_eq(_gm.get_phase_name(), "Playing", "the stack must reach Playing")
+	FullStack.walk_to_playing(self, _gm)
 
 func _teleport(pos: Vector3) -> void:
 	_player.global_position = pos

@@ -162,8 +162,9 @@ impl HUD {
     /// React to GameManager's options broadcast: confine the HUD to the central
     /// band each eye sees in SBS, or full-bleed in mono.
     #[func]
-    fn on_options_changed(&mut self, sbs_enabled: bool, _msaa_enabled: bool, _dynamic_stereo: bool) {
-        self.apply_safe_area(sbs_enabled);
+    fn on_options_changed(&mut self, options: super::options_wire::OptionsDictionary) {
+        let options = super::options_wire::from_dictionary(&options);
+        self.apply_safe_area(options.sbs_enabled);
     }
 
     #[func]

@@ -4,23 +4,11 @@ extends GutTest
 ## and pressing select or back both return to the menu — never a mission. The
 ## pre-level briefing (ship-select -> bestiary -> play) is unchanged.
 
-const UiStub := preload("res://tests/helpers/ui_stub.gd")
+const FullStack := preload("res://tests/helpers/full_stack.gd")
 
 
 func _menu_stack() -> GameManager:
-	var root := Node3D.new()
-	add_child_autofree(root)
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub := UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
-	var lm := LevelManager.new()
-	lm.name = "LevelManager"
-	var gm := GameManager.new()
-	root.add_child(lm)
-	root.add_child(gm)
-	gm.clear_save_for_tests()
-	return gm
+	return FullStack.build(self, {"player": false}).gm
 
 
 func test_the_bestiary_opens_from_the_menu_and_returns_to_it():

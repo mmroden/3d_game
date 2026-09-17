@@ -1,6 +1,6 @@
 use godot::prelude::*;
 use godot::classes::{
-    Node, INode, Engine, CanvasLayer, Input, InputEvent,
+    Node, INode, Engine, CanvasLayer, DisplayServer, Input, InputEvent,
     input::MouseMode,
 };
 
@@ -16,10 +16,62 @@ const OPTIONS_SECTION: &str = "display";
 const SAVE_FILE: &str = "user://savegame.cfg";
 const SAVE_SECTION: &str = "run";
 
+/// A menu screen a `--screen=` boot opens for the capture rig: the shot
+/// sequencer then poses the screen (the roll's offset in pixels, the
+/// controls page) instead of the ship.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureScreen {
+    Credits,
+    Controls,
+    Options,
+}
+
+impl CaptureScreen {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "credits" => Some(Self::Credits),
+            "controls" => Some(Self::Controls),
+            "options" => Some(Self::Options),
+            _ => None,
+        }
+    }
+
+    /// The main menu's own door for the screen.
+    fn open_method(self) -> &'static str {
+        match self {
+            Self::Credits => methods::OPEN_CREDITS,
+            Self::Controls => methods::OPEN_CONTROLS,
+            Self::Options => methods::OPEN_OPTIONS,
+        }
+    }
+
+    /// How far the reported pose may sit from the parked one and still
+    /// count as there: a pixel of roll; a page or row index is exact.
+    fn tolerance(self) -> f32 {
+        match self {
+            Self::Credits => 1.0,
+            Self::Controls | Self::Options => 0.5,
+        }
+    }
+
+    /// What the pose reads as in the capture log.
+    fn pose_name(self) -> &'static str {
+        match self {
+            Self::Credits => "roll offset px",
+            Self::Controls => "controls page",
+            Self::Options => "options row",
+        }
+    }
+}
+
 use rand::RngExt;
 
 use super::constants::{actions, groups, map_flags, signals, methods, nodes, properties};
 use super::godot_util;
+use super::ui::{input_bindings, options_wire};
+use super::ui::options_wire::OptionsDictionary;
+use void_logic::controls::{self, ActionBindings, GameAction};
+use void_logic::game_options::OptionRow;
 use void_logic::audio_catalog::{self, MusicBed, SfxEvent};
 use void_logic::bestiary::{self, BestiaryKind};
 use void_logic::boss_fight::BossFight;
@@ -50,6 +102,9 @@ pub struct GameManager {
     game_options: GameOptions,
     save_game: Option<SaveGame>,
     active_input: InputMethod,
+    /// The InputMap's bindings, read once at ready, for the prompts the
+    /// briefing prints (the begin button on both devices).
+    bindings: Vec<ActionBindings>,
     /// Countdown (process ticks) to the deferred sector build — see
     /// `transition_to`'s Playing arm. 0 = nothing pending.
     pending_level_build: u8,
@@ -120,6 +175,14 @@ pub struct GameManager {
     #[export]
     populace_override: i32,
 
+    /// Dev knob (test stacks): 0 skips the loadout/briefing backdrop room
+    /// — the showcase behind ship select and the bestiary, a full room
+    /// build that a stack with no turntable and no camera rig never
+    /// looks at (it was 60 of 116 builds in one GUT run, 2026-09-16).
+    /// -1 = build it, as play does.
+    #[export]
+    backdrop_override: i32,
+
     /// The parsed `shot_pose` list ("x,y,z,yaw[,pitch];…" — or "offset;…"
     /// for a screen) and the sequencer's cursor: which pose the subject
     /// is parked at, and how many frames it has settled there
@@ -148,6 +211,7 @@ impl INode for GameManager {
             game_options: GameOptions::new(),
             save_game: None,
             active_input: InputMethod::Keyboard,
+            bindings: Vec::new(),
             pending_level_build: 0,
             current_power_mode: 0,
             bestiary_index: 0,
@@ -161,6 +225,7 @@ impl INode for GameManager {
             sbs_override: -1,
             shot_dir: GString::new(),
             populace_override: -1,
+            backdrop_override: -1,
             shot_poses: Vec::new(),
             shot_index: 0,
             shot_timer: 0,
@@ -216,6 +281,8 @@ impl INode for GameManager {
         if !input.get_connected_joypads().is_empty() {
             self.active_input = InputMethod::Controller;
         }
+        // The InputMap's bindings, for the prompts the briefing prints.
+        self.bindings = input_bindings::read_bindings();
 
         // Connect UI signals
         // Load remembered preferences into the one model object first,
@@ -297,7 +364,7 @@ impl INode for GameManager {
         // Reference-capture sequencing on a menu screen (`--screen=`): the
         // subject is the roll, which lives outside Playing. No-op without
         // a shot list.
-        if self.capture_subject_is_roll() && self.phase == GamePhase::MainMenu {
+        if self.capture_subject_is_screen() && self.phase == GamePhase::MainMenu {
             self.tick_shot_sequence();
         }
 
@@ -325,8 +392,10 @@ impl GameManager {
     #[signal]
     fn phase_changed(phase_name: GString);
 
+    /// The authoritative options, every preference keyed by name
+    /// (`ui::options_wire`): consumers rebuild the one GameOptions.
     #[signal]
-    fn options_changed(sbs_enabled: bool, msaa_enabled: bool, dynamic_stereo: bool);
+    fn options_changed(options: OptionsDictionary);
 
     /// Deferred from `ready()`: show the opening screen once every sibling node
     /// has finished its own `ready()`. See the call site for why it can't be
@@ -342,14 +411,14 @@ impl GameManager {
             self.start_new_game();
             self.advance_from_ship_select();
             self.advance_from_bestiary();
-        } else if self.capture_subject_is_roll() {
+        } else if let Some(screen) = self.capture_screen() {
             // Dev knob: a boot with a menu screen under inspection
-            // (`--screen=credits`) opens it at once; a shot list then parks
-            // the roll at each offset — the level rig's sequence, over the
-            // roll's own pose.
+            // (`--screen=credits`, `--screen=controls`) opens it at once; a
+            // shot list then parks the screen at each pose — the level
+            // rig's sequence, over the screen's own pose.
             if let Some(parent) = self.base().get_parent() {
                 if let Some(mut menu) = Self::find_ui_node(&parent, nodes::MAIN_MENU_UI) {
-                    menu.call(methods::OPEN_CREDITS, &[]);
+                    menu.call(screen.open_method(), &[]);
                 }
             }
             self.apply_shot_pose();
@@ -402,7 +471,7 @@ impl GameManager {
         }
         self.run_state.current_level = target;
         godot_print!("DEBUG JUMP: rebuilding at level {target}");
-        self.mark_level_enemies_seen();
+        self.enter_level();
         self.push_loading_veil(true);
         self.pending_level_build = 2;
     }
@@ -889,9 +958,16 @@ impl GameManager {
     fn enter_bestiary(&mut self) {
         self.bestiary_index = 0;
         self.refresh_bestiary();
+        // A profile's first pre-level briefing opens on the controls card
+        // (never the menu's catalog browse); claiming it remembers the
+        // once on disk with the other preferences.
+        let with_controls = !self.bestiary_from_menu && self.game_options.claim_controls_briefing();
+        if with_controls {
+            self.save_options();
+        }
         if let Some(parent) = self.base().get_parent() {
             if let Some(mut ui) = Self::find_ui_node(&parent, nodes::BESTIARY_UI) {
-                ui.call(methods::BEGIN_BRIEFING, &[]);
+                ui.call(methods::BEGIN_BRIEFING, &[Variant::from(with_controls)]);
             }
         }
     }
@@ -916,16 +992,22 @@ impl GameManager {
             );
         }
 
-        // Left stick browses; Ⓧ begins. The hint (and whether it offers next/prev)
-        // is owned by void-logic.
-        let hint = bestiary::briefing_hint(entries.len());
+        // Menu left/right browse; select begins — prompted on both devices
+        // as the InputMap binds it, with the glyph of the pad in hand. The
+        // hint (and whether it offers browsing) is owned by void-logic.
+        let begin = controls::action_prompt(
+            GameAction::MenuSelect,
+            &self.bindings,
+            input_bindings::pad_family(),
+        );
+        let hint = bestiary::briefing_hint(entries.len(), &begin);
         let position = format!("{} / {}", self.bestiary_index + 1, entries.len());
         if let Some(mut ui) = Self::find_ui_node(&parent, nodes::BESTIARY_UI) {
             ui.call(methods::SHOW_BESTIARY, &[
                 Variant::from(GString::from(entry.title)),
                 Variant::from(GString::from(entry.blurb)),
                 Variant::from(GString::from(position.as_str())),
-                Variant::from(GString::from(hint)),
+                Variant::from(GString::from(hint.as_str())),
             ]);
         }
     }
@@ -1101,13 +1183,59 @@ impl GameManager {
     /// listeners cache a copy but never invent their own default.
     #[func]
     fn broadcast_options(&mut self) {
-        let sbs = self.game_options.sbs_enabled;
-        let msaa = self.game_options.msaa_enabled;
-        let dynamic = self.game_options.dynamic_stereo;
-        self.base_mut().emit_signal(
-            signals::OPTIONS_CHANGED,
-            &[sbs.to_variant(), msaa.to_variant(), dynamic.to_variant()],
-        );
+        let payload = options_wire::to_dictionary(&self.game_options);
+        self.base_mut().emit_signal(signals::OPTIONS_CHANGED, &[payload.to_variant()]);
+    }
+
+    /// A menu's options rows asked for a change (row name, delta): the
+    /// one door every preference changes through — adjust, remember,
+    /// announce. Also the dev/test seam for any row by name.
+    #[func]
+    pub fn on_option_adjusted(&mut self, row: GString, delta: i32) {
+        let Some(row) = OptionRow::from_name(&row.to_string()) else {
+            godot_warn!("on_option_adjusted: unknown options row '{row}'");
+            return;
+        };
+        self.adjust_option(row, delta);
+    }
+
+    fn adjust_option(&mut self, row: OptionRow, delta: i32) {
+        if row.adjust(&mut self.game_options, delta) {
+            self.save_options();
+            self.broadcast_options();
+        }
+    }
+
+    /// Test/inspection seam: any options row's displayed value, by the
+    /// row's name (the same text the menus print).
+    #[func]
+    fn option_value_text(&self, row: GString) -> GString {
+        match OptionRow::from_name(&row.to_string()) {
+            Some(row) => GString::from(row.value_text(&self.game_options).as_str()),
+            None => GString::new(),
+        }
+    }
+
+    /// Test seam: every declared level that stages a boss fight for THIS
+    /// run (its seed, its profile), in order — so a test can jump straight
+    /// to a staged fight without pinning which level carries one (that is
+    /// grammar the owner tunes) and without walking the levels between.
+    #[func]
+    fn boss_levels(&self) -> PackedInt32Array {
+        let grammar = void_logic::roster::roster();
+        (1..=grammar.declared_levels())
+            .filter(|&level| {
+                LevelSpec::for_level(
+                    grammar,
+                    self.run_state.run_seed,
+                    level,
+                    &self.run_state.profile.unlocks,
+                )
+                .boss
+                .is_some()
+            })
+            .map(|level| level as i32)
+            .collect()
     }
 
     /// The authoritative MSAA option (for tests / inspection).
@@ -1191,33 +1319,26 @@ impl GameManager {
         godot::classes::DirAccess::remove_absolute(SAVE_FILE);
     }
 
-    /// Called from main menu: toggle SBS stereo.
+    /// F3 in play, and the test seam: toggle SBS stereo through the one
+    /// options door.
     #[func]
     pub fn on_sbs_toggled(&mut self) {
-        self.game_options.toggle_sbs();
-        self.save_options();
-        self.broadcast_options();
+        self.adjust_option(OptionRow::SbsStereo, 1);
     }
 
-    /// Called from main menu: toggle MSAA. Controller-only — flip the
-    /// option and announce it; ViewManager (the view) applies it to the
-    /// actual viewports.
+    /// Test seam: toggle MSAA. Controller-only — flip the option and
+    /// announce it; ViewManager (the view) applies it to the viewports.
     #[func]
     pub fn on_msaa_toggled(&mut self) {
-        self.game_options.toggle_msaa();
-        self.save_options();
-        self.broadcast_options();
+        self.adjust_option(OptionRow::Msaa, 1);
     }
 
     /// Toggle the stereo director (experiment v2: convergence + interaxial
-    /// tracking the threat ladder). F4 in play, and the options menus —
-    /// same controller-only shape as the other display toggles, so the
-    /// in-glasses A/B against the static baseline is one keypress.
+    /// tracking the threat ladder). F4 in play — so the in-glasses A/B
+    /// against the static baseline is one keypress.
     #[func]
     pub fn on_dynamic_stereo_toggled(&mut self) {
-        self.game_options.toggle_dynamic_stereo();
-        self.save_options();
-        self.broadcast_options();
+        self.adjust_option(OptionRow::DynamicStereo, 1);
     }
 
     /// Called from pause menu: resume gameplay.
@@ -1526,7 +1647,7 @@ impl GameManager {
         // and only swaps what the turntable shows — no teardown, no regenerate.
         let entering_backdrop = next == GamePhase::ShipSelect || next == GamePhase::Bestiary;
         let leaving_backdrop = prev == GamePhase::ShipSelect || prev == GamePhase::Bestiary;
-        if entering_backdrop && !leaving_backdrop {
+        if entering_backdrop && !leaving_backdrop && self.backdrop_override != 0 {
             self.generate_backdrop();
         }
 
@@ -1544,7 +1665,7 @@ impl GameManager {
         // frame — one choke point covers new game, Continue, the next
         // level, and respawns alike.
         if next == GamePhase::Playing && prev != GamePhase::Paused {
-            self.mark_level_enemies_seen();
+            self.enter_level();
             self.push_loading_veil(true);
             self.pending_level_build = 2;
             // A run becomes continuable at the start of level 2 — it has
@@ -1570,25 +1691,16 @@ impl GameManager {
         }
     }
 
-    /// Catalog every enemy type this level will contain, so the *next* briefing
-    /// lists them, and persist the bestiary if it grew (it is permanent).
-    fn mark_level_enemies_seen(&mut self) {
-        let mut grew = false;
-        // Coverage, not the direct roster: it includes death-spawn-only types
-        // (the SpawnDrone an EyeDrone drops), so the briefing lists a type the
-        // moment the level can produce it. `enemies_for_level` filtered on
-        // `spawns_directly()` and could never surface a death-only enemy.
-        let coverage = self
-            .level_spec
-            .as_ref()
-            .map(|s| s.coverage.clone())
-            .unwrap_or_default();
-        for enemy in coverage {
-            if self.run_state.mark_enemy_seen(enemy) {
-                grew = true;
-            }
-        }
-        if grew {
+    /// Level entry, at the phase transition — before any screen or the
+    /// build: the run's ONE spec for this level (cached here; the deferred
+    /// build and every later mediator decision read it) and the bestiary
+    /// grown to cover it, persisted the moment it grew (it is permanent).
+    /// Anything shown between here and the build — the loading veil, a
+    /// briefing — already reads the incoming level, never the last one.
+    fn enter_level(&mut self) {
+        let entry = self.run_state.enter_level(void_logic::roster::roster());
+        self.level_spec = Some(entry.spec);
+        if entry.bestiary_grew {
             self.persist_profile();
         }
     }
@@ -1630,9 +1742,13 @@ impl GameManager {
     }
 
     fn show_phase(&self, phase: GamePhase) {
-        // Mouse always visible — controller handles all gameplay input
-        let mut input = Input::singleton();
-        input.set_mouse_mode(MouseMode::VISIBLE);
+        // The mouse steers while flying (captured: relative motion, no
+        // cursor); every other screen frees it. The headless server (GUT,
+        // captures) has no cursor to capture and errors on the ask.
+        if DisplayServer::singleton().get_name() != "headless" {
+            let mode = if phase == GamePhase::Playing { MouseMode::CAPTURED } else { MouseMode::VISIBLE };
+            Input::singleton().set_mouse_mode(mode);
+        }
 
         // Show/hide UI layers by calling into the tree
         let Some(parent) = self.base().get_parent() else { return };
@@ -1846,21 +1962,17 @@ impl GameManager {
         let Some(cfg) = persistence::load(OPTIONS_FILE) else {
             return; // no saved preferences yet
         };
-        self.game_options.sbs_enabled = cfg
-            .get_value_ex(OPTIONS_SECTION, "sbs")
-            .default(&self.game_options.sbs_enabled.to_variant())
-            .done()
-            .to();
-        self.game_options.msaa_enabled = cfg
-            .get_value_ex(OPTIONS_SECTION, "msaa")
-            .default(&self.game_options.msaa_enabled.to_variant())
-            .done()
-            .to();
-        self.game_options.dynamic_stereo = cfg
-            .get_value_ex(OPTIONS_SECTION, "dynamic_stereo")
-            .default(&self.game_options.dynamic_stereo.to_variant())
-            .done()
-            .to();
+        // Every key the wire names; a missing or mistyped one keeps its
+        // default, so an older file (fewer keys) loads cleanly.
+        for key in options_wire::keys() {
+            let stored = cfg
+                .get_value_ex(OPTIONS_SECTION, key.name())
+                .default(&Variant::nil())
+                .done();
+            if let Some(value) = options_wire::from_variant(&stored) {
+                self.game_options.set_entry(key, value);
+            }
+        }
     }
 
     /// Persist the current options so they are remembered next launch.
@@ -1868,11 +1980,7 @@ impl GameManager {
         persistence::save(
             OPTIONS_FILE,
             OPTIONS_SECTION,
-            &[
-                ("sbs", self.game_options.sbs_enabled.to_variant()),
-                ("msaa", self.game_options.msaa_enabled.to_variant()),
-                ("dynamic_stereo", self.game_options.dynamic_stereo.to_variant()),
-            ],
+            &options_wire::to_pairs(&self.game_options),
         );
     }
 
@@ -1915,12 +2023,8 @@ impl GameManager {
                 menu.connect(signals::CONTINUE_SELECTED, &continue_game);
                 let bestiary = self.base().callable(methods::SHOW_BESTIARY_FROM_MENU);
                 menu.connect(signals::BESTIARY_SELECTED, &bestiary);
-                let sbs = self.base().callable(methods::ON_SBS_TOGGLED);
-                menu.connect(signals::SBS_TOGGLED, &sbs);
-                let msaa = self.base().callable(methods::ON_MSAA_TOGGLED);
-                menu.connect(signals::MSAA_TOGGLED, &msaa);
-                let dynamic = self.base().callable(methods::ON_DYNAMIC_STEREO_TOGGLED);
-                menu.connect(signals::DYNAMIC_STEREO_TOGGLED, &dynamic);
+                let adjusted = self.base().callable(methods::ON_OPTION_ADJUSTED);
+                menu.connect(signals::OPTION_ADJUSTED, &adjusted);
             }
         }
 
@@ -1934,12 +2038,8 @@ impl GameManager {
                 pause_ui.connect(signals::NEW_GAME_SELECTED, &new_game);
                 let quit = self.base().callable(methods::QUIT_TO_MENU);
                 pause_ui.connect(signals::QUIT_SELECTED, &quit);
-                let sbs = self.base().callable(methods::ON_SBS_TOGGLED);
-                pause_ui.connect(signals::SBS_TOGGLED, &sbs);
-                let msaa = self.base().callable(methods::ON_MSAA_TOGGLED);
-                pause_ui.connect(signals::MSAA_TOGGLED, &msaa);
-                let dynamic = self.base().callable(methods::ON_DYNAMIC_STEREO_TOGGLED);
-                pause_ui.connect(signals::DYNAMIC_STEREO_TOGGLED, &dynamic);
+                let adjusted = self.base().callable(methods::ON_OPTION_ADJUSTED);
+                pause_ui.connect(signals::OPTION_ADJUSTED, &adjusted);
             }
         }
 
@@ -2165,7 +2265,7 @@ impl GameManager {
         if spec.is_empty() {
             return;
         }
-        let needed = if self.capture_subject_is_roll() { 1 } else { 4 };
+        let needed = if self.capture_subject_is_screen() { 1 } else { 4 };
         self.shot_poses = spec
             .split(';')
             .filter_map(|pose| {
@@ -2281,8 +2381,8 @@ impl GameManager {
         image.save_png(&path);
         // The pose the frame ACTUALLY rendered from — capture-integrity
         // questions get answered from the log, not by inference.
-        let at = if self.capture_subject_is_roll() {
-            format!("roll offset {:.0} px", self.roll_offset().unwrap_or(f32::NAN))
+        let at = if let Some(screen) = self.capture_screen() {
+            format!("{} {:.0}", screen.pose_name(), self.screen_pose(screen).unwrap_or(f32::NAN))
         } else {
             let at = self
                 .base()
@@ -2315,55 +2415,76 @@ impl GameManager {
     }
 
 
-    /// The shot sequencer's subject: the ship in a level, the credits
-    /// crawl on a `--screen=credits` boot.
-    fn capture_subject_is_roll(&self) -> bool {
-        self.screen == "credits"
+    /// The menu screen a `--screen=` boot inspects, if any: the shot
+    /// sequencer's subject is then that screen's pose (the roll's offset
+    /// in pixels, the controls screen's page) instead of the ship.
+    fn capture_screen(&self) -> Option<CaptureScreen> {
+        CaptureScreen::parse(&self.screen.to_string())
     }
 
-    /// Park the sequencer's subject at `pose`: the ship in a level; on
-    /// the credits screen, the roll at `pose[0]` pixels (held there).
+    /// Whether the sequencer's subject is a menu screen (see
+    /// `capture_screen`) rather than the ship in a level.
+    fn capture_subject_is_screen(&self) -> bool {
+        self.capture_screen().is_some()
+    }
+
+    /// Park the sequencer's subject at `pose`: the ship in a level; on a
+    /// menu screen, the screen at `pose[0]` (the roll's offset in pixels,
+    /// the controls page), held there.
     fn park(&mut self, pose: [f32; 5]) {
-        if self.capture_subject_is_roll() {
-            if let Some(parent) = self.base().get_parent() {
-                if let Some(mut menu) = Self::find_ui_node(&parent, nodes::MAIN_MENU_UI) {
-                    menu.call(methods::SET_CREDITS_OFFSET, &[Variant::from(pose[0])]);
+        match self.capture_screen() {
+            Some(screen) => {
+                if let Some(parent) = self.base().get_parent() {
+                    if let Some(mut menu) = Self::find_ui_node(&parent, nodes::MAIN_MENU_UI) {
+                        match screen {
+                            CaptureScreen::Credits => {
+                                menu.call(methods::SET_CREDITS_OFFSET, &[Variant::from(pose[0])]);
+                            }
+                            CaptureScreen::Controls => {
+                                menu.call(methods::SET_CONTROLS_PAGE, &[Variant::from(pose[0] as i32)]);
+                            }
+                            CaptureScreen::Options => {
+                                menu.call(methods::SET_OPTIONS_ROW, &[Variant::from(pose[0] as i32)]);
+                            }
+                        }
+                    }
                 }
             }
-        } else {
-            self.park_at(pose);
+            None => self.park_at(pose),
         }
     }
 
-    /// The roll's offset as the menu reports it (None without a menu).
-    fn roll_offset(&self) -> Option<f32> {
+    /// The screen's pose as the menu reports it (None without a menu):
+    /// the roll's offset, or the controls page.
+    fn screen_pose(&self, screen: CaptureScreen) -> Option<f32> {
         let parent = self.base().get_parent()?;
         let mut menu = Self::find_ui_node(&parent, nodes::MAIN_MENU_UI)?;
-        Some(menu.call(methods::CREDITS_OFFSET, &[]).to::<f32>())
+        Some(match screen {
+            CaptureScreen::Credits => menu.call(methods::CREDITS_OFFSET, &[]).to::<f32>(),
+            CaptureScreen::Controls => menu.call(methods::CONTROLS_PAGE, &[]).to::<i32>() as f32,
+            CaptureScreen::Options => menu.call(methods::OPTIONS_ROW, &[]).to::<i32>() as f32,
+        })
     }
 
     /// Whether the rendering subject is verifiably OFF the pose — the
     /// render camera in a level, the roll's offset on a screen — or
     /// `None` when nothing renders to read (the headless GUT stage).
     fn subject_astray(&self, pose: [f32; 5]) -> Option<bool> {
-        if self.capture_subject_is_roll() {
-            return self.roll_offset().map(|at| (at - pose[0]).abs() > 1.0);
+        if let Some(screen) = self.capture_screen() {
+            return self.screen_pose(screen).map(|at| (at - pose[0]).abs() > screen.tolerance());
         }
         let at = self.base().get_viewport()?.get_camera_3d()?.get_global_position();
         Some((at - Vector3::new(pose[0], pose[1], pose[2])).length() > 1.0)
     }
 
     fn regenerate_level(&mut self) {
-        // ONE spec construction per level entry: every attribute (pitch,
-        // paradigm, roster, boss staging incl. the red container and the
-        // rolled hull) resolves here, against the profile, and this same
-        // value drives the build and every later mediator decision.
-        let spec = LevelSpec::for_level(
-            void_logic::roster::roster(),
-            self.run_state.run_seed,
-            self.run_state.current_level,
-            &self.run_state.profile.unlocks,
-        );
+        // The spec was constructed ONCE at level entry (`enter_level`,
+        // on the phase transition); the build consumes that same value,
+        // so nothing here can disagree with what the entry catalogued.
+        let spec = self
+            .level_spec
+            .clone()
+            .expect("a level build follows a level entry");
         // Every level entry names its run seed — any playtest moment is
         // reproducible (playtest 2026-07-09: an unlogged random seed made a
         // spawn-swarm configuration unrecoverable).
@@ -2378,7 +2499,6 @@ impl GameManager {
         // spec-placed miniboss (never both — LevelSpec enforces it).
         self.boss_fight =
             (spec.boss.is_some() || spec.miniboss.is_some()).then(BossFight::new);
-        self.level_spec = Some(spec.clone());
         let Some(parent) = self.base().get_parent() else { return };
         if let Some(level_mgr) = parent.try_get_node_as::<LevelManager>(nodes::LEVEL_MANAGER) {
             let mut level_mgr = level_mgr;

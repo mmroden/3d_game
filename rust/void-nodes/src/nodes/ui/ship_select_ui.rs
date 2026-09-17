@@ -263,7 +263,7 @@ impl ShipSelectUI {
                 )
             }
             Row::Back => (
-                "  ◄ Hulls".to_string(),
+                "  \u{25C0} Hulls".to_string(),
                 super::rgb(ui_style::TEXT_UNSELECTED),
             ),
             Row::Continue => (

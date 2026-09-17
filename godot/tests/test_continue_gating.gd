@@ -5,6 +5,7 @@ extends GutTest
 ## exists (the menu never reads disk).
 
 const UiStub := preload("res://tests/helpers/ui_stub.gd")
+const FullStack := preload("res://tests/helpers/full_stack.gd")
 
 ## Records GameManager's Continue-availability pushes; everything else is
 ## the shared UiStub contract (tests/helpers/ui_stub.gd).
@@ -16,31 +17,11 @@ class MenuRecordingStub:
 
 
 func _stack() -> Dictionary:
-	var root := Node3D.new()
-	add_child_autofree(root)
-	var menu_stub: MenuRecordingStub = null
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub := MenuRecordingStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
-		if ui_name == "MainMenuUI":
-			menu_stub = stub
-	var lm := LevelManager.new()
-	lm.name = "LevelManager"
-	var gm := GameManager.new()
-	root.add_child(lm)
-	root.add_child(gm)
-	# Real persistence leaks profiles across test runs; start fresh.
-	gm.clear_save_for_tests()
-	return {"gm": gm, "menu": menu_stub}
+	var stack := FullStack.build(self, {"player": false, "stub": MenuRecordingStub})
+	return {"gm": stack.gm, "menu": stack.stubs["MainMenuUI"]}
 
 func _into_playing(gm: GameManager) -> void:
-	gm.advance_from_ship_select()
-	for _i in range(12):
-		if gm.get_phase_name() == "Playing":
-			break
-		gm.advance_from_bestiary()
-	assert_eq(gm.get_phase_name(), "Playing", "must reach Playing")
+	FullStack.walk_to_playing(self, gm)
 
 
 func test_continue_resumes_only_after_finishing_a_level():
@@ -136,7 +117,7 @@ func test_menu_receives_the_availability_push_on_show():
 class GameManagerStub:
 	extends Node
 	@warning_ignore("unused_signal")
-	signal options_changed(sbs_enabled: bool, msaa_enabled: bool)
+	signal options_changed(options: Dictionary)
 
 
 func test_main_menu_hides_and_shows_the_continue_row():

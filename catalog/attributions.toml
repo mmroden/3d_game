@@ -220,6 +220,24 @@ url = "https://svs.gsfc.nasa.gov/vis/a000000/a004800/a004851/starmap_2020_8k_gal
 path = "assets/sky/starmap_2020_8k_gal.exr"
 sha256 = "d70924422d3e0159764b16a19658784befcf73b97e06e5c16614860c1514bb58"
 
+# ---- interface ----
+
+[[source]]
+key = "wikimedia_xbox_controller"
+name = "Xbox Controller.svg"
+author = "Jishenaz (Wikimedia Commons)"
+url = "https://commons.wikimedia.org/wiki/File:Xbox_Controller.svg"
+license = "CC0 1.0 Universal Public Domain Dedication (stated on the file page); no credit required"
+credit = "Xbox 360 controller drawing by Jishenaz, Wikimedia Commons, CC0"
+used_for = "the controls screen's gamepad silhouette — every pad Godot reports lands on this one SDL layout, only the printed names differ"
+contribution = "Controller diagram"
+packs = ["assets/ui"]
+
+[[source.downloads]]  # 744x500 SVG, 62 KB, fetched 2026-09-16
+url = "https://upload.wikimedia.org/wikipedia/commons/1/1b/Xbox_Controller.svg"
+path = "assets/ui/xbox_controller.svg"
+sha256 = "745eec1d547c977fa4de35e253bbc7cf77a80160bf1f576de53c3c82294f1d09"
+
 # ---- music and sound ----
 
 [[source]]

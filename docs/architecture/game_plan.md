@@ -21,7 +21,25 @@
 - Ram/contact damage wired: enemies deal impact-scaled damage on player collision
 - Player take_damage → signal → GameManager → RunState
 - Ram damage on physical collision (scales with impact speed, both bounce)
-- Stabilizer button (Tab/L1) zeroes angular velocity
+- Stabilizer button (Tab / Back-Create) zeroes angular velocity
+- Controls screen (2026-09-16, alpha note): a Controls row on the main and
+  pause menus, and the first pre-level briefing of a profile, open a
+  two-page screen read from the InputMap at runtime — the gamepad
+  silhouette (Wikimedia CC0, `make assets`) with callouts, and the
+  keyboard with the bound keys lit. Pages: `void_logic::controls`; the
+  node: `ControlsPanel`. Keys bind by physical position; one pad button
+  per flight action; pause on Start/Options.
+- Options (2026-09-16): ONE `GameOptions` names its entries
+  (`OptionKey`); that list is saved, loaded and broadcast as a typed
+  dictionary (`ui::options_wire`); both menus host one `OptionsPanel`
+  walking `OptionRow` (toggle / choice / slider / Back) and only ever
+  signal GameManager `option_adjusted(row, delta)` — adjust, save,
+  broadcast. Consumers: ViewManager (SBS, MSAA, dynamic stereo, mono
+  window mode, 3D render scale on both eyes), AudioManager (Master /
+  Music / SFX bus gain), the ship (mouse sensitivity, invert Y), HUD.
+- Mouse look (2026-09-16): captured in Playing; `void_logic::mouse_look`
+  spends a frame's motion per physics tick as a stick deflection added
+  to the pad's, capped at the full turn rate.
 
 ### Shield System
 - Shield newtype with absorb() → overflow to health

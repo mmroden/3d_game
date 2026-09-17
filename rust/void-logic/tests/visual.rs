@@ -760,3 +760,105 @@ fn credits_roll_renders_and_scrolls() {
     }
     assert!(faults.is_empty(), "credits crawl:\n{}", faults.join("\n"));
 }
+
+/// The horizontal span of the frame's bright pixels, in pixels: the
+/// leftmost and rightmost columns holding one (None on a dark frame).
+/// A menu panel's trim is bright, so on a menu screen this is the panel.
+fn bright_span(path: &Path) -> Option<(u32, u32)> {
+    let img = image::open(path).expect("frame opens").to_rgb8();
+    let (w, h) = img.dimensions();
+    let lit = |x: u32| (0..h).any(|y| {
+        let px = img.get_pixel(x, y);
+        px[0] >= 170 && px[1] >= 170 && px[2] >= 170
+    });
+    let first = (0..w).find(|&x| lit(x))?;
+    let last = (0..w).rev().find(|&x| lit(x))?;
+    Some((first, last))
+}
+
+/// The controls screen renders both pages (alpha note 2026-09-15: "need
+/// to see the keymapping"): a `--screen=controls` boot parks the screen
+/// on the controller page, then the keyboard page. Each frame carries
+/// text and lines (the callouts, the caps); the panel — its trim is the
+/// frame's widest bright span — fits the central half of the 1920-wide
+/// game window, what each eye sees in SBS; and the two pages differ —
+/// the page turned. `KEEP_FRAMES=1` keeps the frames under out/visual/
+/// for a look at the diagram itself; the callout anchors are judged by eye.
+#[test]
+fn controls_screen_renders_both_pages() {
+    // Page 0: the controller; page 1: the keyboard and mouse.
+    const PAGES: [f32; 2] = [0.0, 1.0];
+    // The central half of the game window (1920 wide): the UI is laid
+    // out in window pixels, so the panel's width in the frame is its
+    // width in play whatever the capture resolution.
+    const EYE_BAND: u32 = 960;
+    const MIN_TEXT: f32 = 0.002;
+    const MIN_TURN: f32 = 0.5;
+
+    let dir = frames_dir(0, 0, "controls");
+    let frames = capture_screen("controls", &PAGES, &dir);
+    let mut faults = Vec::new();
+    for (frame, page) in frames.iter().zip(PAGES) {
+        let text = bright_fraction(frame, 0.0, 1.0, 0.0, 1.0);
+        if text < MIN_TEXT {
+            faults.push(format!(
+                "page {page:.0}: {:.2}% bright pixels — nothing drawn on the page ({})",
+                text * 100.0, frame.display()));
+        }
+        match bright_span(frame) {
+            Some((x0, x1)) if x1 - x0 + 1 > EYE_BAND => faults.push(format!(
+                "page {page:.0}: the panel spans {} px ({x0}..{x1}) — wider than the \
+                 {EYE_BAND} px each eye sees in SBS ({})",
+                x1 - x0 + 1, frame.display())),
+            Some(_) => {}
+            None => faults.push(format!("page {page:.0}: no panel in the frame ({})", frame.display())),
+        }
+    }
+    if let [first, second] = frames.as_slice() {
+        let turned = band_diff(first, second, 0.0, 1.0);
+        if turned < MIN_TURN {
+            faults.push(format!(
+                "pages 0 -> 1: the frame changed by {turned:.2} — the page did not turn"));
+        }
+    }
+    assert!(faults.is_empty(), "controls screen:\n{}", faults.join("\n"));
+}
+
+/// The options rows render in the menu panel (alpha note 2026-09-15:
+/// audio sliders, video controls): a `--screen=options` boot parks the
+/// cursor on the first row, then the last (Back). Each frame carries
+/// text, the panel fits the SBS eye band, and the cursor moved — the
+/// two frames differ. `KEEP_FRAMES=1` keeps the frames for a look at
+/// the rows themselves (eleven rows in the bottom-seated panel).
+#[test]
+fn options_rows_render_in_the_menu_panel() {
+    const ROWS: [f32; 2] = [0.0, 10.0];
+    const EYE_BAND: u32 = 960;
+    const MIN_TEXT: f32 = 0.002;
+    const MIN_MOVE: f32 = 0.05;
+
+    let dir = frames_dir(0, 0, "options");
+    let frames = capture_screen("options", &ROWS, &dir);
+    let mut faults = Vec::new();
+    for (frame, row) in frames.iter().zip(ROWS) {
+        let text = bright_fraction(frame, 0.0, 1.0, 0.0, 1.0);
+        if text < MIN_TEXT {
+            faults.push(format!("row {row:.0}: {:.2}% bright pixels — no rows drawn ({})",
+                text * 100.0, frame.display()));
+        }
+        match bright_span(frame) {
+            Some((x0, x1)) if x1 - x0 + 1 > EYE_BAND => faults.push(format!(
+                "row {row:.0}: the panel spans {} px — wider than the {EYE_BAND} px each eye sees ({})",
+                x1 - x0 + 1, frame.display())),
+            Some(_) => {}
+            None => faults.push(format!("row {row:.0}: no panel in the frame ({})", frame.display())),
+        }
+    }
+    if let [first, second] = frames.as_slice() {
+        let moved = band_diff(first, second, 0.0, 1.0);
+        if moved < MIN_MOVE {
+            faults.push(format!("rows 0 -> 10: the frame changed by {moved:.3} — the cursor did not move"));
+        }
+    }
+    assert!(faults.is_empty(), "options rows:\n{}", faults.join("\n"));
+}

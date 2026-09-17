@@ -115,15 +115,18 @@ pub fn paged_index(current: usize, delta: i32, total: usize) -> usize {
     (current as i64 + delta as i64).clamp(0, last) as usize
 }
 
-/// The call-to-action under the briefing panel. The Ⓧ marks the begin button
-/// (gamepad X / keyboard Enter). The next/prev hint only appears when there's
-/// more than one entry to move between; its up/down arrows match the menu_up /
-/// menu_down paging input (the same navigation every other menu uses).
-pub fn briefing_hint(total: usize) -> &'static str {
+/// The call-to-action under the briefing panel. `begin` is the begin
+/// button's prompt on both devices as the InputMap binds it (the pad's
+/// glyph beside the key — "Ⓧ / Enter", `controls::action_prompt`), never
+/// a hardcoded glyph. The prev/next hint only appears when there's more
+/// than one entry to move between; its left/right arrows match the
+/// menu_left / menu_right paging input — pages turn sideways, rows
+/// (every other menu) walk up and down.
+pub fn briefing_hint(total: usize, begin: &str) -> String {
     if total > 1 {
-        "\u{25B2} next \u{25BC}     \u{2022}     \u{24CD} Begin mission"
+        format!("\u{25C0} prev  next \u{25B6}     \u{2022}     {begin}  Begin mission")
     } else {
-        "\u{24CD} Begin mission"
+        format!("{begin}  Begin mission")
     }
 }
 
@@ -202,19 +205,26 @@ mod tests {
 
     #[test]
     fn briefing_hint_shows_next_only_with_more_than_one_entry() {
+        // The begin prompt is whatever the InputMap binds, on both devices
+        // (owner 2026-09-16: "(X)/Enter to close"-style), passed in.
+        let begin = "\u{24CD} / Enter";
         // Single subject: nothing to page to, just the begin prompt.
-        assert!(briefing_hint(1).contains("Begin mission"));
-        assert!(!briefing_hint(1).contains("next"), "one entry can't be paged");
+        assert!(briefing_hint(1, begin).contains("Begin mission"));
+        assert!(briefing_hint(1, begin).contains(begin), "the prompt names both devices");
+        assert!(!briefing_hint(1, begin).contains("next"), "one entry can't be paged");
         // Multiple subjects: offer next/prev as well as begin.
-        let multi = briefing_hint(3);
+        let multi = briefing_hint(3, begin);
         assert!(multi.contains("next"), "multiple entries show the next/prev hint");
-        assert!(multi.contains("Begin mission"));
-        // Paging is bound to menu up/down, so the glyphs must read up/down —
-        // not the left/right arrows that imply a horizontal control.
-        assert!(multi.contains('\u{25B2}'), "up arrow ▲ matches the menu_up paging input");
-        assert!(multi.contains('\u{25BC}'), "down arrow ▼ matches the menu_down paging input");
-        assert!(!multi.contains('\u{25C0}'), "no left arrow ◀ — paging isn't horizontal");
-        assert!(!multi.contains('\u{25B6}'), "no right arrow ▶ — paging isn't horizontal");
+        assert!(multi.contains("Begin mission") && multi.contains(begin));
+        // Paging is bound to menu left/right (BestiaryUI since the 2026-07-03
+        // economy overhaul; test_showcase_screens.gd presses them), so the
+        // glyphs read left/right — the house rule: rows walk up/down, pages
+        // turn left/right (owner 2026-09-16). The matched triangle pair
+        // U+25C0/U+25B6, never the two-sized "pointer" pair.
+        assert!(multi.contains('\u{25C0}'), "left arrow ◀ matches the menu_left paging input");
+        assert!(multi.contains('\u{25B6}'), "right arrow ▶ matches the menu_right paging input");
+        assert!(!multi.contains('\u{25B2}'), "no up arrow ▲ — paging isn't vertical");
+        assert!(!multi.contains('\u{25BC}'), "no down arrow ▼ — paging isn't vertical");
     }
 
     #[test]

@@ -9,6 +9,10 @@ pub mod death_screen_ui;
 pub mod hud;
 pub mod map_panel;
 pub mod menu_panel;
+pub mod controls_panel;
+pub mod input_bindings;
+pub mod options_panel;
+pub mod options_wire;
 
 use godot::prelude::Color;
 

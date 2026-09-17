@@ -1,14 +1,18 @@
 use godot::prelude::*;
 use godot::classes::{
+    InputEvent, InputEventMouseMotion,
     RigidBody3D, IRigidBody3D, PhysicsDirectBodyState3D, PhysicsRayQueryParameters3D,
     MeshInstance3D, Camera3D, Node3D, CollisionShape3D, CapsuleShape3D, OmniLight3D,
     GpuParticles3D, SphereMesh, StandardMaterial3D,
     Input,
 };
 
-use super::constants::{actions, groups, methods, signals};
+use super::constants::{actions, groups, methods, nodes, signals};
 use super::godot_util;
 use super::live_handle::{LiveOpt, LiveRef, LiveVec};
+use super::ui::options_wire;
+use void_logic::game_options::GameOptions;
+use void_logic::mouse_look::MouseLook;
 
 use void_logic::cockpit;
 use void_logic::debuff::SlowDebuff;
@@ -138,6 +142,11 @@ pub struct ShipController {
     /// menu/showcase/bestiary screens the camera must NOT respond to the stick,
     /// so GameManager flips this off there.
     controls_enabled: bool,
+    /// Mouse motion pending as steering (void-logic spends it per tick).
+    mouse_look: MouseLook,
+    /// Mouse look preferences, GameManager's options via the broadcast.
+    mouse_sensitivity: u8,
+    invert_mouse_y: bool,
 }
 
 #[godot_api]
@@ -170,6 +179,9 @@ impl IRigidBody3D for ShipController {
             fire_secondary_held: false,
             valkyrie_bursts: 0,
             controls_enabled: false,
+            mouse_look: MouseLook::new(),
+            mouse_sensitivity: GameOptions::MOUSE_SENSITIVITY_DEFAULT,
+            invert_mouse_y: false,
         }
     }
 
@@ -196,6 +208,19 @@ impl IRigidBody3D for ShipController {
         self.spawn_ship_model();
         self.spawn_cockpit_shell();
         self.apply_camera_mode();
+        self.connect_options();
+    }
+
+    /// Mouse motion is steering while piloting: the frame's relative
+    /// motion accumulates here and `fly` spends it per physics tick.
+    fn input(&mut self, event: Gd<InputEvent>) {
+        if !self.controls_enabled {
+            return;
+        }
+        if let Ok(motion) = event.try_cast::<InputEventMouseMotion>() {
+            let relative = motion.get_relative();
+            self.mouse_look.push(relative.x, relative.y);
+        }
     }
 
     /// Flight runs in `integrate_forces`, the engine's hook for safely
@@ -318,6 +343,32 @@ impl ShipController {
     #[func]
     pub fn apply_tractor(&mut self, accel: Vector3) {
         self.tractor_accel += accel;
+    }
+
+    /// GameManager's options broadcast: the mouse look preferences.
+    #[func]
+    fn on_options_changed(&mut self, options: options_wire::OptionsDictionary) {
+        let options = options_wire::from_dictionary(&options);
+        self.mouse_sensitivity = options.mouse_sensitivity;
+        self.invert_mouse_y = options.invert_mouse_y;
+    }
+
+    /// Test/inspection seam: the mouse sensitivity in force.
+    #[func]
+    pub fn mouse_sensitivity(&self) -> i32 {
+        self.mouse_sensitivity as i32
+    }
+
+    /// Listen for the options broadcast (GameManager is a sibling under
+    /// Main; its startup broadcast is deferred past every ready).
+    fn connect_options(&mut self) {
+        let Some(parent) = self.base().get_parent() else { return };
+        if let Some(mut gm) = parent.try_get_node_as::<Node>(nodes::GAME_MANAGER) {
+            let callable = self.base().callable(methods::ON_OPTIONS_CHANGED);
+            if !gm.is_connected(signals::OPTIONS_CHANGED, &callable) {
+                gm.connect(signals::OPTIONS_CHANGED, &callable);
+            }
+        }
     }
 
     /// Enable/disable pilot input. GameManager turns it on only for gameplay so
@@ -664,6 +715,17 @@ impl ShipController {
         // command (and to zero on release).
         let turn_mult = self.loadout.rotation_speed() / self.loadout.base.rotation_speed
             * self.ship_rotation_mul;
+        // Mouse look: the frame's motion spent as a stick deflection over
+        // this tick, added to the stick — pad and mouse are one command,
+        // capped at the full rate either way.
+        let [mouse_pitch, mouse_yaw] = self.mouse_look.deflection(
+            state.get_step(),
+            self.mouse_sensitivity,
+            self.invert_mouse_y,
+            TURN_RATE * turn_mult,
+        );
+        let pitch = (pitch + mouse_pitch).clamp(-1.0, 1.0);
+        let yaw = (yaw + mouse_yaw).clamp(-1.0, 1.0);
         let command = basis * Vector3::new(pitch, yaw, roll) * (TURN_RATE * turn_mult);
         let torque = (command - state.get_angular_velocity()) * TURN_GAIN;
         state.apply_torque(torque);

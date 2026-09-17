@@ -12,7 +12,7 @@ extends GutTest
 ## -1 = no seal on this level, 0 Dormant, 1 Engaged, 2 Defeated,
 ## 3 RewardCollected (a miniboss lands on 3 AT the kill — defeat(0)).
 
-const UiStub := preload("res://tests/helpers/ui_stub.gd")
+const FullStack := preload("res://tests/helpers/full_stack.gd")
 
 var _gm: GameManager
 var _lm: LevelManager
@@ -31,36 +31,15 @@ func after_all():
 	GameManager.clear_test_grammar()
 
 func _build_stack() -> void:
-	var root := Node3D.new()
-	add_child_autofree(root)
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub := UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
-	_lm = LevelManager.new()
-	_lm.name = "LevelManager"
-	_player = ShipController.new()
-	_player.name = "Player"
-	_player.add_to_group("player")
-	var shape := CollisionShape3D.new()
-	shape.name = "CollisionShape3D"
-	shape.shape = SphereShape3D.new()
-	_player.add_child(shape)
-	_gm = GameManager.new()
-	_gm.fixed_seed = 1   # the pinned run — the Rust anchor pins this build
-	_gm.start_level = 1  # the fixture's level 1 fields the miniboss
-	root.add_child(_lm)
-	root.add_child(_player)
-	root.add_child(_gm)
-	_gm.clear_save_for_tests()
+	# The pinned run — the Rust anchor pins this build; the fixture's
+	# level 1 fields the miniboss.
+	var stack := FullStack.build(self, {"seed": 1, "level": 1})
+	_gm = stack.gm
+	_lm = stack.lm
+	_player = stack.player
 
 func _walk_to_playing() -> void:
-	_gm.advance_from_ship_select()
-	for _i in range(12):
-		if _gm.get_phase_name() == "Playing":
-			break
-		_gm.advance_from_bestiary()
-	assert_eq(_gm.get_phase_name(), "Playing", "the stack must reach Playing")
+	FullStack.walk_to_playing(self, _gm)
 
 func _gates() -> Array:
 	return _lm.find_children("*", "BossGate", true, false)

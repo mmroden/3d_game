@@ -160,26 +160,12 @@ func test_only_pushed_contacts_reach_the_radar():
 func test_radar_contacts_cover_the_neighborhood_not_the_level():
 	# Full stack: the wire LevelManager → GameManager → HUD scopes contacts
 	# to the lit neighborhood; the level-wide enemy roster is bigger.
-	const UiStub := preload("res://tests/helpers/ui_stub.gd")
-	var root := Node3D.new()
-	add_child_autofree(root)
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub := UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
-	var lm := LevelManager.new()
-	lm.name = "LevelManager"
-	var gm := GameManager.new()
-	gm.fixed_seed = 1
-	root.add_child(lm)
-	root.add_child(gm)
-	gm.clear_save_for_tests()
+	const FullStack := preload("res://tests/helpers/full_stack.gd")
+	var stack := FullStack.build(self, {"seed": 1, "player": false})
+	var gm: GameManager = stack.gm
+	var lm: LevelManager = stack.lm
 	gm.start_new_game()
-	gm.advance_from_ship_select()
-	for _i in range(12):
-		if gm.get_phase_name() == "Playing":
-			break
-		gm.advance_from_bestiary()
+	FullStack.walk_to_playing(self, gm)
 	await wait_process_frames(4)  # deferred build + first culling pass
 
 	var contacts: PackedInt64Array = lm.radar_contacts()

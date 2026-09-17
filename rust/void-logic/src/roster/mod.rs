@@ -538,6 +538,14 @@ impl Roster {
         self.locate(level).0
     }
 
+    /// How many levels the planet files declare in total — the campaign
+    /// the grammar actually authors, before the newest planet's shape
+    /// repeats virtually. A search over "every declared level" (the
+    /// staged fights, say) stops here.
+    pub fn declared_levels(&self) -> u32 {
+        self.planets.iter().map(|p| p.levels).sum()
+    }
+
     /// A level's world-space quantization — the tile/story of the kit it
     /// builds with (measured by the make-assets probe for generated kits;
     /// a fixed kit's declared scale). Nobody authors a cell dimension

@@ -14,11 +14,7 @@ signal continue_selected
 @warning_ignore("unused_signal")
 signal bestiary_selected
 @warning_ignore("unused_signal")
-signal sbs_toggled(enabled: bool)
-@warning_ignore("unused_signal")
-signal msaa_toggled(enabled: bool)
-@warning_ignore("unused_signal")
-signal dynamic_stereo_toggled(enabled: bool)
+signal option_adjusted(row: String, delta: int)
 @warning_ignore("unused_signal")
 signal resume_selected
 @warning_ignore("unused_signal")
@@ -54,7 +50,7 @@ func show_shop(_c: int, _o: int, _ids: PackedInt32Array, _labels: PackedStringAr
 func refresh_shop(_c: int, _o: int, _ids: PackedInt32Array, _labels: PackedStringArray, _details: PackedStringArray, _costs: PackedInt64Array, _flags: PackedByteArray) -> void: pass
 func show_ship_select(_ship_id: int, _color_id: int, _owned: PackedByteArray) -> void: pass
 func show_bestiary(_t: String, _b: String, _p: String, _h: String) -> void: pass
-func begin_briefing() -> void: pass
+func begin_briefing(_with_controls: bool) -> void: pass
 func hide_bestiary() -> void: pass
 func show_summary(_k: Dictionary, _c: int, _l: int) -> void: pass
 func update_health(_h: float, _m: float) -> void: pass
