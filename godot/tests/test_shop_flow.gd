@@ -17,32 +17,16 @@ const KIND_COMPONENTS := 0
 const KIND_ORGANICS := 1
 
 const UiStub := preload("res://tests/helpers/ui_stub.gd")
+const FullStack := preload("res://tests/helpers/full_stack.gd")
 
 
 ## Build the minimal stack and drive the FSM into Playing. Returns the GameManager.
 func _playing_game() -> GameManager:
-	var root := Node3D.new()
-	add_child_autofree(root)
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub := UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
-	var lm := LevelManager.new()
-	lm.name = "LevelManager"
-	var gm := GameManager.new()
-	root.add_child(lm)
-	root.add_child(gm)
 	# Real persistence leaks profiles (organics, unlocks) across test runs;
 	# every stack starts as a fresh install.
-	gm.clear_save_for_tests()
-
+	var gm: GameManager = FullStack.build(self, {"player": false}).gm
 	gm.start_new_game()
-	gm.advance_from_ship_select()
-	for _i in range(12):
-		if gm.get_phase_name() == "Playing":
-			break
-		gm.advance_from_bestiary()
-	assert_eq(gm.get_phase_name(), "Playing", "the stack must reach Playing")
+	FullStack.walk_to_playing(self, gm)
 	return gm
 
 ## Portal out of the level and into the shop with `funds` components banked.
@@ -172,31 +156,12 @@ func test_the_shop_returns_after_every_level():
 	# Playtest (2026-07-04): the shop appeared after level 1 but not after
 	# level 2. Walk two full levels through the real phase machine; the shop
 	# must be pushed to the UI both times.
-	var root := Node3D.new()
-	add_child_autofree(root)
-	var shop_stub: ShopRecordingStub = null
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub: UiStub
-		if ui_name == "ShopUI":
-			shop_stub = ShopRecordingStub.new()
-			stub = shop_stub
-		else:
-			stub = UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
-	var lm := LevelManager.new()
-	lm.name = "LevelManager"
-	var gm := GameManager.new()
-	root.add_child(lm)
-	root.add_child(gm)
-	gm.clear_save_for_tests()
+	var stack := FullStack.build(self, {"player": false, "stubs": {"ShopUI": ShopRecordingStub}})
+	var shop_stub: ShopRecordingStub = stack.stubs["ShopUI"]
+	var gm: GameManager = stack.gm
 
 	gm.start_new_game()
-	gm.advance_from_ship_select()
-	for _i in range(12):
-		if gm.get_phase_name() == "Playing":
-			break
-		gm.advance_from_bestiary()
+	FullStack.walk_to_playing(self, gm)
 	await wait_process_frames(3)  # let the deferred sector build land
 
 	gm.on_portal_entered()
@@ -228,35 +193,20 @@ func test_one_press_on_the_level_2_summary_lands_in_the_shop_not_past_it():
 	# (Continue), then ship select, menu after menu. This drives the two
 	# button moments with REAL UIs and real presses: the press that closes
 	# the summary must land the player IN the shop, cursor at the top.
-	var root := Node3D.new()
-	add_child_autofree(root)
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub := UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
+	# The REAL summary, shop and ship-select screens ride this stack — the
+	# button moments are theirs.
 	var summary := KillSummaryUI.new()
-	summary.name = "KillSummaryUI"
-	root.add_child(summary)
 	var shop := ShopUI.new()
-	shop.name = "ShopUI"
-	root.add_child(shop)
 	var ship_select := ShipSelectUI.new()
-	ship_select.name = "ShipSelectUI"
-	root.add_child(ship_select)
-	var lm := LevelManager.new()
-	lm.name = "LevelManager"
-	var gm := GameManager.new()
-	root.add_child(lm)
-	root.add_child(gm)
-	gm.clear_save_for_tests()
+	var stack := FullStack.build(self, {
+		"player": false,
+		"real": {"KillSummaryUI": summary, "ShopUI": shop, "ShipSelectUI": ship_select},
+	})
+	var gm: GameManager = stack.gm
 
 	# Level 1, driven directly (the two button moments come later).
 	gm.start_new_game()
-	gm.advance_from_ship_select()
-	for _i in range(12):
-		if gm.get_phase_name() == "Playing":
-			break
-		gm.advance_from_bestiary()
+	FullStack.walk_to_playing(self, gm)
 	await wait_process_frames(3)
 	gm.on_portal_entered()
 	gm.advance_to_shop()

@@ -24,6 +24,9 @@ except ImportError:  # the audit venv (python 3.9) carries tomli
     import tomli as tomllib
 
 CHUNK = 1 << 20
+# Who is asking, for hosts that refuse anonymous library clients
+# (Wikimedia's User-Agent policy): the project and where to find it.
+USER_AGENT = "VoidScavenger-assets/1.0 (https://github.com/mmroden/3d_game)"
 
 
 def sha256_of(path):
@@ -34,12 +37,14 @@ def sha256_of(path):
     return digest.hexdigest()
 
 
-def fetch(url, path):
+def fetch(url, path, user_agent=USER_AGENT):
     """Stream `url` to `path` (a partial file is written beside it and
-    moved into place only when the stream ends)."""
+    moved into place only when the stream ends). The request names the
+    project: Wikimedia (and others) refuse anonymous library clients."""
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
     partial = path + ".part"
-    with urllib.request.urlopen(url) as response, open(partial, "wb") as out:
+    request = urllib.request.Request(url, headers={"User-Agent": user_agent})
+    with urllib.request.urlopen(request) as response, open(partial, "wb") as out:
         for block in iter(lambda: response.read(CHUNK), b""):
             out.write(block)
     os.replace(partial, path)

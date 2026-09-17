@@ -92,6 +92,20 @@ mod tests {
     }
 
     #[test]
+    fn the_declared_levels_end_where_the_virtual_planets_begin() {
+        // The campaign the files author is the sum of the planets'
+        // declared lengths; one level past it is the first virtual planet
+        // (the newest shape repeating, the number still counting).
+        let grammar = crate::roster::roster();
+        let declared = grammar.declared_levels();
+        let summed: u32 = grammar.planets.iter().map(|p| p.levels).sum();
+        assert_eq!(declared, summed);
+        let last = grammar.planets.last().expect("planets").planet;
+        assert_eq!(planet_of(declared), last, "the last declared level is on the last planet");
+        assert_eq!(planet_of(declared + 1), last + 1, "one past it is virtual");
+    }
+
+    #[test]
     fn the_pitch_is_single_sourced_and_derives_from_the_kit_meshes() {
         // The pitch's ONE source is the probe-derived kit grid
         // (kits.generated.toml, measured from the recipe meshes) — there is

@@ -5,11 +5,13 @@ use godot::classes::{
 };
 use godot::global::HorizontalAlignment;
 
+use super::controls_panel::{ControlsOutcome, ControlsPanel};
 use super::menu_panel;
+use super::options_panel::{OptionsOutcome, OptionsPanel};
+use super::options_wire;
 use crate::nodes::constants::{actions, methods, nodes, signals, theme};
 use crate::nodes::live_handle::{LiveOpt, LiveRef, LiveVec};
 use void_logic::credits::{self, Roll, RollDrive, RollEntry};
-use void_logic::game_options::GameOptions;
 use void_logic::menu_cursor::MenuCursor;
 use void_logic::ui_style;
 
@@ -21,6 +23,7 @@ enum MenuAction {
     NewGame,
     Bestiary,
     Options,
+    Controls,
     Credits,
     Exit,
 }
@@ -32,6 +35,7 @@ impl MenuAction {
             Self::NewGame => "New Game",
             Self::Bestiary => "Bestiary",
             Self::Options => "Options",
+            Self::Controls => "Controls",
             Self::Credits => "Credits",
             Self::Exit => "Exit",
         }
@@ -39,12 +43,14 @@ impl MenuAction {
 }
 
 /// What the layer is showing: the panel's action rows, the panel's
-/// options rows, or the credits crawl over the whole screen. One typed
-/// state, so a third view could not arrive as a second bool.
+/// options rows, the controls screen, or the credits crawl over the
+/// whole screen. One typed state, so a new view can never arrive as a
+/// second bool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MenuView {
     Root,
     Options,
+    Controls,
     Credits,
 }
 
@@ -69,8 +75,9 @@ pub struct MainMenuUI {
     /// change can rebuild just the rows.
     items_parent: Option<LiveRef<VBoxContainer>>,
     view: MenuView,
-    option_cursor: MenuCursor,
-    option_labels: LiveVec<Label>,
+    /// The options rows, in the panel where the action rows sit; shows
+    /// GameManager's broadcast and relays the cursor's changes.
+    options_panel: Option<LiveRef<OptionsPanel>>,
     /// The credits crawl: its motion (void_logic), the full-screen node it
     /// rises through and the centered column of every credit pair — the
     /// nodes alive only while the crawl runs.
@@ -81,13 +88,12 @@ pub struct MainMenuUI {
     roll_parked_at: Option<f32>,
     credits_crawl: Option<LiveRef<Control>>,
     credits_column: Option<LiveRef<VBoxContainer>>,
-    /// The panel, hidden while the crawl runs and shown again after: the
-    /// crawl is the whole screen, nothing boxed.
-    hidden_for_roll: LiveVec<Control>,
-    /// Cached copy of the authoritative `GameOptions`, seeded from
-    /// GameManager at startup and updated on `options_changed`. One
-    /// type, one default — no second literal to drift out of sync.
-    options: GameOptions,
+    /// The panel, hidden while the crawl or the controls screen runs and
+    /// shown again after: each is the whole screen, nothing boxed.
+    hidden_for_overlay: LiveVec<Control>,
+    /// The controls screen, built once with the menu and shown on the
+    /// Controls row (and by the `--screen=controls` capture boot).
+    controls: Option<LiveRef<ControlsPanel>>,
 }
 
 /// The menu rows for a given Continue availability. New Game always leads
@@ -102,6 +108,7 @@ fn actions_for(continue_available: bool) -> Vec<MenuAction> {
             MenuAction::NewGame,
             MenuAction::Bestiary,
             MenuAction::Options,
+            MenuAction::Controls,
             MenuAction::Credits,
             MenuAction::Exit,
         ]
@@ -110,6 +117,7 @@ fn actions_for(continue_available: bool) -> Vec<MenuAction> {
             MenuAction::NewGame,
             MenuAction::Bestiary,
             MenuAction::Options,
+            MenuAction::Controls,
             MenuAction::Credits,
             MenuAction::Exit,
         ]
@@ -128,14 +136,13 @@ impl ICanvasLayer for MainMenuUI {
             labels: LiveVec::new(),
             items_parent: None,
             view: MenuView::Root,
-            option_cursor: MenuCursor::new(4),
-            option_labels: LiveVec::new(),
+            options_panel: None,
             roll: Roll::new(),
             roll_parked_at: None,
             credits_crawl: None,
             credits_column: None,
-            hidden_for_roll: LiveVec::new(),
-            options: GameOptions::default(),
+            hidden_for_overlay: LiveVec::new(),
+            controls: None,
         }
     }
 
@@ -157,6 +164,7 @@ impl ICanvasLayer for MainMenuUI {
         match self.view {
             MenuView::Root => self.handle_menu_actions(&input),
             MenuView::Options => self.handle_options_actions(&input),
+            MenuView::Controls => self.handle_controls_actions(&input),
             MenuView::Credits => self.handle_credits_actions(&input, delta as f32),
         }
     }
@@ -176,38 +184,23 @@ impl MainMenuUI {
     #[signal]
     fn exit_selected();
 
+    /// The options rows asked for a change: (row name, delta). GameManager
+    /// adjusts, remembers and broadcasts; the rows never change a value.
     #[signal]
-    fn sbs_toggled();
-
-    #[signal]
-    fn msaa_toggled();
-
-
-    #[signal]
-    fn dynamic_stereo_toggled();
-
-    /// Called by GameManager to update displayed option states.
-    #[func]
-    pub fn set_option_states(&mut self, sbs_on: bool, msaa_on: bool, dynamic_on: bool) {
-        self.options.sbs_enabled = sbs_on;
-        self.options.msaa_enabled = msaa_on;
-        self.options.dynamic_stereo = dynamic_on;
-        if self.view == MenuView::Options {
-            self.refresh_options();
-        }
-    }
+    fn option_adjusted(row: GString, delta: i32);
 
     /// Test/inspection seam: the MSAA state this menu would display,
     /// which must always equal GameManager's authoritative option.
     #[func]
     pub fn displayed_msaa(&self) -> bool {
-        self.options.msaa_enabled
+        self.options_panel.with(|p| p.bind().options().msaa_enabled).unwrap_or(false)
     }
 
-    /// Called when GameManager emits options_changed signal.
+    /// GameManager's options broadcast: the rows show it.
     #[func]
-    pub fn on_options_changed(&mut self, sbs_enabled: bool, msaa_enabled: bool, dynamic_stereo: bool) {
-        self.set_option_states(sbs_enabled, msaa_enabled, dynamic_stereo);
+    pub fn on_options_changed(&mut self, options: options_wire::OptionsDictionary) {
+        let options = options_wire::from_dictionary(&options);
+        self.options_panel.with(|p| p.bind_mut().set_options(options));
     }
 
     /// Pushed by GameManager whenever the menu is shown: whether a
@@ -270,6 +263,55 @@ impl MainMenuUI {
     pub fn release_credits(&mut self) {
         self.roll_parked_at = None;
     }
+
+    /// Open the controls screen on the page for the device in hand —
+    /// the Controls row's own door, the `--screen=controls` boot's, and
+    /// the test seam.
+    #[func]
+    pub fn open_controls(&mut self) {
+        self.view = MenuView::Controls;
+        self.hide_panel_for_overlay();
+        self.controls.with(|c| c.bind_mut().open_default());
+    }
+
+    /// Test/inspection seam: whether the controls screen is showing.
+    #[func]
+    pub fn controls_visible(&self) -> bool {
+        self.view == MenuView::Controls
+    }
+
+    /// Test/inspection seam and capture readback: the page showing
+    /// (0 controller, 1 keyboard).
+    #[func]
+    pub fn controls_page(&self) -> i32 {
+        self.controls.with(|c| c.bind().page_index()).unwrap_or(0)
+    }
+
+    /// Park the controls screen on a page — the capture door
+    /// (`--screen=controls --shot=<page;…>`), also a test seam.
+    #[func]
+    pub fn set_controls_page(&mut self, page: i32) {
+        self.controls.with(|c| c.bind_mut().set_page_index(page));
+    }
+
+    /// Open the options rows — the Options row's own door, the
+    /// `--screen=options` capture boot's, and the test seam.
+    #[func]
+    pub fn open_options(&mut self) {
+        self.show_options();
+    }
+
+    /// The capture door's park: put the options cursor on `row`.
+    #[func]
+    pub fn set_options_row(&mut self, row: i32) {
+        self.options_panel.with(|p| p.bind_mut().set_cursor(row.max(0) as usize));
+    }
+
+    /// Capture readback and test seam: the options cursor's row index.
+    #[func]
+    pub fn options_row(&self) -> i32 {
+        self.options_panel.with(|p| p.bind().cursor_index() as i32).unwrap_or(0)
+    }
 }
 
 impl MainMenuUI {
@@ -330,7 +372,18 @@ impl MainMenuUI {
         self.items_parent = Some(LiveRef::new(&vbox));
         self.rebuild_items();
 
+        // The options rows, in the panel where the action rows sit,
+        // hidden until the Options row.
+        let options = OptionsPanel::new_alloc();
+        vbox.add_child(&options);
+        self.options_panel = Some(LiveRef::new(&options));
+
         self.base_mut().add_child(&panel);
+
+        // The controls screen, over everything, hidden until its row.
+        let controls = ControlsPanel::new_alloc();
+        self.base_mut().add_child(&controls);
+        self.controls = Some(LiveRef::new(&controls));
     }
 
     /// (Re)build the action rows for the current Continue availability, with
@@ -407,9 +460,10 @@ impl MainMenuUI {
                 self.base_mut().emit_signal(signals::BESTIARY_SELECTED, &[]);
             }
             MenuAction::Options => {
-                self.view = MenuView::Options;
-                self.option_cursor.reset();
                 self.show_options();
+            }
+            MenuAction::Controls => {
+                self.open_controls();
             }
             MenuAction::Credits => {
                 self.open_credits();
@@ -452,100 +506,30 @@ impl MainMenuUI {
         });
     }
 
+    /// Show the options rows in the panel, the action rows hidden.
     fn show_options(&mut self) {
-        // Free any lingering option labels from a prior entry.
-        // queue_free() is deferred, so guard against rapid re-entry.
-        self.option_labels.for_each_live(|_, label, _| label.queue_free());
-        self.option_labels.clear();
-
+        self.view = MenuView::Options;
         self.labels.for_each_live(|_, label, _| label.set_visible(false));
-        let Some(mut parent) = self.labels.get_live(0).and_then(|l| l.get_parent()) else {
-            return;
-        };
-
-        let options = [
-            format!("  SBS Stereo: {}", if self.options.sbs_enabled { "ON" } else { "OFF" }),
-            format!("  MSAA: {}", if self.options.msaa_enabled { "ON" } else { "OFF" }),
-            format!("  Dynamic 3D: {}", if self.options.dynamic_stereo { "ON" } else { "OFF" }),
-            "  Back".to_string(),
-        ];
-
-        for (i, text) in options.iter().enumerate() {
-            let mut label = Label::new_alloc();
-            let display = if i == self.option_cursor.index() {
-                format!("> {}", text.trim())
-            } else {
-                text.clone()
-            };
-            label.set_text(&display);
-            label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_ROW);
-            let color = if i == self.option_cursor.index() {
-                super::rgb(ui_style::TEXT_SELECTED)
-            } else {
-                super::rgb(ui_style::TEXT_UNSELECTED)
-            };
-            label.add_theme_color_override(theme::FONT_COLOR, color);
-            parent.add_child(&label);
-            self.option_labels.push(&label, ());
-        }
+        self.options_panel.with(|p| p.bind_mut().open());
     }
 
+    /// Route a frame's input to the options rows; relay a change to
+    /// GameManager, and bring the action rows back when they close.
     fn handle_options_actions(&mut self, input: &Gd<Input>) {
-        if input.is_action_just_pressed(actions::MENU_UP) {
-            self.option_cursor.move_up();
-            self.refresh_options();
-        } else if input.is_action_just_pressed(actions::MENU_DOWN) {
-            self.option_cursor.move_down();
-            self.refresh_options();
-        } else if input.is_action_just_pressed(actions::MENU_SELECT) {
-            match self.option_cursor.index() {
-                0 => {
-                    self.base_mut().emit_signal(signals::SBS_TOGGLED, &[]);
-                }
-                1 => {
-                    self.base_mut().emit_signal(signals::MSAA_TOGGLED, &[]);
-                }
-                2 => {
-                    self.base_mut().emit_signal(signals::DYNAMIC_STEREO_TOGGLED, &[]);
-                }
-                3 => {
-                    self.close_options();
-                }
-                _ => {}
+        match self.options_panel.with(|p| p.bind_mut().handle_input(input)) {
+            Some(OptionsOutcome::Adjust { row, delta }) => {
+                self.base_mut().emit_signal(
+                    signals::OPTION_ADJUSTED,
+                    &[GString::from(row.name()).to_variant(), delta.to_variant()],
+                );
             }
-        } else if input.is_action_just_pressed(actions::MENU_BACK) {
-            self.close_options();
+            Some(OptionsOutcome::Open) => {}
+            Some(OptionsOutcome::Closed) | None => self.close_options(),
         }
-    }
-
-    fn refresh_options(&mut self) {
-        let texts = [
-            format!("SBS Stereo: {}", if self.options.sbs_enabled { "ON" } else { "OFF" }),
-            format!("MSAA: {}", if self.options.msaa_enabled { "ON" } else { "OFF" }),
-            format!("Dynamic 3D: {}", if self.options.dynamic_stereo { "ON" } else { "OFF" }),
-            "Back".to_string(),
-        ];
-
-        let selected = self.option_cursor.index();
-        self.option_labels.for_each_live(|i, label, _| {
-            let display = if i == selected {
-                format!("> {}", texts[i])
-            } else {
-                format!("  {}", texts[i])
-            };
-            label.set_text(&display);
-            let color = if i == selected {
-                super::rgb(ui_style::TEXT_SELECTED)
-            } else {
-                super::rgb(ui_style::TEXT_UNSELECTED)
-            };
-            label.add_theme_color_override(theme::FONT_COLOR, color);
-        });
     }
 
     fn close_options(&mut self) {
-        self.option_labels.for_each_live(|_, label, _| label.queue_free());
-        self.option_labels.clear();
+        self.options_panel.with(|p| p.bind_mut().close());
         self.labels.for_each_live(|_, label, _| label.set_visible(true));
         self.view = MenuView::Root;
         self.update_cursor();
@@ -573,17 +557,7 @@ impl MainMenuUI {
     /// height sets the crawl's extent from then on.
     fn build_credits_crawl(&mut self) {
         self.free_credits_crawl();
-        if let Some(items_parent) = &self.items_parent {
-            if let Some(panel) = items_parent
-                .with(|vbox| vbox.get_parent())
-                .flatten()
-                .and_then(|p| p.try_cast::<Control>().ok())
-            {
-                let mut panel = panel;
-                panel.set_visible(false);
-                self.hidden_for_roll.push(&panel, ());
-            }
-        }
+        self.hide_panel_for_overlay();
 
         let mut crawl = Control::new_alloc();
         crawl.set_anchors_preset(LayoutPreset::FULL_RECT);
@@ -679,10 +653,43 @@ impl MainMenuUI {
     fn close_credits(&mut self) {
         self.free_credits_crawl();
         self.roll_parked_at = None;
-        self.hidden_for_roll.for_each_live(|_, control, _| control.set_visible(true));
-        self.hidden_for_roll.clear();
+        self.show_panel_after_overlay();
         self.view = MenuView::Root;
         self.update_cursor();
     }
 
+    /// Hide the menu panel under a whole-screen view (the crawl, the
+    /// controls screen), remembering it for `show_panel_after_overlay`.
+    fn hide_panel_for_overlay(&mut self) {
+        let Some(items_parent) = &self.items_parent else { return };
+        if let Some(mut panel) = items_parent
+            .with(|vbox| vbox.get_parent())
+            .flatten()
+            .and_then(|p| p.try_cast::<Control>().ok())
+        {
+            panel.set_visible(false);
+            self.hidden_for_overlay.push(&panel, ());
+        }
+    }
+
+    fn show_panel_after_overlay(&mut self) {
+        self.hidden_for_overlay.for_each_live(|_, control, _| control.set_visible(true));
+        self.hidden_for_overlay.clear();
+    }
+
+    /// Route a frame's input to the controls screen; when it closes
+    /// itself, the rows come back.
+    fn handle_controls_actions(&mut self, input: &Gd<Input>) {
+        let outcome = self.controls.with(|c| c.bind_mut().handle_input(input));
+        if outcome != Some(ControlsOutcome::Open) {
+            self.close_controls();
+        }
+    }
+
+    fn close_controls(&mut self) {
+        self.controls.with(|c| c.bind_mut().close());
+        self.show_panel_after_overlay();
+        self.view = MenuView::Root;
+        self.update_cursor();
+    }
 }

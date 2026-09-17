@@ -27,7 +27,7 @@ const MINION_PARENT_SEED := 1
 const MINION_PARENT_LEVEL := 1  # the fixture's level 1 fields every subject
 const GREEN_CACHE_RUN_SEED := 1
 
-const UiStub := preload("res://tests/helpers/ui_stub.gd")
+const FullStack := preload("res://tests/helpers/full_stack.gd")
 
 func before_all():
 	assert_true(GameManager.install_test_grammar(
@@ -177,26 +177,13 @@ func test_build_time_wire_routes_room_container_kill_to_mediator():
 	# enemy_killed to the mediator — crediting NOTHING — and collecting the
 	# dropped cache credits exactly the type's reward, with process running the
 	# whole time (nothing re-scans to make it work).
-	var root := Node3D.new()
-	add_child_autofree(root)
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub := UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
-	var lm := LevelManager.new()
-	lm.name = "LevelManager"
-	var gm := GameManager.new()
-	root.add_child(lm)
-	root.add_child(gm)
+	var stack := FullStack.build(self, {"player": false})
+	var lm: LevelManager = stack.lm
+	var gm: GameManager = stack.gm
 
 	# Drive the FSM into Playing — this builds the level AND wires it once.
 	gm.start_new_game()
-	gm.advance_from_ship_select()
-	for _i in range(12):
-		if gm.get_phase_name() == "Playing":
-			break
-		gm.advance_from_bestiary()
-	assert_eq(gm.get_phase_name(), "Playing", "must reach Playing (which builds + wires)")
+	FullStack.walk_to_playing(self, gm)
 	await wait_process_frames(3, "the sector build defers past the loading veil's frame")
 
 	var enemies := lm.find_children("*", "EnemyDrone", true, false)
@@ -279,27 +266,12 @@ func test_green_cache_collect_credits_organics_only():
 	# the build; flying through one credits organics (never components), through
 	# the same build-time wire as everything else. One pinned run — the seed's
 	# loot-spawn property is verified on the Rust side.
-	var root := Node3D.new()
-	add_child_autofree(root)
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub := UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
-	var lm := LevelManager.new()
-	lm.name = "LevelManager"
-	var gm := GameManager.new()
-	gm.fixed_seed = GREEN_CACHE_RUN_SEED
-	root.add_child(lm)
-	root.add_child(gm)
-	# Real persistence leaks profiles across test runs; start fresh.
-	gm.clear_save_for_tests()
+	var stack := FullStack.build(self, {"seed": GREEN_CACHE_RUN_SEED, "player": false})
+	var lm: LevelManager = stack.lm
+	var gm: GameManager = stack.gm
 
 	gm.start_new_game()
-	gm.advance_from_ship_select()
-	for _i in range(12):
-		if gm.get_phase_name() == "Playing":
-			break
-		gm.advance_from_bestiary()
+	FullStack.walk_to_playing(self, gm)
 	await wait_process_frames(3, "the sector build defers past the loading veil's frame")
 
 	var green: Node = null

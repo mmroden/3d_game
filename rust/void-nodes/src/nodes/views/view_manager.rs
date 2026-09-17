@@ -12,6 +12,8 @@ use godot::classes::{
 };
 
 use crate::nodes::constants::{methods, nodes, signals};
+use crate::nodes::ui::options_wire;
+use void_logic::game_options::{RenderScale, WindowMode as WindowPreference};
 use void_logic::stereo::{
     frustum_offsets, left_eye_offset, right_eye_offset,
     single_viewport_size, ui_plane_size, ui_viewport_size,
@@ -58,6 +60,9 @@ pub struct ViewManager {
     /// Dynamic stereo (the ship's stereo director drives convergence +
     /// interaxial) — GameManager's option, received via the broadcast.
     dynamic_stereo: bool,
+    /// The mono window preference (SBS always goes fullscreen) —
+    /// GameManager's option, received via the broadcast.
+    window_preference: WindowPreference,
     /// The director's dials as polled this frame: (convergence distance,
     /// eye separation). None in static mode — the exports above rule.
     director_focus: Option<(f32, f32)>,
@@ -80,6 +85,7 @@ impl INode3D for ViewManager {
             current_mode: DisplayMode::Mono,
             pre_sbs_window_size: Vector2i::new(0, 0),
             dynamic_stereo: false,
+            window_preference: WindowPreference::Windowed,
             director_focus: None,
             capture_interaxial: None,
             capture_convergence: None,
@@ -205,8 +211,11 @@ impl ViewManager {
 
     /// Called when GameManager emits options_changed.
     #[func]
-    pub fn on_options_changed(&mut self, sbs_enabled: bool, msaa_enabled: bool, dynamic_stereo: bool) {
-        self.dynamic_stereo = dynamic_stereo;
+    pub fn on_options_changed(&mut self, options: options_wire::OptionsDictionary) {
+        let options = options_wire::from_dictionary(&options);
+        let (sbs_enabled, msaa_enabled) = (options.sbs_enabled, options.msaa_enabled);
+        self.dynamic_stereo = options.dynamic_stereo;
+        self.window_preference = options.window_mode;
         let target = if sbs_enabled {
             DisplayMode::SideBySide
         } else {
@@ -247,6 +256,13 @@ impl ViewManager {
         // options change — a pure MSAA toggle and a post-mode-switch
         // re-apply both end up correct.
         self.apply_msaa(msaa_enabled);
+        // The 3D render scale rides every broadcast too; the window
+        // preference applies in mono (SBS owns the window there), and
+        // never on a capture run with a commanded resolution.
+        self.apply_render_scale(options.render_scale);
+        if self.current_mode == DisplayMode::Mono && self.capture_interaxial.is_none() {
+            self.apply_window_preference();
+        }
     }
 }
 
@@ -805,10 +821,42 @@ impl ViewManager {
             self.pre_sbs_window_size = ds.window_get_size();
             ds.window_set_mode(WindowMode::FULLSCREEN);
         } else {
-            ds.window_set_mode(WindowMode::WINDOWED);
+            ds.window_set_mode(Self::engine_window_mode(self.window_preference));
             // Restore the window size from before SBS was enabled
             if self.pre_sbs_window_size.x > 0 && self.pre_sbs_window_size.y > 0 {
                 ds.window_set_size(self.pre_sbs_window_size);
+            }
+        }
+    }
+
+    /// The engine's window mode for the mono preference.
+    fn engine_window_mode(preference: WindowPreference) -> WindowMode {
+        match preference {
+            WindowPreference::Windowed => WindowMode::WINDOWED,
+            WindowPreference::Fullscreen => WindowMode::FULLSCREEN,
+        }
+    }
+
+    /// Apply the mono window preference to the OS window. The headless
+    /// server (GUT, the import stage) has no window and errors on the ask.
+    fn apply_window_preference(&mut self) {
+        let mut ds = DisplayServer::singleton();
+        if ds.get_name() == "headless" {
+            return;
+        }
+        let mode = Self::engine_window_mode(self.window_preference);
+        if ds.window_get_mode() != mode {
+            ds.window_set_mode(mode);
+        }
+    }
+
+    /// Apply the 3D render scale to both eye sub-viewports — the world
+    /// is drawn at that fraction of the window and upscaled. Both eyes
+    /// always, so a later SBS toggle inherits it.
+    fn apply_render_scale(&mut self, scale: RenderScale) {
+        for path in [nodes::LEFT_VIEWPORT, nodes::RIGHT_VIEWPORT] {
+            if let Some(mut vp) = self.base().try_get_node_as::<SubViewport>(path) {
+                vp.set_scaling_3d_scale(scale.factor());
             }
         }
     }

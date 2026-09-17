@@ -6,7 +6,7 @@ extends GutTest
 ## both move together. Mechanism only; the shipped planet-3 tuning never
 ## appears here.
 
-const UiStub := preload("res://tests/helpers/ui_stub.gd")
+const FullStack := preload("res://tests/helpers/full_stack.gd")
 
 const SEED := 1
 const SCALE := 5.0                       # kits_fixed.toml (Rust-anchored)
@@ -18,6 +18,10 @@ const ARENA_CENTER := Vector3(25.0, 5.0, 5.0)  # den box center × SCALE
 var _gm: GameManager
 var _lm: LevelManager
 var _player: ShipController
+## The one fixture level the read-only structural contracts share: built
+## once for the file (a full fixed build is seconds), freed after. A test
+## that mutates the level builds its own.
+var _shared: LevelManager
 
 func before_all():
 	assert_true(GameManager.install_test_grammar(
@@ -27,30 +31,37 @@ func before_all():
 		FileAccess.get_file_as_string("res://tests/fixtures/grammar/planet_fixed.toml"),
 		FileAccess.get_file_as_string("res://tests/fixtures/grammar/env_fixed.toml"),
 	), "the fixed fixture grammar installs")
+	_shared = LevelManager.new()
+	_shared.current_level = 1
+	add_child(_shared)
+	_shared.generate_level(SEED, 0)  # the room budget is the environment's; 0 is ignored
+	await wait_process_frames(2)
 
 func after_all():
+	if _shared and is_instance_valid(_shared):
+		_shared.queue_free()
+		await get_tree().process_frame
 	GameManager.clear_test_grammar()
 
 # ── Structural contracts (LevelManager alone) ─────────────────────────────
 
-func _fresh_level() -> LevelManager:
-	var lm := LevelManager.new()
-	lm.current_level = 1
-	add_child_autofree(lm)
-	lm.generate_level(SEED, 0)  # the room budget is the environment's; 0 is ignored
-	await wait_process_frames(2)
-	return lm
-
-func test_the_authored_ambient_overrides_the_world_environment():
+func test_the_fixed_build_configures_the_world_environment():
+	# ONE build with a WorldEnvironment present, two contracts on it.
 	# The bounce stand-in: a fixed build sets the world ambient from the
 	# environment's [ambient]. (Restoration on non-fixed builds is Rust-side
 	# logic; this fixture grammar is all-fixed, so only the override is
-	# assertable here.)
+	# assertable here.) And the exterior is a skyscape (owner 2026-09-08):
+	# a fixed build whose kit names a sky (kits_fixed.toml [skies.fx_sky],
+	# Rust-anchored) puts that panorama behind every opening — the world
+	# environment's background becomes the sky, its material a
+	# PanoramaSkyMaterial on the catalog's texture, imported as float
+	# (VRAM uncompressed) so the stars keep their range.
 	var world_env := WorldEnvironment.new()
 	world_env.name = "WorldEnvironment"
 	world_env.environment = Environment.new()
 	world_env.environment.ambient_light_source = Environment.AMBIENT_SOURCE_DISABLED
 	world_env.environment.ambient_light_energy = 0.123
+	world_env.environment.background_mode = Environment.BG_COLOR
 	add_child_autofree(world_env)
 	var lm := LevelManager.new()
 	lm.current_level = 1
@@ -61,25 +72,6 @@ func test_the_authored_ambient_overrides_the_world_environment():
 		Environment.AMBIENT_SOURCE_COLOR, "the fixed build overrides ambient")
 	assert_almost_eq(world_env.environment.ambient_light_energy, 0.8, 0.001,
 		"…with the authored energy (env_fixed.toml, Rust-anchored)")
-
-
-func test_the_declared_sky_backs_the_world_environment():
-	# The exterior is a skyscape (owner 2026-09-08): a fixed build whose
-	# kit names a sky (kits_fixed.toml [skies.fx_sky], Rust-anchored) puts
-	# that panorama behind every opening — the world environment's
-	# background becomes the sky, its material a PanoramaSkyMaterial on
-	# the catalog's texture, imported as float (VRAM uncompressed) so the
-	# stars keep their range.
-	var world_env := WorldEnvironment.new()
-	world_env.name = "WorldEnvironment"
-	world_env.environment = Environment.new()
-	world_env.environment.background_mode = Environment.BG_COLOR
-	add_child_autofree(world_env)
-	var lm := LevelManager.new()
-	lm.current_level = 1
-	add_child_autofree(lm)
-	lm.generate_level(SEED, 0)
-	await wait_process_frames(2)
 	assert_eq(world_env.environment.background_mode, Environment.BG_SKY,
 		"the fixed build backs the world environment with its sky")
 	var sky := world_env.environment.sky
@@ -112,8 +104,7 @@ func _room_containers(lm: LevelManager) -> Array:
 	return out
 
 func test_every_zone_gets_a_container_and_the_house_rides_room_zero():
-	var lm = await _fresh_level()
-	var rooms := _room_containers(lm)
+	var rooms := _room_containers(_shared)
 	assert_eq(rooms.size(), ZONES, "one container per authored zone")
 	# The scene mesh: exactly one scaled child, under Room0.
 	var scaled := []
@@ -126,8 +117,7 @@ func test_every_zone_gets_a_container_and_the_house_rides_room_zero():
 		assert_eq(scaled[0].get_parent(), rooms[0], "the scene rides room 0")
 
 func test_room_zero_carries_the_containment_shell():
-	var lm = await _fresh_level()
-	var rooms := _room_containers(lm)
+	var rooms := _room_containers(_shared)
 	if rooms.is_empty():
 		fail_test("no rooms built")
 		return
@@ -144,25 +134,23 @@ func test_room_zero_carries_the_containment_shell():
 		assert_eq(boxes, 64, "one slab per unshared zone-cell face (Rust-anchored)")
 
 func test_the_authored_daylight_rig_spawns():
-	var lm = await _fresh_level()
-	var suns := lm.find_children("*", "DirectionalLight3D", true, false)
+	var suns := _shared.find_children("*", "DirectionalLight3D", true, false)
 	assert_eq(suns.size(), 1, "the environment's [sun] spawns exactly one sun")
 	if not suns.is_empty():
 		assert_true(suns.front().shadow_enabled,
 			"window light needs shadows or the walls don't matter")
-	var panels := lm.find_children("*", "SpotLight3D", true, false)
+	var panels := _shared.find_children("*", "SpotLight3D", true, false)
 	assert_eq(panels.size(), 1, "one panel spot per authored [[window]]")
 	# The window itself GLOWS: an emissive quad at the opening, so the
 	# panel reads as the light source (and bakes as one, later).
-	var quads := lm.find_children("WindowPanel*", "MeshInstance3D", true, false)
+	var quads := _shared.find_children("WindowPanel*", "MeshInstance3D", true, false)
 	assert_eq(quads.size(), 1, "one emissive quad per authored [[window]]")
 
 func test_culling_never_hides_the_house():
-	var lm = await _fresh_level()
-	var rooms := _room_containers(lm)
+	var rooms := _room_containers(_shared)
 	# Stand in the arena (far end): on a generated level depth-2 culling
 	# would hide the start room — on a fixed level everything stays lit.
-	lm.cull_for_position(ARENA_CENTER)
+	_shared.cull_for_position(ARENA_CENTER)
 	await wait_process_frames(1)
 	for room in rooms:
 		assert_true(room.visible, "%s stays visible (frustum culling only)" % room.name)
@@ -170,35 +158,13 @@ func test_culling_never_hides_the_house():
 # ── The staged fight, gateless (full stack) ───────────────────────────────
 
 func _build_stack() -> void:
-	var root := Node3D.new()
-	add_child_autofree(root)
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub := UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
-	_lm = LevelManager.new()
-	_lm.name = "LevelManager"
-	_player = ShipController.new()
-	_player.name = "Player"
-	_player.add_to_group("player")
-	var shape := CollisionShape3D.new()
-	shape.name = "CollisionShape3D"
-	shape.shape = SphereShape3D.new()
-	_player.add_child(shape)
-	_gm = GameManager.new()
-	_gm.fixed_seed = SEED
-	root.add_child(_lm)
-	root.add_child(_player)
-	root.add_child(_gm)
-	_gm.clear_save_for_tests()
+	var stack := FullStack.build(self, {"seed": SEED})
+	_gm = stack.gm
+	_lm = stack.lm
+	_player = stack.player
 
 func _walk_to_playing() -> void:
-	_gm.advance_from_ship_select()
-	for _i in range(12):
-		if _gm.get_phase_name() == "Playing":
-			break
-		_gm.advance_from_bestiary()
-	assert_eq(_gm.get_phase_name(), "Playing", "the stack must reach Playing")
+	FullStack.walk_to_playing(self, _gm)
 
 func test_the_fixed_fight_engages_on_entry_without_gates():
 	_build_stack()

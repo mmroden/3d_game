@@ -5,28 +5,13 @@ extends GutTest
 ## contract: the loading veil goes up the frame the phase flips, the build
 ## waits for a rendered frame, and the veil lifts once the sector exists.
 
-const UiStub := preload("res://tests/helpers/ui_stub.gd")
+const FullStack := preload("res://tests/helpers/full_stack.gd")
 
 
 func _stack() -> GameManager:
-	var root := Node3D.new()
-	add_child_autofree(root)
 	# No LoadingUI stub here — this suite observes the REAL veil below.
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI"]:
-		var stub := UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
-	var loading := LoadingUI.new()
-	loading.name = "LoadingUI"
-	root.add_child(loading)
-	var lm := LevelManager.new()
-	lm.name = "LevelManager"
-	var gm := GameManager.new()
-	gm.fixed_seed = 1
-	root.add_child(lm)
-	root.add_child(gm)
-	gm.clear_save_for_tests()
-	return gm
+	var stack := FullStack.build(self, {"seed": 1, "player": false, "real": {"LoadingUI": LoadingUI.new()}})
+	return stack.gm
 
 
 func test_entering_playing_veils_the_build_then_lifts():

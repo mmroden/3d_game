@@ -4,7 +4,7 @@ extends GutTest
 ## must be a pure function of its seed.
 
 
-const UiStub := preload("res://tests/helpers/ui_stub.gd")
+const FullStack := preload("res://tests/helpers/full_stack.gd")
 
 
 func test_does_not_generate_on_ready():
@@ -43,19 +43,11 @@ func test_level_generation_is_owned_by_the_phase_machine():
 	# The FSM is the sole trigger for generation: entering Playing
 	# generates; a rejected transition (Death -> Playing is invalid)
 	# must generate nothing.
-	var root = Node3D.new()
-	add_child_autofree(root)
-	# Stub the UI layers show_phase toggles, so the minimal scene
+	# The stub UI layers take show_phase's toggles, so the minimal scene
 	# exercises the real phase machinery without UI warnings.
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub = UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
-	var lm = LevelManager.new()
-	lm.name = "LevelManager"
-	var gm = GameManager.new()
-	root.add_child(lm)
-	root.add_child(gm)
+	var stack := FullStack.build(self, {"player": false})
+	var lm: LevelManager = stack.lm
+	var gm: GameManager = stack.gm
 
 	# New game now opens the loadout screen, then the bestiary briefing, before
 	# the level: MainMenu -> ShipSelect -> Bestiary -> ... -> Playing (generates).
@@ -68,6 +60,10 @@ func test_level_generation_is_owned_by_the_phase_machine():
 		gm.advance_from_bestiary()
 	assert_eq(gm.get_phase_name(), "Playing",
 		"the briefing must lead into Playing")
+	# The sector build defers past the loading veil's frame. (Before the
+	# stacks stopped building the loadout backdrop, this assertion passed
+	# on the BACKDROP's nodes, without waiting — vacuously, 2026-09-16.)
+	await wait_process_frames(3)
 	assert_gt(lm.get_child_count(), 0,
 		"entering Playing through the FSM must generate a level")
 

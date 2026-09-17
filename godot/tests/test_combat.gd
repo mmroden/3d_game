@@ -65,41 +65,20 @@ func test_enemy_in_range_fires_and_damages_player():
 	assert_signal_emitted(player, "player_damaged",
 		"an enemy within range must fire a bolt that damages the player")
 
-const UiStub := preload("res://tests/helpers/ui_stub.gd")
+const FullStack := preload("res://tests/helpers/full_stack.gd")
 
 func test_enemy_fires_inside_the_full_game_stack():
 	# Playtest regression report (2026-07-03): enemies stopped firing in real
 	# play. The bare-pipeline test above passes, so this reproduces the FULL
 	# stack: GameManager-driven build, Playing phase, real ShipController —
 	# then parks the player beside a shooter and expects fire.
-	var root := Node3D.new()
-	add_child_autofree(root)
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub := UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
-	var lm := LevelManager.new()
-	lm.name = "LevelManager"
-	var player := ShipController.new()
-	player.name = "Player"
-	var shape := CollisionShape3D.new()
-	shape.name = "CollisionShape3D"
-	shape.shape = SphereShape3D.new()
-	player.add_child(shape)
-	var gm := GameManager.new()
-	gm.fixed_seed = 1  # the pinned seed
-	root.add_child(lm)
-	root.add_child(player)
-	root.add_child(gm)
-	gm.clear_save_for_tests()
+	var stack := FullStack.build(self, {"seed": 1})  # the pinned seed
+	var lm: LevelManager = stack.lm
+	var player: ShipController = stack.player
+	var gm: GameManager = stack.gm
 
 	gm.start_new_game()
-	gm.advance_from_ship_select()
-	for _i in range(12):
-		if gm.get_phase_name() == "Playing":
-			break
-		gm.advance_from_bestiary()
-	assert_eq(gm.get_phase_name(), "Playing", "must reach Playing")
+	FullStack.walk_to_playing(self, gm)
 	await wait_process_frames(2)
 
 	# Park the player right beside a FIRING enemy, found by CAPABILITY (its def
@@ -133,34 +112,13 @@ func test_player_trigger_damages_an_enemy_inside_the_full_game_stack():
 	# above; this pins the player half the same way — real GameManager build,
 	# Playing phase, aim at a live enemy, hold the trigger, expect its health
 	# bar to deplete (or the enemy to die outright).
-	var root := Node3D.new()
-	add_child_autofree(root)
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub := UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
-	var lm := LevelManager.new()
-	lm.name = "LevelManager"
-	var player := ShipController.new()
-	player.name = "Player"
-	var shape := CollisionShape3D.new()
-	shape.name = "CollisionShape3D"
-	shape.shape = SphereShape3D.new()
-	player.add_child(shape)
-	var gm := GameManager.new()
-	gm.fixed_seed = 1  # the pinned seed
-	root.add_child(lm)
-	root.add_child(player)
-	root.add_child(gm)
-	gm.clear_save_for_tests()
+	var stack := FullStack.build(self, {"seed": 1})  # the pinned seed
+	var lm: LevelManager = stack.lm
+	var player: ShipController = stack.player
+	var gm: GameManager = stack.gm
 
 	gm.start_new_game()
-	gm.advance_from_ship_select()
-	for _i in range(12):
-		if gm.get_phase_name() == "Playing":
-			break
-		gm.advance_from_bestiary()
-	assert_eq(gm.get_phase_name(), "Playing", "must reach Playing")
+	FullStack.walk_to_playing(self, gm)
 	await wait_process_frames(2)
 
 	var enemy: RigidBody3D = lm.find_children("*", "EnemyDrone", true, false).front()
@@ -250,34 +208,13 @@ func test_the_laser_never_hits_far_outside_the_assist_cone():
 ## `aim_offset` expressed in lane coordinates (x = lateral across the
 ## lane, y = up). Returns {player, enemy, fill} or {} when staging fails.
 func _full_stack_aimed_at_enemy(aim_offset: Vector3) -> Dictionary:
-	var root := Node3D.new()
-	add_child_autofree(root)
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub := UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
-	var lm := LevelManager.new()
-	lm.name = "LevelManager"
-	var player := ShipController.new()
-	player.name = "Player"
-	var shape := CollisionShape3D.new()
-	shape.name = "CollisionShape3D"
-	shape.shape = SphereShape3D.new()
-	player.add_child(shape)
-	var gm := GameManager.new()
-	gm.fixed_seed = 1
-	root.add_child(lm)
-	root.add_child(player)
-	root.add_child(gm)
-	gm.clear_save_for_tests()
+	var stack := FullStack.build(self, {"seed": 1})
+	var lm: LevelManager = stack.lm
+	var player: ShipController = stack.player
+	var gm: GameManager = stack.gm
 
 	gm.start_new_game()
-	gm.advance_from_ship_select()
-	for _i in range(12):
-		if gm.get_phase_name() == "Playing":
-			break
-		gm.advance_from_bestiary()
-	assert_eq(gm.get_phase_name(), "Playing", "must reach Playing")
+	FullStack.walk_to_playing(self, gm)
 	await wait_process_frames(2)
 
 	var enemy: RigidBody3D = lm.find_children("*", "EnemyDrone", true, false).front()

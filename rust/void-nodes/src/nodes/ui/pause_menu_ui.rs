@@ -1,17 +1,30 @@
 use godot::prelude::*;
 use godot::classes::{
-    CanvasLayer, ICanvasLayer, Label, Control, Engine, Input,
+    CanvasLayer, ICanvasLayer, Label, Control, Engine, Input, PanelContainer,
 };
 
+use super::controls_panel::{ControlsOutcome, ControlsPanel};
 use super::menu_panel;
+use super::options_panel::{OptionsOutcome, OptionsPanel};
+use super::options_wire;
 use crate::nodes::constants::{actions, methods, nodes, signals, theme};
-use crate::nodes::live_handle::LiveVec;
-use void_logic::game_options::GameOptions;
+use crate::nodes::live_handle::{LiveOpt, LiveRef, LiveVec};
 use void_logic::menu_cursor::MenuCursor;
 use void_logic::ui_style;
 
-/// In-game pause menu: Resume / Options / New Game / Quit to Main Menu.
-/// Uses Godot input actions so both keyboard and controller work seamlessly.
+/// What the layer is showing: the rows, the options rows in their
+/// place, or the controls screen over the whole layer. One typed state
+/// (see MainMenuUI), never a second bool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PauseView {
+    Root,
+    Options,
+    Controls,
+}
+
+/// In-game pause menu: Resume / Options / Controls / New Game / Quit to
+/// Main Menu. Uses Godot input actions so both keyboard and controller
+/// work seamlessly.
 #[derive(GodotClass)]
 #[class(base=CanvasLayer)]
 pub struct PauseMenuUI {
@@ -19,11 +32,19 @@ pub struct PauseMenuUI {
     cursor: MenuCursor,
     menu_items: Vec<String>,
     labels: LiveVec<Label>,
-    in_options: bool,
-    option_cursor: MenuCursor,
-    option_labels: LiveVec<Label>,
-    /// Cached copy of the authoritative `GameOptions` (see MainMenuUI).
-    options: GameOptions,
+    view: PauseView,
+    /// The menu reads input from its second visible frame on. GameManager
+    /// pauses on the open_menu press and shows this menu in the same
+    /// frame; Escape is also menu_back, so without the arm the very press
+    /// that opened the menu resumed the game (the pause never held —
+    /// test_controls_screen.gd pins it).
+    armed: bool,
+    /// The options rows, in the panel where the rows sit (see MainMenuUI).
+    options_panel: Option<LiveRef<OptionsPanel>>,
+    /// The rows' panel, hidden under the controls screen.
+    panel: Option<LiveRef<PanelContainer>>,
+    /// The controls screen, built once with the menu.
+    controls: Option<LiveRef<ControlsPanel>>,
 }
 
 #[godot_api]
@@ -31,18 +52,20 @@ impl ICanvasLayer for PauseMenuUI {
     fn init(base: Base<CanvasLayer>) -> Self {
         Self {
             base,
-            cursor: MenuCursor::new(4),
+            cursor: MenuCursor::new(5),
             menu_items: vec![
                 "Resume".to_string(),
                 "Options".to_string(),
+                "Controls".to_string(),
                 "New Game".to_string(),
                 "Quit to Main Menu".to_string(),
             ],
             labels: LiveVec::new(),
-            in_options: false,
-            option_cursor: MenuCursor::new(4),
-            option_labels: LiveVec::new(),
-            options: GameOptions::default(),
+            view: PauseView::Root,
+            armed: false,
+            options_panel: None,
+            panel: None,
+            controls: None,
         }
     }
 
@@ -58,15 +81,21 @@ impl ICanvasLayer for PauseMenuUI {
 
     fn process(&mut self, _delta: f64) {
         if !self.base().is_visible() {
+            self.armed = false;
+            return;
+        }
+        if !self.armed {
+            // The frame that showed us carries the press that did.
+            self.armed = true;
             return;
         }
 
         let input = Input::singleton();
 
-        if self.in_options {
-            self.handle_options_actions(&input);
-        } else {
-            self.handle_menu_actions(&input);
+        match self.view {
+            PauseView::Root => self.handle_menu_actions(&input),
+            PauseView::Options => self.handle_options_actions(&input),
+            PauseView::Controls => self.handle_controls_actions(&input),
         }
     }
 }
@@ -82,24 +111,31 @@ impl PauseMenuUI {
     #[signal]
     fn quit_selected();
 
+    /// The options rows asked for a change: (row name, delta) — see
+    /// MainMenuUI.
     #[signal]
-    fn sbs_toggled();
+    fn option_adjusted(row: GString, delta: i32);
 
-    #[signal]
-    fn msaa_toggled();
-
-
-    #[signal]
-    fn dynamic_stereo_toggled();
-
+    /// GameManager's options broadcast: the rows show it.
     #[func]
-    pub fn on_options_changed(&mut self, sbs_enabled: bool, msaa_enabled: bool, dynamic_stereo: bool) {
-        self.options.sbs_enabled = sbs_enabled;
-        self.options.msaa_enabled = msaa_enabled;
-        self.options.dynamic_stereo = dynamic_stereo;
-        if self.in_options {
-            self.refresh_options();
-        }
+    pub fn on_options_changed(&mut self, options: options_wire::OptionsDictionary) {
+        let options = options_wire::from_dictionary(&options);
+        self.options_panel.with(|p| p.bind_mut().set_options(options));
+    }
+
+    /// Open the controls screen over the rows — the Controls row's own
+    /// door, and the test seam.
+    #[func]
+    pub fn open_controls(&mut self) {
+        self.view = PauseView::Controls;
+        self.panel.with(|p| p.set_visible(false));
+        self.controls.with(|c| c.bind_mut().open_default());
+    }
+
+    /// Test/inspection seam: whether the controls screen is showing.
+    #[func]
+    pub fn controls_visible(&self) -> bool {
+        self.view == PauseView::Controls
     }
 }
 
@@ -151,7 +187,35 @@ impl PauseMenuUI {
             self.labels.push(&label, ());
         }
 
+        // The options rows, in the panel where the rows sit, hidden until
+        // the Options row.
+        let options = OptionsPanel::new_alloc();
+        vbox.add_child(&options);
+        self.options_panel = Some(LiveRef::new(&options));
+
         self.base_mut().add_child(&panel);
+        self.panel = Some(LiveRef::new(&panel));
+
+        // The controls screen, over everything, hidden until its row.
+        let controls = ControlsPanel::new_alloc();
+        self.base_mut().add_child(&controls);
+        self.controls = Some(LiveRef::new(&controls));
+    }
+
+    /// Route a frame's input to the controls screen; when it closes
+    /// itself, the rows come back.
+    fn handle_controls_actions(&mut self, input: &Gd<Input>) {
+        let outcome = self.controls.with(|c| c.bind_mut().handle_input(input));
+        if outcome != Some(ControlsOutcome::Open) {
+            self.close_controls();
+        }
+    }
+
+    fn close_controls(&mut self) {
+        self.controls.with(|c| c.bind_mut().close());
+        self.panel.with(|p| p.set_visible(true));
+        self.view = PauseView::Root;
+        self.update_cursor();
     }
 
     fn handle_menu_actions(&mut self, input: &Gd<Input>) {
@@ -170,19 +234,22 @@ impl PauseMenuUI {
     }
 
     fn select_item(&mut self) {
+        // Row order as `menu_items` lists them: Resume, Options, Controls,
+        // New Game, Quit to Main Menu.
         match self.cursor.index() {
             0 => {
                 self.base_mut().emit_signal(signals::RESUME_SELECTED, &[]);
             }
             1 => {
-                self.in_options = true;
-                self.option_cursor.reset();
                 self.show_options();
             }
             2 => {
-                self.base_mut().emit_signal(signals::NEW_GAME_SELECTED, &[]);
+                self.open_controls();
             }
             3 => {
+                self.base_mut().emit_signal(signals::NEW_GAME_SELECTED, &[]);
+            }
+            4 => {
                 self.base_mut().emit_signal(signals::QUIT_SELECTED, &[]);
             }
             _ => {}
@@ -208,100 +275,32 @@ impl PauseMenuUI {
         });
     }
 
+    /// Show the options rows in the panel, the rows hidden.
     fn show_options(&mut self) {
-        self.option_labels.for_each_live(|_, label, _| label.queue_free());
-        self.option_labels.clear();
-
+        self.view = PauseView::Options;
         self.labels.for_each_live(|_, label, _| label.set_visible(false));
-        let Some(mut parent) = self.labels.get_live(0).and_then(|l| l.get_parent()) else {
-            return;
-        };
-
-        let options = [
-            format!("  SBS Stereo: {}", if self.options.sbs_enabled { "ON" } else { "OFF" }),
-            format!("  MSAA: {}", if self.options.msaa_enabled { "ON" } else { "OFF" }),
-            format!("  Dynamic 3D: {}", if self.options.dynamic_stereo { "ON" } else { "OFF" }),
-            "  Back".to_string(),
-        ];
-
-        for (i, text) in options.iter().enumerate() {
-            let mut label = Label::new_alloc();
-            let display = if i == self.option_cursor.index() {
-                format!("> {}", text.trim())
-            } else {
-                text.clone()
-            };
-            label.set_text(&display);
-            label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_ROW);
-            let color = if i == self.option_cursor.index() {
-                super::rgb(ui_style::TEXT_SELECTED)
-            } else {
-                super::rgb(ui_style::TEXT_UNSELECTED)
-            };
-            label.add_theme_color_override(theme::FONT_COLOR, color);
-            parent.add_child(&label);
-            self.option_labels.push(&label, ());
-        }
+        self.options_panel.with(|p| p.bind_mut().open());
     }
 
+    /// Route a frame's input to the options rows; relay a change to
+    /// GameManager, and bring the rows back when they close.
     fn handle_options_actions(&mut self, input: &Gd<Input>) {
-        if input.is_action_just_pressed(actions::MENU_UP) {
-            self.option_cursor.move_up();
-            self.refresh_options();
-        } else if input.is_action_just_pressed(actions::MENU_DOWN) {
-            self.option_cursor.move_down();
-            self.refresh_options();
-        } else if input.is_action_just_pressed(actions::MENU_SELECT) {
-            match self.option_cursor.index() {
-                0 => {
-                    self.base_mut().emit_signal(signals::SBS_TOGGLED, &[]);
-                }
-                1 => {
-                    self.base_mut().emit_signal(signals::MSAA_TOGGLED, &[]);
-                }
-                2 => {
-                    self.base_mut().emit_signal(signals::DYNAMIC_STEREO_TOGGLED, &[]);
-                }
-                3 => {
-                    self.close_options();
-                }
-                _ => {}
+        match self.options_panel.with(|p| p.bind_mut().handle_input(input)) {
+            Some(OptionsOutcome::Adjust { row, delta }) => {
+                self.base_mut().emit_signal(
+                    signals::OPTION_ADJUSTED,
+                    &[GString::from(row.name()).to_variant(), delta.to_variant()],
+                );
             }
-        } else if input.is_action_just_pressed(actions::MENU_BACK) {
-            self.close_options();
+            Some(OptionsOutcome::Open) => {}
+            Some(OptionsOutcome::Closed) | None => self.close_options(),
         }
-    }
-
-    fn refresh_options(&mut self) {
-        let texts = [
-            format!("SBS Stereo: {}", if self.options.sbs_enabled { "ON" } else { "OFF" }),
-            format!("MSAA: {}", if self.options.msaa_enabled { "ON" } else { "OFF" }),
-            format!("Dynamic 3D: {}", if self.options.dynamic_stereo { "ON" } else { "OFF" }),
-            "Back".to_string(),
-        ];
-
-        let selected = self.option_cursor.index();
-        self.option_labels.for_each_live(|i, label, _| {
-            let display = if i == selected {
-                format!("> {}", texts[i])
-            } else {
-                format!("  {}", texts[i])
-            };
-            label.set_text(&display);
-            let color = if i == selected {
-                super::rgb(ui_style::TEXT_SELECTED)
-            } else {
-                super::rgb(ui_style::TEXT_UNSELECTED)
-            };
-            label.add_theme_color_override(theme::FONT_COLOR, color);
-        });
     }
 
     fn close_options(&mut self) {
-        self.option_labels.for_each_live(|_, label, _| label.queue_free());
-        self.option_labels.clear();
+        self.options_panel.with(|p| p.bind_mut().close());
         self.labels.for_each_live(|_, label, _| label.set_visible(true));
-        self.in_options = false;
+        self.view = PauseView::Root;
         self.update_cursor();
     }
 }

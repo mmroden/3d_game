@@ -35,6 +35,10 @@ pub const FONT_ROW: i32 = 40;
 pub const FONT_BODY: i32 = 32;
 /// Fine print — row detail hints, prompts, pager position.
 pub const FONT_DETAIL: i32 = 26;
+/// The controls screen's key caps: one letter, or a modifier's name, on
+/// a cap a few dozen pixels wide — the one place below the fine-print
+/// floor, because the legend beside the caps carries the reading.
+pub const FONT_KEYCAP: i32 = 22;
 
 // ── HUD type ─────────────────────────────────────────────────────
 // The in-game HUD lives inside the SBS safe band, so its ladder is tighter
@@ -133,6 +137,9 @@ mod tests {
         assert!(FONT_ROW >= 36, "menu rows must be readable from the couch");
         assert!(FONT_TITLE >= 64);
         assert!(FONT_DETAIL >= 22, "even fine print must not be squint-sized");
+        // Key caps sit under the fine print but never below what a cap
+        // can carry legibly; the legend beside them stays at fine print.
+        assert!(FONT_KEYCAP < FONT_DETAIL && FONT_KEYCAP >= 20);
         // The HUD ladder: tighter than the menus (it shares the safe band
         // with the action) but never below the readable floor, and always
         // outlined.

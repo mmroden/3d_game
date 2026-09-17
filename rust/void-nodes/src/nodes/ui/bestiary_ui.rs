@@ -5,8 +5,10 @@ use godot::classes::{
     text_server::AutowrapMode,
 };
 
+use super::controls_panel::ControlsPanel;
 use super::menu_panel;
 use crate::nodes::constants::{actions, signals, theme};
+use crate::nodes::live_handle::{LiveOpt, LiveRef};
 use void_logic::ui_style;
 
 /// Pre-level bestiary briefing: a quiet loadout room with one subject — a
@@ -14,6 +16,8 @@ use void_logic::ui_style;
 /// GameManager via the shared Turntable), and a low panel with its name and
 /// lore. The player taps to step through the catalog; the final tap drops them
 /// into the level. GameManager owns the paging; this is just the panel + input.
+/// The first briefing of a profile opens on the controls card first (alpha
+/// note 2026-09-15: show the controls before anything shoots).
 #[derive(GodotClass)]
 #[class(base=CanvasLayer)]
 pub struct BestiaryUI {
@@ -22,12 +26,14 @@ pub struct BestiaryUI {
     /// that opened the briefing (ship-select's Continue) can't bleed through and
     /// instantly start the mission.
     input_cooldown: f32,
+    /// The controls card, built once and kept across the panel rebuilds.
+    controls: Option<LiveRef<ControlsPanel>>,
 }
 
 #[godot_api]
 impl ICanvasLayer for BestiaryUI {
     fn init(base: Base<CanvasLayer>) -> Self {
-        Self { base, input_cooldown: 0.0 }
+        Self { base, input_cooldown: 0.0, controls: None }
     }
 
     fn ready(&mut self) {
@@ -35,6 +41,9 @@ impl ICanvasLayer for BestiaryUI {
             return;
         }
         self.base_mut().set_visible(false);
+        let controls = ControlsPanel::new_alloc();
+        self.base_mut().add_child(&controls);
+        self.controls = Some(LiveRef::new(&controls));
     }
 
     fn process(&mut self, delta: f64) {
@@ -46,6 +55,12 @@ impl ICanvasLayer for BestiaryUI {
             return;
         }
         let input = Input::singleton();
+        // The controls card takes the frame while it shows; closing it
+        // reveals the entries, and the mission waits for its own press.
+        if self.controls_visible() {
+            self.controls.with(|c| c.bind_mut().handle_input(&input));
+            return;
+        }
         // The menu buttons (leftmost d-pad / arrows) step between catalogued
         // subjects — the same navigation every other menu uses, never the left
         // stick; Select/Fire begins the mission. GameManager owns the index and
@@ -77,15 +92,18 @@ impl BestiaryUI {
     fn back_pressed();
 
     /// Populate the panel for one entry and show the screen. `position` reads
-    /// like "1 / 3"; `hint` is the call to action ("▲ next ▼" / "Begin mission").
+    /// like "1 / 3"; `hint` is the call to action ("◀ ▶ browse" / "Begin mission").
     /// Lock input for a beat. Called by GameManager when the briefing is first
     /// entered (NOT on page refresh), so the ship-select press that opened this
     /// screen can't bleed through and instantly start the mission. Decoupled
     /// from visibility because `show_phase` makes the layer visible before the
     /// first `show_bestiary` runs, which would defeat a self-check.
     #[func]
-    pub fn begin_briefing(&mut self) {
+    pub fn begin_briefing(&mut self, with_controls: bool) {
         self.input_cooldown = 0.25;
+        if with_controls {
+            self.controls.with(|c| c.bind_mut().open_default());
+        }
     }
 
     /// Whether input is currently locked out (entry debounce in effect).
@@ -94,9 +112,20 @@ impl BestiaryUI {
         self.input_cooldown > 0.0
     }
 
+    /// Test/inspection seam: whether the controls card is showing.
+    #[func]
+    pub fn controls_visible(&self) -> bool {
+        self.controls.with(|c| c.bind().is_open()).unwrap_or(false)
+    }
+
     #[func]
     pub fn show_bestiary(&mut self, title: GString, blurb: GString, position: GString, hint: GString) {
+        // Rebuild the panel; the controls card is kept, and stays on top.
+        let card = self.controls.with(|c| c.instance_id());
         for mut child in self.base().get_children().iter_shared() {
+            if Some(child.instance_id()) == card {
+                continue;
+            }
             child.queue_free();
         }
 
@@ -143,6 +172,9 @@ impl BestiaryUI {
         vbox.add_child(&hint_label);
 
         self.base_mut().add_child(&panel);
+        if let Some(card) = self.controls.as_ref().and_then(|c| c.with(|c| c.clone())) {
+            self.base_mut().move_child(&card, -1);
+        }
         self.base_mut().set_visible(true);
     }
 

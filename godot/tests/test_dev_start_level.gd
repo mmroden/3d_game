@@ -4,37 +4,17 @@ extends GutTest
 ## to GameManager.start_level / .fixed_seed; F9/F10 ride debug_jump_level.
 ## Each knob's observable behavior is pinned here.
 
-const UiStub := preload("res://tests/helpers/ui_stub.gd")
+const FullStack := preload("res://tests/helpers/full_stack.gd")
 
 var _gm: GameManager
 var _lm: LevelManager
 
 func _boot_stack(level: int, seed_value: int, shot := "", sbs := -1, populace := -1) -> void:
-	var root := Node3D.new()
-	add_child_autofree(root)
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub := UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
-	_lm = LevelManager.new()
-	_lm.name = "LevelManager"
-	var player := ShipController.new()
-	player.name = "Player"
-	player.add_to_group("player")
-	var shape := CollisionShape3D.new()
-	shape.name = "CollisionShape3D"
-	shape.shape = SphereShape3D.new()
-	player.add_child(shape)
-	_gm = GameManager.new()
-	_gm.fixed_seed = seed_value
-	_gm.start_level = level
-	_gm.shot_pose = shot
-	_gm.sbs_override = sbs
-	_gm.populace_override = populace
-	root.add_child(_lm)
-	root.add_child(player)
-	root.add_child(_gm)
-	_gm.clear_save_for_tests()
+	var stack := FullStack.build(self, {
+		"seed": seed_value, "level": level, "shot": shot, "sbs": sbs, "populace": populace,
+	})
+	_gm = stack.gm
+	_lm = stack.lm
 	await wait_process_frames(6)  # the deferred initial phase + level build
 
 func _portal_position() -> Vector3:

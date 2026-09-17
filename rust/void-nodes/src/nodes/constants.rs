@@ -20,9 +20,8 @@ pub mod signals {
     pub const NEW_GAME_SELECTED: &str = "new_game_selected";
     pub const BESTIARY_SELECTED: &str = "bestiary_selected";
     pub const CONTINUE_SELECTED: &str = "continue_selected";
-    pub const SBS_TOGGLED: &str = "sbs_toggled";
-    pub const MSAA_TOGGLED: &str = "msaa_toggled";
-    pub const DYNAMIC_STEREO_TOGGLED: &str = "dynamic_stereo_toggled";
+    /// A menu's options rows asked for a change: (row name, delta).
+    pub const OPTION_ADJUSTED: &str = "option_adjusted";
     pub const EXIT_SELECTED: &str = "exit_selected";
     pub const RESUME_SELECTED: &str = "resume_selected";
     pub const QUIT_SELECTED: &str = "quit_selected";
@@ -50,14 +49,18 @@ pub mod methods {
     pub const OPEN_CREDITS: &str = "open_credits";
     pub const SET_CREDITS_OFFSET: &str = "set_credits_offset";
     pub const CREDITS_OFFSET: &str = "credits_offset";
+    pub const OPEN_CONTROLS: &str = "open_controls";
+    pub const SET_CONTROLS_PAGE: &str = "set_controls_page";
+    pub const CONTROLS_PAGE: &str = "controls_page";
+    pub const OPEN_OPTIONS: &str = "open_options";
+    pub const SET_OPTIONS_ROW: &str = "set_options_row";
+    pub const OPTIONS_ROW: &str = "options_row";
     pub const START_NEW_GAME: &str = "start_new_game";
     pub const CONTINUE_GAME: &str = "continue_game";
     pub const SHOW_BESTIARY_FROM_MENU: &str = "show_bestiary_from_menu";
     pub const ON_ENEMY_KILLED: &str = "on_enemy_killed";
     pub const ON_PORTAL_ENTERED: &str = "on_portal_entered";
-    pub const ON_SBS_TOGGLED: &str = "on_sbs_toggled";
-    pub const ON_MSAA_TOGGLED: &str = "on_msaa_toggled";
-    pub const ON_DYNAMIC_STEREO_TOGGLED: &str = "on_dynamic_stereo_toggled";
+    pub const ON_OPTION_ADJUSTED: &str = "on_option_adjusted";
     pub const ON_OPTIONS_CHANGED: &str = "on_options_changed";
     pub const BROADCAST_OPTIONS: &str = "broadcast_options";
     pub const ON_RENDER_VIEWPORTS_CHANGED: &str = "on_render_viewports_changed";
@@ -149,33 +152,38 @@ pub mod methods {
 
 // ── Input actions ─────────────────────────────────────────────────────
 
+/// The InputMap action names, re-exported from the one action catalog
+/// (`void_logic::controls::GameAction`) so the controls screen and the
+/// code that reads the stick can never name an action differently.
 pub mod actions {
-    pub const MOVE_FORWARD: &str = "move_forward";
-    pub const MOVE_BACK: &str = "move_back";
-    pub const MOVE_LEFT: &str = "move_left";
-    pub const MOVE_RIGHT: &str = "move_right";
-    pub const MOVE_UP: &str = "move_up";
-    pub const MOVE_DOWN: &str = "move_down";
-    pub const LOOK_UP: &str = "look_up";
-    pub const LOOK_DOWN: &str = "look_down";
-    pub const LOOK_LEFT: &str = "look_left";
-    pub const LOOK_RIGHT: &str = "look_right";
-    pub const ROLL_LEFT: &str = "roll_left";
-    pub const ROLL_RIGHT: &str = "roll_right";
-    pub const FIRE: &str = "fire";
-    pub const FIRE_SECONDARY: &str = "fire_secondary";
-    pub const OPEN_MENU: &str = "open_menu";
-    pub const MENU_UP: &str = "menu_up";
-    pub const MENU_DOWN: &str = "menu_down";
-    pub const MENU_LEFT: &str = "menu_left";
-    pub const MENU_RIGHT: &str = "menu_right";
-    pub const MENU_SELECT: &str = "menu_select";
-    pub const MENU_BACK: &str = "menu_back";
-    pub const ROUTE_SHIELDS: &str = "route_shields";
-    pub const ROUTE_WEAPONS: &str = "route_weapons";
-    pub const STABILIZE: &str = "stabilize";
-    pub const TOGGLE_VIEW: &str = "toggle_view";
-    pub const USE_ITEM: &str = "use_item";
+    use void_logic::controls::GameAction;
+
+    pub const MOVE_FORWARD: &str = GameAction::MoveForward.name();
+    pub const MOVE_BACK: &str = GameAction::MoveBack.name();
+    pub const MOVE_LEFT: &str = GameAction::MoveLeft.name();
+    pub const MOVE_RIGHT: &str = GameAction::MoveRight.name();
+    pub const MOVE_UP: &str = GameAction::MoveUp.name();
+    pub const MOVE_DOWN: &str = GameAction::MoveDown.name();
+    pub const LOOK_UP: &str = GameAction::LookUp.name();
+    pub const LOOK_DOWN: &str = GameAction::LookDown.name();
+    pub const LOOK_LEFT: &str = GameAction::LookLeft.name();
+    pub const LOOK_RIGHT: &str = GameAction::LookRight.name();
+    pub const ROLL_LEFT: &str = GameAction::RollLeft.name();
+    pub const ROLL_RIGHT: &str = GameAction::RollRight.name();
+    pub const FIRE: &str = GameAction::Fire.name();
+    pub const FIRE_SECONDARY: &str = GameAction::FireSecondary.name();
+    pub const OPEN_MENU: &str = GameAction::OpenMenu.name();
+    pub const MENU_UP: &str = GameAction::MenuUp.name();
+    pub const MENU_DOWN: &str = GameAction::MenuDown.name();
+    pub const MENU_LEFT: &str = GameAction::MenuLeft.name();
+    pub const MENU_RIGHT: &str = GameAction::MenuRight.name();
+    pub const MENU_SELECT: &str = GameAction::MenuSelect.name();
+    pub const MENU_BACK: &str = GameAction::MenuBack.name();
+    pub const ROUTE_SHIELDS: &str = GameAction::RouteShields.name();
+    pub const ROUTE_WEAPONS: &str = GameAction::RouteWeapons.name();
+    pub const STABILIZE: &str = GameAction::Stabilize.name();
+    pub const TOGGLE_VIEW: &str = GameAction::ToggleView.name();
+    pub const USE_ITEM: &str = GameAction::UseItem.name();
 }
 
 // ── Shop row wire format ──────────────────────────────────────────────
@@ -280,6 +288,15 @@ pub mod scenes {
     pub const BARREL_MODEL: &str = "res://addons/quaternius/essentials/props/Prop_Barrel1.gltf";
 }
 
+// ── Texture paths ─────────────────────────────────────────────────────
+
+pub mod textures {
+    /// The controls screen's gamepad silhouette: Wikimedia Commons "Xbox
+    /// Controller.svg" (CC0), an attributed download installed by `make
+    /// assets` (catalog/attributions.toml, scripts/install-addons.sh).
+    pub const GAMEPAD_SILHOUETTE: &str = "res://addons/ui/xbox_controller.svg";
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -301,9 +318,7 @@ mod tests {
             signals::RESPAWN_PRESSED,
             signals::NEW_GAME_SELECTED,
             signals::CONTINUE_SELECTED,
-            signals::SBS_TOGGLED,
-            signals::MSAA_TOGGLED,
-            signals::DYNAMIC_STEREO_TOGGLED,
+            signals::OPTION_ADJUSTED,
             signals::EXIT_SELECTED,
             signals::RESUME_SELECTED,
             signals::QUIT_SELECTED,
@@ -336,9 +351,7 @@ mod tests {
             methods::CONTINUE_GAME,
             methods::ON_ENEMY_KILLED,
             methods::ON_PORTAL_ENTERED,
-            methods::ON_SBS_TOGGLED,
-            methods::ON_MSAA_TOGGLED,
-            methods::ON_DYNAMIC_STEREO_TOGGLED,
+            methods::ON_OPTION_ADJUSTED,
             methods::ON_OPTIONS_CHANGED,
             methods::BROADCAST_OPTIONS,
             methods::ON_RENDER_VIEWPORTS_CHANGED,
@@ -390,7 +403,12 @@ mod tests {
             methods::ON_PHASE_CHANGED_AUDIO,
             methods::ON_MUSIC_FINISHED,
             methods::ON_SFX_FINISHED,
-
+            methods::OPEN_CONTROLS,
+            methods::SET_CONTROLS_PAGE,
+            methods::CONTROLS_PAGE,
+            methods::OPEN_OPTIONS,
+            methods::SET_OPTIONS_ROW,
+            methods::OPTIONS_ROW,
         ];
         for method in &all_methods {
             assert!(
@@ -435,6 +453,39 @@ mod tests {
         }
     }
 
+    /// Texture paths must start with res:// and end with an image extension
+    /// Godot imports.
+    #[test]
+    fn texture_paths_are_valid_godot_paths() {
+        for path in [textures::GAMEPAD_SILHOUETTE] {
+            assert!(path.starts_with("res://"), "texture path '{path}' must start with res://");
+            assert!(
+                path.ends_with(".svg") || path.ends_with(".png"),
+                "texture path '{path}' must end with .svg or .png"
+            );
+        }
+    }
+
+    /// Every action the catalog declares is re-exported here under the
+    /// same name — the screen and the stick readers share one list.
+    #[test]
+    fn action_constants_are_the_catalogs_names() {
+        use void_logic::controls::GameAction;
+        let all_actions = [
+            actions::MOVE_FORWARD, actions::MOVE_BACK, actions::MOVE_LEFT, actions::MOVE_RIGHT,
+            actions::MOVE_UP, actions::MOVE_DOWN, actions::LOOK_UP, actions::LOOK_DOWN,
+            actions::LOOK_LEFT, actions::LOOK_RIGHT, actions::ROLL_LEFT, actions::ROLL_RIGHT,
+            actions::FIRE, actions::FIRE_SECONDARY, actions::OPEN_MENU, actions::MENU_UP,
+            actions::MENU_DOWN, actions::MENU_LEFT, actions::MENU_RIGHT, actions::MENU_SELECT,
+            actions::MENU_BACK, actions::ROUTE_SHIELDS, actions::ROUTE_WEAPONS,
+            actions::STABILIZE, actions::TOGGLE_VIEW, actions::USE_ITEM,
+        ];
+        assert_eq!(all_actions.len(), GameAction::ALL.len(), "a catalog action has no constant");
+        for action in GameAction::ALL {
+            assert!(all_actions.contains(&action.name()), "{action:?} has no constant");
+        }
+    }
+
     /// Scene paths must start with res:// and end with a Godot-recognized extension.
     #[test]
     fn scene_paths_are_valid_godot_paths() {
@@ -466,8 +517,7 @@ mod tests {
             signals::CONTINUE_PRESSED, signals::BUY_PRESSED,
             signals::RETURN_PRESSED, signals::RESPAWN_PRESSED,
             signals::NEW_GAME_SELECTED,
-            signals::CONTINUE_SELECTED, signals::SBS_TOGGLED,
-            signals::MSAA_TOGGLED, signals::DYNAMIC_STEREO_TOGGLED,
+            signals::CONTINUE_SELECTED, signals::OPTION_ADJUSTED,
             signals::EXIT_SELECTED,
             signals::RESUME_SELECTED, signals::QUIT_SELECTED,
             signals::BODY_ENTERED,
@@ -496,8 +546,7 @@ mod tests {
         let all = [
             methods::START_NEW_GAME, methods::CONTINUE_GAME,
             methods::ON_ENEMY_KILLED, methods::ON_PORTAL_ENTERED,
-            methods::ON_SBS_TOGGLED, methods::ON_MSAA_TOGGLED,
-            methods::ON_DYNAMIC_STEREO_TOGGLED,
+            methods::ON_OPTION_ADJUSTED,
             methods::ON_OPTIONS_CHANGED, methods::ON_BODY_ENTERED,
             methods::BROADCAST_OPTIONS,
             methods::ON_RENDER_VIEWPORTS_CHANGED,

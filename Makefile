@@ -258,6 +258,17 @@ assets-import: deps-godot
 				-e 's|^compress/mode=.*|compress/mode=3|' \
 				-e 's|^detect_3d/compress_to=.*|detect_3d/compress_to=0|' {} + ; \
 	fi
+	@# Interface art (godot/addons/ui): an SVG rasterizes at import. At
+	@# its nominal 744 px the controls silhouette would upscale soft on
+	@# a 1080p menu, so it imports at twice that (svg/scale), lossless,
+	@# with mipmaps for the UI plane's minification in SBS.
+	@if [ -d $(GODOT_DIR)/addons/ui ]; then \
+		find $(GODOT_DIR)/addons/ui -name "*.svg.import" \
+			-exec sed -i '' -e 's|^svg/scale=.*|svg/scale=2.0|' \
+				-e 's|^mipmaps/generate=.*|mipmaps/generate=true|' \
+				-e 's|^compress/mode=.*|compress/mode=0|' \
+				-e 's|^detect_3d/compress_to=.*|detect_3d/compress_to=0|' {} + ; \
+	fi
 	@echo "==> Reimporting assets (pass 2: with material script + mipmaps)..."
 	@set -o pipefail; $(GODOT) --headless --import --path $(GODOT_DIR) 2>&1 | tee out/assets-import-pass2.log
 	@$(MAKE) assets-materials
@@ -433,13 +444,29 @@ roster-template:
 # persistence, and real persistence must not wipe real progress.
 # build first: GUT drives the COMPILED extension — a stale dylib tests
 # yesterday's code (84 phantom failures, 2026-07-18).
-test-godot: build deps-godot deps-gut
+# Parse-check every GUT script and helper without running one: a typo in
+# a test file surfaces in seconds instead of as a silent skip twenty
+# minutes into the suite. Read-only; runs before test-godot.
+lint-godot: deps-godot
+	@echo "==> Parse-checking GUT scripts..."
+	@set -e; for f in $(GODOT_DIR)/tests/*.gd $(GODOT_DIR)/tests/helpers/*.gd; do \
+		rel=$${f#$(GODOT_DIR)/}; \
+		$(GODOT) --headless --path $(GODOT_DIR) --check-only --script res://$$rel > /dev/null 2>&1 \
+			|| { echo "  parse error: $$rel"; $(GODOT) --headless --path $(GODOT_DIR) --check-only --script res://$$rel 2>&1 | grep -iE "error|line" | head -5; exit 1; }; \
+	done; echo "GUT scripts parse."
+
+test-godot: build deps-godot deps-gut lint-godot
 	@echo "==> Running Godot tests (GUT)$(if $(F), [F=$(F) T=$(T)])..."
 	@mkdir -p $(GODOT_DIR)/.godot/test_home
+	@# Every test's wall time lands in out/gut-results.xml (JUnit): the
+	@# suite's cost is measured per test, never guessed from build counts
+	@# (22 fewer builds bought no time at all, 2026-09-16).
+	@mkdir -p out
 	@GODOT_DISABLE_LEAK_CHECKS=1 HOME=$(abspath $(GODOT_DIR)/.godot/test_home) \
 		$(GODOT) --headless --path $(GODOT_DIR) \
 		-s res://addons/gut/gut_cmdln.gd \
 		-gdir=res://tests -ginclude_subdirs \
+		-gjunit_xml_file=$(abspath out/gut-results.xml) \
 		$(if $(F),-gselect=$(F)) $(if $(T),-gunit_test_name=$(T)) -gexit
 
 build: require-rust

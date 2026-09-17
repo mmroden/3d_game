@@ -15,30 +15,11 @@ const KIND_ORGANICS := 1
 const KIND_HULL_REWARD := 2     # CurrencyKind::id of the red container
 const VALKYRIE_UNLOCK := 2      # Unlock::id of Valkyrie
 
-const UiStub := preload("res://tests/helpers/ui_stub.gd")
+const FullStack := preload("res://tests/helpers/full_stack.gd")
 
 
 func _stack() -> GameManager:
-	var root := Node3D.new()
-	add_child_autofree(root)
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub := UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
-	var lm := LevelManager.new()
-	lm.name = "LevelManager"
-	var player := ShipController.new()
-	player.name = "Player"
-	var shape := CollisionShape3D.new()
-	shape.name = "CollisionShape3D"
-	shape.shape = SphereShape3D.new()
-	player.add_child(shape)
-	var gm := GameManager.new()
-	root.add_child(lm)
-	root.add_child(player)
-	root.add_child(gm)
-	gm.clear_save_for_tests()
-	return gm
+	return FullStack.build(self).gm
 
 
 func test_locked_hull_cannot_be_selected_until_bought():

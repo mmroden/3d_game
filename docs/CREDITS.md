@@ -171,6 +171,15 @@ each came under and the credit it asks for.
 - Credit: Spaceship by oguzfaruk1 (CGTrader)
 - Source: https://www.cgtrader.com
 
+## Xbox Controller.svg
+
+- Author: Jishenaz (Wikimedia Commons)
+- Contribution: Controller diagram
+- Used for: the controls screen's gamepad silhouette — every pad Godot reports lands on this one SDL layout, only the printed names differ
+- License: CC0 1.0 Universal Public Domain Dedication (stated on the file page); no credit required
+- Credit: Xbox 360 controller drawing by Jishenaz, Wikimedia Commons, CC0
+- Source: https://commons.wikimedia.org/wiki/File:Xbox_Controller.svg
+
 ## In the repository, not shipped
 
 Packs checked in that nothing installs from yet — credited all the

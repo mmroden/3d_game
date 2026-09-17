@@ -4,33 +4,18 @@ extends GutTest
 ## and debug level-hopping rebuilds through the ONE build pathway — so a
 ## jumped-to boss level arrives fully staged (arena, gate, schedule).
 
-const UiStub := preload("res://tests/helpers/ui_stub.gd")
+const FullStack := preload("res://tests/helpers/full_stack.gd")
 
 var _gm: GameManager
 var _lm: LevelManager
 
 func _build_stack() -> void:
-	var root := Node3D.new()
-	add_child_autofree(root)
-	for ui_name in ["MainMenuUI", "HUD", "PauseMenuUI", "KillSummaryUI", "ShopUI", "ShipSelectUI", "BestiaryUI", "DeathScreenUI", "LoadingUI"]:
-		var stub := UiStub.new()
-		stub.name = ui_name
-		root.add_child(stub)
-	_lm = LevelManager.new()
-	_lm.name = "LevelManager"
-	_gm = GameManager.new()
-	_gm.fixed_seed = 1
-	root.add_child(_lm)
-	root.add_child(_gm)
-	_gm.clear_save_for_tests()
+	var stack := FullStack.build(self, {"seed": 1, "player": false})
+	_gm = stack.gm
+	_lm = stack.lm
 
 func _walk_to_playing() -> void:
-	_gm.advance_from_ship_select()
-	for _i in range(12):
-		if _gm.get_phase_name() == "Playing":
-			break
-		_gm.advance_from_bestiary()
-	assert_eq(_gm.get_phase_name(), "Playing", "the stack must reach Playing")
+	FullStack.walk_to_playing(self, _gm)
 
 func test_start_level_jumps_a_new_game_straight_to_the_level():
 	_build_stack()
