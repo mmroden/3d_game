@@ -140,8 +140,8 @@ func test_shop_ui_renders_one_row_per_offer_plus_continue():
 		PackedByteArray([3, 3, 3]),
 	)
 	var labels := shop.find_children("*", "Label", true, false)
-	assert_eq(labels.size(), 3 + 3 + 5,
-		"3 offer rows + 3 detail hints + title + balances ×2 + Continue + Save & Exit")
+	assert_eq(labels.size(), 3 + 3 + 5 + 1,
+		"3 offer rows + 3 detail hints + title + balances ×2 + Continue + Save & Exit + the one section heading (all components)")
 	assert_true(shop.visible, "show_shop presents the screen")
 
 
@@ -213,15 +213,12 @@ func test_one_press_on_the_level_2_summary_lands_in_the_shop_not_past_it():
 	await wait_process_frames(2)
 
 	# Leave the level-1 shop the way a player does: walk down past every
-	# offer row to Continue and press it. The count derives from the
-	# storefront on screen — one row and one detail hint per offer, plus
-	# title, two balances, Continue and Save & Exit (the presentation
-	# contract test_shop_ui_renders_one_row_per_offer_plus_continue pins) —
-	# never a pinned number: the catalog changes (Fire Rate retired
-	# 2026-08-20) and the walk must follow it. This is what used to park
+	# offer row to Continue and press it. The count is the storefront's
+	# own (its offer rows, whatever the catalog stocks — Fire Rate retired
+	# 2026-08-20, sections and headings added 2026-09-18) — never a pinned
+	# number: the walk must follow the catalog. This is what used to park
 	# the cursor on Continue for the next visit.
-	@warning_ignore("integer_division")
-	var offers: int = (shop.find_children("*", "Label", true, false).size() - 5) / 2
+	var offers: int = shop.offer_count()
 	assert_gt(offers, 0, "the level-1 shop offers something")
 	for _i in range(offers):
 		Input.action_press("menu_down")

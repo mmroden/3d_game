@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 godot = { version = "0.5", features = ["api-4-6"] }
 rand = "0.10"
 void_logic = { path = "../void-logic" }
+void_devices = { path = "../void-devices" }
 
 [dev-dependencies]
 # Used only by the `no_raw_gd_node_fields` lint test, which parses the source to

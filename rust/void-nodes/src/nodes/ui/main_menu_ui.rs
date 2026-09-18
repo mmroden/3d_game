@@ -11,6 +11,7 @@ use super::options_panel::{OptionsOutcome, OptionsPanel};
 use super::options_wire;
 use crate::nodes::constants::{actions, methods, nodes, signals, theme};
 use crate::nodes::live_handle::{LiveOpt, LiveRef, LiveVec};
+use crate::nodes::views::view_manager::ViewManager;
 use void_logic::credits::{self, Roll, RollDrive, RollEntry};
 use void_logic::menu_cursor::MenuCursor;
 use void_logic::ui_style;
@@ -203,6 +204,12 @@ impl MainMenuUI {
         self.options_panel.with(|p| p.bind_mut().set_options(options));
     }
 
+    /// ViewManager's word on the glasses: the rows' footer shows it.
+    #[func]
+    pub fn on_display_status_changed(&mut self, status: GString) {
+        self.options_panel.with(|p| p.bind_mut().set_note(&status.to_string()));
+    }
+
     /// Pushed by GameManager whenever the menu is shown: whether a
     /// continuable run exists. Rebuilds the rows when the answer changes,
     /// with the cursor parked on New Game.
@@ -337,6 +344,16 @@ impl MainMenuUI {
             }
         } else {
             godot_warn!("MainMenuUI: GameManager not found");
+        }
+        // The display's word on the glasses, for the options footer —
+        // seeded with what was said before this menu listened.
+        if let Some(mut view_mgr) = parent.try_get_node_as::<ViewManager>(nodes::VIEW_MANAGER) {
+            let callable = self.base().callable(methods::ON_DISPLAY_STATUS_CHANGED);
+            if !view_mgr.is_connected(signals::DISPLAY_STATUS_CHANGED, &callable) {
+                view_mgr.connect(signals::DISPLAY_STATUS_CHANGED, &callable);
+            }
+            let status = view_mgr.bind().display_status();
+            self.on_display_status_changed(status);
         }
     }
 

@@ -13,6 +13,8 @@ pub mod signals {
     pub const PORTAL_ENTERED: &str = "portal_entered";
     pub const PHASE_CHANGED: &str = "phase_changed";
     pub const OPTIONS_CHANGED: &str = "options_changed";
+    /// ViewManager's word on the glasses it drives (a line for the menus).
+    pub const DISPLAY_STATUS_CHANGED: &str = "display_status_changed";
     pub const CONTINUE_PRESSED: &str = "continue_pressed";
     pub const BUY_PRESSED: &str = "buy_pressed";
     pub const RETURN_PRESSED: &str = "return_pressed";
@@ -61,6 +63,7 @@ pub mod methods {
     pub const ON_PORTAL_ENTERED: &str = "on_portal_entered";
     pub const ON_OPTION_ADJUSTED: &str = "on_option_adjusted";
     pub const ON_OPTIONS_CHANGED: &str = "on_options_changed";
+    pub const ON_DISPLAY_STATUS_CHANGED: &str = "on_display_status_changed";
     pub const BROADCAST_OPTIONS: &str = "broadcast_options";
     pub const ON_BOSS_ARENA_ENTERED: &str = "on_boss_arena_entered";
     pub const SEAL_BOSS_GATE: &str = "seal_boss_gate";
@@ -255,8 +258,10 @@ pub mod nodes {
     pub const MONO_UI_LAYER: &str = "MonoUILayer";
     pub const UI_VIEWPORT: &str = "UIViewport";
     pub const VIEW_MANAGER: &str = "ViewManager";
-    /// The cockpit-locked UI quad's name (a child of PLAYER_ORIGIN).
+    /// The cockpit-locked UI quad (ViewManager's child) and the
+    /// RemoteTransform3D under PLAYER_ORIGIN that carries it.
     pub const UI_PLANE: &str = "UIPlane";
+    pub const UI_PLANE_ANCHOR: &str = "UIPlaneAnchor";
     pub const AUDIO_MANAGER: &str = "AudioManager";
 }
 

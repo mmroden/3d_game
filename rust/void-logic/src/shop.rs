@@ -185,6 +185,53 @@ fn stat_label(kind: UpgradeKind) -> String {
     )
 }
 
+/// The shop screen's two sections — components stock, then organics stock
+/// — as a display order over the offers plus the split point: display
+/// rows `..components` are components, the rest organics. A stable
+/// partition, so the catalog's order within each currency survives and a
+/// refresh after a purchase (same currencies, new prices) keeps every
+/// row where it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sections {
+    /// Display row → offer index.
+    pub order: Vec<usize>,
+    /// How many display rows are components; the organics rows follow.
+    pub components: usize,
+}
+
+impl Sections {
+    /// Split by currency: `organics[i]` says whether offer `i` is organics
+    /// stock (the wire carries that bit; the model carries the currency).
+    pub fn by_currency(organics: &[bool]) -> Self {
+        let components: Vec<usize> = (0..organics.len()).filter(|&i| !organics[i]).collect();
+        let greens = (0..organics.len()).filter(|&i| organics[i]);
+        let split = components.len();
+        Self { order: components.into_iter().chain(greens).collect(), components: split }
+    }
+
+    /// The section a display row belongs to and its position within it,
+    /// or `None` past the offers (Continue, Save & Exit).
+    pub fn locate(&self, display_row: usize) -> Option<(Section, usize)> {
+        if display_row < self.components {
+            Some((Section::Components, display_row))
+        } else if display_row < self.order.len() {
+            Some((Section::Organics, display_row - self.components))
+        } else {
+            None
+        }
+    }
+
+    pub fn organics(&self) -> usize {
+        self.order.len() - self.components
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Section {
+    Components,
+    Organics,
+}
+
 pub fn offers(run: &RunState) -> Vec<ShopOffer> {
     let mut out: Vec<ShopOffer> = UpgradeKind::ALL.iter()
         // FireRate is RETIRED from the catalog (owner, 2026-08-20): the
@@ -408,6 +455,48 @@ mod tests {
         let mut run = RunState::new(Seed::new(42));
         run.collect_cache(CurrencyKind::Components, 1_000_000);
         run
+    }
+
+
+    #[test]
+    fn sections_partition_the_offers_by_currency_keeping_each_currencys_order() {
+        // The shipped catalog already lists components before organics; the
+        // sections must not depend on that.
+        let s = Sections::by_currency(&[false, true, false, true, true, false]);
+        assert_eq!(s.order, vec![0, 2, 5, 1, 3, 4]);
+        assert_eq!(s.components, 3);
+        assert_eq!(s.organics(), 3);
+        assert_eq!(s.locate(0), Some((Section::Components, 0)));
+        assert_eq!(s.locate(2), Some((Section::Components, 2)));
+        assert_eq!(s.locate(3), Some((Section::Organics, 0)));
+        assert_eq!(s.locate(5), Some((Section::Organics, 2)));
+        assert_eq!(s.locate(6), None, "Continue and Save & Exit are not stock");
+    }
+
+    #[test]
+    fn a_single_currency_catalog_is_one_section() {
+        let blue = Sections::by_currency(&[false, false]);
+        assert_eq!((blue.order.clone(), blue.components, blue.organics()), (vec![0, 1], 2, 0));
+        let green = Sections::by_currency(&[true, true, true]);
+        assert_eq!((green.order.clone(), green.components, green.organics()), (vec![0, 1, 2], 0, 3));
+        assert_eq!(green.locate(0), Some((Section::Organics, 0)));
+        let none = Sections::by_currency(&[]);
+        assert_eq!(none.locate(0), None);
+    }
+
+    #[test]
+    fn the_shipped_catalog_sections_are_the_offers_own_currencies() {
+        // Derived from the model, not from a named order: every display row
+        // in the components section IS a components offer, and so on.
+        let run = rich_run();
+        let offers = offers(&run);
+        let organics: Vec<bool> = offers.iter().map(|o| o.currency == CurrencyKind::Organics).collect();
+        let s = Sections::by_currency(&organics);
+        for (row, &offer) in s.order.iter().enumerate() {
+            let expected = if row < s.components { CurrencyKind::Components } else { CurrencyKind::Organics };
+            assert_eq!(offers[offer].currency, expected, "display row {row}");
+        }
+        assert_eq!(s.order.len(), offers.len(), "every offer is on the screen exactly once");
     }
 
     #[test]

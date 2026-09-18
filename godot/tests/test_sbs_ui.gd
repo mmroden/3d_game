@@ -69,19 +69,62 @@ func test_sbs_mode_creates_visible_ui_plane():
 	await get_tree().process_frame
 	await get_tree().process_frame
 
-	# The plane is cockpit-locked: a child of the XR origin (the eyepoint),
-	# so it rides the ship's interpolation like the hull — no per-frame sync.
-	var ui_plane = _main.get_node("Player/XROrigin3D/UIPlane")
-	assert_not_null(ui_plane, "UIPlane must exist under the XR origin")
+	# The plane is ViewManager's (its visibility is the display's, never the
+	# ship's); it is cockpit-locked through a RemoteTransform3D anchor under
+	# the XR origin, so it rides the ship's pose without sharing its subtree.
+	var ui_plane = _main.get_node("ViewManager/UIPlane")
+	assert_not_null(ui_plane, "UIPlane must exist under ViewManager")
 	assert_true(ui_plane.visible, "UIPlane must be visible in SBS mode")
 
 func test_ui_plane_hidden_in_mono_mode():
-	var ui_plane = _main.get_node("Player/XROrigin3D/UIPlane")
+	var ui_plane = _main.get_node("ViewManager/UIPlane")
 	assert_not_null(ui_plane, "UIPlane must exist even in mono mode")
 	assert_false(ui_plane.visible, "UIPlane must be hidden in mono mode")
 
+func test_headless_sbs_never_drives_glasses():
+	# The glasses handoff drives real hardware over the USB link when SBS
+	# turns on. A headless server has no window to hand off, so the suite
+	# must never touch glasses that happen to be plugged in: the display's
+	# word stays unsaid, and the options footer stays hidden.
+	_main.get_node("GameManager").on_sbs_toggled()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var view_manager = _main.get_node("ViewManager")
+	assert_eq(str(view_manager.display_status()), "",
+		"headless: SBS must not start the glasses handoff")
+
+func test_ui_plane_shows_the_menus_while_the_ship_is_hidden():
+	# The menus live on the plane in SBS, and GameManager hides the Player
+	# outside the flying phases — so the plane must NOT inherit the ship's
+	# visibility (glasses session 2026-09-17: every menu vanished in SBS).
+	_main.get_node("GameManager").on_sbs_toggled()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var player: Node3D = _main.get_node("Player")
+	player.visible = false
+	await get_tree().process_frame
+	var ui_plane: MeshInstance3D = _main.get_node("ViewManager/UIPlane")
+	assert_true(ui_plane.is_visible_in_tree(),
+		"the UI plane must stay visible in SBS while the ship is hidden (menus)")
+
+func test_ui_plane_rides_the_eyepoint():
+	# Cockpit-locked: wherever the ship's XR origin goes, the plane sits
+	# ui_plane_distance straight ahead of it — through the engine's own
+	# RemoteTransform3D, not a per-frame copy.
+	var origin: Node3D = _main.get_node("Player/XROrigin3D")
+	var anchor := origin.get_node_or_null("UIPlaneAnchor") as RemoteTransform3D
+	assert_not_null(anchor, "a RemoteTransform3D anchor under the XR origin carries the plane")
+	var player: Node3D = _main.get_node("Player")
+	player.global_position = Vector3(12.0, -3.0, 7.0)
+	player.rotation = Vector3(0.0, PI / 2.0, 0.0)
+	await get_tree().process_frame
+	var ui_plane: MeshInstance3D = _main.get_node("ViewManager/UIPlane")
+	var expected: Vector3 = origin.global_position - origin.global_transform.basis.z * anchor.position.length()
+	assert_almost_eq(ui_plane.global_position.distance_to(expected), 0.0, 0.01,
+		"the plane sits straight ahead of the eyepoint after the ship moves")
+
 func test_ui_plane_has_viewport_texture():
-	var ui_plane = _main.get_node("Player/XROrigin3D/UIPlane") as MeshInstance3D
+	var ui_plane = _main.get_node("ViewManager/UIPlane") as MeshInstance3D
 	assert_not_null(ui_plane, "UIPlane must be a MeshInstance3D")
 	var material = ui_plane.get_surface_override_material(0)
 	if material == null:

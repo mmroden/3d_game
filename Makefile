@@ -1,4 +1,4 @@
-.PHONY: deps deps-rust deps-godot deps-godot-templates deps-gut deps-xrsim run-xr lsp-up require-rust check check-visual test-rust test-godot test-assets demo edit clean run export build build-release assets assets-install assets-import assets-probe assets-materials ground-truth
+.PHONY: deps deps-rust deps-godot deps-godot-templates deps-gut deps-xrsim run-xr probe-xreal xreal-ctl lsp-up require-rust check check-visual test-rust test-godot test-assets demo edit clean run export build build-release assets assets-install assets-import assets-probe assets-materials ground-truth
 
 # Project-local tool paths
 TOOLS_DIR := $(CURDIR)/tools
@@ -513,6 +513,25 @@ build-release: require-rust
 run: build-release deps-godot
 	@echo "==> Launching game (release)..."
 	@$(GODOT) --path $(GODOT_DIR) $(if $(LEVEL)$(SEED),-- $(if $(LEVEL),--level=$(LEVEL)) $(if $(SEED),--seed=$(SEED)))
+
+# The glasses' USB link, read reproducibly (docs/design/xr_rig.md §6b):
+# every link-local interface the cable brought up, one attempt at the
+# IMU service over each with the outcome classified (streaming / silent /
+# unreachable / timeout / refused), the VPNs the OS reports connected,
+# all written to out/metrics/xreal_probe.toml. The diagnostic suite for
+# the glasses, isolated from the game; the display-mode command joins it
+# once its transport is known.
+probe-xreal: require-rust
+	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
+		cd $(RUST_DIR) && $(CARGO) run -q -p void_devices --bin xreal-probe -- $(CURDIR)/out/metrics/xreal_probe.toml
+
+# Write ONE setting to the glasses over their control service, e.g.
+#   make xreal-ctl ARGS="input-mode sbs"     make xreal-ctl ARGS="eis off"
+# Run from a terminal with Local Network access (see probe-xreal).
+xreal-ctl: require-rust
+	@test -n "$(ARGS)" || { echo "usage: make xreal-ctl ARGS=\"<setting> <value>\""; exit 2; }
+	@export PATH="$$HOME/.cargo/bin:$$PATH" && \
+		cd $(RUST_DIR) && $(CARGO) run -q -p void_devices --bin xreal-ctl -- $(ARGS)
 
 # The game in a headset — the Meta XR Simulator's on the Mac. OpenXR is
 # enabled at process start (Godot's --xr-mode on; the project setting

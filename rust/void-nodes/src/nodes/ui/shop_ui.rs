@@ -6,9 +6,17 @@ use godot::classes::{
 
 use super::menu_panel;
 use crate::nodes::constants::{actions, shop_flags, signals, theme};
-use crate::nodes::live_handle::{LiveRef, LiveVec};
-use void_logic::menu_cursor::MenuCursor;
-use void_logic::ui_style;
+use crate::nodes::live_handle::{LiveOpt, LiveRef, LiveVec};
+use void_logic::menu_cursor::{window, MenuCursor};
+use void_logic::shop::{Section, Sections};
+use void_logic::ui_style::{self, distribute, rows_that_fit};
+
+/// A section's heading, which also says how many rows its window leaves
+/// out above and below — one fixed line per section, no marker rows.
+struct SectionChrome {
+    name: &'static str,
+    heading: LiveRef<Label>,
+}
 
 /// The between-level (and between-lives) shop. Pure presentation: GameManager
 /// prices the catalog in void-logic (`shop::offers`) and pushes it here as
@@ -20,7 +28,18 @@ use void_logic::ui_style;
 pub struct ShopUI {
     base: Base<CanvasLayer>,
     cursor: MenuCursor,
-    labels: LiveVec<Label>,
+    /// The cursor's rows — offers in display order, then Continue, then
+    /// Save & Exit — each offer carrying its detail line.
+    labels: LiveVec<Label, Option<LiveRef<Label>>>,
+    /// Offers in display order (the wire's order permuted once, in
+    /// `populate`): components stock, then organics.
+    sections: Sections,
+    section_chrome: [Option<SectionChrome>; 2],
+    vbox: Option<LiveRef<godot::classes::VBoxContainer>>,
+    /// The window sizes in force (components, organics) and the display
+    /// rows they show — the inspection seams.
+    window_rows: Vec<usize>,
+    shown_rows: Vec<usize>,
     ids: PackedInt32Array,
     flags: PackedByteArray,
     /// The press that opened this screen is still `just_pressed` in the
@@ -45,6 +64,11 @@ impl ICanvasLayer for ShopUI {
             base,
             cursor: MenuCursor::new(1),
             labels: LiveVec::new(),
+            sections: Sections::by_currency(&[]),
+            section_chrome: Default::default(),
+            vbox: None,
+            window_rows: Vec::new(),
+            shown_rows: Vec::new(),
             ids: PackedInt32Array::new(),
             flags: PackedByteArray::new(),
             swallow_entry_press: false,
@@ -161,6 +185,27 @@ impl ShopUI {
         self.populate(components, organics, ids, labels, details, costs, flags, keep_row);
     }
 
+
+    /// Inspection seam: how many offers the storefront lists (the cursor
+    /// walks them, then Continue, then Save & Exit).
+    #[func]
+    pub fn offer_count(&self) -> i32 {
+        self.ids.len() as i32
+    }
+
+    /// Inspection seam: how many rows each section's window shows —
+    /// components, then organics.
+    #[func]
+    pub fn window_rows(&self) -> PackedInt32Array {
+        self.window_rows.iter().map(|&n| n as i32).collect()
+    }
+
+    /// Inspection seam: the display rows (offers, cursor order) on screen.
+    #[func]
+    pub fn visible_offer_rows(&self) -> PackedInt32Array {
+        self.shown_rows.iter().map(|&i| i as i32).collect()
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn populate(
         &mut self,
@@ -177,12 +222,24 @@ impl ShopUI {
             child.queue_free();
         }
         self.labels.clear();
+        self.section_chrome = Default::default();
+        self.vbox = None;
         self.pending_confirm = None;
         self.confirm_panel = None; // freed with the children above
-        self.ids = ids;
-        self.flags = flags;
-        self.row_labels = labels.clone();
-        self.row_details = details.clone();
+
+        // The screen's order: components stock, then organics, each in the
+        // catalog's order (`shop::Sections`). Every per-row array is
+        // permuted once here, so from here on the cursor index IS the
+        // display row and the wire's order is forgotten.
+        let organics_rows: Vec<bool> =
+            (0..ids.len()).map(|i| flags.get(i).unwrap_or(0) & shop_flags::GREEN != 0).collect();
+        self.sections = Sections::by_currency(&organics_rows);
+        let order = self.sections.order.clone();
+        self.ids = order.iter().map(|&i| ids[i]).collect();
+        self.flags = order.iter().map(|&i| flags.get(i).unwrap_or(0)).collect();
+        self.row_labels = order.iter().map(|&i| labels.get(i).unwrap_or_default()).collect();
+        self.row_details = order.iter().map(|&i| details.get(i).unwrap_or_default()).collect();
+        let costs: Vec<i64> = order.iter().map(|&i| costs.get(i).unwrap_or(0)).collect();
         // Rows: the offers, then Continue, then Save & Exit.
         self.cursor = MenuCursor::new(self.ids.len() + 2);
         for _ in 0..keep_row {
@@ -223,38 +280,53 @@ impl ShopUI {
         spacer2.set_custom_minimum_size(Vector2::new(0.0, 30.0));
         vbox.add_child(&spacer2);
 
-        // Offer rows.
-        for i in 0..self.ids.len() {
-            let flag = if i < self.flags.len() { self.flags[i] } else { 0 };
-            let label_text = labels.get(i).map(|l| l.to_string()).unwrap_or_default();
-            let cost = costs.get(i).unwrap_or(0);
-            let currency_name = if flag & shop_flags::GREEN != 0 { "organics" } else { "components" };
+        // The two sections, each a window over its rows under a heading
+        // that also counts the rows the window leaves out, as
+        // `layout_windows` slides it.
+        let split = self.sections.components;
+        let ranges = [
+            (Section::Components, 0..split, "COMPONENTS", ui_style::TEXT_COMPONENTS),
+            (Section::Organics, split..self.ids.len(), "ORGANICS", ui_style::TEXT_ORGANICS),
+        ];
+        for (section, rows, heading, tint) in ranges {
+            if rows.is_empty() {
+                continue;
+            }
+            let mut header = Label::new_alloc();
+            header.set_text(heading);
+            header.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_DETAIL);
+            header.add_theme_color_override(theme::FONT_COLOR, super::rgb(tint));
+            vbox.add_child(&header);
+            self.section_chrome[section as usize] =
+                Some(SectionChrome { name: heading, heading: LiveRef::new(&header) });
+            for i in rows.clone() {
+                let flag = self.flags[i];
+                let label_text = self.row_labels[i].to_string();
+                let currency_name = if flag & shop_flags::GREEN != 0 { "organics" } else { "components" };
+                let text = if flag & shop_flags::PURCHASABLE == 0 {
+                    format!("  {}", label_text)
+                } else {
+                    format!("  {} — {} {}", label_text, costs[i], currency_name)
+                };
+                let mut row = Label::new_alloc();
+                row.set_text(&text);
+                row.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_ROW);
+                vbox.add_child(&row);
 
-            let text = if flag & shop_flags::PURCHASABLE == 0 {
-                format!("  {}", label_text)
-            } else {
-                format!("  {} — {} {}", label_text, cost, currency_name)
-            };
-            let mut row = Label::new_alloc();
-            row.set_text(&text);
-            row.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_ROW);
-            vbox.add_child(&row);
-            self.labels.push(&row, ());
-
-            // The implication line: what buying this row actually does.
-            // Smaller and dimmer — context, not a second row (the cursor
-            // tracks `labels`, so this never joins it).
-            if let Some(detail) = details.get(i) {
-                if !detail.is_empty() {
+                // The implication line: what buying this row actually does.
+                // Smaller and dimmer — context, not a second row (the cursor
+                // tracks `labels`; the hint rides along as the row's data so
+                // it hides and shows with its row).
+                let detail = self.row_details[i].to_string();
+                let hint = (!detail.is_empty()).then(|| {
                     let mut hint = Label::new_alloc();
                     hint.set_text(&format!("      {}", detail));
                     hint.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_DETAIL);
-                    hint.add_theme_color_override(
-                        theme::FONT_COLOR,
-                        Color::from_rgb(0.55, 0.6, 0.65),
-                    );
+                    hint.add_theme_color_override(theme::FONT_COLOR, Color::from_rgb(0.55, 0.6, 0.65));
                     vbox.add_child(&hint);
-                }
+                    LiveRef::new(&hint)
+                });
+                self.labels.push(&row, hint);
             }
         }
 
@@ -263,17 +335,115 @@ impl ShopUI {
         continue_label.set_text("  Continue");
         continue_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_ROW);
         vbox.add_child(&continue_label);
-        self.labels.push(&continue_label, ());
+        self.labels.push(&continue_label, None);
 
         let mut save_exit_label = Label::new_alloc();
         save_exit_label.set_text("  Save & Exit");
         save_exit_label.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_ROW);
         vbox.add_child(&save_exit_label);
-        self.labels.push(&save_exit_label, ());
+        self.labels.push(&save_exit_label, None);
 
+        self.vbox = Some(LiveRef::new(&vbox));
         self.base_mut().add_child(&panel);
         self.base_mut().set_visible(true);
         self.update_cursor();
+    }
+
+    /// Slide each section's window to its cursor and show only the rows
+    /// inside it. The window sizes are measured, not assumed: the rows the
+    /// panel can hold once the title, balances, headings and exits have
+    /// taken their height, dealt to the sections a row at a time.
+    fn layout_windows(&mut self) {
+        let offers = self.ids.len();
+        let Some(sep) = self.vbox.with(|v| v.get_theme_constant("separation") as f32) else {
+            return;
+        };
+        // Row cost: the tallest row with its hint; chrome: every other
+        // child of the column, markers included whether or not shown.
+        let mut row_px: f32 = 0.0;
+        let mut chrome: f32 = 0.0;
+        let mut row_ids = std::collections::HashSet::new();
+        self.labels.for_each_live(|i, label, hint| {
+            let own = label.get_combined_minimum_size().y + sep;
+            if i < offers {
+                row_ids.insert(label.instance_id());
+                let hint_px = hint
+                    .as_ref()
+                    .and_then(|h| h.with(|h| {
+                        row_ids.insert(h.instance_id());
+                        h.get_combined_minimum_size().y + sep
+                    }))
+                    .unwrap_or(0.0);
+                row_px = row_px.max(own + hint_px);
+            } else {
+                chrome += own;
+            }
+        });
+        self.vbox.with(|v| {
+            for child in v.get_children().iter_shared() {
+                if row_ids.contains(&child.instance_id()) {
+                    continue;
+                }
+                if let Ok(control) = child.try_cast::<Control>() {
+                    chrome += control.get_combined_minimum_size().y + sep;
+                }
+            }
+        });
+        let viewport_px = self
+            .base()
+            .get_viewport()
+            .map(|v| v.get_visible_rect().size.y)
+            .unwrap_or(0.0);
+        let available = viewport_px - 4.0 * ui_style::PANEL_PADDING - chrome;
+        let split = self.sections.components;
+        let lens = [split, self.sections.organics()];
+        let shares = distribute(rows_that_fit(available, row_px), &lens);
+
+        let focus = self.sections.locate(self.cursor.index());
+        let focus_in = |section: Section| focus.filter(|(s, _)| *s == section).map(|(_, i)| i);
+        let windows = [
+            window(split, focus_in(Section::Components), shares[0]),
+            window(self.sections.organics(), focus_in(Section::Organics), shares[1]),
+        ];
+        let mut shown = Vec::new();
+        self.labels.for_each_live(|i, label, hint| {
+            if i >= offers {
+                return;
+            }
+            let visible = if i < split { windows[0].contains(&i) } else { windows[1].contains(&(i - split)) };
+            label.set_visible(visible);
+            if let Some(h) = hint {
+                h.with(|h| h.set_visible(visible));
+            }
+            if visible {
+                shown.push(i);
+            }
+        });
+        for (section, len) in [(Section::Components, split), (Section::Organics, self.sections.organics())] {
+            let w = &windows[section as usize];
+            if let Some(chrome) = &self.section_chrome[section as usize] {
+                let text = Self::heading_text(chrome.name, w.start, len - w.end);
+                chrome.heading.with(|h| h.set_text(&text));
+            }
+        }
+        self.window_rows = shares;
+        self.shown_rows = shown;
+    }
+
+    /// The heading with the rows its window leaves out: `COMPONENTS`,
+    /// `COMPONENTS · ▼ 4 more`, `COMPONENTS · ▲ 2 · ▼ 2`.
+    fn heading_text(name: &str, above: usize, below: usize) -> String {
+        let mut text = name.to_string();
+        if above > 0 {
+            text.push_str(&format!(" · ▲ {above}"));
+        }
+        if below > 0 {
+            text.push_str(&format!(" · ▼ {below}"));
+        }
+        if above > 0 || below > 0 {
+            text.push_str(" more");
+        }
+        text
     }
 
     /// Raise the info screen for a green row: name, what it does, how to
@@ -320,7 +490,8 @@ impl ShopUI {
     }
 
     /// Row coloring: the selected row highlights; unpurchasable stock is
-    /// dimmed, unaffordable stock reads red, everything else neutral.
+    /// dimmed, unaffordable stock reads red, everything else neutral. Then
+    /// the section windows follow the cursor.
     fn update_cursor(&mut self) {
         let selected = self.cursor.index();
         let flags = self.flags.clone();
@@ -342,5 +513,6 @@ impl ShopUI {
             };
             label.add_theme_color_override(theme::FONT_COLOR, color);
         });
+        self.layout_windows();
     }
 }

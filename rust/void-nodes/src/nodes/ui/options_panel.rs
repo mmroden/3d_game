@@ -9,7 +9,7 @@ use godot::prelude::*;
 use godot::classes::{Engine, IVBoxContainer, Input, Label, VBoxContainer};
 
 use crate::nodes::constants::{actions, theme};
-use crate::nodes::live_handle::LiveVec;
+use crate::nodes::live_handle::{LiveOpt, LiveRef, LiveVec};
 use void_logic::game_options::{GameOptions, OptionRow, RowKind};
 use void_logic::menu_cursor::MenuCursor;
 use void_logic::ui_style;
@@ -34,6 +34,9 @@ pub struct OptionsPanel {
     /// The authoritative options as last broadcast — display only.
     options: GameOptions,
     labels: LiveVec<Label>,
+    /// A line under the rows for what the display is doing (the glasses
+    /// handoff's word); hidden while there is nothing to say.
+    note: Option<LiveRef<Label>>,
 }
 
 #[godot_api]
@@ -44,6 +47,7 @@ impl IVBoxContainer for OptionsPanel {
             cursor: MenuCursor::new(OptionRow::ALL.len()),
             options: GameOptions::default(),
             labels: LiveVec::new(),
+            note: None,
         }
     }
 
@@ -90,6 +94,15 @@ impl OptionsPanel {
     pub fn set_options(&mut self, options: GameOptions) {
         self.options = options;
         self.refresh();
+    }
+
+    /// The display's word (the host relays ViewManager's status line);
+    /// empty hides the line.
+    pub fn set_note(&mut self, text: &str) {
+        self.note.with(|label| {
+            label.set_text(text);
+            label.set_visible(!text.is_empty());
+        });
     }
 
     /// The options as displayed (the host's inspection seams read it).
@@ -153,6 +166,12 @@ impl OptionsPanel {
             self.base_mut().add_child(&label);
             self.labels.push(&label, ());
         }
+        let mut note = Label::new_alloc();
+        note.add_theme_font_size_override(theme::FONT_SIZE, ui_style::FONT_DETAIL);
+        note.add_theme_color_override(theme::FONT_COLOR, super::rgb(ui_style::TEXT_SECONDARY));
+        note.set_visible(false);
+        self.base_mut().add_child(&note);
+        self.note = Some(LiveRef::new(&note));
         self.refresh();
     }
 

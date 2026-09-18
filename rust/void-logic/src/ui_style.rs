@@ -1,6 +1,39 @@
 //! Pure style constants for the FF-style menu panel.
 //! No Godot dependency — fully testable.
 
+/// How many whole rows `available_px` of panel height holds when one row
+/// costs `row_px` — the height left once the chrome (title, headings,
+/// the fixed rows) has taken its share.
+pub fn rows_that_fit(available_px: f32, row_px: f32) -> usize {
+    if row_px <= 0.0 || available_px <= 0.0 {
+        return 0;
+    }
+    (available_px / row_px).floor() as usize
+}
+
+/// Deal `total` visible rows to sections of the given lengths, one row to
+/// each in turn while it has rows left to show — so a short section shows
+/// whole and the remainder goes to the long one. A section with rows
+/// always gets at least one: its focused row.
+pub fn distribute(total: usize, lens: &[usize]) -> Vec<usize> {
+    let mut shares: Vec<usize> = lens.iter().map(|&len| len.min(1)).collect();
+    let mut left = total.saturating_sub(shares.iter().sum());
+    while left > 0 {
+        let open: Vec<usize> = (0..lens.len()).filter(|&i| shares[i] < lens[i]).collect();
+        if open.is_empty() {
+            break;
+        }
+        for i in open {
+            if left == 0 {
+                break;
+            }
+            shares[i] += 1;
+            left -= 1;
+        }
+    }
+    shares
+}
+
 /// Light blue panel background color [R, G, B, A].
 pub const PANEL_BG_COLOR: [f32; 4] = [0.15, 0.25, 0.45, 0.9];
 
@@ -82,6 +115,28 @@ mod tests {
         for &c in &PANEL_BG_COLOR {
             assert!((0.0..=1.0).contains(&c), "PANEL_BG_COLOR out of range: {c}");
         }
+    }
+
+
+    #[test]
+    fn rows_that_fit_is_the_whole_rows_the_height_holds() {
+        assert_eq!(rows_that_fit(800.0, 100.0), 8);
+        assert_eq!(rows_that_fit(799.0, 100.0), 7, "a partial row does not fit");
+        assert_eq!(rows_that_fit(50.0, 100.0), 0);
+        assert_eq!(rows_that_fit(-300.0, 100.0), 0, "chrome taller than the panel leaves nothing");
+        assert_eq!(rows_that_fit(800.0, 0.0), 0, "an unmeasured row is not a division by zero");
+    }
+
+    #[test]
+    fn rows_are_dealt_to_the_sections_a_row_at_a_time_and_a_section_never_loses_its_focused_row() {
+        // A short section is shown whole and the rest goes to the long one.
+        assert_eq!(distribute(6, &[7, 3]), vec![3, 3]);
+        assert_eq!(distribute(8, &[7, 3]), vec![5, 3]);
+        assert_eq!(distribute(20, &[7, 3]), vec![7, 3], "no section shows more rows than it has");
+        assert_eq!(distribute(0, &[7, 3]), vec![1, 1], "the focused row always shows");
+        assert_eq!(distribute(1, &[7, 3]), vec![1, 1]);
+        assert_eq!(distribute(3, &[7, 0]), vec![3, 0], "an empty section takes nothing");
+        assert_eq!(distribute(4, &[]), Vec::<usize>::new());
     }
 
     #[test]

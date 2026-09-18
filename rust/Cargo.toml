@@ -1,5 +1,5 @@
 [workspace]
-members = ["void-logic", "void-nodes"]
+members = ["void-logic", "void-devices", "void-nodes"]
 resolver = "2"
 
 # Debug builds feed `make run` and the GUT suite, where every full-stack

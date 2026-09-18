@@ -38,11 +38,20 @@ cockpits); an efficient render. No chase view in VR — nauseating.
 - One multiview render: one cull, one shadow pass, one submission, TAA per
   view. MSAA, TAA and the 3D render scale apply to the root viewport.
 - UI is unchanged in principle: every `CanvasLayer` under Main renders into
-  the one `UIViewport`. In SBS the `UIPlane` shows that texture — now a
-  child of the origin (cockpit-locked, no per-frame sync, rides the ship's
-  interpolation like the hull). In mono the `MonoUILayer` draws it: Godot
-  renders a viewport's 2D canvas at one view and skips it at two, so the
-  split falls out of the engine.
+  the one `UIViewport`. In every two-view display the `UIPlane` shows that
+  texture — ViewManager's child (its visibility is the display's, never
+  the ship's: GameManager hides the Player outside the flying phases, and
+  a plane parented under the origin took every menu with it in SBS,
+  glasses session 2026-09-17), cockpit-locked through a `RemoteTransform3D`
+  anchor under the origin that pushes its pose to the plane whenever the
+  ship moves. In mono the `MonoUILayer` draws it: Godot renders a
+  viewport's 2D canvas at one view and skips it at two, so the split falls
+  out of the engine.
+- Window-mode changes (fullscreen for SBS, the mono preference) re-enter
+  ViewManager on macOS before they return — the OS resize delivers the
+  queued `on_window_size_changed` inside the call — so ViewManager makes
+  them under gdext's `base_mut()` guard, which releases its own borrow for
+  the call (the F3 "bind_mut() failed, already bound" panic, 2026-09-17).
 - Deleted: `StereoCanvas`, the eye containers/sub-viewports/cameras, the
   parked player camera, per-frame eye-pose copying, the audio-listener
   sub-viewport workaround, per-eye MSAA/scale loops, the
@@ -156,6 +165,56 @@ the ship's chase gate all read it there.
 Frame: Linux arm64 or Android export of the gdext crate, the Frame
 controller profile in the action map, renderer choice measured on device
 (Forward+ stays until that measurement says otherwise).
+
+## 6c. The glasses' own link (LANDED 2026-09-17)
+
+The One Pro is more than a display. Its X1 chip puts two CDC network
+functions on the USB-C cable and serves each with DHCP (`169.254.N.1`,
+the host `.10`); over that network it speaks two TCP services, both
+framed as `magic(2) + length(u32 BE) + body`
+(`rust/void-devices/src/xreal/`):
+
+- **reports**, port 52998: IMU at 1000 Hz (gyro rad/s, accel m/s²,
+  temperature) and magnetometer at 400 Hz, each kind on its own 24-bit
+  counter, pushed from the moment a client connects;
+- **control**, port 52999: transactions (identity, firmware, the factory
+  calibration JSON, EIS/"stabilizer", proximity, brightness, shade,
+  buttons-enabled, and the two display knobs) plus pushed **button
+  events** (bottom, top, rocker front/back; down/up).
+
+The two display knobs are independent, and full side-by-side is both:
+`display` (the EDID advertised to the host: `9` on the One Pro in 2D;
+`5` = 3840×1080@60) and `input-mode` (`regular` shows the whole frame to
+both eyes; `sbs` splits it). `sbs` alone on a 1920-wide EDID is half-SBS
+(960 px per eye); `wide` alone is a squeezed double-wide desktop. The
+native 3D button's EDID code is still unread (button, then
+`make probe-xreal`).
+
+Tools, both run from a terminal with macOS Local Network access (the
+launching app's permission is what the OS checks — the Claude desktop app
+lacks it, a user Terminal has it): `make probe-xreal` observes and writes
+`out/metrics/xreal_probe.toml` (+ `xreal_config.json`, the factory
+calibration: per-eye intrinsics fx≈2190 fy≈2216 on 1920×1080 ≈ 47°×27°,
+each display's pose in the IMU frame — both ≈36° about X, 68.8 mm apart —
+IMU biases with a 21-point temperature table, magnetometer alignment,
+35×61 pre-distortion grids); `make xreal-ctl ARGS="<setting> <value>"`
+writes one setting.
+
+**The handoff** (`void_logic::handoff`, executed by `ViewManager`): the SBS
+option stays the one truth. When it turns on and a glasses link is up
+(never on a headless server), the glasses are driven on a worker thread —
+the wide EDID unless they already advertise one, then `sbs` — with the
+mode they showed remembered; the window waits for the re-plugged wide
+screen (aspect ≥ 3) for up to 8 s and goes fullscreen on it, else where
+it is. Without glasses, or if they don't answer, the panel is taken at
+once as before and the options footer says so. SBS off and quit put the
+glasses back (`regular`, then the remembered mode); glasses that were
+already wide are left as found. The .app carries
+`NSLocalNetworkUsageDescription` so macOS asks for the permission.
+
+Not built here: head tracking from the report stream (`SbsInterface`
+consuming a pose source; EIS off at that point), button events as
+InputMap actions.
 
 ## 7. Measurements (phase 1, 2026-09-17)
 

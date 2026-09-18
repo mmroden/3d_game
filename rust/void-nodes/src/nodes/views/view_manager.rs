@@ -2,7 +2,8 @@ use godot::prelude::*;
 use godot::builtin::Signal;
 use godot::classes::{
     CanvasLayer, DisplayServer, INode3D, Image, MeshInstance3D, Node, Node3D, QuadMesh,
-    RenderingServer, StandardMaterial3D, SubViewport, TextureRect, XrCamera3D, XrServer,
+    RemoteTransform3D, RenderingServer, StandardMaterial3D, SubViewport, TextureRect,
+    XrCamera3D, XrServer,
     base_material_3d::{ShadingMode, Transparency, CullMode, Flags},
     display_server::WindowMode,
     texture_rect::StretchMode,
@@ -10,13 +11,24 @@ use godot::classes::{
     viewport::Msaa,
 };
 
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::time::Duration;
+
 use crate::nodes::constants::{methods, nodes, signals};
 use crate::nodes::live_handle::{LiveOpt, LiveRef};
 use crate::nodes::ui::options_wire;
 use crate::nodes::views::openxr::{active_display, openxr_interface};
 use crate::nodes::views::sbs_interface::{window_pixels, SbsInterface};
+use void_devices::xreal::control::Setting;
+use void_devices::xreal::glasses::{Entered, Glasses, Restore};
+use void_devices::xreal::session::Failure;
 use void_logic::game_options::{RenderScale, WindowMode as WindowPreference};
+use void_logic::handoff::{wide_screen, Handoff, Report, Step};
 use void_logic::stereo::{msaa_allowed, per_eye_size, ui_plane_size, Display, DisplayMode, StereoConfig};
+
+/// How long the exit path waits on glasses work already in flight before
+/// leaving them as they are.
+const EXIT_SETTLE: Duration = Duration::from_secs(5);
 
 /// Default distance (meters) from the eyepoint to the floating UI plane in
 /// SBS mode. A moderate in-scene depth: close enough (2 m) forces hard
@@ -85,6 +97,23 @@ pub struct ViewManager {
     capture_convergence: Option<f32>,
     /// The cockpit-locked UI quad, a child of the player's XR origin.
     ui_plane: Option<LiveRef<MeshInstance3D>>,
+
+    // ── The side-by-side handoff to the glasses (void_logic::handoff) ──
+    /// Where the window stands relative to the glasses' display re-plug.
+    handoff: Handoff,
+    /// The glasses found when side-by-side turned on, if any.
+    glasses: Option<Glasses>,
+    /// The device work in flight: the glasses entering side-by-side.
+    entering: Option<Receiver<Result<Entered, Failure>>>,
+    /// Side-by-side turned off while the glasses were still being driven:
+    /// undo the moment they report.
+    release_when_entered: bool,
+    /// What to undo on the glasses when side-by-side ends.
+    restore: Option<Restore>,
+    /// The device work in flight: the glasses being put back.
+    restoring: Option<Receiver<Result<Vec<Setting>, Failure>>>,
+    /// The latest word on the glasses — the menus' footer line.
+    display_status: GString,
 }
 
 #[godot_api]
@@ -104,6 +133,13 @@ impl INode3D for ViewManager {
             capture_interaxial: None,
             capture_convergence: None,
             ui_plane: None,
+            handoff: Handoff::Settled,
+            glasses: None,
+            entering: None,
+            release_when_entered: false,
+            restore: None,
+            restoring: None,
+            display_status: GString::new(),
         }
     }
 
@@ -133,10 +169,12 @@ impl INode3D for ViewManager {
     }
 
     fn exit_tree(&mut self) {
+        self.settle_glasses_at_exit();
         self.teardown_interface();
     }
 
-    fn process(&mut self, _delta: f64) {
+    fn process(&mut self, delta: f64) {
+        self.poll_glasses(delta);
         // Dynamic stereo: poll the ship's stereo director for this frame's
         // dials before the interface renders. Static mode leaves None, so
         // the exported tuning values rule (the A/B baseline).
@@ -223,6 +261,17 @@ impl ViewManager {
         );
     }
 
+    /// The latest word on the glasses (the menus' footer line).
+    #[signal]
+    fn display_status_changed(status: GString);
+
+    /// The latest word on the glasses, for a menu that opens after it
+    /// was said.
+    #[func]
+    pub fn display_status(&self) -> GString {
+        self.display_status.clone()
+    }
+
     /// Called when GameManager emits options_changed.
     #[func]
     pub fn on_options_changed(&mut self, options: options_wire::OptionsDictionary) {
@@ -234,16 +283,27 @@ impl ViewManager {
         let target = active_display(options.sbs_enabled);
 
         if target != self.current {
-            // Play-path SBS goes fullscreen (the glasses want the whole
-            // panel); a CAPTURE run with commanded stereo geometry keeps
-            // the commanded --resolution instead — disparity contracts
-            // need pixel-deterministic frames, not the host's display
-            // size (a fullscreen capture ballooned to the physical
-            // screen, 2026-08-20).
-            if self.capture_interaxial.is_none() {
-                self.resize_window(target.wants_fullscreen());
-            }
+            // The display changes first: the window-mode change below
+            // re-enters this node (the OS resize reaches
+            // on_window_size_changed before it returns), and that reading
+            // must see the new display.
             self.current = target;
+            // Play-path SBS goes fullscreen (the glasses want the whole
+            // panel) — by way of the handoff when glasses are there to
+            // drive, at once when not; a CAPTURE run with commanded stereo
+            // geometry keeps the commanded --resolution instead —
+            // disparity contracts need pixel-deterministic frames, not the
+            // host's display size (a fullscreen capture ballooned to the
+            // physical screen, 2026-08-20).
+            if self.capture_interaxial.is_none() {
+                if target.wants_fullscreen() {
+                    self.begin_handoff();
+                } else {
+                    self.handoff = Handoff::Settled;
+                    self.resize_window(false);
+                    self.release_glasses();
+                }
+            }
             // The interface flips its view count on the same frame as the
             // toggle; the engine re-sizes the render target from it.
             self.push_stereo();
@@ -532,11 +592,16 @@ impl ViewManager {
         self.apply_visibility(false);
     }
 
-    /// Create the UIPlane: a QuadMesh textured with the UIViewport, a child
-    /// of the player's XR origin at `ui_plane_distance` straight ahead. In
-    /// SBS both eyes render it with natural parallax, giving the UI real
-    /// depth; being a child of the origin it rides the ship's rendered
-    /// (interpolated) pose exactly like the hull — no per-frame sync.
+    /// Create the UIPlane: a QuadMesh textured with the UIViewport, sitting
+    /// `ui_plane_distance` straight ahead of the player's XR origin. In
+    /// every two-view display both eyes render it with natural parallax,
+    /// giving the UI real depth. The plane is ViewManager's child — its
+    /// visibility is the display's — and it is cockpit-locked through the
+    /// engine's `RemoteTransform3D`: an anchor under the origin pushes its
+    /// global pose to the plane whenever the ship moves, so the plane rides
+    /// the eyepoint without living in the ship's subtree (GameManager hides
+    /// the Player outside the flying phases; a plane parented there took
+    /// every menu with it in SBS, glasses session 2026-09-17).
     fn setup_ui_plane(&mut self, ui_texture: Gd<godot::classes::ViewportTexture>) {
         let (fov, aspect) = self.camera_fov_and_aspect();
         let [quad_w, quad_h] = ui_plane_size(self.ui_plane_distance, fov, aspect);
@@ -565,21 +630,28 @@ impl ViewManager {
         ui_plane.set_name(nodes::UI_PLANE);
         ui_plane.set_mesh(&quad_mesh);
         ui_plane.set_visible(false);
-        ui_plane.set_transform(Transform3D::new(
-            Basis::IDENTITY,
-            Vector3::new(0.0, 0.0, -self.ui_plane_distance),
-        ));
+        self.base_mut().add_child(&ui_plane);
+        self.ui_plane = Some(LiveRef::new(&ui_plane));
 
+        // The anchor: the eyepoint's child, ui_plane_distance ahead, driving
+        // the plane's global pose (position, rotation and scale) every time
+        // the ship's transform changes.
         let Some(mut origin) = self
             .base()
             .get_parent()
             .and_then(|main| main.try_get_node_as::<Node3D>(nodes::PLAYER_ORIGIN))
         else {
-            godot_error!("ViewManager: no player XR origin to carry the UI plane");
+            godot_error!("ViewManager: no player XR origin to anchor the UI plane");
             return;
         };
-        origin.add_child(&ui_plane);
-        self.ui_plane = Some(LiveRef::new(&ui_plane));
+        let mut anchor = RemoteTransform3D::new_alloc();
+        anchor.set_name(nodes::UI_PLANE_ANCHOR);
+        anchor.set_transform(Transform3D::new(
+            Basis::IDENTITY,
+            Vector3::new(0.0, 0.0, -self.ui_plane_distance),
+        ));
+        origin.add_child(&anchor);
+        anchor.set_remote_node(&ui_plane.get_path());
     }
 
     /// FOV from the player camera, and the aspect of the UI plane. The plane
@@ -658,17 +730,29 @@ impl ViewManager {
         }
     }
 
+    /// Take or give back the whole panel. A window-mode change on macOS
+    /// re-enters this node before it returns: the OS resize arrives
+    /// synchronously and the queued `on_window_size_changed` is delivered
+    /// inside the call (F3 in glasses, 2026-09-17: "bind_mut() failed,
+    /// already bound"). The `base_mut()` guard is gdext's rule for that —
+    /// it makes this borrow inaccessible for the call so the re-entrant
+    /// method may bind — hence every DisplayServer call here is made under
+    /// it, with the fields it needs read first.
     fn resize_window(&mut self, fullscreen: bool) {
         let mut ds = DisplayServer::singleton();
         if fullscreen {
             // Remember current window size before going fullscreen
             self.pre_sbs_window_size = ds.window_get_size();
+            let _reentrant = self.base_mut();
             ds.window_set_mode(WindowMode::FULLSCREEN);
         } else {
-            ds.window_set_mode(Self::engine_window_mode(self.window_preference));
+            let mode = Self::engine_window_mode(self.window_preference);
+            let restore = self.pre_sbs_window_size;
+            let _reentrant = self.base_mut();
+            ds.window_set_mode(mode);
             // Restore the window size from before SBS was enabled
-            if self.pre_sbs_window_size.x > 0 && self.pre_sbs_window_size.y > 0 {
-                ds.window_set_size(self.pre_sbs_window_size);
+            if restore.x > 0 && restore.y > 0 {
+                ds.window_set_size(restore);
             }
         }
     }
@@ -690,8 +774,195 @@ impl ViewManager {
         }
         let mode = Self::engine_window_mode(self.window_preference);
         if ds.window_get_mode() != mode {
+            // Re-entrant like resize_window: release the borrow for the call.
+            let _reentrant = self.base_mut();
             ds.window_set_mode(mode);
         }
+    }
+
+
+    // ── The side-by-side handoff to the glasses ──────────────────────
+
+    /// Side-by-side turned on: drive the glasses first when there are
+    /// glasses to drive, and take the panel when the handoff says.
+    fn begin_handoff(&mut self) {
+        let glasses = self.drivable_glasses();
+        let (state, step) = Handoff::begin(glasses.is_some());
+        self.handoff = state;
+        if let Some(glasses) = glasses {
+            self.set_display_status(format!(
+                "XREAL glasses on {}: entering side-by-side…",
+                glasses.link().interface
+            ));
+            let (tx, rx) = mpsc::channel();
+            let worker = glasses.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(worker.enter_side_by_side());
+            });
+            self.glasses = Some(glasses);
+            self.entering = Some(rx);
+            self.release_when_entered = false;
+        }
+        self.apply_step(step);
+    }
+
+    /// Glasses the game may drive: none on a headless server (GUT, the
+    /// import stage), where there is no window to hand off.
+    fn drivable_glasses(&self) -> Option<Glasses> {
+        if DisplayServer::singleton().get_name() == "headless" {
+            return None;
+        }
+        Glasses::find()
+    }
+
+    /// Side-by-side turned off: put the glasses back as they were. With
+    /// the entering work still in flight, the undo waits for its word.
+    fn release_glasses(&mut self) {
+        if self.entering.is_some() {
+            self.release_when_entered = true;
+            return;
+        }
+        let (Some(glasses), Some(restore)) = (self.glasses.take(), self.restore.take()) else {
+            return;
+        };
+        self.set_display_status("XREAL glasses: restoring…".to_string());
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(glasses.restore(restore));
+        });
+        self.restoring = Some(rx);
+    }
+
+    /// Each frame: take the device work's word, run the handoff's clock.
+    fn poll_glasses(&mut self, delta: f64) {
+        if let Some(rx) = &self.entering {
+            let word = match rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some(Err(Failure::NoReply)),
+            };
+            if let Some(result) = word {
+                self.entering = None;
+                let report = match result {
+                    Ok(entered) => {
+                        godot_print!(
+                            "ViewManager: XREAL {} entered side-by-side (was mode {}; {} write(s))",
+                            entered.id,
+                            entered.before,
+                            entered.applied.len()
+                        );
+                        self.set_display_status(format!(
+                            "XREAL {}: side-by-side (was mode {})",
+                            entered.id, entered.before
+                        ));
+                        self.restore = Some(entered.restore);
+                        Report::Driven
+                    }
+                    Err(e) => {
+                        godot_warn!("ViewManager: XREAL glasses not driven: {e}");
+                        self.set_display_status(format!("XREAL glasses not driven ({e}) — fullscreen here"));
+                        Report::NotDriven
+                    }
+                };
+                if self.release_when_entered {
+                    // Side-by-side already went away: nothing to hand off.
+                    self.release_when_entered = false;
+                    self.handoff = Handoff::Settled;
+                    self.release_glasses();
+                } else {
+                    let (state, step) = self.handoff.report(report);
+                    self.handoff = state;
+                    self.apply_step(step);
+                }
+            }
+        }
+        if matches!(self.handoff, Handoff::AwaitingWideScreen { .. }) {
+            let (state, step) = self.handoff.tick(delta, self.wide_screen_index());
+            self.handoff = state;
+            self.apply_step(step);
+        }
+        if let Some(rx) = &self.restoring {
+            match rx.try_recv() {
+                Ok(Ok(applied)) => {
+                    self.restoring = None;
+                    godot_print!("ViewManager: XREAL glasses restored ({} write(s))", applied.len());
+                    self.set_display_status("XREAL glasses: restored".to_string());
+                }
+                Ok(Err(e)) => {
+                    self.restoring = None;
+                    godot_warn!("ViewManager: XREAL glasses not restored: {e}");
+                    self.set_display_status(format!("XREAL glasses not restored ({e})"));
+                }
+                Err(TryRecvError::Disconnected) => self.restoring = None,
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+    }
+
+    /// The process is ending: give the glasses back before the window
+    /// goes, waiting a bounded moment on work already in flight.
+    fn settle_glasses_at_exit(&mut self) {
+        if let Some(rx) = self.entering.take() {
+            if let Ok(Ok(entered)) = rx.recv_timeout(EXIT_SETTLE) {
+                self.restore = Some(entered.restore);
+            }
+        }
+        if let Some(rx) = self.restoring.take() {
+            let _ = rx.recv_timeout(EXIT_SETTLE);
+            return;
+        }
+        if let (Some(glasses), Some(restore)) = (self.glasses.take(), self.restore.take()) {
+            match glasses.restore(restore) {
+                Ok(applied) => godot_print!("ViewManager: XREAL glasses restored at exit ({} write(s))", applied.len()),
+                Err(e) => godot_warn!("ViewManager: XREAL glasses not restored at exit: {e}"),
+            }
+        }
+    }
+
+    fn apply_step(&mut self, step: Option<Step>) {
+        match step {
+            Some(Step::Fullscreen { screen }) => self.fullscreen_on(screen),
+            None => {}
+        }
+    }
+
+    /// The wide screen among the host's screens, if one exists now.
+    fn wide_screen_index(&self) -> Option<usize> {
+        let ds = DisplayServer::singleton();
+        let sizes: Vec<(i32, i32)> = (0..ds.get_screen_count())
+            .map(|i| {
+                let size = ds.screen_get_size_ex().screen(i).done();
+                (size.x, size.y)
+            })
+            .collect();
+        wide_screen(&sizes)
+    }
+
+    /// Take the whole panel, on `screen` when given. A fullscreen window
+    /// does not change screens, so it steps down, moves, and steps back
+    /// up; every DisplayServer call goes under the re-entrancy guard
+    /// (see `resize_window`).
+    fn fullscreen_on(&mut self, screen: Option<usize>) {
+        let mut ds = DisplayServer::singleton();
+        let target = screen
+            .and_then(|i| i32::try_from(i).ok())
+            .filter(|&i| i != ds.window_get_current_screen());
+        if let Some(i) = target {
+            let was_fullscreen = ds.window_get_mode() == WindowMode::FULLSCREEN;
+            let _reentrant = self.base_mut();
+            if was_fullscreen {
+                ds.window_set_mode(WindowMode::WINDOWED);
+            }
+            ds.window_set_current_screen(i);
+        }
+        self.resize_window(true);
+    }
+
+    fn set_display_status(&mut self, status: String) {
+        self.display_status = GString::from(&status);
+        let status = self.display_status.clone();
+        self.base_mut()
+            .emit_signal(signals::DISPLAY_STATUS_CHANGED, &[status.to_variant()]);
     }
 
     /// Apply the 3D render scale to the rendering viewport — the world is

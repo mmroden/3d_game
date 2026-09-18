@@ -105,13 +105,16 @@ impl LevelSpec {
         unlocks: &PermanentUnlocks,
     ) -> Self {
         let roster: Vec<EnemyKey> = grammar.roster_for_level(level);
+        let slot = grammar.boss_slot_for_level(level);
 
-        // The bestiary horizon: the roster closed over bound minions, in
-        // declaration order, deduplicated.
+        // The bestiary horizon: everything the level can produce — the
+        // roster and the staged fight's boss and escorts, each closed over
+        // its bound minions — in declaration order, deduplicated.
         let mut seen = std::collections::HashSet::new();
-        for key in &roster {
-            seen.insert(*key);
-            for m in &grammar.enemy(*key).minions {
+        let staged = slot.iter().flat_map(|s| [s.boss, s.escorts.enemy]);
+        for key in roster.iter().copied().chain(staged) {
+            seen.insert(key);
+            for m in &grammar.enemy(key).minions {
                 seen.insert(m.enemy);
             }
         }
@@ -120,7 +123,7 @@ impl LevelSpec {
             .filter(|k| seen.contains(k))
             .collect();
 
-        let boss = grammar.boss_slot_for_level(level).map(|slot| {
+        let boss = slot.map(|slot| {
             // The red container hangs off the slot's DECLARED reward
             // policy — a hull while unowned ones remain, else the pile.
             let hull_reward = if slot.reward
@@ -238,6 +241,36 @@ mod tests {
             assert_eq!(unique.len(), spec.coverage.len(),
                 "level {level}: coverage lists each enemy once");
         }
+    }
+
+
+    #[test]
+    fn coverage_closes_over_the_staged_fight() {
+        // A staged boss level produces its boss and escorts as surely as
+        // its roster — the bestiary after that fight must know them
+        // (playtest 2026-09-18: the boss just fought was missing). Derived
+        // from the grammar's slots, never from named defs.
+        use crate::roster::roster;
+        let mut staged = 0;
+        for level in 1..=24u32 {
+            let Some(slot) = roster().boss_slot_for_level(level) else { continue };
+            staged += 1;
+            let spec = fresh(level);
+            assert!(spec.coverage.contains(&slot.boss),
+                "level {level}: the staged boss is inside the horizon");
+            assert!(spec.coverage.contains(&slot.escorts.enemy),
+                "level {level}: the staged escorts join the horizon");
+            for key in [slot.boss, slot.escorts.enemy] {
+                for d in &roster().enemy(key).minions {
+                    assert!(spec.coverage.contains(&d.enemy),
+                        "level {level}: a staged fighter's declared minion joins the horizon");
+                }
+            }
+            let unique: std::collections::HashSet<_> = spec.coverage.iter().collect();
+            assert_eq!(unique.len(), spec.coverage.len(),
+                "level {level}: coverage still lists each enemy once");
+        }
+        assert!(staged > 0, "the shipped grammar stages a fight somewhere in 24 levels");
     }
 
     #[test]

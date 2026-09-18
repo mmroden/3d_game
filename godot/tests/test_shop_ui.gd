@@ -107,6 +107,56 @@ func test_menu_type_is_readable_from_the_couch():
 	assert_gte(title_size, 64, "the title must anchor the screen (>= 64px), got %d" % title_size)
 
 
+func _long_catalog_args() -> Array:
+	# Fourteen offers, blue and green interleaved by id — more than any panel
+	# shows at once, and in an order the sections must not depend on.
+	var ids := PackedInt32Array()
+	var labels := PackedStringArray()
+	var details := PackedStringArray()
+	var costs := PackedInt64Array()
+	var flags := PackedByteArray()
+	for i in range(14):
+		ids.append(i)
+		labels.append("Item %d" % i)
+		details.append("does thing %d" % i)
+		costs.append(100 * (i + 1))
+		flags.append(7 if i % 2 == 1 else 3)  # odd ids are organics (GREEN)
+	return [50_000, 1_000, ids, labels, details, costs, flags]
+
+
+func test_a_long_catalog_scrolls_by_section_and_keeps_the_exits_on_screen():
+	# SBS playtest (2026-09-18): ten offers pushed Continue and Save & Exit
+	# below the panel's bottom edge. The screen is two sections — components
+	# stock, then organics — each a window that slides with the cursor, so
+	# the cursor row, both exits, and the section markers are always shown.
+	var ui := ShopUI.new()
+	add_child_autofree(ui)
+	ui.callv("show_shop", _long_catalog_args())
+	watch_signals(ui)
+	await wait_process_frames(1)
+	var windows: PackedInt32Array = ui.window_rows()
+	assert_eq(windows.size(), 2, "one window per section: %s" % [windows])
+	assert_gte(windows[0], 1, "a section always shows at least its focused row")
+	assert_gte(windows[1], 1, "a section always shows at least its focused row")
+
+	# Display order is blue ids (0,2,..,12) then green (1,3,..,13): nine
+	# presses land on display row 9, the third organics row — id 5.
+	for _i in range(9):
+		await _press("menu_down")
+	var shown: PackedInt32Array = ui.visible_offer_rows()
+	assert_true(shown.has(9), "the cursor row stays on screen: %s" % [shown])
+	assert_lte(shown.size(), windows[0] + windows[1], "each section shows at most its window")
+	var headings := _labels(ui)
+	assert_string_contains(headings, "COMPONENTS", "the components stock is headed")
+	assert_string_contains(headings, "ORGANICS", "the organics stock is headed")
+	for l in ui.find_children("*", "Label", true, false):
+		if l.text.contains("Continue") or l.text.contains("Save & Exit"):
+			assert_true(l.is_visible_in_tree(), "%s stays on screen below the sections" % l.text.strip_edges())
+	await _press("menu_select")  # green: the info screen first
+	await _press("menu_select")  # then the buy
+	assert_signal_emitted_with_parameters(ui, "buy_pressed", [5])
+
+
 func test_the_shop_offers_save_and_exit_after_continue():
 	# The catalog ends Continue, then Save & Exit (owner's ask 2026-07-04).
 	var ui := ShopUI.new()
