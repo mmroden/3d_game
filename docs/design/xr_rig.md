@@ -1,6 +1,6 @@
 # XR rig — one XR-shaped scene, two interfaces
 
-Status: **SHAPE APPROVED (owner 2026-09-17); chunk 1 (the SBS interface, the XR scene, the measurement) LANDED — §7, §8.** Chunks 2–4 are not built. Replaces
+Status: **SHAPE APPROVED (owner 2026-09-17); phase 1 (the SBS interface, the XR scene, the measurement) LANDED — §7, §8; phase 3 (the OpenXR display on the Mac) LANDED — §6.** Phases 2 and 4 are not built. Replaces
 the hand-rolled side-by-side rig (two `SubViewport`s, two `Camera3D`s,
 per-frame pose copying) recorded as an open decision in
 `docs/review/ground_truth.md`. Read `docs/architecture` (SBS view geometry)
@@ -34,7 +34,7 @@ cockpits); an efficient render. No chase view in VR — nauseating.
   other camera.
 - The root viewport has `use_xr = true` in both display modes.
   `XRServer.primary_interface` is the `SbsInterface` (xReal and mono) or
-  Godot's `OpenXRInterface` (Frame, chunk 3).
+  Godot's `OpenXRInterface` (Frame and the Meta XR Simulator, §6).
 - One multiview render: one cull, one shadow pass, one submission, TAA per
   view. MSAA, TAA and the 3D render scale apply to the root viewport.
 - UI is unchanged in principle: every `CanvasLayer` under Main renders into
@@ -76,7 +76,7 @@ settled, not here.
 
 ## 4. Capture and measurement
 
-- `ViewManager::capture_frame()` is the one door for "what the display
+- `ViewManager::capture_frame()` is the single entry point for "what the display
   shows": mono = the root render target; SBS = layers 0 and 1 stitched
   left|right. The visual harness's frame contract (an SBS frame spans the
   full window, one eye per half) is unchanged.
@@ -88,7 +88,7 @@ settled, not here.
 
 Measurements: §7.
 
-## 5. Chunk 2 — convergence at the gaze (experiment; not built)
+## 5. Phase 2 — convergence at the gaze (experiment; not built)
 
 The director splits into three pure stages: a **gaze source** (Frame: the
 eye-gaze ray's hit depth; xReal: the subject ladder as proxy), a
@@ -112,16 +112,52 @@ eye-gaze ray's hit depth; xReal: the subject ladder as proxy), a
 - Both ship behind options with the dials exposed; the headset session is
   an A/B. The simulator validates plumbing, not perception.
 
-## 6. Chunks 3–4 (pointers)
+## 6. Phase 3 — the OpenXR display (LANDED 2026-09-17, on the Mac)
 
-- Meta XR Simulator (Apple Silicon) is an OpenXR runtime on the Mac:
-  head in the cockpit, eye-gaze tracker on `/user/eyes_ext`, `z_gaze` by
-  raycast, UI as an `OpenXRCompositionLayerQuad` with the quad as fallback.
-- Frame: Linux arm64 or Android export of the gdext crate, the Frame
-  controller profile in the action map, renderer choice measured on device
-  (Forward+ stays until that measurement says otherwise).
+OpenXR is a fact of the run, not a preference. Godot enables it at process
+start — `--xr-mode on` on the command line, or `xr/openxr/enabled` — and
+its interface initializes then; nothing can switch it on from the menu.
+So the saved preference stays the SBS toggle (the xReal's knob), and
+`void_logic::stereo::Display` names the display in force:
+`Sbs(Mono | SideBySide)` or `OpenXr`, decided by `Display::effective(sbs,
+openxr_active)`. The XRServer is the single source of truth for
+`openxr_active` (`views/openxr.rs`); the view pipeline, the HUD band and
+the ship's chase gate all read it there.
 
-## 7. Measurements (chunk 1, 2026-09-17)
+- `make run-xr` launches the game in the **Meta XR Simulator** (Meta's
+  Homebrew tap, Apple Silicon; `make deps-xrsim`, part of `make deps`),
+  activated per run through `XR_RUNTIME_JSON` — the system-wide runtime
+  symlink is never touched. The project setting stays off, so every other
+  boot skips the runtime lookup; `xr/openxr/startup_alert` is off, so a
+  headset run without a runtime warns and falls back to the SBS interface.
+- Under the runtime: the head moves inside the cockpit (the `XRCamera3D`
+  tracks it), the ship still aims by its nose, the UI rides the
+  cockpit-locked plane, the HUD band is full-bleed (a headset's eye sees
+  the whole plane), the chase view is not offered (`Display::chase_allowed`),
+  the window is the runtime's mirror and keeps the mono window preference,
+  MSAA follows `msaa_allowed` (two views), the stereo director's dials are
+  not pushed (no display of ours to act on — `world_scale` is phase 2's
+  knob), and `capture_frame` returns nothing (the runtime owns the frame).
+- The contract `openxr_runtime_is_the_display_when_it_runs` (visual
+  suite) boots a level under the simulator and reads the startup line;
+  a missing runtime FAILS it (never a silent skip). First reading on the
+  M2 Max: Godot on Metal, Meta XR Simulator 1.71.0, per-eye target
+  1680×1760, ~28 fps under the simulator's compositor.
+- The simulator publishes `XR_FB_eye_tracking_social`, not
+  `XR_EXT_eye_gaze_interaction`; under it phase 2's gaze source runs on
+  the ladder proxy.
+- Not in this phase: the UI as an `OpenXRCompositionLayerQuad` (the quad
+  stands), an OpenXR action map (the simulator's controllers are unused;
+  keyboard/pad drive the ship as before), a capture path for headset
+  frames.
+
+## 6b. Phase 4 (pointer)
+
+Frame: Linux arm64 or Android export of the gdext crate, the Frame
+controller profile in the action map, renderer choice measured on device
+(Forward+ stays until that measurement says otherwise).
+
+## 7. Measurements (phase 1, 2026-09-17)
 
 Same stage both sides — `RUST_TEST_THREADS=1 KEEP_FRAMES=1 make check-visual`
 with `FILTER=stereo_flythrough` (SBS, 5 artery poses, commanded static
@@ -129,7 +165,7 @@ geometry) and `FILTER=cockpit_console` (mono, 5 poses) — read from the
 closing telemetry line in each run's `engine.log`. Level 7 seed 1,
 `--ambient=1 --populace=0 --cull=0`, 1144×828 window (SBS per eye 572×828),
 Godot 4.6.1 Metal / Forward+ / M2 Max. "Before" is commit 59e3ff1 (the old
-two-sub-viewport rig with the telemetry door), "after" the rig change.
+two-sub-viewport rig with the telemetry closing line), "after" the rig change.
 
 | reading (p50 over the posed frames) | before | after |
 |---|---|---|

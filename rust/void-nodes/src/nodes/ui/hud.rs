@@ -160,11 +160,12 @@ impl ICanvasLayer for HUD {
 #[godot_api]
 impl HUD {
     /// React to GameManager's options broadcast: confine the HUD to the central
-    /// band each eye sees in SBS, or full-bleed in mono.
+    /// band each eye sees side by side, or full-bleed in mono and in a
+    /// headset (whose eye sees the whole plane).
     #[func]
     fn on_options_changed(&mut self, options: super::options_wire::OptionsDictionary) {
         let options = super::options_wire::from_dictionary(&options);
-        self.apply_safe_area(options.sbs_enabled);
+        self.apply_safe_area(crate::nodes::views::openxr::active_display(options.sbs_enabled).central_band());
     }
 
     #[func]
@@ -515,10 +516,10 @@ impl HUD {
     /// Mono: full-bleed. Controls anchor to the full window regardless
     /// (custom_viewport redirects rendering, not layout), so this re-anchors the
     /// single wrapper everything hangs off rather than each element.
-    fn apply_safe_area(&self, sbs: bool) {
+    fn apply_safe_area(&self, central_band: bool) {
         use godot::builtin::Side;
         self.safe_area.with(|sa| {
-            if sbs {
+            if central_band {
                 sa.set_anchor(Side::LEFT, SBS_SAFE_AREA_MARGIN);
                 sa.set_anchor(Side::TOP, 0.0);
                 sa.set_anchor(Side::RIGHT, 1.0 - SBS_SAFE_AREA_MARGIN);

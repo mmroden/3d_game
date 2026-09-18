@@ -11,8 +11,10 @@ use super::constants::{actions, groups, methods, nodes, signals};
 use super::godot_util;
 use super::live_handle::{LiveOpt, LiveRef, LiveVec};
 use super::ui::options_wire;
+use super::views::openxr::active_display;
 use void_logic::game_options::GameOptions;
 use void_logic::mouse_look::MouseLook;
+use void_logic::stereo::Display;
 
 use void_logic::cockpit;
 use void_logic::debuff::SlowDebuff;
@@ -148,6 +150,10 @@ pub struct ShipController {
     /// Mouse look preferences, GameManager's options via the broadcast.
     mouse_sensitivity: u8,
     invert_mouse_y: bool,
+    /// The display in force (the runtime or the SBS interface's mode),
+    /// re-read on every options broadcast: it decides whether the chase
+    /// view exists.
+    display: Display,
 }
 
 #[godot_api]
@@ -183,6 +189,7 @@ impl IRigidBody3D for ShipController {
             mouse_look: MouseLook::new(),
             mouse_sensitivity: GameOptions::MOUSE_SENSITIVITY_DEFAULT,
             invert_mouse_y: false,
+            display: Display::effective(false, false),
         }
     }
 
@@ -352,6 +359,14 @@ impl ShipController {
         let options = options_wire::from_dictionary(&options);
         self.mouse_sensitivity = options.mouse_sensitivity;
         self.invert_mouse_y = options.invert_mouse_y;
+        // The display decides which views exist: a headset offers no chase
+        // view (owner 2026-09-17 — nauseating), so a chase in progress
+        // returns to the cockpit the moment the display says so.
+        self.display = active_display(options.sbs_enabled);
+        if !self.display.chase_allowed() && self.camera_mode == CameraMode::Chase {
+            self.camera_mode = CameraMode::Cockpit;
+            self.apply_camera_mode();
+        }
     }
 
     /// Test/inspection seam: the mouse sensitivity in force.
@@ -474,6 +489,9 @@ impl ShipController {
     /// the GUT shell contract exercises directly.
     #[func]
     pub fn toggle_view(&mut self) {
+        if !self.display.chase_allowed() {
+            return;
+        }
         self.camera_mode = match self.camera_mode {
             CameraMode::Cockpit => CameraMode::Chase,
             CameraMode::Chase => CameraMode::Cockpit,

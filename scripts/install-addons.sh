@@ -46,6 +46,24 @@ stale() {  # <output>... -- <input>...   (returns 0 = work needed)
     return 1
 }
 
+# A material census names the model it read (`"source"`, written by
+# mtl_materials.py and extract-fbx-materials.py). A census of another
+# file is stale whatever the mtimes say: a renamed download keeps its
+# mtime, yet what the importer resolves from the model — an OBJ's
+# `mtllib` against the files beside it — changes with the name (the hill
+# house's download carried `+` for every space, 2026-09-17). Returns 0
+# when the census exists and names a different model.
+census_is_of_another_model() {  # <manifest.json> <model>
+    local manifest="$1" model="$2" named
+    [ -f "$manifest" ] || return 1
+    named="$(python3 -c 'import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("source", ""))
+except Exception:
+    print("")' "$manifest" 2>/dev/null)"
+    [ -n "$named" ] && [ "$named" != "$(basename "$model")" ]
+}
+
 # ---------- Quaternius Modular Sci-Fi MegaKit ----------
 
 MEGAKIT_SRC="$ASSETS_DIR/quaternius-megakit/Engine Projects/Godot/modular-sci-fi-megakit/addons/quaternius"
@@ -645,18 +663,6 @@ optimize_glb() {
 convert_environment() {
     local key="$1" pack="$2" pick="${3:-}"
     shift 3 2>/dev/null || shift $#
-    # The stamp carries the model pick and every converter option, the
-    # texture cap included, so a pick or a cap change reconverts like any
-    # other option change (a pack's alternate export is usually OLDER
-    # than the product, so mtime alone would never notice the switch).
-    local stamp="$pack/convert.opts" opts="${pick:-first-model} $* --tex-cap $ENV_TEX_CAP --optimize $OPTIMIZE_OPTS"
-    # Metrics-only re-reads products; it must never touch a stamp (`make
-    # metrics` once ran without the optimizer version in its environment,
-    # stamped every pack "unpinned", and the next real run reconverted all
-    # four scenes for nothing, 2026-09-08).
-    if [ -z "$METRICS_ONLY" ] && { [ ! -f "$stamp" ] || [ "$(cat "$stamp")" != "$opts" ]; }; then
-        printf '%s' "$opts" > "$stamp"
-    fi
     if [ ! -d "$pack" ]; then
         echo "  $key pack not found at $pack, skipping."
         return
@@ -684,20 +690,45 @@ convert_environment() {
         exit 1
     fi
     lfs_guard "$model"
+    # The stamp carries the model pick and every converter option, the
+    # texture cap included, so a pick or a cap change reconverts like any
+    # other option change (a pack's alternate export is usually OLDER
+    # than the product, so mtime alone would never notice the switch).
+    local stamp="$pack/convert.opts" opts="${pick:-first-model} $* --tex-cap $ENV_TEX_CAP --optimize $OPTIMIZE_OPTS"
+    # Metrics-only re-reads products; it must never touch a stamp (`make
+    # metrics` once ran without the optimizer version in its environment,
+    # stamped every pack "unpinned", and the next real run reconverted all
+    # four scenes for nothing, 2026-09-08).
+    if [ -z "$METRICS_ONLY" ] && { [ ! -f "$stamp" ] || [ "$(cat "$stamp")" != "$opts" ]; }; then
+        printf '%s' "$opts" > "$stamp"
+    fi
     # The material manifest the model's format calls for, once per change.
+    # A census (and the cached import beside it) of a model by another
+    # name — a renamed download, a switched pick — is of another file:
+    # both go, whatever the mtimes say.
+    local renamed=""
+    case "$(echo "${model##*.}" | tr '[:upper:]' '[:lower:]')" in
+        obj) manifest="$pack/mtl_materials.json" ;;
+        *) manifest="$pack/fbx_materials.json" ;;
+    esac
+    if [ -z "$METRICS_ONLY" ] && census_is_of_another_model "$manifest" "$model"; then
+        echo "  $key: the material census names another model — recounting, re-importing."
+        renamed=1
+        rm -f "$pack/scene_cache.blend" "$pack/scene_cache.blend.json"
+    fi
     case "$(echo "${model##*.}" | tr '[:upper:]' '[:lower:]')" in
         obj)
             mtl="${model%.*}.mtl"
             [ -f "$mtl" ] || mtl="$(find "$(dirname "$model")" -maxdepth 1 -iname '*.mtl' | head -1)"
-            manifest="$pack/mtl_materials.json"
-            if [ -z "$METRICS_ONLY" ] && stale "$manifest" -- "$model" "$mtl" "$SCRIPTS_DIR/mtl_materials.py"; then
+            if [ -z "$METRICS_ONLY" ] && { [ -n "$renamed" ] \
+                    || stale "$manifest" -- "$model" "$mtl" "$SCRIPTS_DIR/mtl_materials.py"; }; then
                 echo "  Extracting $key material manifest from the MTL..."
                 python3 "$SCRIPTS_DIR/mtl_materials.py" "$model" "$mtl" "$manifest" \
                     | grep -i "mtl-materials:" || echo "  (mtl-materials: no summary — check output)"
             fi ;;
         *)
-            manifest="$pack/fbx_materials.json"
-            if [ -z "$METRICS_ONLY" ] && stale "$manifest" -- "$model" "$SCRIPTS_DIR/extract-fbx-materials.py"; then
+            if [ -z "$METRICS_ONLY" ] && { [ -n "$renamed" ] \
+                    || stale "$manifest" -- "$model" "$SCRIPTS_DIR/extract-fbx-materials.py"; }; then
                 echo "  Extracting $key material manifest from FBX connection tables..."
                 mkdir -p "$OUT_DIR"
                 "$BLENDER" --background --python-exit-code 1 \

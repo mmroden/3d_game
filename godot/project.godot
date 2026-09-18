@@ -221,3 +221,9 @@ anti_aliasing/quality/use_taa=true
 ; only when this is on; without it a two-view render has no vertex
 ; shader and the pipeline creation fails.
 shaders/enabled=true
+; OpenXR is a fact of the run, not a preference: `enabled` stays off so
+; every ordinary boot skips the runtime lookup, and a headset run opts in
+; at process start (`godot --xr-mode on`; `make run-xr` on the Mac with
+; the Meta XR Simulator). Without a runtime that run warns and falls
+; back to the SBS display interface — no dialog.
+openxr/startup_alert=false

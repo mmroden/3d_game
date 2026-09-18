@@ -13,9 +13,10 @@ use godot::classes::{
 use crate::nodes::constants::{methods, nodes, signals};
 use crate::nodes::live_handle::{LiveOpt, LiveRef};
 use crate::nodes::ui::options_wire;
+use crate::nodes::views::openxr::{active_display, openxr_interface};
 use crate::nodes::views::sbs_interface::{window_pixels, SbsInterface};
 use void_logic::game_options::{RenderScale, WindowMode as WindowPreference};
-use void_logic::stereo::{msaa_allowed, per_eye_size, ui_plane_size, DisplayMode, StereoConfig};
+use void_logic::stereo::{msaa_allowed, per_eye_size, ui_plane_size, Display, DisplayMode, StereoConfig};
 
 /// Default distance (meters) from the eyepoint to the floating UI plane in
 /// SBS mode. A moderate in-scene depth: close enough (2 m) forces hard
@@ -32,10 +33,12 @@ const DEFAULT_UI_PLANE_DISTANCE: f32 = 4.0;
 /// stereo) — docs/design/xr_rig.md.
 ///
 /// The 3D world renders ONCE, through the root viewport under `use_xr`,
-/// by the `SbsInterface` this node registers as the XRServer's primary
-/// interface: one view in mono, two side by side, the eye geometry and
-/// the window blits inside the interface. The player's `XRCamera3D`
-/// (under `Player/XROrigin3D`, the eyepoint) is the one camera.
+/// by the XRServer's primary interface: the OpenXR runtime when one came
+/// up at process start (a headset — `--xr-mode on`), else the
+/// `SbsInterface` this node registers — one view in mono, two side by
+/// side, the eye geometry and the window blits inside the interface. The
+/// player's `XRCamera3D` (under `Player/XROrigin3D`, the eyepoint) is the
+/// one camera: the head under a runtime, eyes front otherwise.
 ///
 /// Lives as a direct child of Main. Listens to GameManager's
 /// `options_changed` signal and reconfigures accordingly. Never duplicates
@@ -62,7 +65,8 @@ pub struct ViewManager {
     #[export]
     ui_plane_distance: f32,
 
-    current_mode: DisplayMode,
+    /// The display in force: the runtime, or the SBS interface in a mode.
+    current: Display,
     /// Window size before entering SBS/fullscreen, so we can restore it.
     pre_sbs_window_size: Vector2i,
     /// Dynamic stereo (the ship's stereo director drives convergence +
@@ -92,7 +96,7 @@ impl INode3D for ViewManager {
             depth_strength: 1.0,
             convergence_distance: 0.0,
             ui_plane_distance: DEFAULT_UI_PLANE_DISTANCE,
-            current_mode: DisplayMode::Mono,
+            current: Display::Sbs(DisplayMode::Mono),
             pre_sbs_window_size: Vector2i::new(0, 0),
             dynamic_stereo: false,
             window_preference: WindowPreference::Windowed,
@@ -124,7 +128,7 @@ impl INode3D for ViewManager {
         self.connect_to_game_manager();
         self.connect_to_window_resize();
         self.push_stereo();
-        godot_print!("ViewManager ready — {}", self.current_mode.label());
+        godot_print!("ViewManager ready — {}", self.current.label());
         self.log_display_geometry("startup");
     }
 
@@ -182,7 +186,17 @@ impl ViewManager {
         // 2x Retina backing store of 2056x1329 pt, downsampled to the
         // panel). Print the scale so the log decodes itself.
         let scale = ds.screen_get_scale();
-        let [eye_w, eye_h] = per_eye_size(self.current_mode, window_pixels());
+        // Per-eye target: ours from the window in SBS/mono; the runtime's
+        // own under OpenXR.
+        let [eye_w, eye_h] = match self.current {
+            Display::Sbs(mode) => per_eye_size(mode, window_pixels()),
+            Display::OpenXr => openxr_interface()
+                .map(|iface| {
+                    let size = iface.get_render_target_size();
+                    [size.x as u32, size.y as u32]
+                })
+                .unwrap_or([0, 0]),
+        };
         let texture_side = RenderingServer::singleton()
             .get_rendering_device()
             .map(|device| {
@@ -202,7 +216,7 @@ impl ViewManager {
             window.x,
             window.y,
             ds.window_get_mode(),
-            self.current_mode.label(),
+            self.current.label(),
             eye_w,
             eye_h,
             texture_side,
@@ -213,17 +227,13 @@ impl ViewManager {
     #[func]
     pub fn on_options_changed(&mut self, options: options_wire::OptionsDictionary) {
         let options = options_wire::from_dictionary(&options);
-        let (sbs_enabled, msaa_enabled) = (options.sbs_enabled, options.msaa_enabled);
         self.dynamic_stereo = options.dynamic_stereo;
         self.window_preference = options.window_mode;
-        let target = if sbs_enabled {
-            DisplayMode::SideBySide
-        } else {
-            DisplayMode::Mono
-        };
+        // The SBS preference chooses between the SBS interface's modes; a
+        // running OpenXR runtime is the display regardless.
+        let target = active_display(options.sbs_enabled);
 
-        if target != self.current_mode {
-            let sbs = target == DisplayMode::SideBySide;
+        if target != self.current {
             // Play-path SBS goes fullscreen (the glasses want the whole
             // panel); a CAPTURE run with commanded stereo geometry keeps
             // the commanded --resolution instead — disparity contracts
@@ -231,30 +241,31 @@ impl ViewManager {
             // size (a fullscreen capture ballooned to the physical
             // screen, 2026-08-20).
             if self.capture_interaxial.is_none() {
-                self.resize_window(sbs);
+                self.resize_window(target.wants_fullscreen());
             }
-            self.current_mode = target;
+            self.current = target;
             // The interface flips its view count on the same frame as the
             // toggle; the engine re-sizes the render target from it.
             self.push_stereo();
             // Rebuild the UI texture and plane to the new geometry on the
             // same frame, rather than waiting on the OS resize event.
             self.resize_ui();
-            self.apply_visibility(sbs);
+            self.apply_visibility(target.ui_on_plane());
             self.log_display_geometry("display mode change");
-            godot_print!("SBS stereo {}", if sbs { "enabled" } else { "disabled" });
+            godot_print!("Display: {}", target.label());
         }
 
         // ViewManager owns all viewport anti-aliasing: apply MSAA to the
         // viewport that renders the world. Runs on every options change —
         // a pure MSAA toggle and a post-mode-switch re-apply both end up
         // correct.
-        self.apply_msaa(msaa_enabled);
+        self.apply_msaa(options.msaa_enabled);
         // The 3D render scale rides every broadcast too; the window
-        // preference applies in mono (SBS owns the window there), and
-        // never on a capture run with a commanded resolution.
+        // preference applies where the display doesn't own the window
+        // (mono, and the OpenXR mirror), and never on a capture run with
+        // a commanded resolution.
         self.apply_render_scale(options.render_scale);
-        if self.current_mode == DisplayMode::Mono && self.capture_interaxial.is_none() {
+        if !self.current.wants_fullscreen() && self.capture_interaxial.is_none() {
             self.apply_window_preference();
         }
     }
@@ -278,17 +289,23 @@ impl ViewManager {
         rids
     }
 
-    /// The frame the display shows, as an image — the capture rig's one
-    /// door. Mono is the root render target; side by side it is the two
+    /// The frame the display shows, as an image — the capture rig's single
+    /// entry point. Mono is the root render target; side by side it is the two
     /// multiview layers stitched left|right, exactly what the window
     /// shows (the harness's SBS frame spans the full window, one eye per
-    /// half). `None` when nothing has been drawn (headless).
+    /// half). `None` when nothing has been drawn (headless), and under
+    /// OpenXR, where the runtime owns the frame (its swapchain overrides
+    /// the render target; the window is only a mirror).
     pub(crate) fn capture_frame(&self) -> Option<Gd<Image>> {
         let viewport = self.base().get_viewport()?;
         let texture = viewport.get_texture()?;
-        match self.current_mode {
-            DisplayMode::Mono => texture.get_image(),
-            DisplayMode::SideBySide => {
+        match self.current {
+            Display::OpenXr => {
+                godot_warn!("capture under OpenXR: the runtime owns the frame; nothing saved");
+                None
+            }
+            Display::Sbs(DisplayMode::Mono) => texture.get_image(),
+            Display::Sbs(DisplayMode::SideBySide) => {
                 let rs = RenderingServer::singleton();
                 let rid = texture.get_rid();
                 let left = rs.texture_2d_layer_get(rid, 0)?;
@@ -303,18 +320,29 @@ impl ViewManager {
         }
     }
 
-    /// Register the SBS display interface as the XRServer's primary
-    /// interface and hand the root viewport to it: from here on the 3D
-    /// world renders through `use_xr`, one pass, one or two views.
+    /// Hand the root viewport to the display interface: the OpenXR
+    /// runtime when one initialized at process start (the XRServer already
+    /// holds it primary), else the SBS display interface this node
+    /// registers as primary. From here on the 3D world renders through
+    /// `use_xr`, one pass, one or two views.
     fn setup_interface(&mut self) {
-        let mut interface = SbsInterface::new_gd();
         let mut xr = XrServer::singleton();
-        xr.add_interface(&interface);
-        if !interface.initialize() {
-            godot_error!("ViewManager: the SBS display interface failed to initialize");
-            return;
+        if let Some(runtime) = openxr_interface() {
+            xr.set_primary_interface(&runtime);
+            self.current = Display::OpenXr;
+            godot_print!(
+                "ViewManager: OpenXR runtime up ({}); the headset is the display",
+                runtime.get_system_info()
+            );
+        } else {
+            let mut interface = SbsInterface::new_gd();
+            xr.add_interface(&interface);
+            if !interface.initialize() {
+                godot_error!("ViewManager: the SBS display interface failed to initialize");
+                return;
+            }
+            xr.set_primary_interface(&interface);
         }
-        xr.set_primary_interface(&interface);
         match self.base().get_viewport() {
             Some(mut viewport) => {
                 viewport.set_use_xr(true);
@@ -356,12 +384,17 @@ impl ViewManager {
     }
 
     /// Push this frame's display mode, stereo dials and camera FOV into
-    /// the interface — the one place the render learns them.
+    /// the SBS interface — the one place that render learns them. Under a
+    /// runtime the dials have no display to act on (the runtime owns eye
+    /// geometry; `world_scale` is the one knob there, chunk 2's business).
     fn push_stereo(&self) {
-        let dials = self.stereo_dials();
+        let Display::Sbs(mode) = self.current else {
+            return;
+        };
+        let dials = self.stereo_dials(mode);
         let fov = self.camera_fov();
         if let Some(mut iface) = self.sbs_interface() {
-            iface.bind_mut().configure(self.current_mode, dials, fov);
+            iface.bind_mut().configure(mode, dials, fov);
         }
     }
 
@@ -382,7 +415,7 @@ impl ViewManager {
     /// static mode's volume knob and must not double-scale a computed
     /// baseline. The per-eye dimensions are the interface's business
     /// (it re-reads the window every frame).
-    fn stereo_dials(&self) -> StereoConfig {
+    fn stereo_dials(&self, mode: DisplayMode) -> StereoConfig {
         let (eye_separation, depth_strength, convergence_distance) =
             match (self.capture_interaxial, self.capture_convergence) {
                 (Some(interaxial), Some(convergence)) => (interaxial, 1.0, convergence),
@@ -395,7 +428,7 @@ impl ViewManager {
                     ),
                 },
             };
-        let [viewport_width, viewport_height] = per_eye_size(self.current_mode, window_pixels());
+        let [viewport_width, viewport_height] = per_eye_size(mode, window_pixels());
         StereoConfig {
             eye_separation,
             depth_strength,
@@ -592,13 +625,14 @@ impl ViewManager {
     }
 
     /// UI: in mono the HUD is drawn by the fullscreen MonoUILayer (a proper
-    /// CanvasLayer at 1:1, so tiny center chrome survives); in SBS the 3D
-    /// UIPlane takes over, so the flat layer hides.
-    fn apply_visibility(&mut self, sbs: bool) {
+    /// CanvasLayer at 1:1, so tiny center chrome survives); in every
+    /// two-view display the cockpit-locked UIPlane takes over, so the flat
+    /// layer hides.
+    fn apply_visibility(&mut self, on_plane: bool) {
         if let Some(mut mono) = self.base().try_get_node_as::<CanvasLayer>(nodes::MONO_UI_LAYER) {
-            mono.set_visible(!sbs);
+            mono.set_visible(!on_plane);
         }
-        self.ui_plane.with(|plane| plane.set_visible(sbs));
+        self.ui_plane.with(|plane| plane.set_visible(on_plane));
     }
 
     /// Apply the MSAA option to the viewport that renders the 3D world —
@@ -611,11 +645,11 @@ impl ViewManager {
         let driver = RenderingServer::singleton()
             .get_current_rendering_driver_name()
             .to_string();
-        let allowed = msaa_allowed(self.current_mode, &driver);
+        let allowed = msaa_allowed(self.current, &driver);
         if enabled && !allowed {
             godot_print!(
                 "MSAA requested but the {driver} driver cannot multisample a {} render; rendering without it (TAA stays on)",
-                self.current_mode.label()
+                self.current.label()
             );
         }
         let msaa = if enabled && allowed { Msaa::MSAA_4X } else { Msaa::DISABLED };
@@ -624,9 +658,9 @@ impl ViewManager {
         }
     }
 
-    fn resize_window(&mut self, sbs: bool) {
+    fn resize_window(&mut self, fullscreen: bool) {
         let mut ds = DisplayServer::singleton();
-        if sbs {
+        if fullscreen {
             // Remember current window size before going fullscreen
             self.pre_sbs_window_size = ds.window_get_size();
             ds.window_set_mode(WindowMode::FULLSCREEN);

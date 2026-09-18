@@ -1,4 +1,4 @@
-.PHONY: deps deps-rust deps-godot deps-godot-templates deps-gut lsp-up require-rust check check-visual test-rust test-godot test-assets demo edit clean run export build build-release assets assets-install assets-import assets-probe assets-materials ground-truth
+.PHONY: deps deps-rust deps-godot deps-godot-templates deps-gut deps-xrsim run-xr lsp-up require-rust check check-visual test-rust test-godot test-assets demo edit clean run export build build-release assets assets-install assets-import assets-probe assets-materials ground-truth
 
 # Project-local tool paths
 TOOLS_DIR := $(CURDIR)/tools
@@ -57,7 +57,7 @@ PYENV := tools/pyenv
 # ensurepip, 2026-07-12), the io_scene_max Blender extension (.max material
 # recovery, installed via Blender's own extension system), and the headless
 # Godot editor LSP (via lsp-up below — see that target's comment).
-deps: deps-rust deps-godot deps-godot-templates deps-gut deps-node deps-blender lsp-up
+deps: deps-rust deps-godot deps-godot-templates deps-gut deps-node deps-blender deps-xrsim lsp-up
 	@if ! command -v git-lfs >/dev/null 2>&1; then \
 		echo "==> Installing git-lfs (large provider assets)..."; \
 		brew install git-lfs; \
@@ -76,6 +76,26 @@ deps: deps-rust deps-godot deps-godot-templates deps-gut deps-node deps-blender 
 # extraction failed for days behind a summary grep while the converter
 # read stale tables. The asset stage depends on this target, so the check
 # runs before every install, not only on `make deps`.
+# The Meta XR Simulator: the one OpenXR runtime on macOS (Apple Silicon;
+# Meta's developer preview, from Meta's own Homebrew tap). It plays a
+# Quest — a keyboard/mouse-driven 6DoF head, emulated controllers — so
+# the OpenXR display path (docs/design/xr_rig.md §6) runs on the Mac
+# without a headset. Activated per run through XR_RUNTIME_JSON (never
+# the system-wide symlink its post-install script offers), so nothing
+# else on the machine changes.
+XRSIM_TAP := Oculus-VR/tap
+XRSIM_RUNTIME := $(shell brew --prefix meta-xr-simulator 2>/dev/null)/meta_openxr_simulator.json
+deps-xrsim:
+	@if [ -f "$(XRSIM_RUNTIME)" ]; then \
+		echo "Meta XR Simulator already installed ($$(brew list --versions meta-xr-simulator))."; \
+	else \
+		echo "==> Installing the Meta XR Simulator (OpenXR runtime for 'make run-xr')..."; \
+		brew tap $(XRSIM_TAP) || exit 1; \
+		brew trust --formula $(XRSIM_TAP)/meta-xr-simulator || exit 1; \
+		brew install meta-xr-simulator || exit 1; \
+		echo "Meta XR Simulator installed ($$(brew list --versions meta-xr-simulator))."; \
+	fi
+
 deps-blender:
 	@if [ -x "$(BLENDER)" ]; then \
 		echo "Blender already installed ($$($(BLENDER) --version 2>/dev/null | head -1))."; \
@@ -493,6 +513,15 @@ build-release: require-rust
 run: build-release deps-godot
 	@echo "==> Launching game (release)..."
 	@$(GODOT) --path $(GODOT_DIR) $(if $(LEVEL)$(SEED),-- $(if $(LEVEL),--level=$(LEVEL)) $(if $(SEED),--seed=$(SEED)))
+
+# The game in a headset — the Meta XR Simulator's on the Mac. OpenXR is
+# enabled at process start (Godot's --xr-mode on; the project setting
+# stays off so every other run boots without a runtime lookup), and the
+# view pipeline takes the runtime as the display when it comes up
+# (docs/design/xr_rig.md §6). Same LEVEL/SEED knobs as `make run`.
+run-xr: build-release deps-godot deps-xrsim
+	@echo "==> Launching game in the Meta XR Simulator (release)..."
+	@XR_RUNTIME_JSON="$(XRSIM_RUNTIME)" $(GODOT) --path $(GODOT_DIR) --xr-mode on $(if $(LEVEL)$(SEED),-- $(if $(LEVEL),--level=$(LEVEL)) $(if $(SEED),--seed=$(SEED)))
 
 # Self-contained macOS build, Apple Silicon only: the Godot runtime, the
 # release dylib and every imported resource in one .app, zipped to send

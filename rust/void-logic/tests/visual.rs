@@ -759,6 +759,86 @@ fn stereo_flythrough_renders_every_vantage() {
 }
 
 
+/// The OpenXR runtime's manifest: `XR_RUNTIME_JSON` if the caller set
+/// one, else the Meta XR Simulator's (installed by `make deps-xrsim`,
+/// docs/design/xr_rig.md §6). Missing is a failure, not a skip — a
+/// silently passing headset contract would certify nothing.
+fn openxr_runtime_json() -> PathBuf {
+    if let Some(path) = std::env::var_os("XR_RUNTIME_JSON") {
+        return PathBuf::from(path);
+    }
+    let prefix = Command::new("brew")
+        .args(["--prefix", "meta-xr-simulator"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .unwrap_or_default();
+    let manifest = Path::new(&prefix).join("meta_openxr_simulator.json");
+    assert!(
+        !prefix.is_empty() && manifest.is_file(),
+        "the OpenXR contract needs a runtime: install the Meta XR Simulator (make deps-xrsim) \
+         or point XR_RUNTIME_JSON at a runtime manifest"
+    );
+    manifest
+}
+
+/// HEADSET BOOT: with an OpenXR runtime up at process start (`--xr-mode
+/// on`, the simulator as the runtime), the game takes the runtime as its
+/// display — the same scene, the same one camera under the origin, the
+/// UI on the cockpit-locked plane — and reports it so. The runtime owns
+/// the frames (no captures); the engine log is the reading. Boots a
+/// level so the cockpit and the world render under the head.
+#[test]
+fn openxr_runtime_is_the_display_when_it_runs() {
+    let runtime = openxr_runtime_json();
+    let level = *levels_of_planet(2)
+        .first()
+        .expect("the grammar declares planet 2");
+    let run_seed = 1i64;
+    let dir = frames_dir(level, run_seed, "-openxr");
+    std::fs::create_dir_all(&dir).expect("run dir");
+    let status = Command::new(godot())
+        .env("XR_RUNTIME_JSON", &runtime)
+        .arg("--path")
+        .arg(repo_root().join("godot"))
+        .args(["--resolution", "1144x828", "--xr-mode", "on", "--quit-after", "240", "--"])
+        .args([
+            format!("--level={level}"),
+            format!("--seed={run_seed}"),
+            "--sbs=0".to_string(),
+            "--populace=0".to_string(),
+            "--cull=0".to_string(),
+        ])
+        .stdout(std::fs::File::create(dir.join("engine.log")).expect("engine log"))
+        .stderr(std::fs::File::create(dir.join("engine.err")).expect("engine err"))
+        .status()
+        .unwrap_or_else(|e| panic!("Godot did not launch ({e}) — set GODOT or run make deps"));
+    let log = std::fs::read_to_string(dir.join("engine.log")).expect("engine.log kept");
+    assert!(status.success(), "the headset boot failed ({}) — see {}", status, dir.display());
+    assert!(
+        log.contains("ViewManager ready — OpenXR"),
+        "the runtime must be the display at boot ({}):\n{}",
+        dir.display(),
+        log.lines().filter(|l| l.contains("ViewManager") || l.contains("OpenXR")).collect::<Vec<_>>().join("\n")
+    );
+    let startup = log
+        .lines()
+        .find(|l| l.starts_with("Display [startup]"))
+        .expect("the startup geometry line prints");
+    assert!(
+        startup.contains("mode OpenXR") && !startup.contains("per-eye 0x0"),
+        "the startup geometry must name the runtime's own target: {startup}"
+    );
+    assert!(
+        !log.contains("SBS display interface"),
+        "no fallback to the SBS interface under a running runtime ({})",
+        dir.display()
+    );
+    println!("visual: openxr L{level} S{run_seed} | {startup}");
+}
+
+
 /// The credits crawl renders, fits, and moves (owner 2026-09-09: "can we
 /// do the same thing with the menu as a way to validate that credits are
 /// displayed?"): a `--screen=credits` boot parks the crawl at three

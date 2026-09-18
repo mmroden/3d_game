@@ -80,15 +80,82 @@ pub fn per_eye_size(mode: DisplayMode, window: [u32; 2]) -> [u32; 2] {
 }
 
 
-/// Whether the MSAA option may be applied to the render for `mode` on
+/// Whether the MSAA option may be applied to the render for `display` on
 /// `rendering_driver` (Godot's driver name: "metal", "vulkan", …).
 /// Godot 4.6.1's Metal driver cannot slice a multisample array — the
 /// per-view MSAA resolve of a two-view render asserts inside Metal's
 /// texture-view validation (`MTLTextureType2DMultisampleArray` viewed as
 /// `MTLTextureType2D`, 2026-09-17, TAA on or off) — so on Metal MSAA is a
 /// single-view feature. Re-test on an engine upgrade before widening.
-pub fn msaa_allowed(mode: DisplayMode, rendering_driver: &str) -> bool {
-    !(rendering_driver == "metal" && view_count(mode) > 1)
+pub fn msaa_allowed(display: Display, rendering_driver: &str) -> bool {
+    !(rendering_driver == "metal" && display.views() > 1)
+}
+
+
+/// What renders the world this run: the SBS display interface in one of
+/// its modes (the xReal as a crippled headset, or its single mono eye),
+/// or an OpenXR runtime (a headset). OpenXR is enabled at process start
+/// — Godot's `--xr-mode on` or the project setting — never from the
+/// menu, so it is a fact of the run, not a preference; the saved SBS
+/// preference only chooses between the SBS interface's modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Display {
+    Sbs(DisplayMode),
+    OpenXr,
+}
+
+impl Display {
+    /// The display in force: the runtime when one initialized, else the
+    /// SBS interface in the preferred mode.
+    pub fn effective(sbs_enabled: bool, openxr_active: bool) -> Display {
+        if openxr_active {
+            Display::OpenXr
+        } else if sbs_enabled {
+            Display::Sbs(DisplayMode::SideBySide)
+        } else {
+            Display::Sbs(DisplayMode::Mono)
+        }
+    }
+
+    /// Views rendered per frame.
+    pub fn views(self) -> u32 {
+        match self {
+            Display::Sbs(mode) => view_count(mode),
+            Display::OpenXr => 2,
+        }
+    }
+
+    /// Whether the HUD confines itself to the central band each eye sees:
+    /// only side by side, where each eye's frustum covers the central half
+    /// of the full-window UI plane; a headset's eye sees the whole plane.
+    pub fn central_band(self) -> bool {
+        self == Display::Sbs(DisplayMode::SideBySide)
+    }
+
+    /// Whether the UI shows on the cockpit-locked plane (else the flat
+    /// mono layer draws it): every two-view display.
+    pub fn ui_on_plane(self) -> bool {
+        self.views() > 1
+    }
+
+    /// Whether the chase (third-person) view is offered: not in a headset
+    /// (owner 2026-09-17: nauseating).
+    pub fn chase_allowed(self) -> bool {
+        self != Display::OpenXr
+    }
+
+    /// Whether the display takes the whole panel: the glasses want it; a
+    /// headset's window is a mirror and mono keeps the player's preference.
+    pub fn wants_fullscreen(self) -> bool {
+        self == Display::Sbs(DisplayMode::SideBySide)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Display::Sbs(mode) => mode.label(),
+            Display::OpenXr => "OpenXR",
+        }
+    }
 }
 
 /// Horizontal eye offset (meters, camera X) for `view` of `mode`: the
@@ -330,12 +397,69 @@ mod tests {
         // Godot 4.6.1's Metal driver cannot slice a multisample array (the
         // per-view MSAA resolve asserts in texture-view creation, verified
         // 2026-09-17 with TAA on and off); Vulkan multiviews with MSAA fine.
-        assert!(msaa_allowed(DisplayMode::Mono, "metal"));
-        assert!(!msaa_allowed(DisplayMode::SideBySide, "metal"));
-        assert!(msaa_allowed(DisplayMode::SideBySide, "vulkan"));
-        assert!(msaa_allowed(DisplayMode::Mono, "vulkan"));
+        let mono = Display::Sbs(DisplayMode::Mono);
+        let sbs = Display::Sbs(DisplayMode::SideBySide);
+        assert!(msaa_allowed(mono, "metal"));
+        assert!(!msaa_allowed(sbs, "metal"));
+        assert!(!msaa_allowed(Display::OpenXr, "metal"), "a headset is two views too");
+        assert!(msaa_allowed(sbs, "vulkan"));
+        assert!(msaa_allowed(Display::OpenXr, "vulkan"));
+        assert!(msaa_allowed(mono, "vulkan"));
         // Headless has no driver to speak of; mono there is the GUT shell.
-        assert!(msaa_allowed(DisplayMode::Mono, ""));
+        assert!(msaa_allowed(mono, ""));
+    }
+
+    // --- The effective display: the SBS interface in a mode, or the OpenXR runtime ---
+
+    #[test]
+    fn the_runtime_decides_the_display_when_it_runs_and_the_preference_otherwise() {
+        // OpenXR is enabled at process start (Godot's --xr-mode / project
+        // setting), never from the menu: when a runtime initialized, it is
+        // the display whatever the saved SBS preference says.
+        assert_eq!(Display::effective(true, true), Display::OpenXr);
+        assert_eq!(Display::effective(false, true), Display::OpenXr);
+        assert_eq!(Display::effective(true, false), Display::Sbs(DisplayMode::SideBySide));
+        assert_eq!(Display::effective(false, false), Display::Sbs(DisplayMode::Mono));
+    }
+
+    #[test]
+    fn a_display_renders_one_view_in_mono_and_two_in_either_stereo() {
+        assert_eq!(Display::Sbs(DisplayMode::Mono).views(), 1);
+        assert_eq!(Display::Sbs(DisplayMode::SideBySide).views(), 2);
+        assert_eq!(Display::OpenXr.views(), 2);
+    }
+
+    #[test]
+    fn only_side_by_side_confines_the_hud_to_the_central_band() {
+        // The band exists because each SBS eye sees the central half of the
+        // full-window UI plane; a headset's eye sees the whole plane.
+        assert!(Display::Sbs(DisplayMode::SideBySide).central_band());
+        assert!(!Display::Sbs(DisplayMode::Mono).central_band());
+        assert!(!Display::OpenXr.central_band());
+    }
+
+    #[test]
+    fn the_ui_rides_the_plane_in_both_two_view_displays() {
+        assert!(!Display::Sbs(DisplayMode::Mono).ui_on_plane());
+        assert!(Display::Sbs(DisplayMode::SideBySide).ui_on_plane());
+        assert!(Display::OpenXr.ui_on_plane());
+    }
+
+    #[test]
+    fn the_chase_view_is_not_offered_in_a_headset() {
+        // Owner 2026-09-17: no chase view in VR — nauseating.
+        assert!(Display::Sbs(DisplayMode::Mono).chase_allowed());
+        assert!(Display::Sbs(DisplayMode::SideBySide).chase_allowed());
+        assert!(!Display::OpenXr.chase_allowed());
+    }
+
+    #[test]
+    fn only_side_by_side_takes_the_whole_panel() {
+        // The glasses want the whole panel; a headset's window is a mirror
+        // and mono keeps the player's window preference.
+        assert!(Display::Sbs(DisplayMode::SideBySide).wants_fullscreen());
+        assert!(!Display::Sbs(DisplayMode::Mono).wants_fullscreen());
+        assert!(!Display::OpenXr.wants_fullscreen());
     }
 
     #[test]

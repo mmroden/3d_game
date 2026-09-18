@@ -2377,7 +2377,7 @@ impl GameManager {
         godot::classes::RenderingServer::singleton().force_draw();
         // What the display shows is ViewManager's to say: the root render
         // target in mono, the two multiview layers stitched left|right in
-        // SBS — the one capture door for both.
+        // SBS — the single capture entry point for both.
         let Some(image) = self
             .base()
             .get_parent()

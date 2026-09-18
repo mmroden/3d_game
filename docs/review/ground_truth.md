@@ -133,9 +133,11 @@ The 3D world renders ONCE, through the root viewport under `use_xr`, by the
 display interface the XRServer holds (docs/design/xr_rig.md): the
 `SbsInterface` (`rust/void-nodes/src/nodes/views/sbs_interface.rs`) plays
 the xReal as a crippled headset — one view in mono, two side by side, eyes
-front, head still — and Godot's `OpenXRInterface` is the Frame's (chunk 3,
-not built). The player's `XRCamera3D` under `Player/XROrigin3D` is the one
-camera; the `UIPlane` is a child of that origin (cockpit-locked). A second
+front, head still — and Godot's `OpenXRInterface` is the display whenever a
+runtime came up at process start (`--xr-mode on`; the Meta XR Simulator on
+the Mac via `make run-xr`, the Frame later). `void_logic::stereo::Display`
+names the display in force; `views/openxr.rs` reads the XRServer for it.
+The player's `XRCamera3D` under `Player/XROrigin3D` is the one camera; the `UIPlane` is a child of that origin (cockpit-locked). A second
 render of the scene (a `SubViewport` per eye, a hand-driven camera) is a
 finding, not an open decision.
 
@@ -150,9 +152,10 @@ verdict on one of them.
   above; docs/design/xr_rig.md §7 carries the before/after measurement
   through the visual stage. What stays open inside it: the Frame's
   convergence policy (§5 there: `world_scale` law vs. relief-only remap —
-  an in-headset experiment, dials exposed) and the mono path's shape (one
-  interface at one view, confirmed working; the alternative was `use_xr`
-  off).
+  an in-headset experiment, dials exposed). Settled: the mono path (one
+  interface at one view, working) and the OpenXR display (§6 there, on
+  the Mac under the Meta XR Simulator); the UI as a composition layer,
+  the action map and a headset capture path are phase 4's.
 - **Convergence geometry.** The rig's convergence is shifted-frustum — the
   off-axis term in `void_logic::stereo::off_axis_projection`, read in code,
   not measured. The owner does not accept the frustum-vs-toe-in argument
